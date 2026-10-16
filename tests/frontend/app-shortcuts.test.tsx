@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import './jsdom-storage'
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'

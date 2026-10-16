@@ -143,7 +143,7 @@ export class TerminalService {
       ? undefined
       : canonicalSessionPath(await this.authorizeSessionPath(requireString(options.sessionPath, 'sessionPath', { min: 1, max: 4096 })))
     if (owner.isDestroyed()) throw new Error('Terminal owner was closed')
-    if (this.terminals.size >= 8) throw new Error('GooeyPi supports at most eight concurrent terminals')
+    if (this.terminals.size >= 8) throw new Error('OMP Desktop supports at most eight concurrent terminals')
     const shell = this.validateShell(options.shell ?? this.configuredShell())
     const command = options.command === undefined
       ? undefined
@@ -262,7 +262,7 @@ export class TerminalService {
     if (now - this.totalOutputWindowStartedAt >= 1_000) { this.totalOutputWindowStartedAt = now; this.totalOutputWindowBytes = 0 }
     this.totalOutputWindowBytes += bytes
     if (bytes > MAX_TERMINAL_IPC_CHUNK_BYTES || owned.outputWindowBytes > MAX_TERMINAL_OUTPUT_BYTES_PER_SECOND || this.totalOutputWindowBytes > MAX_TOTAL_TERMINAL_OUTPUT_BYTES_PER_SECOND) {
-      owned.pendingOutput += '\r\n[GooeyPi stopped this terminal because output exceeded 16 MiB/s.]\r\n'
+      owned.pendingOutput += '\r\n[OMP Desktop stopped this terminal because output exceeded 16 MiB/s.]\r\n'
       owned.pendingOutputBytes = Buffer.byteLength(owned.pendingOutput)
       this.flushOutput(id, owned)
       void this.terminate(id, owned)

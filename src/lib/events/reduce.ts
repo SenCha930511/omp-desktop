@@ -1,3 +1,4 @@
+import { HARNESS_AGENT_NAMES } from '@/lib/harness'
 import type { MessagePart, QueuedPrompt, TranscriptMessage } from '@/types/api'
 import { applyCompactionEvent, isCompactionEvent } from './compaction'
 import { nextTranscriptId, withPartId } from './ids'
@@ -35,17 +36,17 @@ function effectiveToolId(id: string | undefined, name: string): string {
 }
 
 const EMPTY_TURN_FALLBACK = 'Completed without a text response.'
-const LOCAL_STEER_PICKUP = Symbol('gooeypi-steer-pickup')
-const LOCAL_STEER_ACCEPTED = Symbol('gooeypi-steer-accepted')
+const LOCAL_STEER_PICKUP = Symbol('omp-desktop-steer-pickup')
+const LOCAL_STEER_ACCEPTED = Symbol('omp-desktop-steer-accepted')
 
 /** Renderer-only event: fixes an admitted steer in history at response time. */
 export function createSteerAcceptedEvent(prompt: QueuedPrompt): Record<string, unknown> {
-  return { type: 'gooeypi_steer_accepted', prompt, [LOCAL_STEER_ACCEPTED]: true }
+  return { type: 'omp_desktop_steer_accepted', prompt, [LOCAL_STEER_ACCEPTED]: true }
 }
 
 /** Renderer-only event: the symbol prevents an agent frame from spoofing a local pickup. */
 export function createSteerPickupEvent(prompts: QueuedPrompt[]): Record<string, unknown> {
-  return { type: 'gooeypi_steer_pickup', prompts, [LOCAL_STEER_PICKUP]: true }
+  return { type: 'omp_desktop_steer_pickup', prompts, [LOCAL_STEER_PICKUP]: true }
 }
 
 export function replayPrimeEvents(
@@ -210,7 +211,7 @@ export function replayPrimeEvents(
     if (stats) stats.eventScans += 1
     const type = string(raw.type) ?? string(raw.event)
     if (!type) continue
-    if (type === 'gooeypi_steer_accepted' && (raw as Record<PropertyKey, unknown>)[LOCAL_STEER_ACCEPTED] === true) {
+    if (type === 'omp_desktop_steer_accepted' && (raw as Record<PropertyKey, unknown>)[LOCAL_STEER_ACCEPTED] === true) {
       const accepted = steerMessage(raw.prompt, 'accepted')
       if (!accepted || next.some((message) => message.id === accepted.id)) continue
       // Freeze the output already visible when the RPC response confirms
@@ -221,7 +222,7 @@ export function replayPrimeEvents(
       next.push(accepted)
       continue
     }
-    if (type === 'gooeypi_steer_pickup' && (raw as Record<PropertyKey, unknown>)[LOCAL_STEER_PICKUP] === true) {
+    if (type === 'omp_desktop_steer_pickup' && (raw as Record<PropertyKey, unknown>)[LOCAL_STEER_PICKUP] === true) {
       const prompts = Array.isArray(raw.prompts) ? raw.prompts : []
       const pickedUp = prompts.flatMap((value) => {
         const message = steerMessage(value, 'read')
@@ -342,7 +343,7 @@ export function replayPrimeEvents(
       continue
     }
     if (type === 'extension_error' || type === 'error' || type === 'transport_error') {
-      const text = string(raw.error) ?? string(raw.message) ?? 'Prime encountered an error.'
+      const text = string(raw.error) ?? string(raw.message) ?? `${HARNESS_AGENT_NAMES.omp} encountered an error.`
       finalizeStreaming(Date.now(), false)
       if (next.at(-1)?.role === 'system') continue
       copyTranscript()
@@ -354,7 +355,7 @@ export function replayPrimeEvents(
       if (raw.expected === true || next.at(-1)?.role === 'system') continue
       const reason = raw.code !== null && raw.code !== undefined ? `exit code ${String(raw.code)}` : string(raw.signal) ?? 'an unknown error'
       copyTranscript()
-      // Harness-neutral: this reducer serves both Prime Agent and OMP events.
+      // This reducer normalizes raw OMP agent events for the renderer.
       next.push({ id: nextTranscriptId('error'), role: 'system', timestamp: Date.now(), parts: [withPartId({ type: 'text', text: `The agent stopped unexpectedly (${reason}). Send the message again to restart it.` })] })
     }
   }

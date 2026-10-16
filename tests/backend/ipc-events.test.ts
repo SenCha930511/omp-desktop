@@ -33,7 +33,7 @@ function harnessStub(): Record<string, unknown> {
 }
 
 describe('app:reveal-path authorization', () => {
-  const expectedUrl = 'prime-work://app/'
+  const expectedUrl = 'omp-desktop://app/'
 
   function revealHarness(overrides: { projects?: unknown; sessions?: unknown; plugins?: unknown }) {
     const services = {
@@ -68,7 +68,7 @@ describe('app:reveal-path authorization', () => {
   }
 
   it('reveals a path through the first authorization domain that accepts it', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'prime-work-reveal-'))
+    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-reveal-'))
     try {
       const deny = async () => { throw new Error('not a project path') }
       const { invoke, registration } = revealHarness({
@@ -82,7 +82,7 @@ describe('app:reveal-path authorization', () => {
   })
 
   it('returns false without revealing when every authorization domain denies', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'prime-work-reveal-denied-'))
+    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-reveal-denied-'))
     try {
       const deny = () => { throw new Error('denied') }
       const { invoke, registration } = revealHarness({
@@ -98,7 +98,7 @@ describe('app:reveal-path authorization', () => {
   })
 
   it('warns instead of swallowing an unexpected reveal failure', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'prime-work-reveal-error-'))
+    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-reveal-error-'))
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     try {
       const { invoke, registration } = revealHarness({
@@ -140,7 +140,7 @@ describe('session change IPC', () => {
       omp: harnessStub(),
       pi: harnessStub(),
     }
-    const expectedUrl = 'prime-work://app/'
+    const expectedUrl = 'omp-desktop://app/'
     const trusted = {
       id: 1,
       getURL: () => expectedUrl,
@@ -186,7 +186,7 @@ describe('session change IPC', () => {
 })
 
 describe('shell-facing app handlers', () => {
-  const expectedUrl = 'prime-work://app/'
+  const expectedUrl = 'omp-desktop://app/'
   const dirs: string[] = []
   let handlers: Map<string, (event: unknown, ...args: unknown[]) => unknown>
   let sender: { id: number; isDestroyed: () => boolean; getURL: () => string; mainFrame: { url: string } }
@@ -256,7 +256,7 @@ describe('shell-facing app handlers', () => {
   })
 
   it('reveals a path only after project authorization succeeds', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'prime-work-reveal-')); dirs.push(dir)
+    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-reveal-')); dirs.push(dir)
     const file = join(dir, 'file.txt'); writeFileSync(file, 'data')
     const canonical = await realpath(file)
     const authorizePath = vi.fn(async (path: string) => path)
@@ -268,7 +268,7 @@ describe('shell-facing app handlers', () => {
   })
 
   it('falls back to session and then plugin authorization in order', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'prime-work-reveal-')); dirs.push(dir)
+    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-reveal-')); dirs.push(dir)
     const file = join(dir, 'file.txt'); writeFileSync(file, 'data')
     const canonical = await realpath(file)
     const authorizePath = vi.fn(async () => { throw new Error('outside projects') })
@@ -287,7 +287,7 @@ describe('shell-facing app handlers', () => {
   })
 
   it('denies reveal when every authorizer refuses the path', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'prime-work-reveal-')); dirs.push(dir)
+    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-reveal-')); dirs.push(dir)
     const file = join(dir, 'file.txt'); writeFileSync(file, 'data')
     const registration = register({
       projects: { ...serviceStub(), authorizePath: vi.fn(async () => { throw new Error('denied') }) },
@@ -300,7 +300,7 @@ describe('shell-facing app handlers', () => {
   })
 
   it('denies reveal for nonexistent or relative paths before consulting authorizers', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'prime-work-reveal-')); dirs.push(dir)
+    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-reveal-')); dirs.push(dir)
     const authorizePath = vi.fn(async (path: string) => path)
     const registration = register({ projects: { ...serviceStub(), authorizePath } })
     await expect(handlers.get('app:reveal-path')!(event, join(dir, 'missing.txt'))).resolves.toBe(false)
@@ -333,7 +333,7 @@ describe('IPC registration lifecycle', () => {
   it('removes any prior listener before registering event channels', () => {
     electronMocks.ipcMain.on.mockClear()
     electronMocks.ipcMain.removeAllListeners.mockClear()
-    const registration = registerIpc(servicesWithUnsubscribe(vi.fn()) as never, 'prime-work://app/')
+    const registration = registerIpc(servicesWithUnsubscribe(vi.fn()) as never, 'omp-desktop://app/')
 
     const eventChannels = electronMocks.ipcMain.on.mock.calls.map(([channel]) => channel)
     expect(eventChannels.length).toBeGreaterThan(0)
@@ -346,10 +346,10 @@ describe('IPC registration lifecycle', () => {
   it('warns and disposes a previous registration when registerIpc is called again', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     const firstUnsubscribe = vi.fn()
-    const first = registerIpc(servicesWithUnsubscribe(firstUnsubscribe) as never, 'prime-work://app/')
+    const first = registerIpc(servicesWithUnsubscribe(firstUnsubscribe) as never, 'omp-desktop://app/')
     expect(firstUnsubscribe).not.toHaveBeenCalled()
 
-    const second = registerIpc(servicesWithUnsubscribe(vi.fn()) as never, 'prime-work://app/')
+    const second = registerIpc(servicesWithUnsubscribe(vi.fn()) as never, 'omp-desktop://app/')
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('previous registration'))
     expect(firstUnsubscribe).toHaveBeenCalledTimes(1)
 

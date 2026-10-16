@@ -11,7 +11,7 @@ const dirs: string[] = []
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }) })
 
 function tempDir(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'prime-work-omp-'))
+  const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-omp-'))
   dirs.push(dir)
   return dir
 }

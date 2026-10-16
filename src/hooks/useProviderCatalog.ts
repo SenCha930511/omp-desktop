@@ -1,7 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { HarnessId, PrimeModelCatalog, PrimeModelDescriptor, PrimeThinkingLevel, PrimeWorkApi, ProviderAuthEvent, RuntimeInfo, SessionRecord } from '@/types/api'
-
-type ActiveProviderAuthEvent = Exclude<ProviderAuthEvent, { type: 'cancelled' }>
+import type { HarnessId, PrimeModelCatalog, PrimeModelDescriptor, PrimeThinkingLevel, DesktopApi, RuntimeInfo, SessionRecord } from '@/types/api'
 
 /** Stable fallback identities so consumers can memoize on prop equality. */
 const DEFAULT_REASONING_LEVELS: PrimeThinkingLevel[] = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
@@ -31,7 +29,7 @@ export function groupModelsByProvider(models: readonly PrimeModelDescriptor[] | 
 }
 
 interface UseProviderCatalogOptions {
-  bridge: PrimeWorkApi | null
+  bridge: DesktopApi | null
   /** Prevent startup work before the persisted harness selection is loaded. */
   ready?: boolean
   /** Harness whose model catalog is shown; catalogs are cached per harness. */
@@ -46,7 +44,7 @@ interface UseProviderCatalogOptions {
   reportError(error: unknown): void
 }
 
-export function useProviderCatalog({ bridge, ready = true, harness = 'prime', runtime, activeSession, lastSelectedModel = '', rememberModel, syncRuntime, reportError }: UseProviderCatalogOptions) {
+export function useProviderCatalog({ bridge, ready = true, harness = 'omp', runtime, activeSession, lastSelectedModel = '', rememberModel, syncRuntime, reportError }: UseProviderCatalogOptions) {
   const [model, setModel] = useState('')
   const [effort, setEffort] = useState<PrimeThinkingLevel>('medium')
   const [fast, setFast] = useState(false)
@@ -57,7 +55,6 @@ export function useProviderCatalog({ bridge, ready = true, harness = 'prime', ru
   const setCatalogFor = useCallback((target: HarnessId, next: PrimeModelCatalog) => {
     setCatalogs((current) => ({ ...current, [target]: next }))
   }, [])
-  const [authEvent, setAuthEvent] = useState<ActiveProviderAuthEvent | null>(null)
   const modelRef = useRef(model)
   const effortRef = useRef(effort)
   const fastRef = useRef(fast)
@@ -162,22 +159,6 @@ export function useProviderCatalog({ bridge, ready = true, harness = 'prime', ru
     if (fallback) rememberSelection(fallback.key)
     if (!fallback?.fastModeSupported) updateFast(false)
   }, [catalog, fallbackModel, harness, rememberSelection, updateFast, updateModel])
-
-  useEffect(() => {
-    if (!bridge) return
-    return bridge.providers.onAuthEvent((event) => {
-      if (event.type === 'complete') {
-        setAuthEvent(event)
-        void refresh(true).catch(reportError)
-      } else if (event.type === 'cancelled') {
-        setAuthEvent(null)
-      } else if (event.type === 'error') {
-        setAuthEvent(event)
-      } else if (event.type === 'auth' || event.type === 'progress' || event.type === 'prompt' || event.type === 'select') {
-        setAuthEvent(event)
-      }
-    })
-  }, [bridge, refresh, reportError])
 
   // Selections made while a session has no live runtime are only local state,
   // so they are parked per session (new tabs share the '' key) until a runtime
@@ -285,18 +266,6 @@ export function useProviderCatalog({ bridge, ready = true, harness = 'prime', ru
     )
   }, [bridge, queueRuntimeMutation, runtime, updateFast])
 
-  // Credentials remain Prime-only, while desktop-owned provider visibility is
-  // stored independently for each harness.
-  const saveApiKey = useCallback(async (providerId: string, apiKey: string) => {
-    if (!bridge) throw new Error('Providers can only be configured in the desktop app.')
-    setCatalogFor('prime', await bridge.providers.saveApiKey(providerId, apiKey))
-  }, [bridge, setCatalogFor])
-
-  const logout = useCallback(async (providerId: string) => {
-    if (!bridge) throw new Error('Providers can only be configured in the desktop app.')
-    setCatalogFor('prime', await bridge.providers.logout(providerId))
-  }, [bridge, setCatalogFor])
-
   const setEnabled = useCallback(async (providerId: string, enabled: boolean) => {
     if (!bridge) throw new Error('Providers can only be configured in the desktop app.')
     const next = await bridge.providers.setEnabled(providerId, enabled, harness)
@@ -340,24 +309,9 @@ export function useProviderCatalog({ bridge, ready = true, harness = 'prime', ru
     }
   }, [bridge, fallbackModel, harness, rememberSelection, setCatalogFor, updateFast, updateModel])
 
-  const startOAuth = useCallback(async (providerId: string) => {
-    if (!bridge) throw new Error('Providers can only be configured in the desktop app.')
-    await bridge.providers.startOAuth(providerId)
-  }, [bridge])
-
-  const respondOAuth = useCallback((promptId: string, value?: string) => {
-    if (!bridge || !authEvent) return
-    void bridge.providers.respondOAuth(authEvent.flowId, promptId, value).catch(reportError)
-  }, [authEvent, bridge, reportError])
-
-  const cancelOAuth = useCallback(() => {
-    if (bridge && authEvent) void bridge.providers.cancelOAuth(authEvent.flowId).catch(reportError)
-    setAuthEvent(null)
-  }, [authEvent, bridge, reportError])
-
   return {
-    model, effort, fast, catalog, authEvent, selectedModel, reasoningLevels, modelsByProvider,
+    model, effort, fast, catalog, selectedModel, reasoningLevels, modelsByProvider,
     refresh, changeModel, changeEffort, changeFast,
-    saveApiKey, logout, setEnabled, setAllEnabled, setAllDisabled, setModelEnabled, startOAuth, respondOAuth, cancelOAuth,
+    setEnabled, setAllEnabled, setAllDisabled, setModelEnabled,
   }
 }

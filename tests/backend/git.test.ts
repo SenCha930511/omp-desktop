@@ -12,7 +12,7 @@ const git = (cwd: string, ...args: string[]) => {
   const result = spawnSync('git', args, { cwd, encoding: 'utf8' })
   if (result.status !== 0) throw new Error(result.stderr)
 }
-const repository = (prefix = 'prime-work-git-') => {
+const repository = (prefix = 'omp-desktop-git-') => {
   const cwd = mkdtempSync(join(tmpdir(), prefix)); dirs.push(cwd)
   git(cwd, 'init', '-q'); git(cwd, 'config', 'user.name', 'Prime Work Test'); git(cwd, 'config', 'user.email', 'test@example.com')
   writeFileSync(join(cwd, 'file.txt'), 'base\n'); git(cwd, 'add', 'file.txt'); git(cwd, 'commit', '-qm', 'base')
@@ -21,7 +21,7 @@ const repository = (prefix = 'prime-work-git-') => {
 
 describe('GitService', () => {
   it('lists local branches and switches without consulting remotes', async () => {
-    const cwd = repository('prime-work-git-branches-')
+    const cwd = repository('omp-desktop-git-branches-')
     git(cwd, 'branch', 'feature/local')
     git(cwd, 'remote', 'add', 'origin', cwd)
     git(cwd, 'fetch', '-q', 'origin', 'feature/local:refs/remotes/origin/remote-only')
@@ -41,7 +41,7 @@ describe('GitService', () => {
   })
 
   it('creates a local branch from HEAD and refuses dirty work', async () => {
-    const cwd = repository('prime-work-git-create-branch-')
+    const cwd = repository('omp-desktop-git-create-branch-')
     expect(await inspectGitWorktreeClean(cwd)).toEqual({ kind: 'clean' })
     await expect(createAndSwitchGitBranch(cwd, 'feature/new')).resolves.toEqual({ kind: 'applied' })
     expect((await listLocalGitBranches(cwd)).find((branch) => branch.current)?.name).toBe('feature/new')
@@ -53,7 +53,7 @@ describe('GitService', () => {
   })
 
   it('does not execute repository clean filters while inspecting or switching branches', async () => {
-    const cwd = repository('prime-work-git-branch-filter-')
+    const cwd = repository('omp-desktop-git-branch-filter-')
     const marker = join(cwd, 'filter-ran')
     const filter = join(cwd, 'filter.sh')
     writeFileSync(filter, `#!/bin/sh\nprintf ran >> ${JSON.stringify(marker)}\ncat\n`)
@@ -94,7 +94,7 @@ describe('GitService', () => {
   }, 15_000)
 
   it('uses repository-relative status paths for every action from a nested cwd', async () => {
-    const cwd = repository('prime-work-git-nested-')
+    const cwd = repository('omp-desktop-git-nested-')
     const nested = join(cwd, 'packages', 'app')
     mkdirSync(nested, { recursive: true })
     writeFileSync(join(nested, 'nested.txt'), 'base\n')
@@ -116,7 +116,7 @@ describe('GitService', () => {
   })
 
   it('unstages files on an unborn HEAD without changing working content', async () => {
-    const cwd = mkdtempSync(join(tmpdir(), 'prime-work-git-unborn-'))
+    const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-git-unborn-'))
     dirs.push(cwd)
     git(cwd, 'init', '-q')
     writeFileSync(join(cwd, 'first.txt'), 'staged version\n')
@@ -132,8 +132,8 @@ describe('GitService', () => {
   })
 
   it('reads a safe user identity and supplies it explicitly when committing', async () => {
-    const cwd = repository('prime-work-git-identity-')
-    const home = mkdtempSync(join(tmpdir(), 'prime-work-git-home-'))
+    const cwd = repository('omp-desktop-git-identity-')
+    const home = mkdtempSync(join(tmpdir(), 'omp-desktop-git-home-'))
     dirs.push(home)
     git(cwd, 'config', '--unset', 'user.name')
     git(cwd, 'config', '--unset', 'user.email')
@@ -155,7 +155,7 @@ describe('GitService', () => {
   })
 
   it('identifies a detached HEAD as a repository branch label', async () => {
-    const cwd = repository('prime-work-git-detached-')
+    const cwd = repository('omp-desktop-git-detached-')
     git(cwd, 'checkout', '-q', '--detach')
     const service = new GitService(async () => cwd)
 
@@ -164,7 +164,7 @@ describe('GitService', () => {
   })
 
   it('represents a file with staged and unstaged edits in both scopes', async () => {
-    const cwd = repository('prime-work-git-scopes-')
+    const cwd = repository('omp-desktop-git-scopes-')
     const service = new GitService(async () => cwd)
     writeFileSync(join(cwd, 'file.txt'), 'base\nstaged\n')
     await service.stage(cwd, ['file.txt'])
@@ -176,8 +176,8 @@ describe('GitService', () => {
     expect(changes.find((file) => !file.staged)?.additions).toBe(1)
   })
   it('respects the user global excludes file (~/.config/git/ignore) for untracked files', async () => {
-    const cwd = repository('prime-work-git-global-excludes-')
-    const home = mkdtempSync(join(tmpdir(), 'prime-work-git-home-'))
+    const cwd = repository('omp-desktop-git-global-excludes-')
+    const home = mkdtempSync(join(tmpdir(), 'omp-desktop-git-home-'))
     dirs.push(home)
     mkdirSync(join(home, '.config', 'git'), { recursive: true })
     writeFileSync(join(home, '.config', 'git', 'ignore'), '.idea/\n')
@@ -202,8 +202,8 @@ describe('GitService', () => {
   })
 
   it('respects core.excludesFile from the global git config for untracked files', async () => {
-    const cwd = repository('prime-work-git-global-excludes-config-')
-    const home = mkdtempSync(join(tmpdir(), 'prime-work-git-home-'))
+    const cwd = repository('omp-desktop-git-global-excludes-config-')
+    const home = mkdtempSync(join(tmpdir(), 'omp-desktop-git-home-'))
     dirs.push(home)
     writeFileSync(join(home, '.gitignore_global'), '.idea/\n')
     writeFileSync(join(home, '.gitconfig'), '[core]\n\texcludesFile = ~/.gitignore_global\n')
@@ -226,8 +226,8 @@ describe('GitService', () => {
   })
 
   it('repository core.excludesFile wins over the global one', async () => {
-    const cwd = repository('prime-work-git-repo-excludes-config-')
-    const home = mkdtempSync(join(tmpdir(), 'prime-work-git-home-'))
+    const cwd = repository('omp-desktop-git-repo-excludes-config-')
+    const home = mkdtempSync(join(tmpdir(), 'omp-desktop-git-home-'))
     dirs.push(home)
     writeFileSync(join(home, '.gitignore_global'), '.idea/\n')
     writeFileSync(join(home, '.gitconfig'), '[core]\n\texcludesFile = ~/.gitignore_global\n')
@@ -253,8 +253,8 @@ describe('GitService', () => {
   })
 
   it('ignores an unsafe global core.excludesFile value', async () => {
-    const cwd = repository('prime-work-git-unsafe-excludes-config-')
-    const home = mkdtempSync(join(tmpdir(), 'prime-work-git-home-'))
+    const cwd = repository('omp-desktop-git-unsafe-excludes-config-')
+    const home = mkdtempSync(join(tmpdir(), 'omp-desktop-git-home-'))
     dirs.push(home)
     writeFileSync(join(home, '.gitconfig'), '[core]\n\texcludesFile = relative/path\n')
     mkdirSync(join(cwd, '.idea'))
@@ -277,7 +277,7 @@ describe('GitService', () => {
   })
 
   it('restores staged, unstaged, and untracked changes to a clean worktree', async () => {
-    const cwd = repository('prime-work-git-restore-all-')
+    const cwd = repository('omp-desktop-git-restore-all-')
     const service = new GitService(async () => cwd)
 
     writeFileSync(join(cwd, 'file.txt'), 'base\nstaged\n')
@@ -292,16 +292,16 @@ describe('GitService', () => {
   })
 
   it('does not execute repository fsmonitor, external diff, hook, or filter programs and strips process secrets/config injection', async () => {
-    const cwd = repository('prime-work-git-hostile-')
+    const cwd = repository('omp-desktop-git-hostile-')
     const marker = join(cwd, 'helper-ran')
     const helper = join(cwd, 'hostile-helper.sh')
     const filter = join(cwd, 'hostile-filter.sh')
     writeFileSync(helper, `#!/bin/sh
-printf '%s:%s\n' "$1" "$PRIME_WORK_TEST_TOKEN" >> ${JSON.stringify(marker)}
+printf '%s:%s\n' "$1" "$OMP_DESKTOP_TEST_TOKEN" >> ${JSON.stringify(marker)}
 exit 1
 `)
     writeFileSync(filter, `#!/bin/sh
-printf 'filter:%s\n' "$PRIME_WORK_TEST_TOKEN" >> ${JSON.stringify(marker)}
+printf 'filter:%s\n' "$OMP_DESKTOP_TEST_TOKEN" >> ${JSON.stringify(marker)}
 cat
 `)
     chmodSync(helper, 0o755); chmodSync(filter, 0o755)
@@ -313,25 +313,25 @@ cat
     writeFileSync(join(cwd, '.gitattributes'), '*.txt filter=hostile\n')
     mkdirSync(join(cwd, '.git', 'hooks'), { recursive: true })
     writeFileSync(join(cwd, '.git', 'hooks', 'pre-commit'), `#!/bin/sh
-printf 'hook:%s\n' "$PRIME_WORK_TEST_TOKEN" >> ${JSON.stringify(marker)}
+printf 'hook:%s\n' "$OMP_DESKTOP_TEST_TOKEN" >> ${JSON.stringify(marker)}
 exit 1
 `)
     chmodSync(join(cwd, '.git', 'hooks', 'pre-commit'), 0o755)
     writeFileSync(join(cwd, 'file.txt'), 'base\nchanged\n')
 
     const oldValues = {
-      token: process.env.PRIME_WORK_TEST_TOKEN,
+      token: process.env.OMP_DESKTOP_TEST_TOKEN,
       count: process.env.GIT_CONFIG_COUNT,
       key: process.env.GIT_CONFIG_KEY_0,
       value: process.env.GIT_CONFIG_VALUE_0,
     }
-    process.env.PRIME_WORK_TEST_TOKEN = 'top-secret-token'
+    process.env.OMP_DESKTOP_TEST_TOKEN = 'top-secret-token'
     process.env.GIT_CONFIG_COUNT = '1'
     process.env.GIT_CONFIG_KEY_0 = 'core.fsmonitor'
     process.env.GIT_CONFIG_VALUE_0 = helper
     try {
       const env = restrictedGitEnvironment()
-      expect(env.PRIME_WORK_TEST_TOKEN).toBeUndefined()
+      expect(env.OMP_DESKTOP_TEST_TOKEN).toBeUndefined()
       expect(env.GIT_CONFIG_COUNT).toBeUndefined()
       expect(env.GIT_CONFIG_KEY_0).toBeUndefined()
       expect(env.GIT_CONFIG_VALUE_0).toBeUndefined()
@@ -351,7 +351,7 @@ exit 1
       expect(existsSync(marker)).toBe(false)
     } finally {
       const restore = (key: string, value: string | undefined) => { if (value === undefined) delete process.env[key]; else process.env[key] = value }
-      restore('PRIME_WORK_TEST_TOKEN', oldValues.token)
+      restore('OMP_DESKTOP_TEST_TOKEN', oldValues.token)
       restore('GIT_CONFIG_COUNT', oldValues.count)
       restore('GIT_CONFIG_KEY_0', oldValues.key)
       restore('GIT_CONFIG_VALUE_0', oldValues.value)
@@ -359,7 +359,7 @@ exit 1
   }, 20_000)
 
   it('inspects filtered changes beyond the status display cap', async () => {
-    const cwd = repository('prime-work-git-filter-cap-')
+    const cwd = repository('omp-desktop-git-filter-cap-')
     for (let index = 0; index < GIT_STATUS_ENTRY_LIMIT; index += 1) {
       writeFileSync(join(cwd, `bulk-${String(index).padStart(4, '0')}.txt`), 'base\n')
     }
@@ -390,7 +390,7 @@ exit 1
   }, 30_000)
 
   it('fails closed for LFS-style filtered content without changing the index or worktree', async () => {
-    const cwd = repository('prime-work-git-lfs-')
+    const cwd = repository('omp-desktop-git-lfs-')
     const marker = join(cwd, 'lfs-filter-ran')
     const filter = join(cwd, 'lfs-filter.sh')
     writeFileSync(filter, `#!/bin/sh
@@ -415,7 +415,7 @@ printf 'mutated by filter\n'
   })
 
   it('rejects a repository root outside the authorized project folder', async () => {
-    const outer = repository('prime-work-git-outer-')
+    const outer = repository('omp-desktop-git-outer-')
     const inner = join(outer, 'authorized-folder')
     mkdirSync(inner)
     writeFileSync(join(inner, 'nested.txt'), 'nested change\n')
@@ -433,7 +433,7 @@ printf 'mutated by filter\n'
   })
 
   it('surfaces mutation and commit failures instead of returning apparent success', async () => {
-    const cwd = repository('prime-work-git-failure-')
+    const cwd = repository('omp-desktop-git-failure-')
     const service = new GitService(async () => cwd)
     writeFileSync(join(cwd, 'file.txt'), 'changed\n')
     writeFileSync(join(cwd, '.git', 'index.lock'), 'locked')
@@ -448,7 +448,7 @@ printf 'mutated by filter\n'
   })
 
   it('caps status entries and diff lines with explicit truncation', async () => {
-    const cwd = repository('prime-work-git-caps-')
+    const cwd = repository('omp-desktop-git-caps-')
     const service = new GitService(async () => cwd)
     for (let index = 0; index < GIT_STATUS_ENTRY_LIMIT + 5; index += 1) writeFileSync(join(cwd, `untracked-${String(index).padStart(4, '0')}`), 'x')
     const status = await service.status(cwd)
@@ -460,14 +460,14 @@ printf 'mutated by filter\n'
     const diff = await service.diff(cwd, 'file.txt', false)
     expect(diff.truncated).toBe(true)
     expect(diff.error).toMatch(/lines.*truncated/i)
-    expect(diff.text).toContain('[GooeyPi: diff truncated')
+    expect(diff.text).toContain('[OMP Desktop: diff truncated')
     const outputLines = diff.text.split('\n')
     expect(outputLines).toHaveLength(GIT_DIFF_LINE_LIMIT + 1)
-    expect(outputLines[outputLines.length - 1]).toContain('[GooeyPi: diff truncated')
+    expect(outputLines[outputLines.length - 1]).toContain('[OMP Desktop: diff truncated')
   }, 30_000)
 
   it('lists and creates linked worktrees with bounded porcelain parsing', async () => {
-    const cwd = repository('prime-work-git-worktrees-')
+    const cwd = repository('omp-desktop-git-worktrees-')
     const target = `${cwd}-feature`; dirs.push(target)
 
     await createGitWorktree(cwd, target, 'feature/test')
@@ -481,7 +481,7 @@ printf 'mutated by filter\n'
   })
 
   it('reports isRepo false only for a genuine not-a-repository failure', async () => {
-    const cwd = mkdtempSync(join(tmpdir(), 'prime-work-git-norepo-')); dirs.push(cwd)
+    const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-git-norepo-')); dirs.push(cwd)
     const service = new GitService(async () => cwd)
     const status = await service.status(cwd)
     expect(status.isRepo).toBe(false)
@@ -489,7 +489,7 @@ printf 'mutated by filter\n'
   })
 
   it('keeps isRepo true when status fails for a reason other than a missing repository', async () => {
-    const cwd = repository('prime-work-git-authz-')
+    const cwd = repository('omp-desktop-git-authz-')
     const service = new GitService(async () => { throw new TypeError('path is not inside an added Prime Work project') })
     const status = await service.status(cwd)
     expect(status.isRepo).toBe(true)

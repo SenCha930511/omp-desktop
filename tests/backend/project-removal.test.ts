@@ -11,7 +11,7 @@ const identities = (...paths: string[]) => Object.fromEntries(paths.map((path) =
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }) })
 
 function fixture() {
-  const dir = mkdtempSync(join(tmpdir(), 'prime-work-project-removal-'))
+  const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-project-removal-'))
   dirs.push(dir)
   const folder = join(dir, 'project')
   mkdirSync(folder)
@@ -19,7 +19,7 @@ function fixture() {
   writeFileSync(marker, 'keep')
   const store = new JsonStateStore(join(dir, 'state.json'))
   const session: SessionRecord = {
-    id: 'session', harness: 'prime', filePath: join(dir, 'session.jsonl'), projectPath: folder, title: 'Session',
+    id: 'session', harness: 'omp', filePath: join(dir, 'session.jsonl'), projectPath: folder, title: 'Session',
     createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), status: 'idle', depth: 0,
   }
   const service = new ProjectService(store, () => null)
@@ -32,7 +32,7 @@ describe('project removal', () => {
     const { folder, marker, store, service } = fixture()
     const now = new Date().toISOString()
     await store.update((state) => { state.projects.push({
-      id: 'project-1', harness: 'prime', name: 'Project', path: folder, folders: [folder], primaryFolder: folder,
+      id: 'project-1', harness: 'omp', name: 'Project', path: folder, folders: [folder], primaryFolder: folder,
       pinned: false, createdAt: now, lastOpenedAt: now, folderIdentities: identities(folder),
     }) })
 
@@ -62,8 +62,8 @@ describe('project removal', () => {
     mkdirSync(second)
     const now = new Date().toISOString()
     await store.update((state) => { state.projects.push(
-      { id: 'project-1', harness: 'prime', name: 'First', path: folder, folders: [folder], primaryFolder: folder, pinned: false, createdAt: now, lastOpenedAt: now, folderIdentities: identities(folder) },
-      { id: 'project-2', harness: 'prime', name: 'Second', path: second, folders: [second], primaryFolder: second, pinned: false, createdAt: now, lastOpenedAt: now, folderIdentities: identities(second) },
+      { id: 'project-1', harness: 'omp', name: 'First', path: folder, folders: [folder], primaryFolder: folder, pinned: false, createdAt: now, lastOpenedAt: now, folderIdentities: identities(folder) },
+      { id: 'project-2', harness: 'omp', name: 'Second', path: second, folders: [second], primaryFolder: second, pinned: false, createdAt: now, lastOpenedAt: now, folderIdentities: identities(second) },
     ) })
     let releaseBranch!: () => void
     let markEntered!: () => void
@@ -82,7 +82,7 @@ describe('project removal', () => {
 
     // The removal deny-list is released once removal completes; the lasting
     // block is that the project is no longer authorized at all.
-    await expect(service.authorizeCwd(second)).rejects.toThrow(/not inside an added Prime Work project/)
+    await expect(service.authorizeCwd(second)).rejects.toThrow(/not inside an added OMP Desktop project/)
   })
 
   it('keeps a nested registered project authorized while and after its parent is removed', async () => {
@@ -91,8 +91,8 @@ describe('project removal', () => {
     mkdirSync(nested)
     const now = new Date().toISOString()
     await store.update((state) => { state.projects.push(
-      { id: 'parent', harness: 'prime', name: 'Parent', path: folder, folders: [folder], primaryFolder: folder, pinned: false, createdAt: now, lastOpenedAt: now, folderIdentities: identities(folder) },
-      { id: 'nested', harness: 'prime', name: 'Nested', path: nested, folders: [nested], primaryFolder: nested, pinned: false, createdAt: now, lastOpenedAt: now, folderIdentities: identities(nested) },
+      { id: 'parent', harness: 'omp', name: 'Parent', path: folder, folders: [folder], primaryFolder: folder, pinned: false, createdAt: now, lastOpenedAt: now, folderIdentities: identities(folder) },
+      { id: 'nested', harness: 'omp', name: 'Nested', path: nested, folders: [nested], primaryFolder: nested, pinned: false, createdAt: now, lastOpenedAt: now, folderIdentities: identities(nested) },
     ) })
     await service.list()
     let releaseStop!: () => void
@@ -113,14 +113,14 @@ describe('project removal', () => {
     await expect(removal).resolves.toBe(true)
 
     await expect(service.authorizeCwd(nested)).resolves.toBe(realpathSync(nested))
-    await expect(service.authorizeCwd(folder)).rejects.toThrow(/not inside an added Prime Work project/)
+    await expect(service.authorizeCwd(folder)).rejects.toThrow(/not inside an added OMP Desktop project/)
   })
 
   it('releases removal roots and keeps the project working when the store update fails', async () => {
     const { folder, store, service } = fixture()
     const now = new Date().toISOString()
     await store.update((state) => { state.projects.push({
-      id: 'project-1', harness: 'prime', name: 'Project', path: folder, folders: [folder], primaryFolder: folder,
+      id: 'project-1', harness: 'omp', name: 'Project', path: folder, folders: [folder], primaryFolder: folder,
       pinned: false, createdAt: now, lastOpenedAt: now, folderIdentities: identities(folder),
     }) })
     await service.list()
@@ -144,7 +144,7 @@ describe('project removal', () => {
     session.projectPath = secondary
     const now = new Date().toISOString()
     await store.update((state) => { state.projects.push({
-      id: 'project-1', harness: 'prime', name: 'Project', path: primary, folders: [primary, secondary], primaryFolder: primary,
+      id: 'project-1', harness: 'omp', name: 'Project', path: primary, folders: [primary, secondary], primaryFolder: primary,
       pinned: false, createdAt: now, lastOpenedAt: now, folderIdentities: identities(folder),
     }) })
 
@@ -157,7 +157,7 @@ describe('project removal', () => {
     const { folder, store, service } = fixture()
     const now = new Date().toISOString()
     await store.update((state) => { state.projects.push({
-      id: 'project-1', harness: 'prime', name: 'Project', path: folder, folders: [folder], primaryFolder: folder,
+      id: 'project-1', harness: 'omp', name: 'Project', path: folder, folders: [folder], primaryFolder: folder,
       pinned: false, createdAt: now, lastOpenedAt: now, folderIdentities: identities(folder),
     }) })
     await service.list()
@@ -184,7 +184,7 @@ describe('project removal', () => {
     const { folder, store, service } = fixture()
     const now = new Date().toISOString()
     await store.update((state) => { state.projects.push({
-      id: 'project-1', harness: 'prime', name: 'Project', path: folder, folders: [folder], primaryFolder: folder,
+      id: 'project-1', harness: 'omp', name: 'Project', path: folder, folders: [folder], primaryFolder: folder,
       pinned: false, createdAt: now, lastOpenedAt: now, folderIdentities: identities(folder),
     }) })
     await service.list()

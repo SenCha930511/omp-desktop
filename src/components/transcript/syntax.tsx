@@ -1,5 +1,5 @@
 import { Fragment } from 'react'
-import { tokenizeSyntaxText, type SyntaxTokenKind } from '@/lib/syntax-text'
+import { type SyntaxTokenKind, tokenizeSyntaxText } from '@/lib/syntax-text'
 
 export type { SyntaxTokenKind }
 
@@ -33,19 +33,29 @@ export function tokenizeSyntax(text: string): SyntaxToken[] {
 }
 
 export function SyntaxText({ text }: { text: string }) {
-  return <>{tokenizeSyntax(text).map((token, index) => (
-    <span className={token.kind === 'plain' ? undefined : `syntax-${token.kind}`} key={`${index}-${token.text.slice(0, 8)}`}>{token.text}</span>
-  ))}</>
+  return (
+    <>
+      {tokenizeSyntax(text).map((token, index) => (
+        <span className={token.kind === 'plain' ? undefined : `syntax-${token.kind}`} key={`${index}-${token.text.slice(0, 8)}`}>
+          {token.text}
+        </span>
+      ))}
+    </>
+  )
 }
 
 export function InlineText({ text }: { text: string }) {
   const lines = text.split('\n')
-  return <>{lines.map((line, lineIndex) => (
-    <Fragment key={`${lineIndex}-${line.slice(0, 12)}`}>
-      {line.split(/(`[^`]+`)/g).map((fragment, index) => fragment.startsWith('`') && fragment.endsWith('`')
-        ? <code key={index}>{fragment.slice(1, -1)}</code>
-        : <Fragment key={index}>{fragment}</Fragment>)}
-      {lineIndex < lines.length - 1 ? <br /> : null}
-    </Fragment>
-  ))}</>
+  return (
+    <>
+      {lines.map((line, lineIndex) => (
+        <Fragment key={`${lineIndex}-${line.slice(0, 12)}`}>
+          {line
+            .split(/(`[^`]+`)/g)
+            .map((fragment, index) => (fragment.startsWith('`') && fragment.endsWith('`') ? <code key={index}>{fragment.slice(1, -1)}</code> : <Fragment key={index}>{fragment}</Fragment>))}
+          {lineIndex < lines.length - 1 ? <br /> : null}
+        </Fragment>
+      ))}
+    </>
+  )
 }

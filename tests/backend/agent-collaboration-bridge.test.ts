@@ -12,11 +12,11 @@ afterEach(async () => {
 })
 
 const source: SessionRecord = {
-  id: '019f0000-0000-7000-8000-000000000001', harness: 'prime', filePath: '/sessions/source.jsonl', projectPath: '/project', title: 'Planner',
+  id: '019f0000-0000-7000-8000-000000000001', harness: 'omp', filePath: '/sessions/source.jsonl', projectPath: '/project', title: 'Planner',
   createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z', status: 'running', depth: 0,
 }
 const target: SessionRecord = {
-  id: '019f0000-0000-7000-8000-000000000002', harness: 'prime', filePath: '/sessions/target.jsonl', projectPath: '/project', title: 'API owner',
+  id: '019f0000-0000-7000-8000-000000000002', harness: 'omp', filePath: '/sessions/target.jsonl', projectPath: '/project', title: 'API owner',
   createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:01:00.000Z', status: 'idle', depth: 0,
 }
 const foreign: SessionRecord = {
@@ -115,21 +115,19 @@ async function fixture(
   waitClock?: FakeCollaborationWaitClock,
 ) {
   const records = [source, target, foreign, child, archived]
-  const primeSessions = service(records, {
+  const ompSessions = service(records, {
     [target.filePath]: targetTranscript,
   })
   const targetRuntime: RuntimeInfo | undefined = live ? {
-    runtimeId: 'runtime-target', harness: 'prime', sessionId: target.id, sessionFile: target.filePath, cwd: '/project', isStreaming: false,
+    runtimeId: 'runtime-target', harness: 'omp', sessionId: target.id, sessionFile: target.filePath, cwd: '/project', isStreaming: false,
   } : undefined
-  const primeManager = manager(targetRuntime, () => records.push(created))
-  const emptySessions = service([])
-  const emptyManager = manager()
+  const ompManager = manager(targetRuntime, () => records.push(created))
   const bridge = new AgentCollaborationBridge({
     extensionPath: '/app/extensions/omp-work-collaboration.ts',
-    sessions: { prime: primeSessions, omp: emptySessions, pi: emptySessions },
-    agents: { prime: primeManager as unknown as AgentRpcManager, omp: emptyManager as unknown as AgentRpcManager, pi: emptyManager as unknown as AgentRpcManager },
+    sessions: { omp: ompSessions },
+    agents: { omp: ompManager as unknown as AgentRpcManager },
     catalogs: {
-      prime: {
+      omp: {
         catalog: vi.fn(async (_force = false, disabled: ReadonlySet<string> = new Set(), disabledModels: ReadonlySet<string> = new Set()) => ({
           primeVersion: 'test', refreshedAt: '2026-01-01T00:00:00.000Z',
           providers: [
@@ -149,30 +147,28 @@ async function fixture(
           }],
         })),
       },
-      omp: { catalog: vi.fn(async () => ({ primeVersion: 'test', refreshedAt: '', providers: [], models: [] })) },
-      pi: { catalog: vi.fn(async () => ({ primeVersion: 'test', refreshedAt: '', providers: [], models: [] })) },
     } as unknown as ConstructorParameters<typeof AgentCollaborationBridge>[0]['catalogs'],
-    disabledProviders: { prime: () => new Set(['hidden']), omp: () => new Set(), pi: () => new Set() },
-    disabledModels: { prime: () => new Set(['openai-codex/desktop-hidden']), omp: () => new Set(), pi: () => new Set() },
+    disabledProviders: { omp: () => new Set(['hidden']) },
+    disabledModels: { omp: () => new Set(['openai-codex/desktop-hidden']) },
     ...(waitClock ? { waitClock } : {}),
   })
   await bridge.start()
   bridges.push(bridge)
-  const environment = bridge.environmentFor({ cwd: '/project', sessionPath: source.filePath, harness: 'prime' })
+  const environment = bridge.environmentFor({ cwd: '/project', sessionPath: source.filePath, harness: 'omp' })
   const call = async (method: string, params: Record<string, unknown> = {}, token = environment.GOOEYPI_COLLABORATION_TOKEN) => {
     const response = await fetch(environment.GOOEYPI_COLLABORATION_URL!, {
       method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ method, params }),
     })
     return { status: response.status, body: await response.json() as { ok: boolean; result?: Record<string, unknown> | Array<Record<string, unknown>>; error?: string } }
   }
-  return { bridge, call, environment, primeManager, primeSessions }
+  return { bridge, call, environment, ompManager, ompSessions }
 }
 
 describe('AgentCollaborationBridge', () => {
   it('revokes a runtime claim and clears its cached and pending session bindings', async () => {
     const { bridge, call, environment } = await fixture()
     const token = environment.GOOEYPI_COLLABORATION_TOKEN!
-    const active = bridge.environmentFor({ cwd: '/project', sessionPath: source.filePath, harness: 'prime' })
+    const active = bridge.environmentFor({ cwd: '/project', sessionPath: source.filePath, harness: 'omp' })
     await expect(call('list')).resolves.toMatchObject({ status: 200 })
     bridge.bindSession(token, undefined, 'runtime-pending')
 
@@ -203,7 +199,7 @@ describe('AgentCollaborationBridge', () => {
     const read = await call('read', { target_session_id: target.id })
     expect(read.status).toBe(200)
     expect(read.body.result).toMatchObject({
-      session: { id: target.id, harness: 'prime' },
+      session: { id: target.id, harness: 'omp' },
       live: true,
       estimated_tokens: expect.any(Number),
       token_limit: 30_000,
@@ -275,13 +271,13 @@ describe('AgentCollaborationBridge', () => {
   })
 
   it('delivers attributed messages to a live target and returns a wait cursor', async () => {
-    const { call, primeManager } = await fixture()
+    const { call, ompManager } = await fixture()
     const sent = await call('send', { target_session_id: target.id, message: 'Please claim src/api.ts.' })
     expect(sent.status).toBe(200)
     expect(sent.body.result).toMatchObject({ delivered: true, target_session_id: target.id, queued: false })
     expect(sent.body.result).toHaveProperty('cursor_before')
-    expect(primeManager.command).toHaveBeenCalledWith('runtime-target', expect.objectContaining({ type: 'prompt' }))
-    const delivered = (primeManager.command.mock.calls[0] as unknown as [string, { message: string }])[1]
+    expect(ompManager.command).toHaveBeenCalledWith('runtime-target', expect.objectContaining({ type: 'prompt' }))
+    const delivered = (ompManager.command.mock.calls[0] as unknown as [string, { message: string }])[1]
     expect(delivered.message).toContain(`"from_session_id":"${source.id}"`)
     expect(delivered.message).toContain('"reply_with":"gooeypi_session_send"')
     expect(delivered.message).not.toContain('"from_title"')
@@ -306,8 +302,8 @@ describe('AgentCollaborationBridge', () => {
   })
 
   it('lists GUI-visible models and creates a readable peer with the selected model and reasoning', async () => {
-    const { bridge, call, primeManager } = await fixture()
-    const createdEnvironment = bridge.environmentFor({ cwd: '/project', harness: 'prime' })
+    const { bridge, call, ompManager } = await fixture()
+    const createdEnvironment = bridge.environmentFor({ cwd: '/project', harness: 'omp' })
     bridge.bindSession(createdEnvironment.GOOEYPI_COLLABORATION_TOKEN, undefined, 'runtime-created')
     const models = await call('models', { query: 'GPT five six sol' })
     expect(models.status).toBe(200)
@@ -325,20 +321,20 @@ describe('AgentCollaborationBridge', () => {
     expect(response.status).toBe(200)
     expect(response.body.result).toMatchObject({
       created: true,
-      session: { id: created.id, harness: 'prime', title: 'Model reviewer', live: true },
+      session: { id: created.id, harness: 'omp', title: 'Model reviewer', live: true },
       runtime_id: 'runtime-created',
       model: { key: 'openai-codex/gpt-5.6-sol' },
       reasoning: 'max',
       fast_mode: { requested: true, enabled: true, available: true },
     })
-    expect(primeManager.start).toHaveBeenCalledWith({
+    expect(ompManager.start).toHaveBeenCalledWith({
       cwd: '/project', model: 'openai-codex/gpt-5.6-sol', thinking: 'max', fast: true,
     })
-    expect(primeManager.command).toHaveBeenNthCalledWith(1, 'runtime-created', {
+    expect(ompManager.command).toHaveBeenNthCalledWith(1, 'runtime-created', {
       type: 'prompt', message: 'Review the model integration.', streamingBehavior: 'followUp',
     })
-    expect(primeManager.command).toHaveBeenCalledWith('runtime-created', { type: 'set_session_name', name: 'Model reviewer' })
-    expect(primeManager.command).toHaveBeenCalledWith('runtime-created', { type: 'get_state' })
+    expect(ompManager.command).toHaveBeenCalledWith('runtime-created', { type: 'set_session_name', name: 'Model reviewer' })
+    expect(ompManager.command).toHaveBeenCalledWith('runtime-created', { type: 'get_state' })
     const createdList = await call('list', {}, createdEnvironment.GOOEYPI_COLLABORATION_TOKEN)
     expect(createdList.status).toBe(200)
     expect(createdList.body.result).toEqual(expect.arrayContaining([expect.objectContaining({ id: target.id })]))
@@ -346,60 +342,60 @@ describe('AgentCollaborationBridge', () => {
   })
 
   it('rejects an MCP auth creation prompt before starting a peer runtime', async () => {
-    const { call, primeManager } = await fixture()
+    const { call, ompManager } = await fixture()
 
-    const response = await call('create', { prompt: '/mcp login notion' })
+    const response = await call('create', { prompt: '/mcp reauth docs' })
 
     expect(response.status).toBe(400)
-    expect(response.body.error).toContain('Network MCP authentication is managed outside GooeyPi')
-    expect(primeManager.start).not.toHaveBeenCalled()
+    expect(response.body.error).toContain('Network MCP authentication is managed outside OMP Desktop')
+    expect(ompManager.start).not.toHaveBeenCalled()
   })
 
   it('rejects an MCP auth delivery before waking or queuing a peer runtime', async () => {
-    const { call, primeManager } = await fixture(false)
+    const { call, ompManager } = await fixture(false)
 
-    const response = await call('send', { target_session_id: target.id, message: '/mcp login notion' })
+    const response = await call('send', { target_session_id: target.id, message: '/mcp reauth docs' })
 
     expect(response.status).toBe(400)
-    expect(response.body.error).toContain('Network MCP authentication is managed outside GooeyPi')
-    expect(primeManager.start).not.toHaveBeenCalled()
-    expect(primeManager.command).not.toHaveBeenCalled()
+    expect(response.body.error).toContain('Network MCP authentication is managed outside OMP Desktop')
+    expect(ompManager.start).not.toHaveBeenCalled()
+    expect(ompManager.command).not.toHaveBeenCalled()
   })
 
   it('starts normally and reports unavailable when fast mode is requested without model support', async () => {
-    const { call, primeManager } = await fixture()
+    const { call, ompManager } = await fixture()
     const response = await call('create', { prompt: 'Review the fallback.', fast: true })
     expect(response.status).toBe(200)
     expect(response.body.result).toMatchObject({
       created: true,
       fast_mode: { requested: true, enabled: false, available: false },
     })
-    expect(primeManager.start).toHaveBeenCalledWith({ cwd: '/project', fast: true })
+    expect(ompManager.start).toHaveBeenCalledWith({ cwd: '/project', fast: true })
   })
 
   it('serializes concurrent deliveries to the same target', async () => {
-    const { call, primeManager } = await fixture()
+    const { call, ompManager } = await fixture()
     let releaseFirst!: () => void
-    primeManager.command
+    ompManager.command
       .mockImplementationOnce(() => new Promise((resolveCommand) => { releaseFirst = () => resolveCommand({ ok: true }) }))
       .mockResolvedValue({ ok: true })
     const first = call('send', { target_session_id: target.id, message: 'First' })
-    await vi.waitFor(() => expect(primeManager.command).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(ompManager.command).toHaveBeenCalledTimes(1))
     const second = call('send', { target_session_id: target.id, message: 'Second' })
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 20))
-    expect(primeManager.command).toHaveBeenCalledTimes(1)
+    expect(ompManager.command).toHaveBeenCalledTimes(1)
     releaseFirst()
     await expect(Promise.all([first, second])).resolves.toEqual([
       expect.objectContaining({ status: 200 }), expect.objectContaining({ status: 200 }),
     ])
-    expect(primeManager.command).toHaveBeenCalledTimes(2)
+    expect(ompManager.command).toHaveBeenCalledTimes(2)
   })
 
   it('allows only one active wait per target and bounds idle transcript polling', async () => {
-    const { call, primeSessions } = await fixture()
+    const { call, ompSessions } = await fixture()
     const read = await call('read', { target_session_id: target.id })
     const cursor = (read.body.result as Record<string, unknown>).cursor
-    const readsBefore = primeSessions.read.mock.calls.length
+    const readsBefore = ompSessions.read.mock.calls.length
     const first = call('wait', { target_session_id: target.id, after_cursor: cursor, timeout_ms: 150 })
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 20))
     const duplicate = await call('wait', { target_session_id: target.id, after_cursor: cursor, timeout_ms: 150 })
@@ -407,33 +403,33 @@ describe('AgentCollaborationBridge', () => {
     expect(duplicate.body.error).toContain('already active')
     const completed = await first
     expect(completed.body.result).toMatchObject({ timed_out: true })
-    expect(primeSessions.read.mock.calls.length - readsBefore).toBeLessThanOrEqual(2)
+    expect(ompSessions.read.mock.calls.length - readsBefore).toBeLessThanOrEqual(2)
   })
 
   it('re-arms an early timeout wake without polling the transcript early', async () => {
     const clock = new FakeCollaborationWaitClock()
-    const { call, primeSessions } = await fixture(true, defaultTargetTranscript, clock)
+    const { call, ompSessions } = await fixture(true, defaultTargetTranscript, clock)
     const read = await call('read', { target_session_id: target.id })
     const cursor = (read.body.result as Record<string, unknown>).cursor
-    const readsBefore = primeSessions.read.mock.calls.length
+    const readsBefore = ompSessions.read.mock.calls.length
     const waiting = call('wait', { target_session_id: target.id, after_cursor: cursor, timeout_ms: 150 })
 
     const firstTimer = await clock.takeNextTimer()
     expect(firstTimer).toMatchObject({ requestedAt: 10_000, delayMs: 150, dueAt: 10_150 })
     expect(firstTimer.unref).toHaveBeenCalledOnce()
-    expect(primeSessions.read.mock.calls.length - readsBefore).toBe(1)
+    expect(ompSessions.read.mock.calls.length - readsBefore).toBe(1)
 
     clock.fireAt(firstTimer, firstTimer.dueAt - 25)
     const replacementTimer = await clock.takeNextTimer()
     expect(replacementTimer).toMatchObject({ requestedAt: 10_125, delayMs: 25, dueAt: 10_150 })
     expect(replacementTimer.unref).toHaveBeenCalledOnce()
-    expect(primeSessions.read.mock.calls.length - readsBefore).toBe(1)
+    expect(ompSessions.read.mock.calls.length - readsBefore).toBe(1)
 
     clock.fireAt(replacementTimer, replacementTimer.dueAt)
     const completed = await waiting
     expect(completed.body.result).toMatchObject({ timed_out: true })
     expect(clock.now()).toBe(10_150)
-    expect(primeSessions.read.mock.calls.length - readsBefore).toBe(2)
+    expect(ompSessions.read.mock.calls.length - readsBefore).toBe(2)
   })
 
   it('reports a transcript change found by the final deadline snapshot', async () => {
@@ -442,9 +438,9 @@ describe('AgentCollaborationBridge', () => {
       { id: 'a2', role: 'assistant', parts: [{ type: 'text', text: 'The deadline update is ready.' }] },
     ]
     const clock = new FakeCollaborationWaitClock()
-    const { call, primeSessions } = await fixture(true, defaultTargetTranscript, clock)
+    const { call, ompSessions } = await fixture(true, defaultTargetTranscript, clock)
     let reads = 0
-    primeSessions.read.mockImplementation(async () => {
+    ompSessions.read.mockImplementation(async () => {
       reads += 1
       return reads >= 3 ? changedTranscript : defaultTargetTranscript
     })
@@ -473,7 +469,7 @@ describe('AgentCollaborationBridge', () => {
     expect(offline.body.result).toMatchObject({ delivered: true, awakened: true })
     expect((await call('list', {}, 'wrong')).status).toBe(401)
 
-    const unbound = bridge.environmentFor({ cwd: '/project', harness: 'prime' as HarnessId })
+    const unbound = bridge.environmentFor({ cwd: '/project', harness: 'omp' as HarnessId })
     const response = await fetch(unbound.GOOEYPI_COLLABORATION_URL!, {
       method: 'POST', headers: { authorization: `Bearer ${unbound.GOOEYPI_COLLABORATION_TOKEN}`, 'content-type': 'application/json' }, body: JSON.stringify({ method: 'list', params: {} }),
     })
@@ -484,7 +480,7 @@ describe('AgentCollaborationBridge', () => {
 
   it('rejects a subagent source even when its runtime token is otherwise valid', async () => {
     const { bridge, environment } = await fixture()
-    const childEnvironment = bridge.environmentFor({ cwd: '/project', sessionPath: child.filePath, harness: 'prime' })
+    const childEnvironment = bridge.environmentFor({ cwd: '/project', sessionPath: child.filePath, harness: 'omp' })
     const response = await fetch(environment.GOOEYPI_COLLABORATION_URL!, {
       method: 'POST', headers: { authorization: `Bearer ${childEnvironment.GOOEYPI_COLLABORATION_TOKEN}`, 'content-type': 'application/json' }, body: JSON.stringify({ method: 'list', params: {} }),
     })

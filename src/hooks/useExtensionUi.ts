@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { ExtensionUiResponse } from '@/components/ExtensionUiModal'
 import { ASK_USER_TIMEOUT_MS, parseExtensionUiRequest, type ExtensionUiRequest } from '@/lib/extension-ui'
-import type { PrimeWorkApi, RuntimeInfo, SessionRecord } from '@/types/api'
+import type { DesktopApi, RuntimeInfo, SessionRecord } from '@/types/api'
 
 interface UseExtensionUiOptions {
-  bridge: PrimeWorkApi | null
+  bridge: DesktopApi | null
   activeRuntimeId?: string
   runtimeSessionsRef: React.RefObject<Map<string, string>>
   setSessions: React.Dispatch<React.SetStateAction<SessionRecord[]>>

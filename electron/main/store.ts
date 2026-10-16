@@ -27,8 +27,8 @@ export interface DesktopState {
   schedules: AutomationScheduleRecord[]
 }
 
-export const CURRENT_DESKTOP_STATE_FILENAME = 'prime-work-state-v4.json'
-export const LEGACY_DESKTOP_STATE_FILENAME = 'prime-work-state.json'
+export const CURRENT_DESKTOP_STATE_FILENAME = 'omp-desktop-state-v4.json'
+export const LEGACY_DESKTOP_STATE_FILENAME = 'omp-desktop-state.json'
 const CURRENT_DESKTOP_STATE_VERSION = 4 as const
 type SupportedDesktopStateVersion = 1 | 2 | 3 | typeof CURRENT_DESKTOP_STATE_VERSION
 
@@ -44,7 +44,7 @@ export class UnsupportedStateVersionError extends StateCompatibilityError {
     readonly stateVersion: number,
     readonly statePath: string,
   ) {
-    super(`Desktop state schema version ${stateVersion} at ${statePath} is newer than supported version ${CURRENT_DESKTOP_STATE_VERSION}. Upgrade GooeyPi to a compatible version; the state file was left unchanged.`)
+    super(`Desktop state schema version ${stateVersion} at ${statePath} is newer than supported version ${CURRENT_DESKTOP_STATE_VERSION}. Upgrade OMP Desktop to a compatible version; the state file was left unchanged.`)
     this.name = 'UnsupportedStateVersionError'
   }
 }
@@ -119,24 +119,16 @@ export function defaultSettings(): AppSettings {
     showReasoningSummaries: true,
     showToolCalls: true,
     messageEnterAction: 'queue',
-    runtimePaths: { prime: '', omp: '', pi: '' },
-    enabledHarnesses: ['omp', 'prime', 'pi'],
+    runtimePaths: { omp: '' },
     telemetry: false,
     askUserEnabled: false,
     browserEnabled: true,
     computerUseEnabled: false,
-    disabledProviders: [],
-    disabledModels: [],
     ompDisabledProviders: [],
     ompDisabledModels: [],
-    piDisabledProviders: [],
-    piDisabledModels: [],
-    lastSelectedModels: { prime: '', omp: '', pi: '' },
+    lastSelectedModels: { omp: '' },
     activeHarness: 'omp',
     ompApprovalMode: 'inherit',
-    petEnabled: true,
-    petId: 'orb',
-    petSize: 75,
     voiceTranscriptionProvider: 'openai-live',
     voiceOpenAiLiveTranscriptionModel: 'gpt-live-transcribe',
     voiceOpenAiTranscriptionModel: 'gpt-4o-transcribe',
@@ -146,8 +138,6 @@ export function defaultSettings(): AppSettings {
     voiceSelfHostedModel: '',
     voiceLocalWhisperExecutable: '',
     voiceLocalWhisperModel: '',
-    voiceRealtimeModel: 'gpt-realtime-2.1',
-    voiceRealtimeVoice: 'marin',
   }
 }
 
@@ -155,10 +145,14 @@ function defaultState(): DesktopState {
   return { version: CURRENT_DESKTOP_STATE_VERSION, projects: [], settings: defaultSettings(), archivedSessions: [], dismissedProjectPaths: [], schedules: [] }
 }
 
-/** Versions 1 and 2 predate harness scoping, so only an absent value migrates to Prime. */
+/**
+ * OMP Desktop is a single-harness fork: every harness marker persisted by
+ * OMP Desktop ('prime', 'omp', 'pi', or absent in pre-harness-scoping state)
+ * migrates to 'omp'. Any other value is hostile state and drops the record.
+ */
 function parseHarness(value: unknown, preHarnessState: boolean): HarnessId | null {
-  if (value === 'prime' || value === 'omp' || value === 'pi') return value
-  return preHarnessState && value === undefined ? 'prime' : null
+  if (value === 'omp' || value === 'prime' || value === 'pi' || (preHarnessState && value === undefined)) return 'omp'
+  return null
 }
 
 function validDate(value: unknown): value is string {
@@ -213,41 +207,26 @@ function parseProject(value: unknown, preHarnessState: boolean): PersistedProjec
   }
 }
 
-function parseSettings(value: unknown, legacyState = false): AppSettings {
+function parseSettings(value: unknown): AppSettings {
   const defaults = defaultSettings()
   if (!isRecord(value)) return defaults
   const parseRuntimePath = (path: unknown, fallback: string): string => (
     typeof path === 'string' && path.length <= 4_096 && (!path || isAbsolute(path)) ? path : fallback
   )
   const runtimePaths = isRecord(value.runtimePaths)
-    ? {
-        prime: parseRuntimePath(value.runtimePaths.prime, defaults.runtimePaths.prime),
-        omp: parseRuntimePath(value.runtimePaths.omp, defaults.runtimePaths.omp),
-        pi: parseRuntimePath(value.runtimePaths.pi, defaults.runtimePaths.pi),
-      }
+    ? { omp: parseRuntimePath(value.runtimePaths.omp, defaults.runtimePaths.omp) }
     : defaults.runtimePaths
-  const enabledHarnesses = Array.isArray(value.enabledHarnesses)
-    ? [...new Set(value.enabledHarnesses.filter((item): item is HarnessId => item === 'prime' || item === 'omp' || item === 'pi'))]
-    : defaults.enabledHarnesses
-  const usableHarnesses = enabledHarnesses.length ? enabledHarnesses : defaults.enabledHarnesses
-  const activeHarness = value.activeHarness === 'prime' || value.activeHarness === 'omp' || value.activeHarness === 'pi'
-    ? value.activeHarness as HarnessId
-    : legacyState ? 'prime' : defaults.activeHarness
   const parseLastSelectedModel = (model: unknown, fallback: string): string => (
     typeof model === 'string' && model.length <= 385 && (!model || /^[a-z0-9][a-z0-9._-]{0,127}\/[a-z0-9._:/+-]{1,256}$/i.test(model))
       ? model
       : fallback
   )
   const lastSelectedModels = isRecord(value.lastSelectedModels)
-    ? {
-        prime: parseLastSelectedModel(value.lastSelectedModels.prime, defaults.lastSelectedModels.prime),
-        omp: parseLastSelectedModel(value.lastSelectedModels.omp, defaults.lastSelectedModels.omp),
-        pi: parseLastSelectedModel(value.lastSelectedModels.pi, defaults.lastSelectedModels.pi),
-      }
+    ? { omp: parseLastSelectedModel(value.lastSelectedModels.omp, defaults.lastSelectedModels.omp) }
     : defaults.lastSelectedModels
   return {
     theme: value.theme === 'light' || value.theme === 'dark' || value.theme === 'system' ? value.theme : defaults.theme,
-    locale: value.locale === 'en' || value.locale === 'zh-CN' || value.locale === 'system' ? value.locale : defaults.locale,
+    locale: value.locale === 'en' || value.locale === 'zh-CN' || value.locale === 'zh-TW' || value.locale === 'system' ? value.locale : defaults.locale,
     interfaceFontScale: INTERFACE_FONT_SCALES.includes(value.interfaceFontScale as AppSettings['interfaceFontScale'])
       ? value.interfaceFontScale as AppSettings['interfaceFontScale']
       : defaults.interfaceFontScale,
@@ -270,29 +249,17 @@ function parseSettings(value: unknown, legacyState = false): AppSettings {
     showToolCalls: typeof value.showToolCalls === 'boolean' ? value.showToolCalls : defaults.showToolCalls,
     messageEnterAction: value.messageEnterAction === 'queue' || value.messageEnterAction === 'steer' ? value.messageEnterAction : defaults.messageEnterAction,
     runtimePaths,
-    enabledHarnesses: usableHarnesses,
     telemetry: typeof value.telemetry === 'boolean' ? value.telemetry : defaults.telemetry,
     askUserEnabled: typeof value.askUserEnabled === 'boolean' ? value.askUserEnabled : defaults.askUserEnabled,
     browserEnabled: typeof value.browserEnabled === 'boolean' ? value.browserEnabled : defaults.browserEnabled,
     computerUseEnabled: typeof value.computerUseEnabled === 'boolean' ? value.computerUseEnabled : defaults.computerUseEnabled,
-    disabledProviders: Array.isArray(value.disabledProviders)
-      ? [...new Set(value.disabledProviders.filter((item): item is string => typeof item === 'string' && /^[a-z0-9][a-z0-9._-]{0,127}$/i.test(item)))].slice(0, 128)
-      : defaults.disabledProviders,
-    disabledModels: parseDisabledModels(value.disabledModels, defaults.disabledModels),
     ompDisabledProviders: Array.isArray(value.ompDisabledProviders)
       ? [...new Set(value.ompDisabledProviders.filter((item): item is string => typeof item === 'string' && /^[a-z0-9][a-z0-9._-]{0,127}$/i.test(item)))].slice(0, 256)
       : defaults.ompDisabledProviders,
     ompDisabledModels: parseDisabledModels(value.ompDisabledModels, defaults.ompDisabledModels),
-    piDisabledProviders: Array.isArray(value.piDisabledProviders)
-      ? [...new Set(value.piDisabledProviders.filter((item): item is string => typeof item === 'string' && /^[a-z0-9][a-z0-9._-]{0,127}$/i.test(item)))].slice(0, 256)
-      : defaults.piDisabledProviders,
-    piDisabledModels: parseDisabledModels(value.piDisabledModels, defaults.piDisabledModels),
     lastSelectedModels,
-    activeHarness,
+    activeHarness: 'omp',
     ompApprovalMode: value.ompApprovalMode === 'inherit' || value.ompApprovalMode === 'always-ask' || value.ompApprovalMode === 'write' || value.ompApprovalMode === 'yolo' ? value.ompApprovalMode : defaults.ompApprovalMode,
-    petEnabled: typeof value.petEnabled === 'boolean' ? value.petEnabled : defaults.petEnabled,
-    petId: boundedString(value.petId, 128) && /^[a-z0-9][a-z0-9._/-]{0,127}$/i.test(value.petId) ? value.petId : defaults.petId,
-    petSize: Number.isInteger(value.petSize) && (value.petSize as number) >= 50 && (value.petSize as number) <= 125 ? value.petSize as number : defaults.petSize,
     voiceTranscriptionProvider: value.voiceTranscriptionProvider === 'openai-live' || value.voiceTranscriptionProvider === 'openai' || value.voiceTranscriptionProvider === 'groq' || value.voiceTranscriptionProvider === 'deepgram' || value.voiceTranscriptionProvider === 'self-hosted' || value.voiceTranscriptionProvider === 'local-whisper' ? value.voiceTranscriptionProvider : defaults.voiceTranscriptionProvider,
     voiceOpenAiLiveTranscriptionModel: boundedString(value.voiceOpenAiLiveTranscriptionModel, 128) ? value.voiceOpenAiLiveTranscriptionModel : defaults.voiceOpenAiLiveTranscriptionModel,
     voiceOpenAiTranscriptionModel: boundedString(value.voiceOpenAiTranscriptionModel, 128) ? value.voiceOpenAiTranscriptionModel : defaults.voiceOpenAiTranscriptionModel,
@@ -302,8 +269,6 @@ function parseSettings(value: unknown, legacyState = false): AppSettings {
     voiceSelfHostedModel: boundedString(value.voiceSelfHostedModel, 128, true) ? value.voiceSelfHostedModel : defaults.voiceSelfHostedModel,
     voiceLocalWhisperExecutable: boundedString(value.voiceLocalWhisperExecutable, 4096, true) ? value.voiceLocalWhisperExecutable : defaults.voiceLocalWhisperExecutable,
     voiceLocalWhisperModel: boundedString(value.voiceLocalWhisperModel, 4096, true) ? value.voiceLocalWhisperModel : defaults.voiceLocalWhisperModel,
-    voiceRealtimeModel: boundedString(value.voiceRealtimeModel, 128) ? value.voiceRealtimeModel : defaults.voiceRealtimeModel,
-    voiceRealtimeVoice: boundedString(value.voiceRealtimeVoice, 64) ? value.voiceRealtimeVoice : defaults.voiceRealtimeVoice,
   }
 }
 
@@ -430,7 +395,7 @@ function parseState(value: unknown, statePath: string): { sourceVersion: Support
   const state: DesktopState = {
     version: CURRENT_DESKTOP_STATE_VERSION,
     projects: Array.isArray(value.projects) ? value.projects.map((project) => parseProject(project, preHarnessProjectState)).filter((item): item is PersistedProject => item !== null) : [],
-    settings: parseSettings(value.settings, preHarnessProjectState),
+    settings: parseSettings(value.settings),
     archivedSessions: Array.isArray(value.archivedSessions) ? value.archivedSessions.filter((item): item is string => typeof item === 'string') : [],
     dismissedProjectPaths: Array.isArray(value.dismissedProjectPaths) ? value.dismissedProjectPaths.filter((item): item is string => typeof item === 'string') : [],
     schedules: version !== 1 && Array.isArray(value.schedules) ? value.schedules.map((schedule) => parseSchedule(schedule, preHarnessScheduleState)).filter((item): item is AutomationScheduleRecord => item !== null).slice(0, 500) : [],
@@ -496,7 +461,7 @@ export class JsonStateStore {
         }
       }
       if (size > MAX_STATE_FILE_BYTES) {
-        throw new StateCompatibilityError(`Desktop state file at ${sourcePath} is ${size} bytes, which exceeds the ${MAX_STATE_FILE_BYTES}-byte safe parse limit. It was left unchanged; use the GooeyPi version that created it, or move it aside only after making a backup.`)
+        throw new StateCompatibilityError(`Desktop state file at ${sourcePath} is ${size} bytes, which exceeds the ${MAX_STATE_FILE_BYTES}-byte safe parse limit. It was left unchanged; use the OMP Desktop version that created it, or move it aside only after making a backup.`)
       }
       const rawState = readFileSync(sourcePath)
       const serializedState: unknown = JSON.parse(rawState.toString('utf8'))
@@ -516,7 +481,7 @@ export class JsonStateStore {
       }
       const needsPersist = sourceKind === 'legacy' || (legacyFilePath !== undefined && parsed.sourceVersion !== CURRENT_DESKTOP_STATE_VERSION)
       if (needsPersist || legacyFilePath !== undefined) {
-        this.scheduleInitialization(needsPersist, legacyFilePath !== undefined, 'GooeyPi desktop state migration could not be completed')
+        this.scheduleInitialization(needsPersist, legacyFilePath !== undefined, 'OMP Desktop desktop state migration could not be completed')
       }
     } catch (error) {
       if (error instanceof StateCompatibilityError) {
@@ -525,13 +490,13 @@ export class JsonStateStore {
           if (this.platform === 'win32') {
             this.scheduleInitializationOperation(
               () => this.ensureWindowsLegacyProtection(false),
-              'GooeyPi could not protect incompatible v4 state from a downgraded Windows binary',
+              'OMP Desktop could not protect incompatible v4 state from a downgraded Windows binary',
             )
           } else {
             this.scheduleInitialization(
               false,
               true,
-              'GooeyPi could not protect incompatible v4 state from a downgraded binary',
+              'OMP Desktop could not protect incompatible v4 state from a downgraded binary',
             )
           }
         }
@@ -541,7 +506,7 @@ export class JsonStateStore {
       let preservationFailure: unknown
       try {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-          console.error(`GooeyPi desktop state was reset and backed up: ${error instanceof Error ? error.message : String(error)}`)
+          console.error(`OMP Desktop desktop state was reset and backed up: ${error instanceof Error ? error.message : String(error)}`)
           recoveryPath = `${sourcePath}.corrupt-${Date.now()}`
           renameSync(sourcePath, recoveryPath)
         }
@@ -550,7 +515,7 @@ export class JsonStateStore {
         recoveryPath = undefined
       }
       if (this.platform === 'win32' && legacyFilePath) this.scheduleWindowsRecoveryInitialization(sourceKind, recoveryPath, preservationFailure)
-      else this.scheduleInitialization(true, legacyFilePath !== undefined, 'GooeyPi desktop state could not be rewritten after the reset')
+      else this.scheduleInitialization(true, legacyFilePath !== undefined, 'OMP Desktop desktop state could not be rewritten after the reset')
     }
   }
 
@@ -615,14 +580,14 @@ export class JsonStateStore {
   private scheduleFreshInitialization(): void {
     this.scheduleInitializationOperation(
       () => this.persist(this.state),
-      'GooeyPi desktop state could not be initialized',
+      'OMP Desktop desktop state could not be initialized',
     )
   }
 
   private scheduleWindowsFreshInitialization(): void {
     this.scheduleInitializationOperation(
       () => this.initializeWindowsFreshState(),
-      'GooeyPi could not establish the Windows v4 compatibility marker',
+      'OMP Desktop could not establish the Windows v4 compatibility marker',
     )
   }
 
@@ -646,13 +611,13 @@ export class JsonStateStore {
         if (error instanceof StateCompatibilityError || error instanceof StateMigrationError) throw error
         throw this.migrationError(`The Windows desktop-state migration was interrupted: ${this.errorMessage(error)}`, this.verifiedBackupFile(backupPath))
       }
-    }, 'GooeyPi could not complete the Windows desktop-state migration')
+    }, 'OMP Desktop could not complete the Windows desktop-state migration')
   }
 
   private scheduleWindowsTombstoneRecovery(tombstone: WindowsLegacyTombstone): void {
     this.scheduleInitializationOperation(
       () => this.resumeWindowsTombstone(tombstone),
-      'GooeyPi could not resume the interrupted Windows desktop-state migration',
+      'OMP Desktop could not resume the interrupted Windows desktop-state migration',
     )
   }
 
@@ -694,7 +659,7 @@ export class JsonStateStore {
   private scheduleWindowsLegacyProtection(): void {
     this.scheduleInitializationOperation(
       () => this.ensureWindowsLegacyProtection(true),
-      'GooeyPi could not protect v4 state from a downgraded Windows binary',
+      'OMP Desktop could not protect v4 state from a downgraded Windows binary',
     )
   }
 
@@ -712,7 +677,7 @@ export class JsonStateStore {
         return
       }
       await this.initializeWindowsFreshState()
-    }, 'GooeyPi desktop state could not be safely rewritten after reset')
+    }, 'OMP Desktop desktop state could not be safely rewritten after reset')
   }
 
   private scheduleInitializationOperation(operation: () => Promise<void>, failurePrefix: string): void {

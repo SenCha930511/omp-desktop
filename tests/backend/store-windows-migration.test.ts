@@ -122,7 +122,7 @@ describe('Windows desktop-state compatibility protocol', () => {
     await migrated.ready()
     expect(firstEvents).not.toContain('directory-open')
     expect(firstEvents).not.toContain('retire-legacy')
-    expect(migrated.snapshot().projects).toMatchObject([{ id: 'legacy-project', harness: 'prime' }])
+    expect(migrated.snapshot().projects).toMatchObject([{ id: 'legacy-project', harness: 'omp' }])
     const initialTombstone = expectCompletedTombstone(legacyPath)
     expect(initialTombstone.reason).toBe('migration')
     expect(initialTombstone.backupFile).toMatch(new RegExp(`^${LEGACY_DESKTOP_STATE_FILENAME.replace('.', '\\.')}\\.migrated-v4-`))
@@ -140,7 +140,7 @@ describe('Windows desktop-state compatibility protocol', () => {
     await reopened.ready()
     expect(restartEvents).not.toContain('directory-open')
     expect(restartEvents).toContain('retire-legacy')
-    expect(reopened.snapshot().projects).toMatchObject([{ id: 'legacy-project', harness: 'prime' }])
+    expect(reopened.snapshot().projects).toMatchObject([{ id: 'legacy-project', harness: 'omp' }])
     expect(reopened.snapshot().archivedSessions).toEqual(['/sessions/v4-only.jsonl'])
     const quarantineTombstone = expectCompletedTombstone(legacyPath)
     expect(quarantineTombstone.reason).toBe('quarantine')
@@ -204,7 +204,7 @@ describe('Windows desktop-state compatibility protocol', () => {
 
     const retried = new JsonStateStore(currentPath, windowsFileSystem(directory, []), legacyPath, 'win32')
     await retried.ready()
-    expect(retried.snapshot().projects).toMatchObject([{ id: 'legacy-project', harness: 'prime' }])
+    expect(retried.snapshot().projects).toMatchObject([{ id: 'legacy-project', harness: 'omp' }])
     expect(expectCompletedTombstone(legacyPath)).toMatchObject({
       backupFile: pending.gooeyPiV4Migration.backupFile,
       reason: 'migration',
@@ -267,7 +267,7 @@ describe('Windows desktop-state compatibility protocol', () => {
     const recovered = new JsonStateStore(currentPath, windowsFileSystem(directory, []), legacyPath, 'win32')
     await recovered.ready()
 
-    expect(recovered.snapshot().projects).toMatchObject([{ id: 'legacy-project', harness: 'prime' }])
+    expect(recovered.snapshot().projects).toMatchObject([{ id: 'legacy-project', harness: 'omp' }])
     expect(readFileSync(join(directory, pending.gooeyPiV4Migration.backupFile), 'utf8')).toBe(originalLegacy)
     expect(expectCompletedTombstone(legacyPath)).toMatchObject({
       backupFile: pending.gooeyPiV4Migration.backupFile,
@@ -422,7 +422,7 @@ describe('Windows desktop-state compatibility protocol', () => {
     const productionStore = new JsonStateStore(currentPath, undefined, legacyPath)
     await productionStore.ready()
 
-    expect(productionStore.snapshot().projects).toMatchObject([{ id: 'legacy-project', harness: 'prime' }])
+    expect(productionStore.snapshot().projects).toMatchObject([{ id: 'legacy-project', harness: 'omp' }])
     const tombstone = expectCompletedTombstone(legacyPath)
     expect(readFileSync(join(directory, tombstone.backupFile!), 'utf8')).toBe(raw)
     await productionStore.update((state) => { state.archivedSessions.push('/sessions/windows-ci.jsonl') })
@@ -431,7 +431,7 @@ describe('Windows desktop-state compatibility protocol', () => {
 
     const productionRestart = new JsonStateStore(currentPath, undefined, legacyPath)
     await productionRestart.ready()
-    expect(productionRestart.snapshot().projects).toMatchObject([{ id: 'legacy-project', harness: 'prime' }])
+    expect(productionRestart.snapshot().projects).toMatchObject([{ id: 'legacy-project', harness: 'omp' }])
     expect(productionRestart.snapshot().archivedSessions).toEqual(['/sessions/windows-ci.jsonl'])
     await productionRestart.update((state) => { state.archivedSessions.push('/sessions/windows-restart.jsonl') })
     expect(productionRestart.snapshot().archivedSessions).toEqual(['/sessions/windows-ci.jsonl', '/sessions/windows-restart.jsonl'])

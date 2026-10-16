@@ -27,7 +27,7 @@ async function setup() {
   const root = join(dir, 'project')
   mkdirSync(root)
   runGit(root, 'init', '-q')
-  runGit(root, 'config', 'user.name', 'GooeyPi Test')
+  runGit(root, 'config', 'user.name', 'OMP Desktop Test')
   runGit(root, 'config', 'user.email', 'test@example.com')
   writeFileSync(join(root, 'file.txt'), 'base\n')
   runGit(root, 'add', 'file.txt')
@@ -38,7 +38,7 @@ async function setup() {
   const store = new JsonStateStore(join(dir, 'state.json'))
   const now = new Date().toISOString()
   await store.update((state) => { state.projects.push({
-    id: 'project', harness: 'prime', name: 'Project', path: canonical, folders: [canonical], primaryFolder: canonical,
+    id: 'project', harness: 'omp', name: 'Project', path: canonical, folders: [canonical], primaryFolder: canonical,
     pinned: false, createdAt: now, lastOpenedAt: now,
     folderIdentities: { [canonical]: { dev: info.dev.toString(), ino: info.ino.toString(), birthtimeNs: info.birthtimeNs.toString() } },
   }) })
@@ -72,7 +72,7 @@ describe('CheckoutService', () => {
     expect(runGit(root, 'branch', '--show-current')).toBe(initial)
     rmSync(join(root, 'untracked.txt'))
 
-    const lease = await gate.beginWorkspaceUse(root, { kind: 'agent', harness: 'prime', runtimeId: 'runtime' })
+    const lease = await gate.beginWorkspaceUse(root, { kind: 'agent', harness: 'omp', runtimeId: 'runtime' })
     await expect(service.execute('project', { strategy: 'branch', operation: 'switch', branch: 'feature/local' })).resolves.toMatchObject({ kind: 'refused', code: 'active-work' })
     expect(runGit(root, 'branch', '--show-current')).toBe(initial)
     lease.release()

@@ -1,13 +1,128 @@
 import { ArrowUpRight, Folder, FolderGit2, FolderPlus, GitBranch, Pin, Search, Trash2 } from 'lucide-react'
 import { useMemo, useState } from 'react'
-import type { ProjectRecord, ProjectSortMode } from '@/types/api'
-import { formatRelative } from '@/lib/data'
 import { EmptyState, IconButton, Modal } from '@/components/ui'
+import { formatRelative } from '@/lib/data'
+import { useI18n } from '@/lib/i18n'
 import { sortProjects } from '@/lib/project-order'
+import type { ProjectRecord, ProjectSortMode } from '@/types/api'
 
-export function ProjectsPage({ projects, sortMode, onAdd, onOpen, onRemove, onTogglePin }: { projects: ProjectRecord[]; sortMode: ProjectSortMode; onAdd(): void; onOpen(project: ProjectRecord): void; onRemove(project: ProjectRecord): void; onTogglePin(project: ProjectRecord): void }) {
+export function ProjectsPage({
+  projects,
+  sortMode,
+  onAdd,
+  onOpen,
+  onRemove,
+  onTogglePin,
+}: {
+  projects: ProjectRecord[]
+  sortMode: ProjectSortMode
+  onAdd(): void
+  onOpen(project: ProjectRecord): void
+  onRemove(project: ProjectRecord): void
+  onTogglePin(project: ProjectRecord): void
+}) {
+  const { t } = useI18n()
   const [query, setQuery] = useState('')
   const [removeTarget, setRemoveTarget] = useState<ProjectRecord | null>(null)
-  const visible = useMemo(() => sortProjects(projects.filter((project) => `${project.name} ${project.path} ${project.gitBranch ?? ''}`.toLowerCase().includes(query.toLowerCase())), sortMode), [projects, query, sortMode])
-  return <div className="page scroll-area"><div className="page-container"><header className="page-header"><div><h1>Projects</h1><p>Local folders and ongoing work available to Prime.</p></div><button type="button" title="Add project" className="button button--primary" onClick={onAdd}><FolderPlus size={14}/> Add project</button></header><div className="page-tools"><label className="page-search"><Search size={14}/><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search projects"/></label><span>{visible.length} {visible.length === 1 ? 'project' : 'projects'}</span></div>{visible.length ? <div className="project-library">{visible.map((project) => <article key={project.id} className="project-item"><button type="button" className="project-item__open" onClick={() => onOpen(project)}><span className="project-item__icon"><FolderGit2 size={19}/></span><span className="project-item__body"><span><h2>{project.name}</h2>{project.pinned ? <Pin size={11} fill="currentColor"/> : null}</span><span className="project-item__path">{project.path}</span><span className="project-item__meta"><span><GitBranch size={12}/>{project.gitBranch ?? 'No repository'}</span><span>{project.sessionCount} sessions</span><span>Opened {formatRelative(project.lastOpenedAt)}</span></span></span></button><div className="project-item__actions"><IconButton label={`Open ${project.name}`} onClick={() => onOpen(project)}><ArrowUpRight size={14}/></IconButton>{!project.inferred ? <IconButton label={`${project.pinned ? 'Unpin' : 'Pin'} ${project.name}`} onClick={() => onTogglePin(project)}><Pin size={14} fill={project.pinned ? 'currentColor' : 'none'}/></IconButton> : null}<IconButton label={`Remove ${project.name}`} onClick={() => setRemoveTarget(project)}><Trash2 size={14}/></IconButton></div></article>)}</div> : <EmptyState icon={<Folder size={25}/>} title={query ? 'No matching projects' : 'Add your first project'}>{query ? 'Try a project name, folder, or branch.' : 'Choose a local folder to start persistent Prime sessions.'}</EmptyState>}{removeTarget ? <Modal title="Remove project" onClose={() => setRemoveTarget(null)} footer={<><button type="button" className="button" onClick={() => setRemoveTarget(null)}>Cancel</button><button type="button" className="button button--danger" onClick={() => { const project = removeTarget; setRemoveTarget(null); onRemove(project) }}>Remove</button></>}><p>Remove “{removeTarget.name}” from Prime Work? The folder and saved Prime sessions will not be deleted.</p></Modal> : null}</div></div>
+  const visible = useMemo(
+    () =>
+      sortProjects(
+        projects.filter((project) => `${project.name} ${project.path} ${project.gitBranch ?? ''}`.toLowerCase().includes(query.toLowerCase())),
+        sortMode,
+      ),
+    [projects, query, sortMode],
+  )
+  return (
+    <div className="page scroll-area">
+      <div className="page-container">
+        <header className="page-header">
+          <div>
+            <h1>{t('projects.title')}</h1>
+            <p>{t('projects.subtitle')}</p>
+          </div>
+          <button type="button" title={t('projects.addProject')} className="button button--primary" onClick={onAdd}>
+            <FolderPlus size={14} /> {t('projects.addProject')}
+          </button>
+        </header>
+        <div className="page-tools">
+          <label className="page-search">
+            <Search size={14} />
+            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t('projects.searchPlaceholder')} />
+          </label>
+          <span>{t('projects.count', { count: visible.length })}</span>
+        </div>
+        {visible.length ? (
+          <div className="project-library">
+            {visible.map((project) => (
+              <article key={project.id} className="project-item">
+                <button type="button" className="project-item__open" onClick={() => onOpen(project)}>
+                  <span className="project-item__icon">
+                    <FolderGit2 size={19} />
+                  </span>
+                  <span className="project-item__body">
+                    <span>
+                      <h2>{project.name}</h2>
+                      {project.pinned ? <Pin size={11} fill="currentColor" /> : null}
+                    </span>
+                    <span className="project-item__path">{project.path}</span>
+                    <span className="project-item__meta">
+                      <span>
+                        <GitBranch size={12} />
+                        {project.gitBranch ?? t('projects.noRepository')}
+                      </span>
+                      <span>{t('projects.sessionCount', { count: project.sessionCount })}</span>
+                      <span>{t('projects.opened', { time: formatRelative(project.lastOpenedAt) })}</span>
+                    </span>
+                  </span>
+                </button>
+                <div className="project-item__actions">
+                  <IconButton label={t('projects.openProject', { name: project.name })} onClick={() => onOpen(project)}>
+                    <ArrowUpRight size={14} />
+                  </IconButton>
+                  {!project.inferred ? (
+                    <IconButton label={t(project.pinned ? 'projects.unpinProject' : 'projects.pinProject', { name: project.name })} onClick={() => onTogglePin(project)}>
+                      <Pin size={14} fill={project.pinned ? 'currentColor' : 'none'} />
+                    </IconButton>
+                  ) : null}
+                  <IconButton label={t('projects.removeProject', { name: project.name })} onClick={() => setRemoveTarget(project)}>
+                    <Trash2 size={14} />
+                  </IconButton>
+                </div>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <EmptyState icon={<Folder size={25} />} title={query ? t('projects.emptySearchTitle') : t('projects.emptyTitle')}>
+            {query ? t('projects.emptySearchBody') : t('projects.emptyBody')}
+          </EmptyState>
+        )}
+        {removeTarget ? (
+          <Modal
+            title={t('projects.removeTitle')}
+            onClose={() => setRemoveTarget(null)}
+            footer={
+              <>
+                <button type="button" className="button" onClick={() => setRemoveTarget(null)}>
+                  {t('projects.cancel')}
+                </button>
+                <button
+                  type="button"
+                  className="button button--danger"
+                  onClick={() => {
+                    const project = removeTarget
+                    setRemoveTarget(null)
+                    onRemove(project)
+                  }}
+                >
+                  {t('projects.remove')}
+                </button>
+              </>
+            }
+          >
+            <p>{t('projects.removeBody', { name: removeTarget.name })}</p>
+          </Modal>
+        ) : null}
+      </div>
+    </div>
+  )
 }

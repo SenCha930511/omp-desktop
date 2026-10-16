@@ -5,9 +5,8 @@ import type { RpcObject } from './types'
 
 const SIMPLE_COMMANDS = new Set([
   'abort', 'new_session', 'get_state', 'cycle_model', 'get_available_models', 'cycle_thinking_level',
-  'abort_retry', 'get_session_stats', 'clone', 'get_fork_messages', 'get_last_assistant_text',
-  'get_messages', 'agent_messages_status', 'agent_messages_pause', 'agent_messages_resume',
-  'agent_messages_clear', 'list_heartbeats', 'get_heartbeat', 'get_commands',
+  'abort_retry', 'get_session_stats', 'get_fork_messages', 'get_last_assistant_text',
+  'get_messages', 'get_commands',
 ])
 const THINKING_LEVELS: ReadonlySet<string> = new Set(PRIME_THINKING_LEVELS)
 
@@ -103,33 +102,6 @@ export async function validateRpcCommand(raw: unknown, validateSessionPath: (pat
   if (type === 'set_session_name') {
     rejectUnknownKeys(command, ['type', 'name'], 'command')
     return { type, name: requireString(command.name, 'name', { min: 1, max: 200, trim: true }) }
-  }
-  if (type === 'send_message') {
-    rejectUnknownKeys(command, ['type', 'targetActiveSessionId', 'message'], 'command')
-    return { type, targetActiveSessionId: requireId(command.targetActiveSessionId, 'targetActiveSessionId'), message: requireString(command.message, 'message', { min: 1, max: 1024 * 1024 }) }
-  }
-  if (type === 'set_heartbeat') {
-    rejectUnknownKeys(command, ['type', 'schedule', 'prompt', 'deliveryMode'], 'command')
-    const result: RpcObject = { type, schedule: requireString(command.schedule, 'schedule', { min: 1, max: 500, trim: true }), prompt: requireString(command.prompt, 'prompt', { min: 1, max: 1024 * 1024 }) }
-    if (command.deliveryMode !== undefined) {
-      if (command.deliveryMode !== 'steer' && command.deliveryMode !== 'follow_up') throw new TypeError('Invalid deliveryMode')
-      result.deliveryMode = command.deliveryMode
-    }
-    return result
-  }
-  if (type === 'update_heartbeat') {
-    rejectUnknownKeys(command, ['type', 'action'], 'command')
-    if (command.action !== 'pause' && command.action !== 'resume' && command.action !== 'clear') throw new TypeError('Invalid heartbeat action')
-    return { type, action: command.action }
-  }
-  if (type === 'manage_heartbeat') {
-    rejectUnknownKeys(command, ['type', 'activeSessionId', 'jobId', 'action'], 'command')
-    if (command.action !== 'pause' && command.action !== 'resume' && command.action !== 'stop') throw new TypeError('Invalid heartbeat management action')
-    return { type, activeSessionId: requireId(command.activeSessionId, 'activeSessionId'), jobId: requireId(command.jobId, 'jobId'), action: command.action }
-  }
-  if (type === 'observe' || type === 'unobserve') {
-    rejectUnknownKeys(command, ['type', 'activeSessionId'], 'command')
-    return { type, activeSessionId: requireId(command.activeSessionId, 'activeSessionId') }
   }
   if (type === 'extension_ui_response') {
     const id = requireId(command.id, 'id')

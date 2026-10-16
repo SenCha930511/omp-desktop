@@ -1,6 +1,6 @@
 # Validation guide
 
-This page explains how to reproduce and interpret GooeyPi's validation gates. It is not a status report. A passing command or workflow is evidence only for the exact commit, runner, inputs, and credentials that produced it; do not infer that the current branch is green from this document.
+This page explains how to reproduce and interpret OMP Desktop's validation gates. It is not a status report. A passing command or workflow is evidence only for the exact commit, runner, inputs, and credentials that produced it; do not infer that the current branch is green from this document.
 
 ## Protected `main` validation contract
 
@@ -25,7 +25,7 @@ GitHub merge queues are not available to this public repository while it is owne
 An authorized maintainer can verify the active legacy branch protection and exact required-context set with:
 
 ```sh
-gh api repos/am-will/gooey-pi/branches/main/protection \
+gh api repos/SenCha930511/omp-desktop/branches/main/protection \
   --jq '{strict: .required_status_checks.strict, contexts: .required_status_checks.contexts, reviews: .required_pull_request_reviews}'
 ```
 
@@ -102,7 +102,7 @@ Packaging is native: run each platform command on its matching operating system 
 
 ## Dependency audit policy
 
-The [dependency-audit workflow](../.github/workflows/audit.yml) runs weekly and on manual dispatch. It uses the repository toolchain and executes `npm run audit:production` against the production dependency graph. This scheduled job supplies advisory coverage for vendored package forms that Dependabot cannot parse.
+The [dependency-audit workflow](../.github/workflows/audit.yml) runs weekly and on manual dispatch. It uses the repository toolchain and executes `npm run audit:production` against the production dependency graph. This scheduled job re-audits the production graph against a current advisory database so advisories disclosed after a merge are still detected.
 
 Ordinary PR CI validates the exception file and its expiry rules, but it does not replace the live registry-backed audit. Use the scheduled or manually dispatched audit workflow when making a current dependency-advisory claim.
 

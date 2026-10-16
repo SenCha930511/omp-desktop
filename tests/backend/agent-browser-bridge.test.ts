@@ -43,12 +43,12 @@ function fakeTerminals() {
 async function fixture(scope: { cwd: string; sessionPath?: string } = { cwd: '/project', sessionPath: '/sessions/one.jsonl' }) {
   const { calls, service } = fakeService()
   const terminals = fakeTerminals()
-  const bridge = new TestAgentBrowserBridge({ service, terminals, extensionPath: '/app/extensions/prime-work-browser.ts', skillPath: '/app/skills/prime-work-browser' })
+  const bridge = new TestAgentBrowserBridge({ service, terminals, extensionPath: '/app/extensions/omp-desktop-browser.ts', skillPath: '/app/skills/omp-desktop-browser' })
   await bridge.start()
   bridges.push(bridge)
   const environment = bridge.environmentFor(scope)
-  const call = async (method: string, params: Record<string, unknown> = {}, token = environment.PRIME_WORK_BROWSER_TOKEN) => {
-    const response = await fetch(environment.PRIME_WORK_BROWSER_URL!, {
+  const call = async (method: string, params: Record<string, unknown> = {}, token = environment.OMP_DESKTOP_BROWSER_TOKEN) => {
+    const response = await fetch(environment.OMP_DESKTOP_BROWSER_URL!, {
       method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ method, params }),
     })
@@ -62,18 +62,18 @@ describe('AgentBrowserBridge', () => {
     const { bridge, call, environment } = await fixture()
     const active = bridge.environmentFor({ cwd: '/project', sessionPath: '/sessions/active.jsonl' })
 
-    expect(bridge.revoke(environment.PRIME_WORK_BROWSER_TOKEN)).toBe(true)
-    expect(bridge.revoke(environment.PRIME_WORK_BROWSER_TOKEN)).toBe(false)
+    expect(bridge.revoke(environment.OMP_DESKTOP_BROWSER_TOKEN)).toBe(true)
+    expect(bridge.revoke(environment.OMP_DESKTOP_BROWSER_TOKEN)).toBe(false)
 
     expect(await call('tabs.list')).toMatchObject({ status: 401 })
-    expect(await call('tabs.list', {}, active.PRIME_WORK_BROWSER_TOKEN)).toMatchObject({ status: 200 })
+    expect(await call('tabs.list', {}, active.OMP_DESKTOP_BROWSER_TOKEN)).toMatchObject({ status: 200 })
   })
 
   it('returns 401 without dispatch when a claim is revoked after headers but before the full body', async () => {
     const { bridge, calls, environment } = await fixture()
-    const token = environment.PRIME_WORK_BROWSER_TOKEN!
+    const token = environment.OMP_DESKTOP_BROWSER_TOKEN!
     const body = JSON.stringify({ method: 'tabs.list', params: {} })
-    const request = httpRequest(environment.PRIME_WORK_BROWSER_URL!, {
+    const request = httpRequest(environment.OMP_DESKTOP_BROWSER_URL!, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${token}`,
@@ -101,8 +101,8 @@ describe('AgentBrowserBridge', () => {
 
   it('exposes the extension and skill paths and dispatches scoped methods', async () => {
     const { calls, environment, call } = await fixture()
-    expect(environment.PRIME_WORK_BROWSER_EXTENSION_PATH).toBe('/app/extensions/prime-work-browser.ts')
-    expect(environment.PRIME_WORK_BROWSER_SKILL_PATH).toBe('/app/skills/prime-work-browser')
+    expect(environment.OMP_DESKTOP_BROWSER_EXTENSION_PATH).toBe('/app/extensions/omp-desktop-browser.ts')
+    expect(environment.OMP_DESKTOP_BROWSER_SKILL_PATH).toBe('/app/skills/omp-desktop-browser')
     const response = await call('tabs.open', { url: 'https://example.com' })
     expect(response.status).toBe(200)
     expect(response.body.ok).toBe(true)
@@ -119,14 +119,14 @@ describe('AgentBrowserBridge', () => {
     const { environment, call } = await fixture()
     expect((await call('tabs.list', {}, 'wrong-token')).status).toBe(401)
     expect((await call('definitely_not_a_method')).status).toBe(400)
-    const origin = await fetch(environment.PRIME_WORK_BROWSER_URL!, {
+    const origin = await fetch(environment.OMP_DESKTOP_BROWSER_URL!, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${environment.PRIME_WORK_BROWSER_TOKEN}`, 'Content-Type': 'application/json', Origin: 'https://evil.example' },
+      headers: { Authorization: `Bearer ${environment.OMP_DESKTOP_BROWSER_TOKEN}`, 'Content-Type': 'application/json', Origin: 'https://evil.example' },
       body: JSON.stringify({ method: 'tabs.list' }),
     })
     expect(origin.status).toBe(404)
-    const wrongPath = await fetch(environment.PRIME_WORK_BROWSER_URL!.replace('/v1/call', '/v1/other'), {
-      method: 'POST', headers: { Authorization: `Bearer ${environment.PRIME_WORK_BROWSER_TOKEN}` }, body: '{}',
+    const wrongPath = await fetch(environment.OMP_DESKTOP_BROWSER_URL!.replace('/v1/call', '/v1/other'), {
+      method: 'POST', headers: { Authorization: `Bearer ${environment.OMP_DESKTOP_BROWSER_TOKEN}` }, body: '{}',
     })
     expect(wrongPath.status).toBe(404)
   })
@@ -137,12 +137,12 @@ describe('AgentBrowserBridge', () => {
     expect(before.status).toBe(409)
     expect(before.body.error).toContain('not available yet')
     expect(calls).toHaveLength(0)
-    bridge.bindSession(environment.PRIME_WORK_BROWSER_TOKEN, '/sessions/late.jsonl')
+    bridge.bindSession(environment.OMP_DESKTOP_BROWSER_TOKEN, '/sessions/late.jsonl')
     const after = await call('tabs.list')
     expect(after.status).toBe(200)
     expect(calls[0].sessionKey.endsWith('late.jsonl')).toBe(true)
     // A bound session scope must never be rebound to another thread.
-    bridge.bindSession(environment.PRIME_WORK_BROWSER_TOKEN, '/sessions/other.jsonl')
+    bridge.bindSession(environment.OMP_DESKTOP_BROWSER_TOKEN, '/sessions/other.jsonl')
     await call('tabs.list')
     expect(calls[1].sessionKey.endsWith('late.jsonl')).toBe(true)
   })
@@ -164,8 +164,8 @@ describe('AgentBrowserBridge', () => {
     await bridge.start()
     bridges.push(bridge)
     const environment = bridge.environmentFor({ cwd: '/project', sessionPath: '/sessions/one.jsonl' })
-    const response = await fetch(environment.PRIME_WORK_BROWSER_URL!, {
-      method: 'POST', headers: { Authorization: `Bearer ${environment.PRIME_WORK_BROWSER_TOKEN}`, 'Content-Type': 'application/json' },
+    const response = await fetch(environment.OMP_DESKTOP_BROWSER_URL!, {
+      method: 'POST', headers: { Authorization: `Bearer ${environment.OMP_DESKTOP_BROWSER_TOKEN}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ method: 'read_page' }),
     })
     expect(response.status).toBe(409)
@@ -175,7 +175,7 @@ describe('AgentBrowserBridge', () => {
   it('mints one independent claim per runtime', async () => {
     const { bridge, calls, call } = await fixture()
     const other = bridge.environmentFor({ cwd: '/project', sessionPath: '/sessions/two.jsonl' })
-    const response = await call('tabs.list', {}, other.PRIME_WORK_BROWSER_TOKEN)
+    const response = await call('tabs.list', {}, other.OMP_DESKTOP_BROWSER_TOKEN)
     expect(response.status).toBe(200)
     expect(calls[0].sessionKey.endsWith('two.jsonl')).toBe(true)
   })

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Cloud Agent install phase for GooeyPi.
+# Cloud Agent install phase for OMP Desktop.
 #
 # Idempotent bootstrap that prepares a checked-out working tree so a Cloud
 # Agent can lint, type-check, test, build, and run the Electron desktop app.
@@ -37,8 +37,8 @@ npm run toolchain:bootstrap
 
 # --- Project dependencies + native/Electron runtime ------------------------
 # `npm ci` runs the repo postinstall (electron platform download + native
-# dependency rebuild). node-pty is rebuilt for Electron; zeromq/koffi ship
+# dependency rebuild). node-pty is rebuilt for Electron; node-pty ships
 # vendored prebuilt binaries, so npm 12's default script blocking is fine.
 npm ci
 
-echo "GooeyPi Cloud Agent install complete: node $(node -v), npm $(npm -v)."
+echo "OMP Desktop Cloud Agent install complete: node $(node -v), npm $(npm -v)."

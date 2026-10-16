@@ -31,7 +31,7 @@ function schedule(id: number, runs: ScheduleRunRecord[] = []): AutomationSchedul
   return {
     schemaVersion: 1,
     id: `schedule-${id}`,
-    harness: 'prime',
+    harness: 'omp',
     revision: 1,
     title: `Schedule ${id}`,
     prompt: 'Retain bounded history',
@@ -105,7 +105,7 @@ describe('scheduled run history retention', () => {
     const { store } = stateFile({ ...stateWithSchedules([]), version: 2, schedules: legacySchedules })
 
     expect(allRuns(store)).toHaveLength(2_000)
-    expect(store.snapshot().schedules.every(({ harness }) => harness === 'prime')).toBe(true)
+    expect(store.snapshot().schedules.every(({ harness }) => harness === 'omp')).toBe(true)
     expect(allRuns(store).map(({ id }) => id)).not.toContain('run-0')
   })
 

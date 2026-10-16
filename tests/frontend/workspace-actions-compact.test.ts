@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createWorkspaceActions, type WorkspaceActionsDeps } from '../../src/hooks/useWorkspaceActions'
-import type { PrimeWorkApi, RuntimeInfo, SessionRecord, TranscriptMessage } from '../../src/types/api'
+import type { DesktopApi, RuntimeInfo, SessionRecord, TranscriptMessage } from '../../src/types/api'
 
 const project = {
   id: 'compact-project',
-  harness: 'prime' as const,
+  harness: 'omp' as const,
   name: 'Compact project',
   path: '/compact-project',
   folders: ['/compact-project'],
@@ -17,7 +17,7 @@ const project = {
 
 const session = (status: SessionRecord['status'] = 'idle'): SessionRecord => ({
   id: 'compact-session',
-  harness: 'prime',
+  harness: 'omp',
   filePath: '/compact-project/session.jsonl',
   projectPath: '/compact-project',
   title: 'Compact session',
@@ -29,7 +29,7 @@ const session = (status: SessionRecord['status'] = 'idle'): SessionRecord => ({
 
 const runtime = (runtimeId = 'idle-runtime', isStreaming = false): RuntimeInfo => ({
   runtimeId,
-  harness: 'prime',
+  harness: 'omp',
   cwd: project.primaryFolder,
   sessionFile: session().filePath,
   isStreaming,
@@ -88,7 +88,7 @@ function fixture({ runtime: configuredRuntime = null, sessionStatus = 'idle', ow
   const bridge = {
     agent: { list: agentList, command, start, stop: vi.fn(async () => false) },
     sessions: { followUp },
-  } as unknown as PrimeWorkApi
+  } as unknown as DesktopApi
   const workspaceSessions = currentSession ? [currentSession] : []
   const actions = createWorkspaceActions(() => ({
     bridge,
@@ -96,7 +96,7 @@ function fixture({ runtime: configuredRuntime = null, sessionStatus = 'idle', ow
     sessions: workspaceSessions,
     activeProject: project,
     workspace,
-    settingsState: { settings: { activeHarness: 'prime' } },
+    settingsState: { settings: { activeHarness: 'omp' } },
     provider: { model: 'auto', effort: 'medium', fast: false },
     submissionAdmissionRef: { current: { active: false, run: async (task: () => Promise<void>) => { await task(); return true } } },
     initialized: true,
@@ -112,7 +112,6 @@ function fixture({ runtime: configuredRuntime = null, sessionStatus = 'idle', ow
     setToast,
     setSubmitting: vi.fn(),
     refreshSchedules: vi.fn(),
-    refreshHeartbeats: vi.fn(),
     resetBrowserView: vi.fn(),
     closeTerminalForSession: vi.fn(),
     clearSessionAttention: vi.fn(),
@@ -169,7 +168,7 @@ describe('/compact dispatch', () => {
 
     expect(fixtureState.followUp).not.toHaveBeenCalled()
     expect(fixtureState.start).not.toHaveBeenCalled()
-    expect(fixtureState.setToast).toHaveBeenCalledWith('Compaction is unavailable while this session is running outside GooeyPi.')
+    expect(fixtureState.setToast).toHaveBeenCalledWith('Compaction is unavailable while this session is running outside OMP Desktop.')
   })
 
   it('rejects image attachments', async () => {

@@ -6,7 +6,7 @@ import { readComposerDraft, saveComposerDraft } from '../../src/lib/composer-dra
 import type { ProjectRecord, SessionRecord } from '../../src/types/api'
 
 const project: ProjectRecord = {
-  id: 'project', harness: 'prime', name: 'Project', path: '/project', folders: ['/project'], primaryFolder: '/project',
+  id: 'project', harness: 'omp', name: 'Project', path: '/project', folders: ['/project'], primaryFolder: '/project',
   pinned: false, createdAt: '2026-01-01T00:00:00.000Z', lastOpenedAt: '2026-01-01T00:00:00.000Z', sessionCount: 1,
 }
 
@@ -20,7 +20,7 @@ const other: ProjectRecord = {
 }
 
 const session: SessionRecord = {
-  id: 'session', harness: 'prime', filePath: '/sessions/session.jsonl', projectPath: '/project', title: 'Session',
+  id: 'session', harness: 'omp', filePath: '/sessions/session.jsonl', projectPath: '/project', title: 'Session',
   createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z', status: 'idle', depth: 0,
 }
 

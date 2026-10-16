@@ -1,6 +1,5 @@
 import { appendFileSync, chmodSync, createReadStream, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync, type Stats } from 'node:fs'
 import { lstat, readdir, realpath, stat } from 'node:fs/promises'
-import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -19,7 +18,7 @@ function setup(
   maxSessionFiles?: number,
   options?: SessionServiceOptions,
 ): { root: string; project: string; service: SessionService; store: JsonStateStore } {
-  const dir = mkdtempSync(join(tmpdir(), 'prime-work-sessions-')); dirs.push(dir)
+  const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-sessions-')); dirs.push(dir)
   const root = join(dir, 'sessions'); mkdirSync(root)
   const project = join(dir, 'project'); mkdirSync(project)
   const store = new JsonStateStore(join(dir, 'state.json'))
@@ -140,7 +139,7 @@ describe('SessionService catalog scaling', () => {
     const info = lstatSync(project, { bigint: true })
     const now = new Date().toISOString()
     await store.update((state) => { state.projects.push({
-      id: 'project', harness: 'prime', name: 'Project', path: project, folders: [project], primaryFolder: project,
+      id: 'project', harness: 'omp', name: 'Project', path: project, folders: [project], primaryFolder: project,
       pinned: false, createdAt: now, lastOpenedAt: now,
       folderIdentities: { [project]: { dev: info.dev.toString(), ino: info.ino.toString() } },
     }) })
@@ -279,7 +278,7 @@ describe('incremental session metadata reads', () => {
   }
 
   it('reads only the appended byte range plus the verification tail after the initial parse', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'prime-work-incremental-')); dirs.push(dir)
+    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-incremental-')); dirs.push(dir)
     const file = join(dir, 'incremental.jsonl')
     writeLargeSession(file, 'incremental')
     const { reader, opens } = trackedReader()
@@ -302,7 +301,7 @@ describe('incremental session metadata reads', () => {
   })
 
   it('resumes a verified partial line and matches the one-shot parser', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'prime-work-partial-line-')); dirs.push(dir)
+    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-partial-line-')); dirs.push(dir)
     const file = join(dir, 'partial.jsonl')
     writeLargeSession(file, 'partial')
     const { reader, opens } = trackedReader()
@@ -326,7 +325,7 @@ describe('incremental session metadata reads', () => {
   })
 
   it('falls back to a full re-read on truncation and rewritten tails', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'prime-work-truncate-')); dirs.push(dir)
+    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-truncate-')); dirs.push(dir)
     const file = join(dir, 'truncate.jsonl')
     writeSession(file, '/project', 'original')
     appendFileSync(file, JSON.stringify({ type: 'message', id: 'tail', message: { role: 'assistant', content: 'tail' } }).slice(0, 30))
@@ -355,7 +354,7 @@ describe('incremental session metadata reads', () => {
 
 describe('Prime task-state freshness', () => {
   it('ignores a persisted verdict after later messages and accepts a current verdict', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'prime-work-task-state-')); dirs.push(dir)
+    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-task-state-')); dirs.push(dir)
     const file = join(dir, 'task-state.jsonl')
     writeFileSync(file, [
       JSON.stringify({ type: 'session', id: 'task-state', cwd: '/project', timestamp: '2025-01-01T00:00:00.000Z' }),
@@ -413,7 +412,7 @@ describe('SessionService user-message ordering', () => {
 
 describe('SessionMetadataCatalog live synchronization', () => {
   it('keeps live overlays when a known-file reconcile refreshes JSONL metadata', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'prime-work-live-reconcile-')); dirs.push(dir)
+    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-live-reconcile-')); dirs.push(dir)
     const root = join(dir, 'sessions'); mkdirSync(root)
     const project = join(dir, 'project'); mkdirSync(project)
     const file = join(root, 'live.jsonl')
@@ -434,7 +433,7 @@ process.stdout.write(JSON.stringify({ sessions: [{ sessionFile: ${JSON.stringify
   })
 
   it('does not join an in-flight scan owned by the previous executable', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'prime-work-scan-executable-race-')); dirs.push(dir)
+    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-scan-executable-race-')); dirs.push(dir)
     const root = join(dir, 'sessions'); mkdirSync(root)
     const project = join(dir, 'project'); mkdirSync(project)
     const file = join(root, 'scan.jsonl')
@@ -473,7 +472,7 @@ process.stdout.write(JSON.stringify({ sessions: [{ sessionFile: ${JSON.stringify
   })
 
   it('does not reuse the previous executable cache after runtime discovery changes', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'prime-work-catalog-executable-')); dirs.push(dir)
+    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-catalog-executable-')); dirs.push(dir)
     const root = join(dir, 'sessions'); mkdirSync(root)
     const project = join(dir, 'project'); mkdirSync(project)
     const firstFile = join(root, 'first.jsonl')
@@ -504,7 +503,7 @@ process.stdout.write(JSON.stringify({ sessions: [{ sessionFile: ${JSON.stringify
   })
 
   it('canonicalizes daemon session paths and never regresses the JSONL update time', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'prime-work-live-catalog-')); dirs.push(dir)
+    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-live-catalog-')); dirs.push(dir)
     const root = join(dir, 'sessions'); mkdirSync(root)
     const project = join(dir, 'project'); mkdirSync(project)
     const file = join(root, 'live.jsonl')
@@ -528,7 +527,7 @@ process.exit(2)
   })
 
   it('rate limits the live-catalog CLI spawn independently of change events', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'prime-work-catalog-throttle-')); dirs.push(dir)
+    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-catalog-throttle-')); dirs.push(dir)
     const root = join(dir, 'sessions'); mkdirSync(root)
     const project = join(dir, 'project'); mkdirSync(project)
     const file = join(root, 'burst.jsonl')
@@ -570,7 +569,7 @@ process.exit(0)
   })
 
   it('does not let an in-flight pre-append scan satisfy a post-invalidation refresh', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'prime-work-scan-race-')); dirs.push(dir)
+    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-scan-race-')); dirs.push(dir)
     const root = join(dir, 'sessions'); mkdirSync(root)
     const project = join(dir, 'project'); mkdirSync(project)
     const file = join(root, 'race.jsonl')
@@ -1024,153 +1023,6 @@ describe('SessionService transcript bounds', () => {
 
 
 describe('SessionService orchestration', () => {
-  it('rejects a Prime MCP auth command before daemon or session-path work', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'prime-work-auth-command-')); dirs.push(dir)
-    const service = new SessionService(new JsonStateStore(join(dir, 'state.json')), null)
-
-    await expect(service.followUp(join(dir, 'missing.jsonl'), '/mcp login notion'))
-      .rejects.toThrow('Network MCP authentication is managed outside GooeyPi')
-  })
-
-  it('queues a follow-up through the active Prime Agent daemon instead of resuming its locked session', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'prime-work-active-session-')); dirs.push(dir)
-    const root = join(dir, 'sessions'); mkdirSync(root)
-    const project = join(dir, 'project'); mkdirSync(project)
-    const file = join(root, 'active.jsonl')
-    writeSession(file, project, 'active')
-    const socketPath = join(dir, 'daemon.sock')
-    const deliveredMessages: Array<Record<string, unknown>> = []
-    const daemon = createServer((socket) => {
-      socket.write(`${JSON.stringify({ type: 'daemon_hello', protocol: { name: 'prime-agent.daemon', version: 7 }, serverCapabilities: ['session_input_admission'] })}\n`)
-      let buffer = ''
-      socket.on('data', (chunk: Buffer) => {
-        buffer += chunk.toString('utf8')
-        while (buffer.includes('\n')) {
-          const index = buffer.indexOf('\n')
-          const line = buffer.slice(0, index)
-          buffer = buffer.slice(index + 1)
-          const envelope = JSON.parse(line) as { id?: string; command?: Record<string, unknown> }
-          if (envelope.command?.type !== 'follow_up' && envelope.command?.type !== 'steer') continue
-          deliveredMessages.push(envelope)
-          socket.write(`${JSON.stringify({ id: envelope.id, type: 'response', command: envelope.command.type, success: true, data: {} })}\n`)
-        }
-      })
-    })
-    await new Promise<void>((resolveListen, rejectListen) => {
-      daemon.once('error', rejectListen)
-      daemon.listen(socketPath, resolveListen)
-    })
-
-    const executable = join(dir, 'prime-agent.cjs')
-    writeFileSync(executable, `#!/usr/bin/env node
-const args = process.argv.slice(2)
-if (args[0] === 'list') {
-  process.stdout.write(JSON.stringify({ sessions: [{ id: 'active-worker', activeSessionId: 'active-worker', lifecycle: 'live', isSessionActive: true, sessionFile: ${JSON.stringify(file)} }] }))
-  process.exit(0)
-}
-if (args[0] === 'status') {
-  process.stdout.write(JSON.stringify([{ isDefault: true, status: 'current', socketPath: ${JSON.stringify(socketPath)} }]))
-  process.exit(0)
-}
-process.exit(2)
-`)
-    chmodSync(executable, 0o755)
-    const service = new SessionService(new JsonStateStore(join(dir, 'state.json')), executable)
-    Object.defineProperty(service, 'sessionRoot', { value: root })
-
-    try {
-      await expect(service.followUp(file, 'queue this reply')).resolves.toBe(true)
-      await expect(service.followUp(file, 'change direction', 'steer')).resolves.toBe(true)
-      expect(deliveredMessages).toHaveLength(2)
-      expect(deliveredMessages[0]).toMatchObject({
-        type: 'command',
-        protocol: { name: 'prime-agent.daemon', version: 7 },
-        command: { type: 'follow_up', activeSessionId: 'active-worker', message: 'queue this reply' },
-      })
-      expect(deliveredMessages[1]).toMatchObject({
-        command: { type: 'steer', activeSessionId: 'active-worker', message: 'change direction' },
-      })
-      await expect(service.followUp(file, 'invalid', 'later')).rejects.toThrow('Invalid active-session message intent')
-    } finally {
-      await new Promise<void>((resolveClose) => daemon.close(() => resolveClose()))
-    }
-  })
-
-  it('rejects a daemon endpoint that is not a same-user Unix socket', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'prime-work-untrusted-daemon-')); dirs.push(dir)
-    const root = join(dir, 'sessions'); mkdirSync(root)
-    const project = join(dir, 'project'); mkdirSync(project)
-    const file = join(root, 'active.jsonl')
-    writeSession(file, project, 'active')
-    const socketPath = join(dir, 'not-a-socket')
-    writeFileSync(socketPath, 'not a daemon')
-    const executable = join(dir, 'prime-agent.cjs')
-    writeFileSync(executable, `#!/usr/bin/env node
-const args = process.argv.slice(2)
-if (args[0] === 'list') {
-  process.stdout.write(JSON.stringify({ sessions: [{ id: 'active-worker', lifecycle: 'live', isSessionActive: true, sessionFile: ${JSON.stringify(file)} }] }))
-  process.exit(0)
-}
-if (args[0] === 'status') {
-  process.stdout.write(JSON.stringify([{ status: 'current', isDefault: true, socketPath: ${JSON.stringify(socketPath)} }]))
-  process.exit(0)
-}
-process.exit(2)
-`)
-    chmodSync(executable, 0o755)
-    const service = new SessionService(new JsonStateStore(join(dir, 'state.json')), executable)
-    Object.defineProperty(service, 'sessionRoot', { value: root })
-
-    await expect(service.followUp(file, 'do not disclose this')).rejects.toThrow('untrusted daemon socket')
-  })
-
-  it('resolves follow-up candidates through the cached live catalog instead of a second listing', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'prime-work-followup-catalog-')); dirs.push(dir)
-    const root = join(dir, 'sessions'); mkdirSync(root)
-    const project = join(dir, 'project'); mkdirSync(project)
-    const file = join(root, 'busy.jsonl')
-    writeSession(file, project, 'busy')
-    const countFile = join(dir, 'list-count')
-    const executable = join(dir, 'prime-agent.cjs')
-    writeFileSync(executable, `#!/usr/bin/env node
-const fs = require('node:fs')
-if (process.argv[2] === 'list') {
-  fs.appendFileSync(${JSON.stringify(countFile)}, 'x')
-  process.stdout.write(JSON.stringify({ sessions: [{ id: 'busy-worker', activeSessionId: 'busy-worker', lifecycle: 'live', isSessionActive: false, sessionFile: ${JSON.stringify(file)} }] }))
-  process.exit(0)
-}
-process.exit(9)
-`)
-    chmodSync(executable, 0o755)
-    const service = new SessionService(new JsonStateStore(join(dir, 'state.json')), executable)
-    Object.defineProperty(service, 'sessionRoot', { value: root })
-
-    await service.list()
-    await expect(service.followUp(file, 'reuse the catalog')).resolves.toBe(false)
-    const { readFileSync } = await import('node:fs')
-    expect(readFileSync(countFile, 'utf8')).toBe('x')
-  })
-
-  it('does not send a follow-up when the session is no longer active', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'prime-work-inactive-session-')); dirs.push(dir)
-    const root = join(dir, 'sessions'); mkdirSync(root)
-    const project = join(dir, 'project'); mkdirSync(project)
-    const file = join(root, 'inactive.jsonl')
-    writeSession(file, project, 'inactive')
-    const executable = join(dir, 'prime-agent.cjs')
-    writeFileSync(executable, `#!/usr/bin/env node
-if (process.argv[2] === 'list') {
-  process.stdout.write(JSON.stringify({ sessions: [{ id: 'inactive-worker', activeSessionId: 'inactive-worker', lifecycle: 'live', isSessionActive: false, sessionFile: ${JSON.stringify(file)} }] }))
-  process.exit(0)
-}
-process.exit(9)
-`)
-    chmodSync(executable, 0o755)
-    const service = new SessionService(new JsonStateStore(join(dir, 'state.json')), executable)
-    Object.defineProperty(service, 'sessionRoot', { value: root })
-
-    await expect(service.followUp(file, 'start normally instead')).resolves.toBe(false)
-  })
 
   it('snapshots runtimes once per list() instead of once per session', async () => {
     const { root, project, service } = setup()
@@ -1190,7 +1042,7 @@ process.exit(9)
   })
 
   it('marks a session running and stops its runtime when the agent reports the file via a symlinked root', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'prime-work-sessions-symlink-')); dirs.push(dir)
+    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-sessions-symlink-')); dirs.push(dir)
     const realRoot = join(dir, 'real-sessions'); mkdirSync(realRoot)
     const aliasRoot = join(dir, 'alias-sessions'); symlinkSync(realRoot, aliasRoot)
     const project = join(dir, 'project'); mkdirSync(project)
@@ -1204,7 +1056,9 @@ const readline = require('node:readline')
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
 readline.createInterface({ input: process.stdin }).on('line', (line) => {
   const command = JSON.parse(line)
-  if (command.type === 'get_state') {
+  if (command.type === 'negotiate_protocol') {
+    send({ id: command.id, type: 'response', command: 'negotiate_protocol', success: true, data: { protocolVersion: command.protocolVersion } })
+  } else if (command.type === 'get_state') {
     send({ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'runtime', sessionFile: ${JSON.stringify(aliasFile)}, isStreaming: true } })
   } else if (command.type === 'abort') {
     send({ id: command.id, type: 'response', command: 'abort', success: true })
@@ -1286,7 +1140,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   })
 
   it('does not call renameFile for Prime when a CLI path exists', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'prime-work-rename-cli-')); dirs.push(dir)
+    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-rename-cli-')); dirs.push(dir)
     const root = join(dir, 'sessions'); mkdirSync(root)
     const project = join(dir, 'project'); mkdirSync(project)
     const file = join(root, 'prime.jsonl')

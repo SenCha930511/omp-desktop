@@ -19,7 +19,7 @@ describe('repository security policy', () => {
   })
 
   test('directs sensitive reports to GitHub private advisories', () => {
-    expect(policy).toContain('https://github.com/am-will/gooey-pi/security/advisories/new')
+    expect(policy).toContain('https://github.com/SenCha930511/omp-desktop/security/advisories/new')
     expect(policy).toMatch(/Do not disclose suspected vulnerabilities in a public issue/i)
     expect(policy).toMatch(/If the private reporting form is unavailable/i)
     expect(policy).toMatch(/Do not include any vulnerability details in that issue/i)

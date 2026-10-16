@@ -1,8 +1,9 @@
-import { memo, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
-import type { Components } from 'react-markdown'
+import { type ComponentPropsWithoutRef, type MouseEvent, memo, useEffect, useMemo, useRef, useState } from 'react'
+import type { Components, ExtraProps } from 'react-markdown'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { openExternalUrl } from '@/lib/desktop-actions'
+import { useI18n } from '@/lib/i18n'
 
 interface MarkdownTextProps {
   text: string
@@ -14,12 +15,16 @@ function openMarkdownLink(event: MouseEvent<HTMLAnchorElement>, href?: string): 
   if (!href) return
   event.preventDefault()
   if (href.startsWith('#')) {
-    try { document.getElementById(decodeURIComponent(href.slice(1)))?.scrollIntoView({ block: 'start' }) } catch { /* malformed fragment */ }
+    try {
+      document.getElementById(decodeURIComponent(href.slice(1)))?.scrollIntoView({ block: 'start' })
+    } catch {
+      /* malformed fragment */
+    }
     return
   }
   if (!/^(https?:|mailto:)/i.test(href)) return
-  if (window.prime) {
-    void openExternalUrl(window.prime.app, href).then((failure) => {
+  if (window.desktop) {
+    void openExternalUrl(window.desktop.app, href).then((failure) => {
       // Transcript links have no toast surface of their own; the refusal still
       // has to leave a trace instead of looking like a dead link.
       if (failure) console.error('Opening a transcript link failed:', failure)
@@ -27,6 +32,24 @@ function openMarkdownLink(event: MouseEvent<HTMLAnchorElement>, href?: string): 
     return
   }
   window.open(href, '_blank', 'noopener,noreferrer')
+}
+
+function MarkdownLink({ node: _node, href, children, ...props }: ComponentPropsWithoutRef<'a'> & ExtraProps) {
+  const { t } = useI18n()
+  return href && /^(https?:|mailto:|#)/i.test(href) ? (
+    <a {...props} href={href} rel="noreferrer" onClick={(event) => openMarkdownLink(event, href)}>
+      <bdi>{children}</bdi>
+    </a>
+  ) : (
+    <span className="markdown-link-unsupported" title={href ? t('transcript.markdown.projectRelativeLink', { href }) : undefined}>
+      {children}
+    </span>
+  )
+}
+
+function MarkdownImage({ alt }: ComponentPropsWithoutRef<'img'> & ExtraProps) {
+  const { t } = useI18n()
+  return <span className="markdown-image-placeholder">{t('transcript.markdown.image', { label: alt || t('transcript.markdown.imageFallback') })}</span>
 }
 
 const markdownPlugins = [remarkGfm]
@@ -37,22 +60,28 @@ const markdownPlugins = [remarkGfm]
  * opening with LTR code still lays out RTL prose correctly.
  */
 const markdownComponents: Components = {
-  a: ({ node: _node, href, children, ...props }) => href && (/^(https?:|mailto:|#)/i.test(href))
-    ? <a {...props} href={href} rel="noreferrer" onClick={(event) => openMarkdownLink(event, href)}><bdi>{children}</bdi></a>
-    : <span className="markdown-link-unsupported" title={href ? `Project-relative link: ${href}` : undefined}>{children}</span>,
+  a: MarkdownLink,
   blockquote: ({ node: _node, ...props }) => <blockquote {...props} dir="auto" />,
-  code: ({ node: _node, children, ...props }) => <code {...props} dir="ltr">{children}</code>,
+  code: ({ node: _node, children, ...props }) => (
+    <code {...props} dir="ltr">
+      {children}
+    </code>
+  ),
   h1: ({ node: _node, ...props }) => <h1 {...props} dir="auto" />,
   h2: ({ node: _node, ...props }) => <h2 {...props} dir="auto" />,
   h3: ({ node: _node, ...props }) => <h3 {...props} dir="auto" />,
   h4: ({ node: _node, ...props }) => <h4 {...props} dir="auto" />,
   h5: ({ node: _node, ...props }) => <h5 {...props} dir="auto" />,
   h6: ({ node: _node, ...props }) => <h6 {...props} dir="auto" />,
-  img: ({ alt }) => <span className="markdown-image-placeholder">[Image: {alt || 'attachment'}]</span>,
+  img: MarkdownImage,
   li: ({ node: _node, ...props }) => <li {...props} dir="auto" />,
   ol: ({ node: _node, ...props }) => <ol {...props} dir="auto" />,
   p: ({ node: _node, ...props }) => <p {...props} dir="auto" />,
-  pre: ({ node: _node, children, ...props }) => <pre {...props} dir="ltr">{children}</pre>,
+  pre: ({ node: _node, children, ...props }) => (
+    <pre {...props} dir="ltr">
+      {children}
+    </pre>
+  ),
   td: ({ node: _node, ...props }) => <td {...props} dir="auto" />,
   th: ({ node: _node, ...props }) => <th {...props} dir="auto" />,
   ul: ({ node: _node, ...props }) => <ul {...props} dir="auto" />,
@@ -72,12 +101,7 @@ export interface StreamingParseState {
  * when the unparsed tail crossed a newline; otherwise the caller keeps the
  * previous coherent snapshot visible and retries after `delayMs`.
  */
-export function advanceStreamingParse(
-  state: StreamingParseState,
-  textLength: number,
-  newlineInTail: boolean,
-  now: number,
-): { state: StreamingParseState; delayMs?: number } {
+export function advanceStreamingParse(state: StreamingParseState, textLength: number, newlineInTail: boolean, now: number): { state: StreamingParseState; delayMs?: number } {
   if (state.boundary >= textLength) {
     return state.boundary === textLength ? { state } : { state: { boundary: textLength, lastParseAt: now } }
   }
@@ -113,7 +137,9 @@ export const MarkdownText = memo(function MarkdownText({ text, streaming = false
     }
     const delayMs = decide()
     if (delayMs === undefined) return
-    const timer = window.setTimeout(() => { decide() }, delayMs)
+    const timer = window.setTimeout(() => {
+      decide()
+    }, delayMs)
     return () => window.clearTimeout(timer)
   }, [streaming, text])
 
@@ -123,7 +149,11 @@ export const MarkdownText = memo(function MarkdownText({ text, streaming = false
   // unparsed suffix as a sibling block makes punctuation and partial words
   // jump onto separate lines while tokens are still arriving.
   const markdown = useMemo(
-    () => <ReactMarkdown remarkPlugins={markdownPlugins} skipHtml components={markdownComponents}>{parsedText}</ReactMarkdown>,
+    () => (
+      <ReactMarkdown remarkPlugins={markdownPlugins} skipHtml components={markdownComponents}>
+        {parsedText}
+      </ReactMarkdown>
+    ),
     [parsedText],
   )
   return <div className="prose">{markdown}</div>

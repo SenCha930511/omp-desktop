@@ -1,10 +1,10 @@
-import { accessSync, constants as fsConstants, readdirSync } from 'node:fs'
+import { constants as fsConstants, readdirSync } from 'node:fs'
 import { access, readdir } from 'node:fs/promises'
 import { delimiter, posix, win32 } from 'node:path'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { homedir } from 'node:os'
 import { createAdmissionQueue } from './lib/async'
-import { HARNESSES, type HarnessDescriptor } from './harness'
+import type { HarnessDescriptor } from './harness'
 import type { ProcessFailureReason, ProcessOutcome } from '../../src/types/api'
 
 export interface ProcessResult {
@@ -202,7 +202,7 @@ export function safeChildEnvironment(extra: NodeJS.ProcessEnv = {}): NodeJS.Proc
 /**
  * Makes an absolute executable's own directory available to `/usr/bin/env`
  * shebangs without evaluating a shell profile. Finder-launched macOS apps get
- * a minimal PATH, while npm-installed Pi-family CLIs commonly use
+ * a minimal PATH, while npm-installed CLIs commonly use
  * `#!/usr/bin/env node` with `node` beside the CLI shim.
  */
 export function executableChildEnvironment(
@@ -241,64 +241,18 @@ export interface ExecutableSpawnInvocation {
   env: NodeJS.ProcessEnv
 }
 
-interface PrepareExecutableSpawnOptions {
-  platform?: NodeJS.Platform
-  home?: string
-  canAccess?: (candidate: string, mode: number) => boolean
-}
-
-function canAccessPath(candidate: string, mode: number): boolean {
-  try { accessSync(candidate, mode); return true } catch { return false }
-}
 
 /**
- * Resolves official Windows npm shims declared on harness descriptors without
- * running cmd.exe. npm puts the package entry point below the shim directory,
- * so GooeyPi can invoke that fixed JavaScript file with a validated Node
- * executable and keep shell=false.
+ * Normalizes the child environment for an executable spawn. OMP ships a
+ * native executable on every platform, so no command-shim translation is
+ * needed and the spawn stays shell-free.
  */
 export function prepareExecutableSpawn(
   file: string,
   args: readonly string[],
   env: NodeJS.ProcessEnv = safeChildEnvironment(),
-  options: PrepareExecutableSpawnOptions = {},
 ): ExecutableSpawnInvocation {
-  const platform = options.platform ?? process.platform
-  const childEnvironment = executableChildEnvironment(file, env, platform)
-  const descriptor = platform === 'win32'
-    ? Object.values(HARNESSES).find((harness) => harness.windowsNpmShim?.shim === win32.basename(file).toLowerCase())
-    : undefined
-  if (!descriptor?.windowsNpmShim) {
-    return { file, args: [...args], env: childEnvironment }
-  }
-
-  const canAccess = options.canAccess ?? canAccessPath
-  const entrypoint = win32.join(win32.dirname(file), 'node_modules', ...descriptor.windowsNpmShim.entrypoint)
-  if (!canAccess(entrypoint, fsConstants.F_OK)) throw new Error(`The ${descriptor.agentName} npm command shim does not point to an official ${descriptor.agentName} installation`)
-  const homeValue = options.home ?? childEnvironment.USERPROFILE
-  const home = homeValue && win32.isAbsolute(homeValue) ? homeValue : homedir()
-  const pathDirectories = [childEnvironment.Path, childEnvironment.PATH]
-    .flatMap((value) => (value ?? '').split(';'))
-    .filter((directory) => Boolean(directory && win32.isAbsolute(directory)))
-  const nodeDirectories = [
-    win32.dirname(file),
-    ...versionManagerRuntimeDirs(childEnvironment, platform, home),
-    ...pathDirectories,
-    childEnvironment.ProgramFiles ? win32.join(childEnvironment.ProgramFiles, 'nodejs') : '',
-    childEnvironment.LOCALAPPDATA ? win32.join(childEnvironment.LOCALAPPDATA, 'Programs', 'nodejs') : '',
-  ]
-  const seen = new Set<string>()
-  const node = nodeDirectories
-    .filter((directory) => {
-      const key = directory.toLowerCase()
-      if (!directory || seen.has(key)) return false
-      seen.add(key)
-      return true
-    })
-    .map((directory) => win32.join(directory, 'node.exe'))
-    .find((candidate) => canAccess(candidate, fsConstants.X_OK))
-  if (!node) throw new Error(`Node.js was not found for the ${descriptor.agentName} npm command shim`)
-  return { file: node, args: [entrypoint, ...args], env: childEnvironment }
+  return { file, args: [...args], env: executableChildEnvironment(file, env, process.platform) }
 }
 
 /**
@@ -417,7 +371,6 @@ export function harnessExecutableCandidates(
 ): string[] {
   const pathApi = platform === 'win32' ? win32 : posix
   const executable = descriptor.executableName(platform)
-  const executableNames = platform === 'win32' && descriptor.windowsNpmShim ? [executable, descriptor.windowsNpmShim.shim] : [executable]
   const candidates: string[] = []
   if (configuredPath && isAbsolutePathForPlatform(configuredPath, platform)) candidates.push(configuredPath)
   const configured = env[descriptor.binaryEnvVar]
@@ -427,20 +380,16 @@ export function harnessExecutableCandidates(
   }
   const pathValues = platform === 'win32' ? [env.Path, env.PATH] : [env.PATH]
   for (const directory of pathValues.flatMap((value) => (value ?? '').split(platform === 'win32' ? ';' : delimiter))) {
-    if (directory && isAbsolutePathForPlatform(directory, platform)) {
-      for (const name of executableNames) candidates.push(pathApi.join(directory, name))
-    }
+    if (directory && isAbsolutePathForPlatform(directory, platform)) candidates.push(pathApi.join(directory, executable))
   }
   // Electron E2E fixtures must not silently connect to a developer machine's
   // globally installed harnesses after an explicit fixture binary disappears.
-  const fallbackDirs = env.PRIME_WORK_E2E_HIDE_WINDOWS === '1' ? [] : [
+  const fallbackDirs = env.OMP_DESKTOP_E2E_HIDE_WINDOWS === '1' ? [] : [
     ...descriptor.candidateDirs(platform, home, env),
     ...sharedHarnessCandidateDirs(env, platform, home),
   ]
   for (const directory of fallbackDirs) {
-    if (directory && isAbsolutePathForPlatform(directory, platform)) {
-      for (const name of executableNames) candidates.push(pathApi.join(directory, name))
-    }
+    if (directory && isAbsolutePathForPlatform(directory, platform)) candidates.push(pathApi.join(directory, executable))
   }
   const seen = new Set<string>()
   return candidates.filter((candidate) => {
@@ -458,7 +407,7 @@ export async function nvmHarnessExecutableCandidates(
   platform = process.platform,
   home = homedir(),
 ): Promise<string[]> {
-  if (platform === 'win32' || env.PRIME_WORK_E2E_HIDE_WINDOWS === '1') return []
+  if (platform === 'win32' || env.OMP_DESKTOP_E2E_HIDE_WINDOWS === '1') return []
   const root = env.NVM_DIR && posix.isAbsolute(env.NVM_DIR) ? env.NVM_DIR : posix.join(home, '.nvm')
   const versionsRoot = posix.join(root, 'versions', 'node')
   try {
@@ -506,17 +455,6 @@ export function resolveExecutable(source: ExecutableSource): string | null {
   return typeof source === 'function' ? source() : source
 }
 
-export function primeAgentExecutableName(platform = process.platform): string {
-  return HARNESSES.prime.executableName(platform)
-}
-
-export function primeAgentCandidates(env: NodeJS.ProcessEnv = process.env, platform = process.platform): string[] {
-  return harnessExecutableCandidates(HARNESSES.prime, env, platform)
-}
-
-export async function findPrimeAgent(): Promise<string | null> {
-  return findHarnessExecutable(HARNESSES.prime)
-}
 
 export function runProcess(file: string, args: readonly string[], options: {
   cwd?: string

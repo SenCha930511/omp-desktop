@@ -9,7 +9,7 @@ import { canonicalSessionPath } from '../session-paths'
 import { errorMessage, isRecord } from '../validation'
 import { redactedStderrTail } from '../lib/process-detail'
 import { AgentEventForwarder } from './events'
-import { PRIME_RPC_ADAPTER, parseContextUsage, parseSessionUsage, type HarnessRpcAdapter } from './harness-adapter'
+import { OMP_RPC_ADAPTER, parseContextUsage, parseSessionUsage, type HarnessRpcAdapter } from './harness-adapter'
 import { LiveContextUsageTracker, withLiveContextUsage } from './context-usage'
 import { FramedRpcTransport, type QueuedRpcWrite } from './transport'
 import type { RpcObject } from './types'
@@ -99,7 +99,7 @@ export class RpcRuntime {
   // outside info so get_state refreshes (which report isStreaming false
   // during the backoff) cannot clear it.
   private retryPending = false
-  // Compaction watchdog: some Prime Agent event paths buffer compaction_start
+  // Compaction watchdog: some OMP agent event paths buffer compaction_start
   // until the surrounding RPC command settles, so the desktop would learn
   // about a compaction only after it finished. get_state responses are never
   // buffered, so polling the compacting flag while the runtime is active lets
@@ -127,15 +127,14 @@ export class RpcRuntime {
     private readonly onExit: (runtime: RpcRuntime) => void,
     extraEnvironment: NodeJS.ProcessEnv = {},
     watchdogTimings: Partial<CompactionWatchdogTimings> = {},
-    private readonly adapter: HarnessRpcAdapter = PRIME_RPC_ADAPTER,
+    private readonly adapter: HarnessRpcAdapter = OMP_RPC_ADAPTER,
     private readonly chunkAssemblyTiming: RpcChunkAssemblyTiming = DEFAULT_RPC_CHUNK_ASSEMBLY_TIMING,
   ) {
     this.watchdogTimings = { ...DEFAULT_COMPACTION_WATCHDOG_TIMINGS, ...watchdogTimings }
     this.info = { runtimeId: this.runtimeId, harness: this.adapter.id, cwd, isStreaming: false, isCompacting: false, sessionActions: emptySessionActionSnapshot() }
     this.eventForwarder = new AgentEventForwarder(this.runtimeId, onEvent)
-    // Every harness child is spawned with the authorized cwd as its working
-    // directory. Adapters that declare spawnsInCwd (pi has no --cwd flag and
-    // buckets its sessions by the process working directory) depend on this.
+    // The harness child is spawned with the authorized cwd as its working
+    // directory.
     const invocation = prepareExecutableSpawn(executable, args, safeChildEnvironment(extraEnvironment))
     this.child = spawn(invocation.file, invocation.args, { cwd, env: invocation.env, shell: false, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, detached: process.platform !== 'win32' })
     this.transport = new FramedRpcTransport(
@@ -678,7 +677,7 @@ export class RpcRuntime {
         this.emit({ type: 'session_usage', sessionUsage })
       }
       if (usage) this.applyAuthoritativeContextUsage(usage, request.activityTokens)
-    } catch { /* older Prime Agent versions may not expose session stats */ }
+    } catch { /* older OMP agent versions may not expose session stats */ }
   }
 
   private applyAuthoritativeContextUsage(usage: PrimeContextUsage, activityTokens?: number): void {

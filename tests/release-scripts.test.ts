@@ -1,11 +1,16 @@
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, truncateSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, truncateSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, test } from 'vitest'
+import { SHIPPED_EXTENSION_FILENAMES } from '../electron/main/extension-manifest'
+// after-pack.cjs is CommonJS; the interop layer exposes module.exports properties as named exports.
+import { executablePath } from '../scripts/release/after-pack.cjs'
+import { producedReleaseArtifactNames, RELEASE_BUILD_MATRIX, readElectronBuilderConfig } from '../scripts/release/artifact-names.mjs'
+import { collectAuditAdvisories, describeAuditEvaluation, evaluateAuditReport, parseAuditExceptions, readAuditExceptions } from '../scripts/release/audit-exceptions.mjs'
 import {
   bootstrapNpm,
   parsePinnedNpmArtifact,
@@ -15,6 +20,7 @@ import {
   resolveNpmGlobalLayout,
   verifyPinnedNpmArtifact,
 } from '../scripts/release/bootstrap-npm.mjs'
+import { brandDevElectron, DEV_LSREGISTER_PATH } from '../scripts/release/brand-dev-electron.mjs'
 import { installAppDependencies } from '../scripts/release/install-app-deps.mjs'
 import {
   artifactArchitectures,
@@ -22,14 +28,14 @@ import {
   assertAsarLayout,
   assertExactArchitectures,
   assertPackagedExtensions,
-  assertSupportedNpm,
   assertSupportedNode,
+  assertSupportedNpm,
   assertSupportedToolchain,
   assertUnpackedNativeLayout,
   expectedUnpackedNativeLayout,
-  parseToolchainMetadata,
   parseArchitectures,
   parseTeamIdentifier,
+  parseToolchainMetadata,
   readNpmOutput,
   readNpmVersion,
   readRepositoryToolchain,
@@ -39,8 +45,6 @@ import {
   validateWindowsReleaseCredentials,
   withoutReleaseCredentials,
 } from '../scripts/release/lib.mjs'
-import { SHIPPED_EXTENSION_FILENAMES } from '../electron/main/extension-manifest'
-import { producedReleaseArtifactNames, readElectronBuilderConfig, RELEASE_BUILD_MATRIX } from '../scripts/release/artifact-names.mjs'
 import {
   expectedDownloadedReleaseAssets,
   expectedGitHubReleaseAssets,
@@ -52,17 +56,13 @@ import {
 import { parseDraftAssetNames, staleDraftReleaseAssets } from '../scripts/release/prune-draft-release-assets.mjs'
 import { assertBundleSizeBudgets, assertPackageSizeBudgets, BUNDLE_SIZE_BUDGETS, collectBundleSizeMetrics, collectPackageSizeMetrics, PACKAGE_SIZE_BUDGETS } from '../scripts/release/size-budgets.mjs'
 import { assertReleaseTag } from '../scripts/release/validate-release-tag.mjs'
-// after-pack.cjs is CommonJS; the interop layer exposes module.exports properties as named exports.
-import { executablePath } from '../scripts/release/after-pack.cjs'
-import { collectAuditAdvisories, describeAuditEvaluation, evaluateAuditReport, parseAuditExceptions, readAuditExceptions } from '../scripts/release/audit-exceptions.mjs'
 import {
-  assertValidAuthenticode,
   assertUnpackedNativeLayout as assertCrossPlatformUnpackedNativeLayout,
+  assertValidAuthenticode,
   expectedArtifactExtensions,
   expectedAuthenticodeSigner,
   expectedNativeFiles,
   nativeRuntimeDirectory,
-  zeroMqAddonPattern,
 } from '../scripts/release/verify-cross-platform-package.mjs'
 
 // js-yaml ships no type declarations, so it is required rather than imported.
@@ -77,19 +77,9 @@ const baseEnvironment = {
   APPLE_TEAM_ID: 'TEAM123',
 }
 
-const FIXTURE_ZEROMQ_DIRECTORIES = new Map([
-  ['arm64', 'arm64'],
-  ['x86_64', 'x64'],
-])
-
-function fixtureAddonPath(architecture: string, runtime = 'libc-115-Release') {
-  return `node_modules/zeromq/build/darwin/${FIXTURE_ZEROMQ_DIRECTORIES.get(architecture)}/node/${runtime}/addon.node`
-}
-
-function createUnpackedFixture(architectures = new Set(['arm64'])) {
-  const directory = mkdtempSync(join(tmpdir(), 'prime-work-unpacked-'))
-  const relativePaths = [...expectedUnpackedNativeLayout(architectures).files, ...[...architectures].map((architecture) => fixtureAddonPath(architecture))]
-  for (const relativePath of relativePaths) {
+function createUnpackedFixture() {
+  const directory = mkdtempSync(join(tmpdir(), 'omp-desktop-unpacked-'))
+  for (const relativePath of expectedUnpackedNativeLayout().files) {
     const path = join(directory, relativePath)
     mkdirSync(dirname(path), { recursive: true })
     writeFileSync(path, 'fixture')
@@ -123,7 +113,7 @@ function writeMacReleaseFixture(directory: string, { omit }: { omit?: string } =
     const artifactDirectory = join(inputDirectory, `artifact-${index}`)
     mkdirSync(artifactDirectory, { recursive: true })
     const content = name.endsWith('.yml')
-      ? 'version: 0.2.0\nfiles:\n  - url: GooeyPi-0.2.0-x64.zip\n    sha512: x64-digest\n    size: 42\npath: GooeyPi-0.2.0-x64.zip\nsha512: x64-digest\n'
+      ? 'version: 0.2.0\nfiles:\n  - url: OMP-Desktop-0.2.0-x64.zip\n    sha512: x64-digest\n    size: 42\npath: OMP-Desktop-0.2.0-x64.zip\nsha512: x64-digest\n'
       : `asset ${index}`
     writeFileSync(join(artifactDirectory, name), content)
   }
@@ -164,7 +154,7 @@ function npmArtifactManifest(size: number, overrides: Record<string, unknown> = 
 }
 
 function createPinnedNpmArtifactFixture(contents = Buffer.from('verified npm archive fixture')) {
-  const temporaryDirectory = mkdtempSync(join(tmpdir(), 'gooeypi npm artifact & '))
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), 'omp-desktop npm artifact & '))
   const repositoryRoot = join(temporaryDirectory, 'repository with spaces & metacharacters')
   const artifactPath = join(repositoryRoot, 'vendor', 'npm-12.0.2.tgz')
   mkdirSync(dirname(artifactPath), { recursive: true })
@@ -201,11 +191,11 @@ describe('release preflight', () => {
 
   test('binds the requested target architecture to the produced mac artifacts', async () => {
     const { assertBooleanEntitlement, assertRequestedArchitecture } = await import('../scripts/release/verify-package.mjs')
-    const artifacts = { dmg: 'release/mac/arm64/Prime Work-1.0.0-arm64.dmg', zip: 'release/mac/arm64/Prime Work-1.0.0-arm64.zip' }
+    const artifacts = { dmg: 'release/mac/arm64/OMP-Desktop-1.0.0-arm64.dmg', zip: 'release/mac/arm64/OMP-Desktop-1.0.0-arm64.zip' }
     expect(() => assertRequestedArchitecture(artifacts, 'arm64')).not.toThrow()
     expect(() => assertRequestedArchitecture(artifacts, undefined)).not.toThrow()
     expect(() => assertRequestedArchitecture(artifacts, 'x64')).toThrow(/declares architecture arm64, but --arch x64 was requested/)
-    expect(() => assertRequestedArchitecture({ ...artifacts, zip: 'release/mac/x64/Prime Work-1.0.0-x64.zip' }, 'arm64')).toThrow(/declares architecture x64/)
+    expect(() => assertRequestedArchitecture({ ...artifacts, zip: 'release/mac/x64/OMP-Desktop-1.0.0-x64.zip' }, 'arm64')).toThrow(/declares architecture x64/)
     expect(() => assertRequestedArchitecture(artifacts, 'universal')).toThrow(/must be arm64 or x64/)
     expect(() => assertRequestedArchitecture(artifacts, '')).toThrow(/must be arm64 or x64/)
     // package.mjs forwards the authoritative arch into mac post-package verification.
@@ -333,7 +323,7 @@ describe('release preflight', () => {
   })
 
   test('probes npm through its JavaScript CLI and both release entry points reject an old npm', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'gooeypi-npm-version-'))
+    const directory = mkdtempSync(join(tmpdir(), 'omp-desktop-npm-version-'))
     const npmCli = join(directory, 'npm-cli.mjs')
     writeFileSync(npmCli, "process.stdout.write('12.0.1\\n')\n")
     const env = { ...process.env, npm_execpath: npmCli }
@@ -377,7 +367,7 @@ describe('release preflight', () => {
   })
 
   test('exact npm CLI verification ignores a stale lifecycle npm_execpath', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'gooeypi exact npm & version-'))
+    const directory = mkdtempSync(join(tmpdir(), 'omp-desktop exact npm & version-'))
     const staleCli = join(directory, 'stale-npm-cli.mjs')
     const installedCli = join(directory, 'installed-npm-cli.mjs')
     writeFileSync(staleCli, "process.stdout.write('11.12.1\\n')\n")
@@ -446,7 +436,7 @@ describe('release preflight', () => {
 
   test('executes the installed npm CLI and selects its shim for the next workflow step', () => {
     const fixture = createPinnedNpmArtifactFixture()
-    const directory = mkdtempSync(join(tmpdir(), 'gooeypi stale npm & bootstrap-'))
+    const directory = mkdtempSync(join(tmpdir(), 'omp-desktop stale npm & bootstrap-'))
     const prefix = join(directory, 'configured global')
     const root = process.platform === 'win32' ? join(prefix, 'node_modules') : join(prefix, 'lib', 'node_modules')
     const layout = resolveNpmGlobalLayout(prefix, root)
@@ -485,7 +475,7 @@ else if (JSON.stringify(args) === ${JSON.stringify(JSON.stringify(expectedInstal
   })
 
   test('installs the checked-in npm archive into a fresh prefix without network access', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'gooeypi real npm bootstrap & '))
+    const directory = mkdtempSync(join(tmpdir(), 'omp-desktop real npm bootstrap & '))
     const prefix = join(directory, 'fresh global prefix')
     const githubPath = join(directory, 'github-path')
     const cache = join(directory, 'npm cache')
@@ -508,7 +498,7 @@ else if (JSON.stringify(args) === ${JSON.stringify(JSON.stringify(expectedInstal
   }, 30_000)
 
   test('persists only a validated npm shim directory for the next GitHub Actions step', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'gooeypi-github-path-'))
+    const directory = mkdtempSync(join(tmpdir(), 'omp-desktop-github-path-'))
     const githubPath = join(directory, 'github-path')
     writeFileSync(githubPath, '/existing/tool\n')
     try {
@@ -526,7 +516,7 @@ else if (JSON.stringify(args) === ${JSON.stringify(JSON.stringify(expectedInstal
   })
 
   test('persists the bootstrapped npm CLI for direct Node release entry points', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'gooeypi-github-env-'))
+    const directory = mkdtempSync(join(tmpdir(), 'omp-desktop-github-env-'))
     const githubEnv = join(directory, 'github-env')
     writeFileSync(githubEnv, '')
     try {
@@ -861,8 +851,8 @@ else if (JSON.stringify(args) === ${JSON.stringify(JSON.stringify(expectedInstal
   test('ships both mac architectures as separate builds from native-arch runners', () => {
     const releaseWorkflow = readFileSync('.github/workflows/release.yml', 'utf8')
     // Two matrix legs, each on a runner whose native architecture matches the
-    // target (arm64 on macos-15, x64 on macos-15-intel) so node-pty/zeromq never
-    // cross-compile, and one leg's failure never cancels the other's build.
+    // target (arm64 on macos-15, x64 on macos-15-intel) so node-pty never
+    // cross-compiles, and one leg's failure never cancels the other's build.
     expect(releaseWorkflow).toContain('fail-fast: false')
     expect(releaseWorkflow).toMatch(/- arch: arm64\n {12}runner: macos-15/)
     expect(releaseWorkflow).toMatch(/- arch: x64\n {12}runner: macos-15-intel/)
@@ -870,7 +860,7 @@ else if (JSON.stringify(args) === ${JSON.stringify(JSON.stringify(expectedInstal
     // The explicit target arch drives packaging, and each leg uploads only its
     // own arch directory under a per-arch artifact name and cache key.
     expect(releaseWorkflow).toContain('npm run package:mac -- --skip-verify --arch ${{ matrix.arch }}')
-    expect(releaseWorkflow).toContain('name: gooeypi-public-macos-${{ matrix.arch }}')
+    expect(releaseWorkflow).toContain('name: omp-desktop-public-macos-${{ matrix.arch }}')
     expect(releaseWorkflow).toContain('release/mac/${{ matrix.arch }}/*.dmg')
     expect(releaseWorkflow).toContain('release/mac/${{ matrix.arch }}/*.zip')
     expect(releaseWorkflow).toContain('electron-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles(')
@@ -885,7 +875,7 @@ else if (JSON.stringify(args) === ${JSON.stringify(JSON.stringify(expectedInstal
     expect(releaseWorkflow).toMatch(/- arch: x64\n {12}runner: ubuntu-22\.04/)
     expect(releaseWorkflow).toContain('runs-on: ${{ matrix.runner }}')
     expect(releaseWorkflow).toContain('npm run package:linux -- --skip-verify --arch ${{ matrix.arch }}')
-    expect(releaseWorkflow).toContain('name: gooeypi-public-linux-${{ matrix.arch }}')
+    expect(releaseWorkflow).toContain('name: omp-desktop-public-linux-${{ matrix.arch }}')
     expect(releaseWorkflow).toContain('release/linux/${{ matrix.arch }}/*.AppImage')
     expect(releaseWorkflow).toContain('release/linux/${{ matrix.arch }}/latest*.yml')
     expect(releaseWorkflow).toContain('electron-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles(')
@@ -895,18 +885,30 @@ else if (JSON.stringify(args) === ${JSON.stringify(JSON.stringify(expectedInstal
 describe('GitHub Release publication', () => {
   test('selects an exact enabled platform set', () => {
     expect(parseReleasePlatforms('mac,linux')).toEqual(['mac', 'linux'])
-    expect(expectedGitHubReleaseAssets('0.2.0', ['mac', 'linux'])).not.toContain('GooeyPi-0.2.0-win-x64.exe')
-    expect(expectedGitHubReleaseAssets('0.2.0', ['mac'])).toEqual(['GooeyPi-0.2.0-arm64.zip', 'GooeyPi-0.2.0-intel-chip.dmg', 'GooeyPi-0.2.0-m-chip.dmg', 'GooeyPi-0.2.0-x64.zip', 'latest-mac.yml'])
-    expect(expectedDownloadedReleaseAssets('0.2.0', ['mac'])).toEqual(['GooeyPi-0.2.0-arm64.zip', 'GooeyPi-0.2.0-x64.dmg', 'GooeyPi-0.2.0-arm64.dmg', 'GooeyPi-0.2.0-x64.zip', 'latest-mac.yml'])
+    expect(expectedGitHubReleaseAssets('0.2.0', ['mac', 'linux'])).not.toContain('OMP-Desktop-0.2.0-win-x64.exe')
+    expect(expectedGitHubReleaseAssets('0.2.0', ['mac'])).toEqual([
+      'OMP-Desktop-0.2.0-arm64.zip',
+      'OMP-Desktop-0.2.0-intel-chip.dmg',
+      'OMP-Desktop-0.2.0-m-chip.dmg',
+      'OMP-Desktop-0.2.0-x64.zip',
+      'latest-mac.yml',
+    ])
+    expect(expectedDownloadedReleaseAssets('0.2.0', ['mac'])).toEqual([
+      'OMP-Desktop-0.2.0-arm64.zip',
+      'OMP-Desktop-0.2.0-x64.dmg',
+      'OMP-Desktop-0.2.0-arm64.dmg',
+      'OMP-Desktop-0.2.0-x64.zip',
+      'latest-mac.yml',
+    ])
     expect(expectedGitHubReleaseAssets('0.2.0', ['linux'])).toEqual([
-      'GooeyPi-0.2.0-linux-aarch64.pacman',
-      'GooeyPi-0.2.0-linux-aarch64.rpm',
-      'GooeyPi-0.2.0-linux-amd64.deb',
-      'GooeyPi-0.2.0-linux-arm64.AppImage',
-      'GooeyPi-0.2.0-linux-arm64.deb',
-      'GooeyPi-0.2.0-linux-x64.pacman',
-      'GooeyPi-0.2.0-linux-x86_64.AppImage',
-      'GooeyPi-0.2.0-linux-x86_64.rpm',
+      'OMP-Desktop-0.2.0-linux-aarch64.pacman',
+      'OMP-Desktop-0.2.0-linux-aarch64.rpm',
+      'OMP-Desktop-0.2.0-linux-amd64.deb',
+      'OMP-Desktop-0.2.0-linux-arm64.AppImage',
+      'OMP-Desktop-0.2.0-linux-arm64.deb',
+      'OMP-Desktop-0.2.0-linux-x64.pacman',
+      'OMP-Desktop-0.2.0-linux-x86_64.AppImage',
+      'OMP-Desktop-0.2.0-linux-x86_64.rpm',
       'latest-linux-arm64.yml',
       'latest-linux.yml',
     ])
@@ -930,9 +932,9 @@ describe('GitHub Release publication', () => {
     expect(produced).toHaveLength(targetCount)
     // Only the two macOS DMGs are renamed for the public download page.
     expect([...names].filter(([published, downloaded]) => published !== downloaded)).toEqual([
-      ['GooeyPi-0.2.0-intel-chip.dmg', 'GooeyPi-0.2.0-x64.dmg'],
-      ['GooeyPi-0.2.0-m-chip.dmg', 'GooeyPi-0.2.0-arm64.dmg'],
-      ['GooeyPi-0.2.0-win-x64.msix', 'GooeyPi-0.2.0-win-x64.appx'],
+      ['OMP-Desktop-0.2.0-intel-chip.dmg', 'OMP-Desktop-0.2.0-x64.dmg'],
+      ['OMP-Desktop-0.2.0-m-chip.dmg', 'OMP-Desktop-0.2.0-arm64.dmg'],
+      ['OMP-Desktop-0.2.0-win-x64.msix', 'OMP-Desktop-0.2.0-win-x64.appx'],
     ])
   })
 
@@ -949,13 +951,13 @@ describe('GitHub Release publication', () => {
   })
 
   test('reports the published name of a missing artifact through the rename map', async () => {
-    const directory = mkdtempSync(join(tmpdir(), 'gooeypi-github-release-missing-'))
+    const directory = mkdtempSync(join(tmpdir(), 'omp-desktop-github-release-missing-'))
     try {
-      const { projectDirectory, inputDirectory } = writeMacReleaseFixture(directory, { omit: 'GooeyPi-0.2.0-arm64.dmg' })
+      const { projectDirectory, inputDirectory } = writeMacReleaseFixture(directory, { omit: 'OMP-Desktop-0.2.0-arm64.dmg' })
       // The arm64 DMG publishes as m-chip.dmg: the report must name the missing
       // published asset, not whichever entry happens to share its sort index.
       await expect(prepareGitHubRelease({ inputDirectory, outputDirectory: join(directory, 'out'), projectDirectory, platforms: ['mac'], tag: 'v0.2.0' })).rejects.toThrow(
-        /incomplete; missing GooeyPi-0\.2\.0-m-chip\.dmg$/,
+        /incomplete; missing OMP-Desktop-0\.2\.0-m-chip\.dmg$/,
       )
     } finally {
       rmSync(directory, { recursive: true, force: true })
@@ -963,19 +965,19 @@ describe('GitHub Release publication', () => {
   })
 
   test('takes legacy updater fields from the primary architecture manifest, not the first sorted path', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'gooeypi-update-metadata-'))
+    const directory = mkdtempSync(join(tmpdir(), 'omp-desktop-update-metadata-'))
     try {
-      const arm64 = writeUpdateManifest(directory, 'a-arm64', 'GooeyPi-0.2.0-arm64.zip', 'arm64-digest', '2026-01-01T00:00:00.000Z')
-      const x64 = writeUpdateManifest(directory, 'z-x64', 'GooeyPi-0.2.0-x64.zip', 'x64-digest', '2026-02-02T00:00:00.000Z')
+      const arm64 = writeUpdateManifest(directory, 'a-arm64', 'OMP-Desktop-0.2.0-arm64.zip', 'arm64-digest', '2026-01-01T00:00:00.000Z')
+      const x64 = writeUpdateManifest(directory, 'z-x64', 'OMP-Desktop-0.2.0-x64.zip', 'x64-digest', '2026-02-02T00:00:00.000Z')
       const merged = mergeUpdateMetadata([arm64, x64], '0.2.0')
-      expect(merged.path).toBe('GooeyPi-0.2.0-x64.zip')
+      expect(merged.path).toBe('OMP-Desktop-0.2.0-x64.zip')
       expect(merged.sha512).toBe('x64-digest')
       expect(merged.releaseDate).toBe('2026-02-02T00:00:00.000Z')
-      expect(merged.files.map((file: { url: string }) => file.url)).toEqual(['GooeyPi-0.2.0-arm64.zip', 'GooeyPi-0.2.0-x64.zip'])
+      expect(merged.files.map((file: { url: string }) => file.url)).toEqual(['OMP-Desktop-0.2.0-arm64.zip', 'OMP-Desktop-0.2.0-x64.zip'])
       // Renaming the artifact directories reverses the path sort order without
       // changing which manifest supplies the legacy fields.
-      const swappedArm64 = writeUpdateManifest(directory, 'z-arm', 'GooeyPi-0.2.0-arm64.zip', 'arm64-digest', '2026-01-01T00:00:00.000Z')
-      const swappedX64 = writeUpdateManifest(directory, 'a-intel', 'GooeyPi-0.2.0-x64.zip', 'x64-digest', '2026-02-02T00:00:00.000Z')
+      const swappedArm64 = writeUpdateManifest(directory, 'z-arm', 'OMP-Desktop-0.2.0-arm64.zip', 'arm64-digest', '2026-01-01T00:00:00.000Z')
+      const swappedX64 = writeUpdateManifest(directory, 'a-intel', 'OMP-Desktop-0.2.0-x64.zip', 'x64-digest', '2026-02-02T00:00:00.000Z')
       expect(mergeUpdateMetadata([swappedArm64, swappedX64], '0.2.0')).toEqual(merged)
       expect(mergeUpdateMetadata([swappedX64, swappedArm64], '0.2.0')).toEqual(merged)
     } finally {
@@ -984,19 +986,19 @@ describe('GitHub Release publication', () => {
   })
 
   test('rejects updater metadata without a usable size or digest', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'gooeypi-update-metadata-invalid-'))
+    const directory = mkdtempSync(join(tmpdir(), 'omp-desktop-update-metadata-invalid-'))
     try {
       const write = (name: string, file: string) => {
         const path = join(directory, name)
         writeFileSync(path, `version: 0.2.0\nfiles:\n${file}`)
         return path
       }
-      const sized = (size: string) => `  - url: GooeyPi-0.2.0-x64.zip\n    sha512: digest\n    size: ${size}\n`
-      expect(() => mergeUpdateMetadata([write('missing-size.yml', '  - url: GooeyPi-0.2.0-x64.zip\n    sha512: digest\n')], '0.2.0')).toThrow(/invalid size/)
+      const sized = (size: string) => `  - url: OMP-Desktop-0.2.0-x64.zip\n    sha512: digest\n    size: ${size}\n`
+      expect(() => mergeUpdateMetadata([write('missing-size.yml', '  - url: OMP-Desktop-0.2.0-x64.zip\n    sha512: digest\n')], '0.2.0')).toThrow(/invalid size/)
       expect(() => mergeUpdateMetadata([write('zero-size.yml', sized('0'))], '0.2.0')).toThrow(/invalid size/)
       expect(() => mergeUpdateMetadata([write('negative-size.yml', sized('-1'))], '0.2.0')).toThrow(/invalid size/)
       expect(() => mergeUpdateMetadata([write('text-size.yml', sized("'42'"))], '0.2.0')).toThrow(/invalid size/)
-      expect(() => mergeUpdateMetadata([write('empty-digest.yml', "  - url: GooeyPi-0.2.0-x64.zip\n    sha512: ''\n    size: 42\n")], '0.2.0')).toThrow(/no sha512/)
+      expect(() => mergeUpdateMetadata([write('empty-digest.yml', "  - url: OMP-Desktop-0.2.0-x64.zip\n    sha512: ''\n    size: 42\n")], '0.2.0')).toThrow(/no sha512/)
       expect(() => mergeUpdateMetadata([write('valid.yml', sized('42'))], '0.2.0')).not.toThrow()
       expect(() => mergeUpdateMetadata([write('a.yml', sized('42')), write('b.yml', sized('43'))], '0.2.0')).toThrow(/disagrees/)
       expect(() => mergeUpdateMetadata([], '0.2.0')).toThrow(/missing/)
@@ -1006,9 +1008,9 @@ describe('GitHub Release publication', () => {
   })
 
   test('deletes only unexpected assets from a resumed draft release', () => {
-    const assets = ['GooeyPi-0.2.0-m-chip.dmg', 'GooeyPi-0.1.9-arm64.dmg', 'latest-mac.yml', 'SHA256SUMS.txt']
-    const expected = ['GooeyPi-0.2.0-m-chip.dmg', 'latest-mac.yml', 'SHA256SUMS.txt']
-    expect(staleDraftReleaseAssets(assets, expected)).toEqual(['GooeyPi-0.1.9-arm64.dmg'])
+    const assets = ['OMP-Desktop-0.2.0-m-chip.dmg', 'OMP-Desktop-0.1.9-arm64.dmg', 'latest-mac.yml', 'SHA256SUMS.txt']
+    const expected = ['OMP-Desktop-0.2.0-m-chip.dmg', 'latest-mac.yml', 'SHA256SUMS.txt']
+    expect(staleDraftReleaseAssets(assets, expected)).toEqual(['OMP-Desktop-0.1.9-arm64.dmg'])
     expect(staleDraftReleaseAssets(expected, expected)).toEqual([])
     // An empty expected set would delete the whole draft, so it fails instead.
     expect(() => staleDraftReleaseAssets(assets, [])).toThrow(/expected release asset set is empty/)
@@ -1018,15 +1020,15 @@ describe('GitHub Release publication', () => {
   })
 
   test('prints the stale draft assets when run as a script', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'gooeypi-draft-prune-'))
+    const directory = mkdtempSync(join(tmpdir(), 'omp-desktop-draft-prune-'))
     try {
       mkdirSync(join(directory, 'release-assets'))
-      for (const name of ['GooeyPi-0.2.0-m-chip.dmg', 'SHA256SUMS.txt']) writeFileSync(join(directory, 'release-assets', name), 'asset')
-      writeFileSync(join(directory, 'draft.json'), JSON.stringify({ assets: [{ name: 'GooeyPi-0.2.0-m-chip.dmg' }, { name: 'GooeyPi-0.1.9-arm64.dmg' }] }))
+      for (const name of ['OMP-Desktop-0.2.0-m-chip.dmg', 'SHA256SUMS.txt']) writeFileSync(join(directory, 'release-assets', name), 'asset')
+      writeFileSync(join(directory, 'draft.json'), JSON.stringify({ assets: [{ name: 'OMP-Desktop-0.2.0-m-chip.dmg' }, { name: 'OMP-Desktop-0.1.9-arm64.dmg' }] }))
       const args = ['scripts/release/prune-draft-release-assets.mjs', '--assets', join(directory, 'draft.json'), '--expected', join(directory, 'release-assets')]
       const result = spawnSync(process.execPath, args, { encoding: 'utf8' })
       expect(result.status).toBe(0)
-      expect(result.stdout.trim().split('\n')).toEqual(['GooeyPi-0.1.9-arm64.dmg'])
+      expect(result.stdout.trim().split('\n')).toEqual(['OMP-Desktop-0.1.9-arm64.dmg'])
       const failed = spawnSync(process.execPath, args.slice(0, 3), { encoding: 'utf8' })
       expect(failed.status).toBe(1)
       expect(failed.stderr).toMatch(/Draft release asset pruning failed/)
@@ -1045,7 +1047,7 @@ describe('GitHub Release publication', () => {
   })
 
   test('selects the exact cross-platform asset set and writes reproducible checksums', async () => {
-    const directory = mkdtempSync(join(tmpdir(), 'gooeypi-github-release-'))
+    const directory = mkdtempSync(join(tmpdir(), 'omp-desktop-github-release-'))
     const projectDirectory = join(directory, 'project')
     const inputDirectory = join(directory, 'downloaded')
     const outputDirectory = join(directory, 'release-assets')
@@ -1060,20 +1062,20 @@ describe('GitHub Release publication', () => {
       mkdirSync(artifactDirectory)
       const updateTarget =
         name === 'latest-mac.yml'
-          ? 'GooeyPi-0.2.0-arm64.zip'
+          ? 'OMP-Desktop-0.2.0-arm64.zip'
           : name === 'latest-linux.yml'
-            ? 'GooeyPi-0.2.0-linux-x86_64.AppImage'
+            ? 'OMP-Desktop-0.2.0-linux-x86_64.AppImage'
             : name === 'latest-linux-arm64.yml'
-              ? 'GooeyPi-0.2.0-linux-arm64.AppImage'
-              : 'GooeyPi-0.2.0-win-x64.exe'
+              ? 'OMP-Desktop-0.2.0-linux-arm64.AppImage'
+              : 'OMP-Desktop-0.2.0-win-x64.exe'
       const content = name.startsWith('latest')
-        ? `version: 0.2.0\nfiles:\n  - url: ${updateTarget}\n    sha512: checksum-${index}\n    size: ${index + 1}\n${name === 'latest-mac.yml' ? '  - url: GooeyPi-0.2.0-arm64.dmg\n    sha512: checksum-arm64-dmg\n    size: 44\n' : ''}path: ${updateTarget}\nsha512: checksum-${index}\n`
+        ? `version: 0.2.0\nfiles:\n  - url: ${updateTarget}\n    sha512: checksum-${index}\n    size: ${index + 1}\n${name === 'latest-mac.yml' ? '  - url: OMP-Desktop-0.2.0-arm64.dmg\n    sha512: checksum-arm64-dmg\n    size: 44\n' : ''}path: ${updateTarget}\nsha512: checksum-${index}\n`
         : `asset ${index}`
       writeFileSync(join(artifactDirectory, name), content)
     }
     const secondMacManifest = join(inputDirectory, 'macos-x64')
     mkdirSync(secondMacManifest)
-    writeFileSync(join(secondMacManifest, 'latest-mac.yml'), 'version: 0.2.0\nfiles:\n  - url: GooeyPi-0.2.0-x64.zip\n    sha512: checksum-x64\n    size: 42\n')
+    writeFileSync(join(secondMacManifest, 'latest-mac.yml'), 'version: 0.2.0\nfiles:\n  - url: OMP-Desktop-0.2.0-x64.zip\n    sha512: checksum-x64\n    size: 42\n')
     try {
       const result = await prepareGitHubRelease({ inputDirectory, outputDirectory, projectDirectory, tag: 'v0.2.0' })
       expect(result.assets).toEqual(expected)
@@ -1087,23 +1089,23 @@ describe('GitHub Release publication', () => {
         expect(checksums).toContain(`${digest}  ${name}`)
       }
       const macFeed = readFileSync(join(outputDirectory, 'latest-mac.yml'), 'utf8')
-      expect(macFeed).toContain('GooeyPi-0.2.0-arm64.zip')
-      expect(macFeed).toContain('GooeyPi-0.2.0-x64.zip')
-      expect(macFeed).toContain('GooeyPi-0.2.0-m-chip.dmg')
-      expect(macFeed).not.toContain('GooeyPi-0.2.0-arm64.dmg')
+      expect(macFeed).toContain('OMP-Desktop-0.2.0-arm64.zip')
+      expect(macFeed).toContain('OMP-Desktop-0.2.0-x64.zip')
+      expect(macFeed).toContain('OMP-Desktop-0.2.0-m-chip.dmg')
+      expect(macFeed).not.toContain('OMP-Desktop-0.2.0-arm64.dmg')
       const linuxFeed = readFileSync(join(outputDirectory, 'latest-linux.yml'), 'utf8')
-      expect(linuxFeed).toContain('GooeyPi-0.2.0-linux-x86_64.AppImage')
-      expect(linuxFeed).not.toContain('GooeyPi-0.2.0-linux-arm64.AppImage')
+      expect(linuxFeed).toContain('OMP-Desktop-0.2.0-linux-x86_64.AppImage')
+      expect(linuxFeed).not.toContain('OMP-Desktop-0.2.0-linux-arm64.AppImage')
       const linuxArmFeed = readFileSync(join(outputDirectory, 'latest-linux-arm64.yml'), 'utf8')
-      expect(linuxArmFeed).toContain('GooeyPi-0.2.0-linux-arm64.AppImage')
-      expect(linuxArmFeed).not.toContain('GooeyPi-0.2.0-linux-x86_64.AppImage')
+      expect(linuxArmFeed).toContain('OMP-Desktop-0.2.0-linux-arm64.AppImage')
+      expect(linuxArmFeed).not.toContain('OMP-Desktop-0.2.0-linux-x86_64.AppImage')
     } finally {
       rmSync(directory, { recursive: true, force: true })
     }
   })
 
   test('rejects incomplete and duplicate downloaded release assets', async () => {
-    const directory = mkdtempSync(join(tmpdir(), 'gooeypi-github-release-invalid-'))
+    const directory = mkdtempSync(join(tmpdir(), 'omp-desktop-github-release-invalid-'))
     const projectDirectory = join(directory, 'project')
     const inputDirectory = join(directory, 'downloaded')
     mkdirSync(projectDirectory, { recursive: true })
@@ -1119,12 +1121,12 @@ describe('GitHub Release publication', () => {
         mkdirSync(artifactDirectory)
         const updateTarget =
           name === 'latest-mac.yml'
-            ? 'GooeyPi-0.2.0-arm64.zip'
+            ? 'OMP-Desktop-0.2.0-arm64.zip'
             : name === 'latest-linux.yml'
-              ? 'GooeyPi-0.2.0-linux-x86_64.AppImage'
+              ? 'OMP-Desktop-0.2.0-linux-x86_64.AppImage'
               : name === 'latest-linux-arm64.yml'
-                ? 'GooeyPi-0.2.0-linux-arm64.AppImage'
-                : 'GooeyPi-0.2.0-win-x64.exe'
+                ? 'OMP-Desktop-0.2.0-linux-arm64.AppImage'
+                : 'OMP-Desktop-0.2.0-win-x64.exe'
         writeFileSync(join(artifactDirectory, name), name.startsWith('latest') ? `version: 0.2.0\nfiles:\n  - url: ${updateTarget}\n    sha512: checksum-${index}\n` : `asset ${index}`)
       }
       const duplicateDirectory = join(inputDirectory, 'duplicate')
@@ -1165,14 +1167,14 @@ describe('post-package verification helpers', () => {
   })
 
   test('requires exactly one DMG and ZIP and binds their declared architecture', () => {
-    expect(requireReleaseArtifacts(['/release/Prime Work-0.1.0-arm64.dmg', '/release/Prime Work-0.1.0-arm64.zip'])).toEqual({
-      dmg: '/release/Prime Work-0.1.0-arm64.dmg',
-      zip: '/release/Prime Work-0.1.0-arm64.zip',
+    expect(requireReleaseArtifacts(['/release/OMP-Desktop-0.1.0-arm64.dmg', '/release/OMP-Desktop-0.1.0-arm64.zip'])).toEqual({
+      dmg: '/release/OMP-Desktop-0.1.0-arm64.dmg',
+      zip: '/release/OMP-Desktop-0.1.0-arm64.zip',
     })
-    expect(() => requireReleaseArtifacts(['/release/Prime Work-0.1.0-arm64.dmg'])).toThrow(/ZIP/)
-    expect(artifactArchitectures('Prime Work-0.1.0-universal.zip')).toEqual(new Set(['arm64', 'x86_64']))
-    expect(() => assertExactArchitectures(new Set(['arm64']), artifactArchitectures('Prime Work-0.1.0-arm64.dmg'), 'DMG')).not.toThrow()
-    expect(() => assertExactArchitectures(new Set(['x86_64']), artifactArchitectures('Prime Work-0.1.0-arm64.dmg'), 'DMG')).toThrow(/do not match/)
+    expect(() => requireReleaseArtifacts(['/release/OMP-Desktop-0.1.0-arm64.dmg'])).toThrow(/ZIP/)
+    expect(artifactArchitectures('OMP-Desktop-0.1.0-universal.zip')).toEqual(new Set(['arm64', 'x86_64']))
+    expect(() => assertExactArchitectures(new Set(['arm64']), artifactArchitectures('OMP-Desktop-0.1.0-arm64.dmg'), 'DMG')).not.toThrow()
+    expect(() => assertExactArchitectures(new Set(['x86_64']), artifactArchitectures('OMP-Desktop-0.1.0-arm64.dmg'), 'DMG')).toThrow(/do not match/)
   })
 
   test('requires native modules to cover every application architecture', () => {
@@ -1181,14 +1183,7 @@ describe('post-package verification helpers', () => {
   })
 
   test('requires the ASAR and rejects duplicated renderer dependencies', () => {
-    const entries = [
-      '/out/main/index.js',
-      '/out/preload/index.js',
-      '/out/renderer/index.html',
-      '/node_modules/node-pty/lib/index.js',
-      '/node_modules/zeromq/lib/index.js',
-      '/node_modules/zeromq/build/manifest.json',
-    ]
+    const entries = ['/out/main/index.js', '/out/preload/index.js', '/out/renderer/index.html', '/node_modules/node-pty/lib/index.js']
     expect(() => assertAsarLayout(entries)).not.toThrow()
     expect(() => assertAsarLayout([...entries, '/node_modules/react/index.js'])).toThrow(/duplicated/)
     expect(() => assertAsarLayout(entries.filter((entry) => !entry.includes('node-pty')))).toThrow(/missing required/)
@@ -1197,12 +1192,12 @@ describe('post-package verification helpers', () => {
 
   test('keeps every platform native unpack allowlist exact and architecture-specific', () => {
     const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
-    expect(packageJson.author).toEqual({ name: 'GooeyPi contributors', email: '42459108+am-will@users.noreply.github.com' })
-    expect(packageJson.description).toBe('A desktop workspace for Pi, OMP, and Prime Agent')
-    expect(packageJson.homepage).toBe('https://github.com/am-will/gooey-pi')
-    expect(packageJson.build.productName).toBe('GooeyPi')
-    expect(packageJson.build.appId).toBe('app.gooeypi.desktop')
-    expect(packageJson.desktopName).toBe('gooeypi.desktop')
+    expect(packageJson.author).toEqual({ name: 'OMP Desktop contributors', email: '69847839+SenCha930511@users.noreply.github.com' })
+    expect(packageJson.description).toBe('A desktop workspace for OMP')
+    expect(packageJson.homepage).toBe('https://github.com/SenCha930511/omp-desktop')
+    expect(packageJson.build.productName).toBe('OMP Desktop')
+    expect(packageJson.build.appId).toBe('app.ompdesktop.desktop')
+    expect(packageJson.desktopName).toBe('omp-desktop.desktop')
     expect(packageJson.build.linux.synopsis).toBe(packageJson.description)
     expect(packageJson.build.linux.syncDesktopName).toBe(true)
     expect(packageJson.build.mac.icon).toBe('assets/icon.icns')
@@ -1220,17 +1215,13 @@ describe('post-package verification helpers', () => {
       offset += size
     }
     // The previous checked-in ICNS silently contained Prime artwork. Anchor
-    // its full-size layer to GooeyPi's canonical PNG and retain small layers.
+    // its full-size layer to OMP Desktop's canonical PNG and retain small layers.
     expect(macIconChunks.get('ic10')).toEqual(readFileSync('assets/icon.png'))
     expect(macIconChunks.has('ic04')).toBe(true)
     expect(macIconChunks.has('ic11')).toBe(true)
     expect(packageJson.build.asarUnpack).toBeUndefined()
-    expect(packageJson.build.mac.asarUnpack).toEqual([
-      '**/node_modules/node-pty/build/Release/pty.node',
-      '**/node_modules/node-pty/build/Release/spawn-helper',
-      '**/node_modules/zeromq/build/darwin/${arch}/node/*-Release/addon.node',
-    ])
-    expect(packageJson.build.linux.asarUnpack).toEqual(['**/node_modules/node-pty/build/Release/pty.node', '**/node_modules/zeromq/build/linux/${arch}/node/*-Release/addon.node'])
+    expect(packageJson.build.mac.asarUnpack).toEqual(['**/node_modules/node-pty/build/Release/pty.node', '**/node_modules/node-pty/build/Release/spawn-helper'])
+    expect(packageJson.build.linux.asarUnpack).toEqual(['**/node_modules/node-pty/build/Release/pty.node'])
     expect(packageJson.build.win.asarUnpack).toEqual([
       '**/node_modules/node-pty/prebuilds/win32-${arch}/pty.node',
       '**/node_modules/node-pty/prebuilds/win32-${arch}/conpty.node',
@@ -1239,7 +1230,6 @@ describe('post-package verification helpers', () => {
       '**/node_modules/node-pty/prebuilds/win32-${arch}/winpty.dll',
       '**/node_modules/node-pty/prebuilds/win32-${arch}/conpty/OpenConsole.exe',
       '**/node_modules/node-pty/prebuilds/win32-${arch}/conpty/conpty.dll',
-      '**/node_modules/zeromq/build/win32/${arch}/node/*-Release/addon.node',
     ])
     expect(packageJson.build.linux.target).toEqual(['AppImage', 'deb', 'rpm', 'pacman'])
     expect(packageJson.build.win.target).toEqual(['nsis', 'zip', 'appx'])
@@ -1263,16 +1253,16 @@ describe('post-package verification helpers', () => {
       return { status: 0, stdout: '', stderr: '' }
     }
     const spawn = validSpawn as unknown as Parameters<typeof assertValidAuthenticode>[1]
-    expect(() => assertValidAuthenticode('C:\\release\\GooeyPi.exe', spawn, signerEnvironment)).not.toThrow()
+    expect(() => assertValidAuthenticode('C:\\release\\OMP-Desktop.exe', spawn, signerEnvironment)).not.toThrow()
     expect(calls).toEqual([
       {
         file: 'powershell.exe',
         args: expect.arrayContaining(['-NoProfile', '-NonInteractive', '-Command']),
-        path: 'C:\\release\\GooeyPi.exe',
+        path: 'C:\\release\\OMP-Desktop.exe',
       },
     ])
     const invalidSpawn = () => ({ status: 1, stdout: '', stderr: 'NotSigned' })
-    expect(() => assertValidAuthenticode('C:\\release\\GooeyPi.exe', invalidSpawn as unknown as Parameters<typeof assertValidAuthenticode>[1], signerEnvironment)).toThrow(/NotSigned/)
+    expect(() => assertValidAuthenticode('C:\\release\\OMP-Desktop.exe', invalidSpawn as unknown as Parameters<typeof assertValidAuthenticode>[1], signerEnvironment)).toThrow(/NotSigned/)
   })
 
   test('asserts the expected Authenticode signer instead of any trusted certificate', () => {
@@ -1290,19 +1280,19 @@ describe('post-package verification helpers', () => {
       calls.push({ args, env: options.env })
       return { status: 0, stdout: '', stderr: '' }
     }
-    assertValidAuthenticode('C:\\release\\GooeyPi.exe', spawn as unknown as Parameters<typeof assertValidAuthenticode>[1], {
+    assertValidAuthenticode('C:\\release\\OMP-Desktop.exe', spawn as unknown as Parameters<typeof assertValidAuthenticode>[1], {
       GOOEYPI_WINDOWS_CERT_SUBJECT: 'CN=Example Ltd',
       GOOEYPI_WINDOWS_CERT_THUMBPRINT: 'a1b2c3d4e5f60718293a4b5c6d7e8f901a2b3c4d',
     })
     // The file path and expected signer are passed as environment variables, never
     // interpolated into the script, and a terminating error exits non-zero.
     expect(calls[0].env).toMatchObject({
-      GOOEYPI_SIGNED_FILE: 'C:\\release\\GooeyPi.exe',
+      GOOEYPI_SIGNED_FILE: 'C:\\release\\OMP-Desktop.exe',
       GOOEYPI_WINDOWS_CERT_SUBJECT: 'CN=Example Ltd',
       GOOEYPI_WINDOWS_CERT_THUMBPRINT: 'A1B2C3D4E5F60718293A4B5C6D7E8F901A2B3C4D',
     })
     const script = calls[0].args.at(-1) as string
-    expect(script).not.toContain('C:\\release\\GooeyPi.exe')
+    expect(script).not.toContain('C:\\release\\OMP-Desktop.exe')
     expect(script).toContain("$ErrorActionPreference = 'Stop'")
     expect(script).toContain('try {')
     expect(script).toContain('} catch {')
@@ -1311,79 +1301,21 @@ describe('post-package verification helpers', () => {
     expect(script).toContain('$certificate.Thumbprint.ToUpperInvariant() -ne $env:GOOEYPI_WINDOWS_CERT_THUMBPRINT')
   })
 
-  test('excludes other platform native build trees and declares zeromq directly', () => {
+  test('excludes other platform native build trees and keeps the runtime dependency set minimal', () => {
     const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
-    const optimizedAgentExclusions = [
-      '!**/node_modules/prime-agent/docs/**',
-      '!**/node_modules/prime-agent/dist/bundle/**',
-      '!**/node_modules/prime-agent/dist/modes/**',
-      '!**/node_modules/prime-agent/**/*.map',
-      '!**/node_modules/prime-agent/**/*.d.ts',
-      '!**/node_modules/@earendil-works/pi-tui/**',
-      '!**/node_modules/koffi/**',
-    ]
-    expect(packageJson.build.mac.files).toEqual([
-      'out/**/*',
-      'package.json',
-      ...optimizedAgentExclusions,
-      '!**/node_modules/zeromq/build/linux/**',
-      '!**/node_modules/zeromq/build/win32/**',
-      '!**/node_modules/extract-zip/index.linux-*.node',
-      '!**/node_modules/extract-zip/index.win32-*.node',
-    ])
-    expect(packageJson.build.linux.files).toEqual([
-      'out/**/*',
-      'package.json',
-      ...optimizedAgentExclusions,
-      '!**/node_modules/zeromq/build/darwin/**',
-      '!**/node_modules/zeromq/build/win32/**',
-      '!**/node_modules/extract-zip/index.darwin-*.node',
-      '!**/node_modules/extract-zip/index.win32-*.node',
-    ])
-    expect(packageJson.build.win.files).toEqual([
-      'out/**/*',
-      'package.json',
-      ...optimizedAgentExclusions,
-      '!**/node_modules/zeromq/build/darwin/**',
-      '!**/node_modules/zeromq/build/linux/**',
-      '!**/node_modules/extract-zip/index.darwin-*.node',
-      '!**/node_modules/extract-zip/index.linux-*.node',
-    ])
-    // Pin the app to the zeromq range prime-agent uses so the packaged addon
-    // and the agent's runtime expectations cannot drift apart silently.
-    const primeAgent = JSON.parse(readFileSync(new URL('../node_modules/prime-agent/package.json', import.meta.url), 'utf8'))
-    expect(packageJson.dependencies.zeromq).toBe(primeAgent.dependencies.zeromq)
-  })
-
-  test('accepts bounded ZeroMQ ABI fallbacks per architecture', () => {
-    const architectures = new Set(['arm64'])
-    const fallbackDirectory = createUnpackedFixture(architectures)
-    const fallback = join(fallbackDirectory, fixtureAddonPath('arm64', 'libc-999-Release'))
-    mkdirSync(dirname(fallback), { recursive: true })
-    writeFileSync(fallback, 'fixture')
-    try {
-      expect(() => assertUnpackedNativeLayout(fallbackDirectory, architectures, () => architectures)).not.toThrow()
-    } finally {
-      rmSync(fallbackDirectory, { recursive: true, force: true })
-    }
-
-    const futureDirectory = mkdtempSync(join(tmpdir(), 'prime-work-unpacked-'))
-    for (const relativePath of [...expectedUnpackedNativeLayout(architectures).files, fixtureAddonPath('arm64', 'libc-999-Release')]) {
-      const path = join(futureDirectory, relativePath)
-      mkdirSync(dirname(path), { recursive: true })
-      writeFileSync(path, 'fixture')
-    }
-    try {
-      // A future runtime-library name still matches the bounded wildcard.
-      expect(() => assertUnpackedNativeLayout(futureDirectory, architectures, () => architectures)).not.toThrow()
-    } finally {
-      rmSync(futureDirectory, { recursive: true, force: true })
-    }
+    expect(packageJson.build.files).toEqual(['out/**/*', 'package.json'])
+    expect(packageJson.build.mac.files).toEqual(['out/**/*', 'package.json', '!**/node_modules/extract-zip/index.linux-*.node', '!**/node_modules/extract-zip/index.win32-*.node'])
+    expect(packageJson.build.linux.files).toEqual(['out/**/*', 'package.json', '!**/node_modules/extract-zip/index.darwin-*.node', '!**/node_modules/extract-zip/index.win32-*.node'])
+    expect(packageJson.build.win.files).toEqual(['out/**/*', 'package.json', '!**/node_modules/extract-zip/index.darwin-*.node', '!**/node_modules/extract-zip/index.linux-*.node'])
+    // The slimmed runtime dependency tree: the packaged application carries
+    // only what the OMP harness shell itself needs, no agent runtimes.
+    expect(Object.keys(packageJson.dependencies).sort()).toEqual(['electron-updater', 'js-yaml', 'node-pty', 'rrule'])
+    expect(packageJson.overrides).toEqual({ 'extract-zip': 'npm:@electron-internal/extract-zip@1.0.5' })
   })
 
   test('accepts the exact unpacked native fixture with complete architecture coverage', () => {
     const architectures = new Set(['arm64'])
-    const directory = createUnpackedFixture(architectures)
+    const directory = createUnpackedFixture()
     try {
       expect(() => assertUnpackedNativeLayout(directory, architectures, () => new Set(['arm64']))).not.toThrow()
     } finally {
@@ -1393,15 +1325,15 @@ describe('post-package verification helpers', () => {
 
   test('rejects missing and extra unpacked fixture files', () => {
     const architectures = new Set(['arm64'])
-    const missingDirectory = createUnpackedFixture(architectures)
-    rmSync(join(missingDirectory, expectedUnpackedNativeLayout(architectures).files.at(-1)!))
+    const missingDirectory = createUnpackedFixture()
+    rmSync(join(missingDirectory, expectedUnpackedNativeLayout().files.at(-1)!))
     try {
       expect(() => assertUnpackedNativeLayout(missingDirectory, architectures, () => architectures)).toThrow(/Missing unpacked/)
     } finally {
       rmSync(missingDirectory, { recursive: true, force: true })
     }
 
-    const extraDirectory = createUnpackedFixture(architectures)
+    const extraDirectory = createUnpackedFixture()
     const extraPath = join(extraDirectory, 'node_modules/extra/native.node')
     mkdirSync(dirname(extraPath), { recursive: true })
     writeFileSync(extraPath, 'fixture')
@@ -1411,7 +1343,7 @@ describe('post-package verification helpers', () => {
       rmSync(extraDirectory, { recursive: true, force: true })
     }
 
-    const extraPrefixDirectory = createUnpackedFixture(architectures)
+    const extraPrefixDirectory = createUnpackedFixture()
     mkdirSync(join(extraPrefixDirectory, 'empty-prefix'))
     try {
       expect(() => assertUnpackedNativeLayout(extraPrefixDirectory, architectures, () => architectures)).toThrow(/Unexpected unpacked.*empty-prefix/)
@@ -1422,10 +1354,10 @@ describe('post-package verification helpers', () => {
 
   test('checks every allowed native fixture file against the application architecture', () => {
     const architectures = new Set(['arm64'])
-    const directory = createUnpackedFixture(architectures)
+    const directory = createUnpackedFixture()
     try {
-      expect(() => assertUnpackedNativeLayout(directory, architectures, (path: string) => (path.endsWith('addon.node') ? new Set(['x86_64']) : new Set(['arm64'])))).toThrow(
-        /addon\.node is missing app architecture.*arm64/,
+      expect(() => assertUnpackedNativeLayout(directory, architectures, (path: string) => (path.endsWith('pty.node') ? new Set(['x86_64']) : new Set(['arm64'])))).toThrow(
+        /pty\.node is missing app architecture.*arm64/,
       )
     } finally {
       rmSync(directory, { recursive: true, force: true })
@@ -1436,13 +1368,13 @@ describe('post-package verification helpers', () => {
 describe('cross-platform packaging repair', () => {
   const fixtureContext = {
     appOutDir: join('/tmp', 'app-out'),
-    packager: { appInfo: { productFilename: 'Prime Work', sanitizedName: 'Prime-Work' } },
+    packager: { appInfo: { productFilename: 'OMP Desktop', sanitizedName: 'omp-desktop' } },
   }
 
   test('computes the hardened executable path per platform', () => {
-    expect(executablePath(fixtureContext, 'darwin')).toBe(join('/tmp', 'app-out', 'Prime Work.app', 'Contents', 'MacOS', 'Prime Work'))
-    expect(executablePath(fixtureContext, 'win32')).toBe(join('/tmp', 'app-out', 'Prime Work.exe'))
-    expect(executablePath(fixtureContext, 'linux')).toBe(join('/tmp', 'app-out', 'prime-work'))
+    expect(executablePath(fixtureContext, 'darwin')).toBe(join('/tmp', 'app-out', 'OMP Desktop.app', 'Contents', 'MacOS', 'OMP Desktop'))
+    expect(executablePath(fixtureContext, 'win32')).toBe(join('/tmp', 'app-out', 'OMP Desktop.exe'))
+    expect(executablePath(fixtureContext, 'linux')).toBe(join('/tmp', 'app-out', 'omp-desktop'))
   })
 
   function globMatchExists(directory: string, segments: string[]): boolean {
@@ -1491,7 +1423,7 @@ describe('cross-platform packaging repair', () => {
     }
   })
 
-  test('the verifier and package.json agree on native directory naming', () => {
+  test('the verifier and package.json agree on the native unpack allowlist', () => {
     const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
     for (const [target, architecture] of [
       ['win', 'x64'],
@@ -1503,31 +1435,23 @@ describe('cross-platform packaging repair', () => {
       for (const file of expectedNativeFiles(target, architecture)) {
         expect(globs, `verifier requires ${file} but no ${target} asarUnpack glob produces it`).toContain(file)
       }
-      const zeroMqGlob = globs.find((glob) => glob.includes('zeromq'))
-      expect(zeroMqGlob).toBe(`node_modules/zeromq/build/${nativeRuntimeDirectory(target)}/${architecture}/node/*-Release/addon.node`)
-      const sampleAddon = `node_modules/zeromq/build/${nativeRuntimeDirectory(target)}/${architecture}/node/glibc-x64-115-Release/addon.node`
-      expect(zeroMqAddonPattern(target, architecture).test(sampleAddon)).toBe(true)
     }
     expect(nativeRuntimeDirectory('win')).toBe('win32')
     expect(nativeRuntimeDirectory('linux')).toBe('linux')
   })
 
-  test('accepts ZeroMQ ABI and libc fallbacks only within the target architecture', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'prime-work-cross-platform-unpacked-'))
-    const nativeFiles = [
-      ...expectedNativeFiles('linux', 'x64'),
-      'node_modules/zeromq/build/linux/x64/node/glibc-127-Release/addon.node',
-      'node_modules/zeromq/build/linux/x64/node/musl-127-Release/addon.node',
-    ]
-    for (const relativePath of nativeFiles) {
+  test('rejects any unpacked native file outside the expected allowlist', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'omp-desktop-cross-platform-unpacked-'))
+    for (const relativePath of expectedNativeFiles('linux', 'x64')) {
       const path = join(directory, relativePath)
       mkdirSync(dirname(path), { recursive: true })
       writeFileSync(path, 'fixture')
     }
     try {
       expect(() => assertCrossPlatformUnpackedNativeLayout(directory, 'linux', 'x64')).not.toThrow()
-      rmSync(join(directory, 'node_modules/zeromq'), { recursive: true, force: true })
-      expect(() => assertCrossPlatformUnpackedNativeLayout(directory, 'linux', 'x64')).toThrow(/expected at least 1/)
+      const stray = join(directory, 'node_modules/node-pty/build/Release/stray.node')
+      writeFileSync(stray, 'fixture')
+      expect(() => assertCrossPlatformUnpackedNativeLayout(directory, 'linux', 'x64')).toThrow(/extra: .*stray\.node/)
     } finally {
       rmSync(directory, { recursive: true, force: true })
     }
@@ -1568,6 +1492,96 @@ describe('cross-platform packaging repair', () => {
     ])
     expect(calls[0].env).toBe(calls[1].env)
     expect(calls[0].env).toMatchObject({ TASK_MARKER: 'kept', PYTHON: '/usr/bin/python3' })
+  })
+})
+
+describe('dev Electron branding', () => {
+  function makeDevAppBundle(iconBytes: Buffer) {
+    const root = mkdtempSync(join(tmpdir(), 'brand-dev-electron-'))
+    const appBundle = join(root, 'Electron.app')
+    mkdirSync(join(appBundle, 'Contents/Resources'), { recursive: true })
+    writeFileSync(join(appBundle, 'Contents/Info.plist'), 'placeholder')
+    const iconSource = join(root, 'source.icns')
+    writeFileSync(iconSource, iconBytes)
+    return { root, appBundle, iconSource }
+  }
+
+  test('non-darwin platforms are left untouched', () => {
+    const calls: Array<{ command: string; args: string[] }> = []
+    const run = (command: string, args: string[]) => {
+      calls.push({ command, args })
+    }
+
+    expect(brandDevElectron(run, 'linux')).toEqual({ changed: false, reason: 'non-darwin platform' })
+    expect(calls).toEqual([])
+  })
+
+  test('a missing dev bundle is skipped instead of failing the install', () => {
+    expect(brandDevElectron(() => {}, 'darwin', { appBundle: '/nonexistent/Electron.app' })).toEqual({ changed: false, reason: 'dev Electron.app not found' })
+  })
+
+  test('renames the bundle, refreshes a stale icon, and re-signs ad hoc', () => {
+    const calls: Array<{ command: string; args: string[] }> = []
+    const run = (command: string, args: string[]) => {
+      calls.push({ command, args })
+    }
+    const { root, appBundle, iconSource } = makeDevAppBundle(Buffer.from('new-icon'))
+    writeFileSync(join(appBundle, 'Contents/Resources/electron.icns'), Buffer.from('old-icon'))
+    const plistPath = join(appBundle, 'Contents/Info.plist')
+
+    try {
+      const result = brandDevElectron(run, 'darwin', { appBundle, iconSource, capture: (_command, args) => (args[1] === 'CFBundleIdentifier' ? 'com.github.Electron' : 'Electron') })
+
+      expect(result).toEqual({ changed: true, renamedKeys: ['CFBundleName', 'CFBundleDisplayName', 'CFBundleIdentifier'], iconUpdated: true })
+      expect(calls).toEqual([
+        { command: 'plutil', args: ['-replace', 'CFBundleName', '-string', 'OMP Desktop', plistPath] },
+        { command: 'plutil', args: ['-replace', 'CFBundleDisplayName', '-string', 'OMP Desktop', plistPath] },
+        { command: 'plutil', args: ['-replace', 'CFBundleIdentifier', '-string', 'app.ompdesktop.dev', plistPath] },
+        { command: 'codesign', args: ['--force', '--sign', '-', appBundle] },
+        { command: DEV_LSREGISTER_PATH, args: ['-f', appBundle] },
+      ])
+      expect(readFileSync(join(appBundle, 'Contents/Resources/electron.icns'))).toEqual(Buffer.from('new-icon'))
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('an already branded bundle with a current icon is left alone', () => {
+    const calls: Array<{ command: string; args: string[] }> = []
+    const run = (command: string, args: string[]) => {
+      calls.push({ command, args })
+    }
+    const icon = Buffer.from('shared-icon')
+    const { root, appBundle, iconSource } = makeDevAppBundle(icon)
+    writeFileSync(join(appBundle, 'Contents/Resources/electron.icns'), icon)
+
+    try {
+      expect(brandDevElectron(run, 'darwin', { appBundle, iconSource, capture: (_command, args) => (args[1] === 'CFBundleIdentifier' ? 'app.ompdesktop.dev' : 'OMP Desktop') })).toEqual({
+        changed: false,
+        reason: 'already branded',
+      })
+      expect(calls).toEqual([])
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('plist read failures surface instead of being silently ignored', () => {
+    const { root, appBundle, iconSource } = makeDevAppBundle(Buffer.from('icon'))
+
+    try {
+      expect(() =>
+        brandDevElectron(() => {}, 'darwin', {
+          appBundle,
+          iconSource,
+          capture: () => {
+            throw new Error('plutil failed')
+          },
+        }),
+      ).toThrow('plutil failed')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })
 
@@ -1613,13 +1627,13 @@ describe('release size budgets', () => {
   test('measures deterministic package fixtures and enforces every artifact budget', () => {
     const directory = mkdtempSync(join(tmpdir(), 'prime-work-package-size-'))
     const paths = {
-      app: join(directory, 'Prime Work.app'),
-      asar: join(directory, 'Prime Work.app/Contents/Resources/app.asar'),
-      dmg: join(directory, 'Prime Work.dmg'),
-      zip: join(directory, 'Prime Work.zip'),
+      app: join(directory, 'OMP Desktop.app'),
+      asar: join(directory, 'OMP Desktop.app/Contents/Resources/app.asar'),
+      dmg: join(directory, 'OMP Desktop.dmg'),
+      zip: join(directory, 'OMP Desktop.zip'),
     }
     writeSizedFile(paths.asar, 201)
-    writeSizedFile(join(paths.app, 'Contents/MacOS/Prime Work'), 202)
+    writeSizedFile(join(paths.app, 'Contents/MacOS/OMP Desktop'), 202)
     writeSizedFile(paths.dmg, 203)
     writeSizedFile(paths.zip, 204)
     try {
@@ -1642,77 +1656,13 @@ describe('release size budgets', () => {
 })
 
 describe('vendored supply-chain pins', () => {
-  test('every non-registry dependency in the lockfile matches its recorded pin exactly', () => {
-    const lockfile = JSON.parse(readFileSync('package-lock.json', 'utf8'))
-    const pins = JSON.parse(readFileSync('scripts/release/dependency-pins.json', 'utf8')).packages
-    const nonRegistry = (Object.entries(lockfile.packages ?? {}) as Array<[string, { resolved?: string; integrity?: string }]>).filter(
-      ([, entry]) => typeof entry.resolved === 'string' && entry.resolved.length > 0 && !entry.resolved.startsWith('https://registry.npmjs.org'),
-    )
-
-    // The lockfile sha512 hashes are the supply-chain integrity boundary for
-    // the vendored Prime Agent tarballs. A regenerated lockfile silently
-    // re-anchors them to whatever bytes are present; this pin file makes that
-    // a deliberate, reviewed change. To upgrade Prime Agent on purpose:
-    // verify the new tarballs, replace them in vendor/, update the lockfile,
-    // then mirror the new resolved/integrity values here in the same commit.
-    expect(nonRegistry.length).toBeGreaterThan(0)
-    for (const [name, entry] of nonRegistry) {
-      const pin = pins[name]
-      expect(pin, `unpinned non-registry dependency: ${name}`).toBeDefined()
-      expect(entry.resolved, `resolved location drifted for ${name}`).toBe(pin.resolved)
-      expect(entry.integrity, `integrity drifted for ${name}`).toBe(pin.integrity)
-      expect(entry.integrity, `weak integrity algorithm for ${name}`).toMatch(/^sha512-/)
-    }
-    for (const name of Object.keys(pins)) {
-      expect(
-        nonRegistry.some(([lockName]) => lockName === name),
-        `stale pin for removed dependency: ${name}`,
-      ).toBe(true)
-    }
-  })
-
-  test('the vendored tarballs on disk hash to their pinned integrity', () => {
-    const pins = JSON.parse(readFileSync('scripts/release/dependency-pins.json', 'utf8')).packages as Record<string, { resolved: string; integrity: string }>
-    const vendored = [
-      ...new Set(
-        Object.values(pins)
-          .filter((pin) => pin.resolved.startsWith('file:vendor/'))
-          .map((pin) => ({ path: pin.resolved.slice('file:'.length), integrity: pin.integrity }))
-          .map((entry) => JSON.stringify(entry)),
-      ),
-    ].map((entry) => JSON.parse(entry) as { path: string; integrity: string })
-
-    expect(vendored.length).toBeGreaterThan(0)
-    for (const { path, integrity } of vendored) {
-      const digest = `sha512-${createHash('sha512').update(readFileSync(path)).digest('base64')}`
-      expect(digest, `vendored tarball bytes drifted from pin: ${path}`).toBe(integrity)
-    }
-  })
-
-  test('every vendored tarball is pinned and reference artifacts hash to their pins', () => {
+  test('vendor/ holds only the pinned npm bootstrap artifacts', () => {
     const manifest = JSON.parse(readFileSync('scripts/release/dependency-pins.json', 'utf8'))
-    const reference = manifest['reference-artifacts'] as Record<string, { path: string; integrity: string }> | undefined
-    // Reference artifacts are not installed (no lockfile entry binds them), but
-    // they document the upstream base releases the patched tarballs derive
-    // from; unpinned bytes in vendor/ would drift silently.
-    expect(reference, 'reference-artifacts section missing from dependency-pins.json').toBeDefined()
-
-    const pinned = new Set<string>()
-    for (const pin of Object.values(manifest.packages as Record<string, { resolved: string }>)) {
-      if (pin.resolved.startsWith('file:vendor/')) pinned.add(pin.resolved.slice('file:'.length))
-    }
-    pinned.add(readPinnedNpmArtifact().relativePath)
-    for (const entry of Object.values(reference ?? {})) pinned.add(entry.path)
-
-    for (const [name, entry] of Object.entries(reference ?? {})) {
-      expect(entry.path, `reference artifact outside vendor/: ${name}`).toMatch(/^vendor\/[^/]+\.tgz$/)
-      expect(entry.integrity, `weak integrity algorithm for ${name}`).toMatch(/^sha512-/)
-      const digest = `sha512-${createHash('sha512').update(readFileSync(entry.path)).digest('base64')}`
-      expect(digest, `reference tarball bytes drifted from pin: ${entry.path}`).toBe(entry.integrity)
-    }
-
-    const unpinned = readdirSync('vendor').filter((name) => name.endsWith('.tgz') && !pinned.has(`vendor/${name}`))
-    expect(unpinned, 'vendored tarballs without any pin').toEqual([])
+    // The vendored Prime Agent tarballs and their package pins are gone with
+    // the slimmed dependency tree; a new vendored package must add a pin
+    // deliberately rather than reappearing silently in vendor/.
+    expect(manifest.packages).toEqual({})
+    expect(readdirSync('vendor').sort()).toEqual(['npm-12.0.2.md', 'npm-12.0.2.tgz'])
   })
 
   test('the checked-in npm bootstrap archive matches its strict artifact pin and provenance record', () => {
@@ -1749,17 +1699,7 @@ describe('vendored supply-chain pins', () => {
     const packagedInputs = JSON.stringify({ files: build.files, extraResources: build.extraResources, mac: build.mac?.files, linux: build.linux?.files, win: build.win?.files })
     expect(packagedInputs).not.toContain('vendor/npm-')
     expect(packagedInputs).not.toContain('vendor/**')
-    expect(build.files).toEqual([
-      'out/**/*',
-      'package.json',
-      '!**/node_modules/prime-agent/docs/**',
-      '!**/node_modules/prime-agent/dist/bundle/**',
-      '!**/node_modules/prime-agent/dist/modes/**',
-      '!**/node_modules/prime-agent/**/*.map',
-      '!**/node_modules/prime-agent/**/*.d.ts',
-      '!**/node_modules/@earendil-works/pi-tui/**',
-      '!**/node_modules/koffi/**',
-    ])
+    expect(build.files).toEqual(['out/**/*', 'package.json'])
   })
 })
 
@@ -1786,7 +1726,7 @@ describe('production dependency audit', () => {
     const report = {
       vulnerabilities: {
         ...auditReport([advisory, { package: 'left-pad', advisory: 'GHSA-2222-2222-2222', severity: 'moderate' }]).vulnerabilities,
-        'prime-agent': { name: 'prime-agent', severity: 'high', via: ['extract-zip'] },
+        'omp-desktop': { name: 'omp-desktop', severity: 'high', via: ['extract-zip'] },
       },
     }
 
@@ -1874,7 +1814,7 @@ describe('production dependency audit', () => {
 
 describe('packaged extension resources', () => {
   function createFixture() {
-    const directory = mkdtempSync(join(tmpdir(), 'gooeypi-packaged-extensions-'))
+    const directory = mkdtempSync(join(tmpdir(), 'omp-desktop-packaged-extensions-'))
     const resources = join(directory, 'resources')
     const extensions = join(resources, 'extensions')
     mkdirSync(extensions, { recursive: true })

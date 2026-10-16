@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import './jsdom-storage'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -10,11 +11,11 @@ import type { ProjectRecord, SessionRecord } from '../../src/types/api'
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
 const project: ProjectRecord = {
-  id: 'project', harness: 'prime', name: 'Project', path: '/project', folders: ['/project'], primaryFolder: '/project',
+  id: 'project', harness: 'omp', name: 'Project', path: '/project', folders: ['/project'], primaryFolder: '/project',
   pinned: false, createdAt: '2026-01-01T00:00:00.000Z', lastOpenedAt: '2026-01-01T00:00:00.000Z', sessionCount: 1,
 }
 const session: SessionRecord = {
-  id: 'session', harness: 'prime', filePath: '/sessions/session.jsonl', projectPath: '/project', title: 'Session',
+  id: 'session', harness: 'omp', filePath: '/sessions/session.jsonl', projectPath: '/project', title: 'Session',
   createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z', status: 'idle', depth: 0,
 }
 
@@ -134,7 +135,7 @@ describe('sidebar project context menu', () => {
     expect(update?.querySelector('.lucide-download')).not.toBeNull()
     await press(update!)
     expect(onUpdateAction).not.toHaveBeenCalled()
-    expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain('Download and Restart GooeyPi?')
+    expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain('Download and Restart OMP Desktop?')
 
     const yes = [...document.body.querySelectorAll<HTMLButtonElement>('.modal__footer button')].find((button) => button.textContent === 'Yes')
     expect(yes).toBeDefined()

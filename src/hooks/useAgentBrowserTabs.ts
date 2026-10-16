@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { AgentBrowserActivityEvent, AgentBrowserPointerEvent, AgentBrowserTabRecord, PrimeWorkApi } from '@/types/api'
+import type { AgentBrowserActivityEvent, AgentBrowserPointerEvent, AgentBrowserTabRecord, DesktopApi } from '@/types/api'
 
 interface UseAgentBrowserTabsOptions {
-  bridge: PrimeWorkApi | null
+  bridge: DesktopApi | null
   reportError(error: unknown): void
 }
 

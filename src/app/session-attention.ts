@@ -96,13 +96,13 @@ function parseClearedSignatures(raw: string | null): Record<string, string> {
 export function readClearedAttention(storedValue?: string | null): Record<string, string> {
   const raw = storedValue !== undefined
     ? storedValue
-    : typeof window === 'undefined' ? null : window.localStorage.getItem('prime-work.cleared-session-attention')
+    : typeof window === 'undefined' ? null : window.localStorage.getItem('omp-desktop.cleared-session-attention')
   return parseClearedSignatures(raw)
 }
 
 export function readClearedActivity(storedValue?: string | null): Record<string, string> {
   const raw = storedValue !== undefined
     ? storedValue
-    : typeof window === 'undefined' ? null : window.localStorage.getItem('prime-work.cleared-activity')
+    : typeof window === 'undefined' ? null : window.localStorage.getItem('omp-desktop.cleared-activity')
   return parseClearedSignatures(raw)
 }

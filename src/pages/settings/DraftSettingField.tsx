@@ -1,11 +1,6 @@
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react'
-import {
-  createDraftState,
-  errorMessage,
-  reduceDraftState,
-  type DraftAction,
-  type DraftState,
-} from './draft-state'
+import { type KeyboardEvent, useCallback, useEffect, useRef, useState } from 'react'
+import { useI18n } from '@/lib/i18n'
+import { createDraftState, DRAFT_SAVE_ERROR, type DraftAction, type DraftState, errorMessage, reduceDraftState } from './draft-state'
 
 interface DraftSettingFieldProps {
   id: string
@@ -18,17 +13,9 @@ interface DraftSettingFieldProps {
   className?: string
 }
 
-export function DraftSettingField({
-  id,
-  label,
-  description,
-  committedValue,
-  validate,
-  normalize = (value) => value,
-  onCommit,
-  className,
-}: DraftSettingFieldProps) {
+export function DraftSettingField({ id, label, description, committedValue, validate, normalize = (value) => value, onCommit, className }: DraftSettingFieldProps) {
   const [state, setState] = useState<DraftState>(() => createDraftState(committedValue))
+  const { t } = useI18n()
   const stateRef = useRef(state)
   const nextCommitId = useRef(0)
   const inFlight = useRef<Promise<void> | null>(null)
@@ -57,8 +44,12 @@ export function DraftSettingField({
     const id = ++nextCommitId.current
     dispatch({ type: 'commit', id, value })
     const operation = Promise.resolve(onCommit(value))
-      .then(() => { dispatch({ type: 'resolve', id }) })
-      .catch((error: unknown) => { dispatch({ type: 'reject', id, error: errorMessage(error) }) })
+      .then(() => {
+        dispatch({ type: 'resolve', id })
+      })
+      .catch((error: unknown) => {
+        dispatch({ type: 'reject', id, error: errorMessage(error) })
+      })
       .finally(() => {
         if (inFlight.current === operation) inFlight.current = null
       })
@@ -75,11 +66,14 @@ export function DraftSettingField({
     void commit()
   }
   const errorId = `${id}-error`
+  const errorText = state.error === DRAFT_SAVE_ERROR ? t('draft.saveError') : state.error
 
   return (
     <div className="settings-row settings-row--stack">
       <span>
-        <label htmlFor={id}><strong>{label}</strong></label>
+        <label htmlFor={id}>
+          <strong>{label}</strong>
+        </label>
         <small>{description}</small>
       </span>
       <input
@@ -89,17 +83,25 @@ export function DraftSettingField({
         aria-invalid={Boolean(state.error)}
         aria-describedby={state.error ? errorId : undefined}
         onChange={(event) => onChange(event.target.value)}
-        onBlur={() => { void commit() }}
+        onBlur={() => {
+          void commit()
+        }}
         onKeyDown={onKeyDown}
       />
-      {state.error ? <p id={errorId} className="settings-error" role="alert">{state.error}</p> : null}
+      {state.error ? (
+        <p id={errorId} className="settings-error" role="alert">
+          {errorText}
+        </p>
+      ) : null}
       <button
         type="button"
         className="button"
         disabled={!state.dirty || Boolean(state.error) || Boolean(state.pending)}
-        onClick={() => { void commit() }}
+        onClick={() => {
+          void commit()
+        }}
       >
-        {state.pending ? 'Saving…' : 'Save'}
+        {state.pending ? t('draft.saving') : t('draft.save')}
       </button>
     </div>
   )

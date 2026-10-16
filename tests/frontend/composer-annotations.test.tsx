@@ -130,7 +130,7 @@ const clickSend = async () => {
 describe('Composer session mentions', () => {
   it('closes an accepted mention and only reopens it after editing back into the query', async () => {
     const sessions: SessionRecord[] = [{
-      id: '019f0000-0000-7000-8000-000000000001', harness: 'prime', filePath: '/sessions/browser.jsonl', projectPath: '/project', title: 'Browser',
+      id: '019f0000-0000-7000-8000-000000000001', harness: 'omp', filePath: '/sessions/browser.jsonl', projectPath: '/project', title: 'Browser',
       createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z', status: 'idle', depth: 0,
     }]
     renderComposer({ sessions })
@@ -162,7 +162,7 @@ describe('Composer session mentions', () => {
 
   it('suggests sidebar sessions by title and sends a stable UUID routing block', async () => {
     const sessions: SessionRecord[] = [{
-      id: '019f0000-0000-7000-8000-000000000002', harness: 'pi', filePath: '/sessions/api.jsonl', projectPath: '/project', title: 'API owner',
+      id: '019f0000-0000-7000-8000-000000000002', harness: 'omp', filePath: '/sessions/api.jsonl', projectPath: '/project', title: 'API owner',
       createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z', status: 'running', depth: 0,
     }]
     const { onSend } = renderComposer({ sessions })
@@ -183,7 +183,7 @@ describe('Composer session mentions', () => {
 
     const [prompt] = onSend.mock.calls[0]
     expect(prompt.startsWith('Coordinate with @API owner continue\n\n')).toBe(true)
-    expect(prompt).toContain('pi session UUID 019f0000-0000-7000-8000-000000000002')
+    expect(prompt).toContain('omp session UUID 019f0000-0000-7000-8000-000000000002')
     expect(prompt).toContain('Use gooeypi_session_read, gooeypi_session_send, and gooeypi_session_wait')
   })
 })

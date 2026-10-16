@@ -4,7 +4,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_SETTINGS } from '../../src/lib/data'
 import { VoiceSettings } from '../../src/pages/settings/VoiceSettings'
-import type { AppSettings, PrimeWorkApi, VoiceCredentialStatus } from '../../src/types/api'
+import type { AppSettings, DesktopApi, VoiceCredentialStatus } from '../../src/types/api'
 
 vi.mock('../../src/components/ui', () => ({
   Modal: ({ title, children, footer }: { title: string; children: ReactNode; footer?: ReactNode }) => <div role="dialog" aria-label={title}>{children}{footer}</div>,
@@ -54,7 +54,7 @@ async function choose(select: HTMLSelectElement, value: string) {
   })
 }
 
-function voiceBridge(overrides: Partial<PrimeWorkApi['voice']> = {}): PrimeWorkApi['voice'] {
+function voiceBridge(overrides: Partial<DesktopApi['voice']> = {}): DesktopApi['voice'] {
   return {
     credentialStatus: vi.fn().mockResolvedValue(emptyStatus),
     saveApiKey: vi.fn().mockResolvedValue(emptyStatus),
@@ -62,12 +62,11 @@ function voiceBridge(overrides: Partial<PrimeWorkApi['voice']> = {}): PrimeWorkA
     createRealtimeCall: vi.fn(),
     transcribe: vi.fn(),
     testSelfHosted: vi.fn().mockResolvedValue(true),
-    executeTool: vi.fn(),
     ...overrides,
   }
 }
 
-function Harness({ voice }: { voice: PrimeWorkApi['voice'] | null }) {
+function Harness({ voice }: { voice: DesktopApi['voice'] | null }) {
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS)
   return <VoiceSettings settings={settings} voice={voice} onUpdate={(patch) => { setSettings((current) => ({ ...current, ...patch })) }} />
 }
@@ -109,16 +108,8 @@ describe('Voice settings setup flow', () => {
     expect(saveApiKey).toHaveBeenCalledWith('openai', 'sk-test-key')
   })
 
-  it('explains secure keychain retrieval in the realtime section', async () => {
-    await render(<Harness voice={voiceBridge()} />)
-
-    const realtime = container.querySelector<HTMLElement>('[aria-labelledby="voice-realtime-title"]')!
-    expect(realtime.textContent).toContain('Saved API keys are encrypted using your operating system’s internal keychain.')
-    expect(realtime.textContent).toContain('may ask for your password to retrieve the key')
-  })
-
   it('allows a session key and warns that it will not persist without secure Linux storage', async () => {
-    const message = 'GooeyPi will not save voice API keys because this Linux desktop is using unprotected basic-text storage. Install and unlock GNOME Keyring (libsecret) or KWallet, then restart GooeyPi.'
+    const message = 'OMP Desktop will not save voice API keys because this Linux desktop is using unprotected basic-text storage. Install and unlock GNOME Keyring (libsecret) or KWallet, then restart OMP Desktop.'
     const saveApiKey = vi.fn().mockResolvedValue({
       configured: { openai: true, groq: false, deepgram: false, 'self-hosted': false },
       source: { openai: 'session' },
@@ -133,7 +124,7 @@ describe('Voice settings setup flow', () => {
       saveApiKey,
     })} />)
 
-    expect(container.textContent).toContain('Keys will work only until GooeyPi quits')
+    expect(container.textContent).toContain('Keys will work only until OMP Desktop quits')
     expect(container.textContent).toContain('GNOME Keyring (libsecret) or KWallet')
     expect(container.textContent).toContain('will not save it to disk')
     expect(container.textContent).toContain('Storage locked')
@@ -153,13 +144,13 @@ describe('Voice settings setup flow', () => {
     expect(saveApiKey).toHaveBeenCalledWith('openai', 'sk-session-key')
     expect(container.querySelector('[role="dialog"]')).toBeNull()
     expect(openAiCard.textContent).toContain('Session only')
-    expect(container.textContent).toContain('Keys will work only until GooeyPi quits')
+    expect(container.textContent).toContain('Keys will work only until OMP Desktop quits')
   })
 
   it('explains how to recover an older desktop process instead of showing disabled key buttons', async () => {
     await render(<Harness voice={null} />)
 
-    expect(container.textContent).toContain('Restart GooeyPi to finish enabling Voice')
+    expect(container.textContent).toContain('Restart OMP Desktop to finish enabling Voice')
     expect(container.textContent).toContain('⌘Q')
     expect([...container.querySelectorAll('button')].some((button) => button.disabled && button.textContent?.includes('Add key'))).toBe(false)
   })
@@ -195,14 +186,14 @@ describe('Voice settings setup flow', () => {
 
     await click([...container.querySelectorAll('button')].find((button) => button.textContent?.includes('Connect & test'))!)
     expect(testSelfHosted).toHaveBeenCalledWith({ url: 'http://127.0.0.1:9000', model: 'nvidia/parakeet-tdt-0.6b-v3' })
-    expect(container.textContent).toContain('Connected. GooeyPi successfully transcribed a test audio clip.')
+    expect(container.textContent).toContain('Connected. OMP Desktop successfully transcribed a test audio clip.')
   })
 
   it('turns a missing Voice IPC handler into a restart state instead of checking forever', async () => {
     const credentialStatus = vi.fn().mockRejectedValue(new Error("No handler registered for 'voice:credential-status'"))
     await render(<Harness voice={voiceBridge({ credentialStatus })} />)
 
-    expect(container.textContent).toContain('Restart GooeyPi to finish enabling Voice')
+    expect(container.textContent).toContain('Restart OMP Desktop to finish enabling Voice')
     expect(container.textContent).toContain('Restart required')
     expect(container.textContent).not.toContain('Checking…')
     expect([...container.querySelectorAll('button')].some((button) => button.textContent?.includes('Add key'))).toBe(false)

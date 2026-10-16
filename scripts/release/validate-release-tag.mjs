@@ -30,7 +30,7 @@ if (invokedAsScript()) {
   const tag = tagIndex === -1 ? undefined : process.argv[tagIndex + 1]
   try {
     const release = validateReleaseTag(tag)
-    console.log(`Validated release tag ${release.tag} for GooeyPi ${release.version}.`)
+    console.log(`Validated release tag ${release.tag} for OMP Desktop ${release.version}.`)
   } catch (error) {
     console.error(`Release tag validation failed: ${error instanceof Error ? error.message : String(error)}`)
     process.exitCode = 1

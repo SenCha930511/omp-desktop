@@ -17,7 +17,7 @@ import type { WorkspaceSnapshot } from '@/app/workspace'
 import { createPrimeEventBuffer, createSteerAcceptedEvent, createSteerPickupEvent, replayPrimeEvents } from '@/lib/events'
 import type { PrimeEventBuffer } from '@/lib/events'
 import { findRuntimeForWorkspace, workspaceCwd } from '@/lib/workspace'
-import type { HarnessId, MessagePart, PrimeWorkApi, ProjectRecord, PromptDeliveryIntent, QueuedPrompt, RuntimeInfo, SessionActionSnapshot, SessionRecord, TranscriptMessage } from '@/types/api'
+import type { HarnessId, MessagePart, DesktopApi, ProjectRecord, PromptDeliveryIntent, QueuedPrompt, RuntimeInfo, SessionActionSnapshot, SessionRecord, TranscriptMessage } from '@/types/api'
 
 let queuedPromptSequence = 0
 
@@ -49,7 +49,7 @@ interface TranscriptLoad {
 }
 
 interface UseWorkspaceRuntimeOptions {
-  bridge: PrimeWorkApi | null
+  bridge: DesktopApi | null
   /** Active harness; runtime discovery only attaches runtimes it owns. */
   harness?: HarnessId
   initialProject?: ProjectRecord
@@ -61,7 +61,7 @@ interface UseWorkspaceRuntimeOptions {
 
 export function useWorkspaceRuntime({
   bridge,
-  harness = 'prime',
+  harness = 'omp',
   initialProject,
   initialSession,
   sessions,

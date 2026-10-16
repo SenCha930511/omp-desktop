@@ -14,7 +14,7 @@ afterEach(() => {
 })
 
 const temp = (): string => {
-  const dir = mkdtempSync(join(tmpdir(), 'prime-work-crash-'))
+  const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-crash-'))
   dirs.push(dir)
   return dir
 }

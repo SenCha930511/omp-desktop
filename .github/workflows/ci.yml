@@ -182,14 +182,14 @@ jobs:
         include:
           - runner: macos-14
             package: npm run package:mac:local-qa
-            artifact: gooeypi-local-qa-macos
+            artifact: omp-desktop-local-qa-macos
             # Installers only: never upload the unpacked application directory.
             path: |
               release/mac/**/*.dmg
               release/mac/**/*.zip
           - runner: ubuntu-22.04
             package: npm run package:linux:local-qa
-            artifact: gooeypi-local-qa-linux
+            artifact: omp-desktop-local-qa-linux
             path: |
               release/linux/**/*.AppImage
               release/linux/**/*.deb
@@ -197,7 +197,7 @@ jobs:
               release/linux/**/*.pacman
           - runner: windows-2022
             package: npm run package:win:local-qa
-            artifact: gooeypi-local-qa-windows
+            artifact: omp-desktop-local-qa-windows
             path: |
               release/win/**/*.exe
               release/win/**/*.zip

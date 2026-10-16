@@ -20,7 +20,7 @@ const dirs: string[] = []
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }) })
 
 function makeDirectory(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'prime-work-store-'))
+  const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-store-'))
   dirs.push(dir)
   return dir
 }
@@ -61,6 +61,9 @@ describe('JsonStateStore', () => {
     writeFileSync(path, JSON.stringify({ version: 4, projects: [], settings, archivedSessions: [], dismissedProjectPaths: [], schedules: [] }))
     expect(new JsonStateStore(path).getSettings().locale).toBe('zh-CN')
 
+    writeFileSync(path, JSON.stringify({ version: 4, projects: [], settings: { ...settings, locale: 'zh-TW' }, archivedSessions: [], dismissedProjectPaths: [], schedules: [] }))
+    expect(new JsonStateStore(path).getSettings().locale).toBe('zh-TW')
+
     writeFileSync(path, JSON.stringify({ version: 4, projects: [], settings: { ...settings, locale: 'fr' }, archivedSessions: [], dismissedProjectPaths: [], schedules: [] }))
     expect(new JsonStateStore(path).getSettings().locale).toBe('system')
   })
@@ -83,18 +86,6 @@ describe('JsonStateStore', () => {
     await Promise.all(Array.from({ length: 20 }, (_, index) => store.update((state) => { state.archivedSessions.push(String(index)) })))
     expect(store.snapshot().archivedSessions).toHaveLength(20)
     expect(JSON.parse(readFileSync(path, 'utf8')).archivedSessions).toHaveLength(20)
-  })
-
-  it('defaults to Orb and preserves the selected pet across a full store restart', async () => {
-    const dir = makeDirectory()
-    const path = join(dir, 'state.json')
-    const store = new JsonStateStore(path)
-    expect(store.getSettings().petId).toBe('orb')
-
-    await store.update((state) => { state.settings.petId = 'codex/rocky' })
-    await store.beginShutdown()
-
-    expect(new JsonStateStore(path).getSettings().petId).toBe('codex/rocky')
   })
 
   it('defaults and validates the configurable message Enter action', () => {
@@ -377,7 +368,7 @@ describe('JsonStateStore', () => {
     expect(store.getArchivedSessions()).toEqual(['/sessions/kept.jsonl'])
   })
 
-  it('migrates version 2 state: projects gain the prime harness and settings gain harness defaults', () => {
+  it('migrates version 2 state: projects gain the omp harness and settings gain harness defaults', () => {
     const dir = makeDirectory()
     const path = join(dir, 'state.json')
     const { activeHarness: _activeHarness, ompApprovalMode: _ompApprovalMode, ...legacySettings } = defaultSettings()
@@ -391,8 +382,8 @@ describe('JsonStateStore', () => {
     }))
     const state = new JsonStateStore(path).snapshot()
     expect(state.version).toBe(4)
-    expect(state.projects.map((project) => project.harness)).toEqual(['prime'])
-    expect(state.settings.activeHarness).toBe('prime')
+    expect(state.projects.map((project) => project.harness)).toEqual(['omp'])
+    expect(state.settings.activeHarness).toBe('omp')
     expect(state.settings.ompApprovalMode).toBe('inherit')
     expect(state.settings.askUserEnabled).toBe(false)
   })
@@ -424,7 +415,7 @@ describe('JsonStateStore', () => {
       dismissedProjectPaths: [],
       schedules: [],
     }))
-    expect(new JsonStateStore(path).snapshot().settings.activeHarness).toBe('prime')
+    expect(new JsonStateStore(path).snapshot().settings.activeHarness).toBe('omp')
 
     writeFileSync(path, JSON.stringify({
       version: 3,
@@ -439,7 +430,7 @@ describe('JsonStateStore', () => {
     expect(reset.settings.ompApprovalMode).toBe('inherit')
   })
 
-  it('accepts the pi harness for projects and the active workspace', () => {
+  it('migrates the legacy pi harness for projects and the active workspace to omp', () => {
     const dir = makeDirectory()
     const path = join(dir, 'state.json')
     writeFileSync(path, JSON.stringify({
@@ -455,46 +446,46 @@ describe('JsonStateStore', () => {
     }))
     const state = new JsonStateStore(path).snapshot()
     expect(state.version).toBe(4)
-    expect(state.projects.map((project) => project.harness)).toEqual(['pi'])
-    expect(state.settings.activeHarness).toBe('pi')
+    expect(state.projects.map((project) => project.harness)).toEqual(['omp'])
+    expect(state.settings.activeHarness).toBe('omp')
   })
 
-  it('bounds piDisabledProviders and defaults the field when absent', () => {
+  it('bounds ompDisabledProviders and defaults the field when absent', () => {
     const dir = makeDirectory()
     const path = join(dir, 'state.json')
     writeFileSync(path, JSON.stringify({
       version: 3,
       projects: [],
-      settings: { ...defaultSettings(), piDisabledProviders: ['openai', 'openai', '../evil', 42, 'anthropic'] },
+      settings: { ...defaultSettings(), ompDisabledProviders: ['openai', 'openai', '../evil', 42, 'anthropic'] },
       archivedSessions: [],
       dismissedProjectPaths: [],
       schedules: [],
     }))
-    expect(new JsonStateStore(path).snapshot().settings.piDisabledProviders).toEqual(['openai', 'anthropic'])
+    expect(new JsonStateStore(path).snapshot().settings.ompDisabledProviders).toEqual(['openai', 'anthropic'])
 
     writeFileSync(path, JSON.stringify({
       version: 3,
       projects: [],
-      settings: { ...defaultSettings(), piDisabledProviders: Array.from({ length: 400 }, (_, index) => `provider-${index}`) },
+      settings: { ...defaultSettings(), ompDisabledProviders: Array.from({ length: 400 }, (_, index) => `provider-${index}`) },
       archivedSessions: [],
       dismissedProjectPaths: [],
       schedules: [],
     }))
-    expect(new JsonStateStore(path).snapshot().settings.piDisabledProviders).toHaveLength(256)
+    expect(new JsonStateStore(path).snapshot().settings.ompDisabledProviders).toHaveLength(256)
 
-    // A version-3 state written before pi support keeps its version and gains the default.
-    const { piDisabledProviders: _piDisabledProviders, ...prePiSettings } = defaultSettings()
+    // A version-3 state written before the field existed keeps its version and gains the default.
+    const { ompDisabledProviders: _ompDisabledProviders, ...preFieldSettings } = defaultSettings()
     writeFileSync(path, JSON.stringify({
       version: 3,
       projects: [],
-      settings: prePiSettings,
+      settings: preFieldSettings,
       archivedSessions: [],
       dismissedProjectPaths: [],
       schedules: [],
     }))
     const state = new JsonStateStore(path).snapshot()
     expect(state.version).toBe(4)
-    expect(state.settings.piDisabledProviders).toEqual([])
+    expect(state.settings.ompDisabledProviders).toEqual([])
   })
 
   it('preserves an unsupported future state byte-for-byte and refuses updates', async () => {
@@ -513,7 +504,7 @@ describe('JsonStateStore', () => {
     expect(() => store.getProjects()).toThrow(UnsupportedStateVersionError)
     expect(() => store.getArchivedSessions()).toThrow(UnsupportedStateVersionError)
     await expect(store.ready()).rejects.toBeInstanceOf(UnsupportedStateVersionError)
-    await expect(store.ready()).rejects.toThrow(/version 99.*newer.*version 4.*upgrade GooeyPi/i)
+    await expect(store.ready()).rejects.toThrow(/version 99.*newer.*version 4.*upgrade OMP Desktop/i)
     await expect(store.update(mutator)).rejects.toBeInstanceOf(UnsupportedStateVersionError)
     expect(mutator).not.toHaveBeenCalled()
     await store.beginShutdown()
@@ -827,7 +818,6 @@ describe('JsonStateStore', () => {
       settings: {
         ...defaultSettings(),
         runtimePaths: { prime: '/opt/prime-agent', omp: 'relative/omp', pi: 'x'.repeat(4_097) },
-        enabledHarnesses: ['pi', 'pi', 'invalid'],
         activeHarness: 'omp',
       },
       archivedSessions: [],
@@ -835,8 +825,7 @@ describe('JsonStateStore', () => {
       schedules: [],
     }))
     const state = new JsonStateStore(path).snapshot()
-    expect(state.settings.runtimePaths).toEqual({ prime: '/opt/prime-agent', omp: '', pi: '' })
-    expect(state.settings.enabledHarnesses).toEqual(['pi'])
+    expect(state.settings.runtimePaths).toEqual({ omp: '' })
     expect(state.settings.activeHarness).toBe('omp')
   })
 
@@ -876,7 +865,7 @@ describe('JsonStateStore', () => {
     expect(JSON.parse(readFileSync(path, 'utf8')).archivedSessions).toEqual(['after-recovery'])
   })
   it('archives and restores session visibility metadata without touching the transcript', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'prime-work-session-')); dirs.push(dir)
+    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-session-')); dirs.push(dir)
     const sessionRoot = join(dir, 'sessions')
     const { mkdirSync } = await import('node:fs')
     mkdirSync(sessionRoot)

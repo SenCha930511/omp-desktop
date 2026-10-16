@@ -28,8 +28,8 @@ describe('NoHarnessPrompt', () => {
     const onOpenHarnessSettings = vi.fn()
     await act(async () => root.render(<NoHarnessPrompt onClose={vi.fn()} onOpenHarnessSettings={onOpenHarnessSettings} />))
 
-    expect(document.querySelector('[role="dialog"]')?.textContent).toContain('No Pi family harness detected')
-    expect(document.querySelector('[role="dialog"]')?.textContent).toContain('Pi, OMP, or Prime Agent')
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain('OMP is not installed')
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain('OMP Desktop couldn’t find OMP. Install it to get started.')
     expect(document.querySelector('[role="dialog"]')?.textContent).toContain('configure its executable path in Harness settings')
 
     const button = [...document.querySelectorAll<HTMLButtonElement>('button')].find((item) => item.textContent === 'Take me there')!

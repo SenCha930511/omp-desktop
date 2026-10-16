@@ -121,7 +121,7 @@ function assertArtifactSizeBudgets(payload, artifacts) {
 
 async function verifyZip(zip, options, artifacts) {
   run('unzip', ['-t', zip])
-  const extractionDirectory = mkdtempSync(join(tmpdir(), 'prime-work-zip-'))
+  const extractionDirectory = mkdtempSync(join(tmpdir(), 'omp-desktop-zip-'))
   try {
     run('ditto', ['-x', '-k', zip, extractionDirectory])
     const payload = await verifyApp({ ...options, app: findSingleApp(extractionDirectory, basename(zip)), artifact: zip })
@@ -133,7 +133,7 @@ async function verifyZip(zip, options, artifacts) {
 
 async function verifyDmg(dmg, options, artifacts) {
   run('hdiutil', ['verify', dmg])
-  const mountPoint = mkdtempSync(join(tmpdir(), 'prime-work-dmg-'))
+  const mountPoint = mkdtempSync(join(tmpdir(), 'omp-desktop-dmg-'))
   let mounted = false
   try {
     run('hdiutil', ['attach', '-readonly', '-nobrowse', '-noautoopen', '-mountpoint', mountPoint, dmg])
@@ -184,7 +184,7 @@ export async function verifyPackage({ mode, releaseDirectory = resolve('release'
 
   const packageJson = JSON.parse(readFileSync(resolve('package.json'), 'utf8'))
   console.log(
-    `Verified ${mode} DMG and ZIP for GooeyPi ${packageJson.version}: archive integrity, contained application, exact native unpack allowlist and architectures, Electron fuses, and package size budgets (DMG payload: ${describeSizeMetrics(dmgMetrics)}; ZIP payload: ${describeSizeMetrics(zipMetrics)})${mode === 'public' ? ', signatures, microphone entitlements, notarization staples, and Gatekeeper' : ''}.`,
+    `Verified ${mode} DMG and ZIP for OMP Desktop ${packageJson.version}: archive integrity, contained application, exact native unpack allowlist and architectures, Electron fuses, and package size budgets (DMG payload: ${describeSizeMetrics(dmgMetrics)}; ZIP payload: ${describeSizeMetrics(zipMetrics)})${mode === 'public' ? ', signatures, microphone entitlements, notarization staples, and Gatekeeper' : ''}.`,
   )
 }
 

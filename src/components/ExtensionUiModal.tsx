@@ -1,15 +1,12 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
+import { type KeyboardEvent, useEffect, useRef, useState } from 'react'
 import type { ExtensionUiQuestion, ExtensionUiRequest } from '@/lib/extension-ui'
+import { useI18n } from '@/lib/i18n'
 import { shortcutLabel } from '@/lib/platform-shortcuts'
 import { Modal } from './ui'
 
 const OTHER_OPTION = 'Other (type your own answer)'
 
-export type ExtensionUiResponse =
-  | { cancelled: true }
-  | { value: string }
-  | { confirmed: boolean }
-  | { values: Record<string, string> }
+export type ExtensionUiResponse = { cancelled: true } | { value: string } | { confirmed: boolean } | { values: Record<string, string> }
 
 interface ExtensionUiModalProps {
   request: ExtensionUiRequest
@@ -17,11 +14,7 @@ interface ExtensionUiModalProps {
   platform?: NodeJS.Platform
 }
 
-function questionnaireAnswer(
-  question: ExtensionUiQuestion,
-  selectedIndex: number,
-  contexts: Record<string, string>,
-) {
+function questionnaireAnswer(question: ExtensionUiQuestion, selectedIndex: number, contexts: Record<string, string>) {
   const selected = question.options[selectedIndex]
   const typed = contexts[question.id]?.trim()
   if (selected === OTHER_OPTION) {
@@ -39,6 +32,7 @@ function questionnaireAnswer(
 }
 
 export function ExtensionUiModal({ request, onRespond, platform = 'darwin' }: ExtensionUiModalProps) {
+  const { t } = useI18n()
   const prefill = request.method === 'editor' ? request.prefill : undefined
   const questionnaireTimeout = request.method === 'questionnaire' ? request.timeout : undefined
   const [value, setValue] = useState(prefill ?? '')
@@ -78,8 +72,7 @@ export function ExtensionUiModal({ request, onRespond, platform = 'darwin' }: Ex
     if (request.method !== 'questionnaire' || !request.complete) return
     const container = questionnaireRef.current
     if (!container || container.contains(document.activeElement)) return
-    const focusTarget = container.querySelector<HTMLElement>('.extension-question__options button')
-      ?? container.querySelector<HTMLElement>('.extension-questionnaire__progress button.is-active')
+    const focusTarget = container.querySelector<HTMLElement>('.extension-question__options button') ?? container.querySelector<HTMLElement>('.extension-questionnaire__progress button.is-active')
     focusTarget?.focus()
   }, [request.id, request.method === 'questionnaire' ? request.complete : false, questionIndex])
 
@@ -98,10 +91,8 @@ export function ExtensionUiModal({ request, onRespond, platform = 'darwin' }: Ex
   const cancel = () => onRespond({ cancelled: true })
 
   const questionnaire = request.method === 'questionnaire' ? request : undefined
-  const activeQuestion = questionnaire && questionIndex < questionnaire.questions.length
-    ? questionnaire.questions[questionIndex]
-    : undefined
-  const activeSelected = activeQuestion ? selectedByQuestion[activeQuestion.id] ?? 0 : 0
+  const activeQuestion = questionnaire && questionIndex < questionnaire.questions.length ? questionnaire.questions[questionIndex] : undefined
+  const activeSelected = activeQuestion ? (selectedByQuestion[activeQuestion.id] ?? 0) : 0
   const allAnswered = Boolean(questionnaire?.complete && questionnaire.questions.length > 0 && questionnaire.questions.every((question) => answeredByQuestion[question.id]))
 
   const selectQuestionOption = (index: number) => {
@@ -197,75 +188,107 @@ export function ExtensionUiModal({ request, onRespond, platform = 'darwin' }: Ex
   }
 
   return (
-    <Modal title={request.title} onClose={cancel} footer={(
-      <>
-        <button type="button" className="button" onClick={cancel}>Cancel</button>
-        {request.method === 'confirm' ? <button type="button" className="button button--primary" onClick={() => onRespond({ confirmed: true })}>Confirm</button> : null}
-        {request.method === 'input' || request.method === 'editor' ? <button type="button" className="button button--primary" disabled={!value.trim()} onClick={() => onRespond({ value })}>Continue</button> : null}
-        {request.method === 'questionnaire' ? <button type="button" className="button button--primary" disabled={!allAnswered} onClick={submitQuestionnaire}>Submit answers</button> : null}
-      </>
-    )}>
+    <Modal
+      title={request.title}
+      onClose={cancel}
+      footer={
+        <>
+          <button type="button" className="button" onClick={cancel}>
+            {t('extensionUi.cancel')}
+          </button>
+          {request.method === 'confirm' ? (
+            <button type="button" className="button button--primary" onClick={() => onRespond({ confirmed: true })}>
+              {t('extensionUi.confirm')}
+            </button>
+          ) : null}
+          {request.method === 'input' || request.method === 'editor' ? (
+            <button type="button" className="button button--primary" disabled={!value.trim()} onClick={() => onRespond({ value })}>
+              {t('extensionUi.continue')}
+            </button>
+          ) : null}
+          {request.method === 'questionnaire' ? (
+            <button type="button" className="button button--primary" disabled={!allAnswered} onClick={submitQuestionnaire}>
+              {t('extensionUi.submitAnswers')}
+            </button>
+          ) : null}
+        </>
+      }
+    >
       {request.method === 'questionnaire' ? (
         <div ref={questionnaireRef} className="extension-questionnaire" onKeyDown={handleQuestionnaireKeyDown}>
-          {!request.complete ? <p className="modal-intro">Preparing questions…</p> : null}
+          {!request.complete ? <p className="modal-intro">{t('extensionUi.preparing')}</p> : null}
           {request.complete ? (
             <>
               {remainingMs !== undefined ? (
                 <div className="extension-questionnaire__timer" role="timer" aria-live="polite">
-                  <span>Time remaining</span>
-                  <strong aria-label={`${Math.max(0, Math.ceil(remainingMs / 1_000))} seconds remaining`}>
-                    {Math.max(0, Math.ceil(remainingMs / 1_000))}s
-                  </strong>
+                  <span>{t('extensionUi.timeRemaining')}</span>
+                  <strong aria-label={t('extensionUi.secondsRemaining', { count: Math.max(0, Math.ceil(remainingMs / 1_000)) })}>{Math.max(0, Math.ceil(remainingMs / 1_000))}s</strong>
                 </div>
               ) : null}
-              <div className="extension-questionnaire__progress" aria-label="Question progress">
+              <div className="extension-questionnaire__progress" aria-label={t('extensionUi.progress')}>
                 {request.questions.map((question, index) => (
-                  <button type="button" key={question.id} aria-current={questionIndex === index ? 'step' : undefined} className={questionIndex === index ? 'is-active' : ''} onClick={() => navigateQuestion(index)}>
+                  <button
+                    type="button"
+                    key={question.id}
+                    aria-current={questionIndex === index ? 'step' : undefined}
+                    className={questionIndex === index ? 'is-active' : ''}
+                    onClick={() => navigateQuestion(index)}
+                  >
                     {answeredByQuestion[question.id] ? '✓' : '○'} {index + 1}
                   </button>
                 ))}
-                <button type="button" aria-current={questionIndex === request.questions.length ? 'step' : undefined} className={questionIndex === request.questions.length ? 'is-active' : ''} onClick={() => navigateQuestion(request.questions.length)}>✓ Submit</button>
+                <button
+                  type="button"
+                  aria-current={questionIndex === request.questions.length ? 'step' : undefined}
+                  className={questionIndex === request.questions.length ? 'is-active' : ''}
+                  onClick={() => navigateQuestion(request.questions.length)}
+                >
+                  {t('extensionUi.submit')}
+                </button>
               </div>
               {activeQuestion ? (
                 <div className="extension-questionnaire__question">
-                  <p className="modal-intro">Question {questionIndex + 1} of {request.questions.length}</p>
+                  <p className="modal-intro">{t('extensionUi.questionOf', { index: questionIndex + 1, total: request.questions.length })}</p>
                   <h3>{activeQuestion.title}</h3>
                   <div className="extension-question__options" role="listbox" aria-label={activeQuestion.title}>
                     {activeQuestion.options.map((option, index) => {
                       const isSelected = activeSelected === index
-                      return <button
-                        type="button"
-                        role="option"
-                        aria-selected={isSelected}
-                        className={isSelected ? 'is-selected' : ''}
-                        key={`${option}-${index}`}
-                        onClick={() => commitQuestion(index)}
-                      >
-                        <span className="extension-question__option-index">{index + 1}</span>
-                        <span>{option}</span>
-                      </button>
+                      return (
+                        <button type="button" role="option" aria-selected={isSelected} className={isSelected ? 'is-selected' : ''} key={`${option}-${index}`} onClick={() => commitQuestion(index)}>
+                          <span className="extension-question__option-index">{index + 1}</span>
+                          <span>{option}</span>
+                        </button>
+                      )
                     })}
                   </div>
                   <label className="field extension-questionnaire__context">
-                    <span>Type to add context</span>
+                    <span>{t('extensionUi.typeContext')}</span>
                     <input
-                      ref={(element) => { contextInputRefs.current[activeQuestion.id] = element }}
+                      ref={(element) => {
+                        contextInputRefs.current[activeQuestion.id] = element
+                      }}
                       value={contexts[activeQuestion.id] ?? ''}
-                      placeholder="Type to add context"
-                      aria-label="Additional context"
+                      placeholder={t('extensionUi.typeContext')}
+                      aria-label={t('extensionUi.additionalContext')}
                       onChange={(event) => {
                         setContexts((values) => ({ ...values, [activeQuestion.id]: event.target.value }))
                         setAnsweredByQuestion((values) => ({ ...values, [activeQuestion.id]: false }))
                       }}
                     />
                   </label>
-                  <p className="extension-questionnaire__hint">{shortcutLabel(platform, ['Primary', 'ArrowLeft'])} / {shortcutLabel(platform, ['Primary', 'ArrowRight'])} or PgUp/PgDn questions · ↑ ↓ choices · 1–9 select · Enter continue</p>
+                  <p className="extension-questionnaire__hint">
+                    {t('extensionUi.hint', { left: shortcutLabel(platform, ['Primary', 'ArrowLeft']), right: shortcutLabel(platform, ['Primary', 'ArrowRight']) })}
+                  </p>
                 </div>
               ) : (
-                <div className="extension-questionnaire__submit" role="listbox" aria-label="Submit answers">
+                <div className="extension-questionnaire__submit" role="listbox" aria-label={t('extensionUi.submitAnswers')}>
                   {request.questions.map((question) => {
                     const answer = questionnaireAnswer(question, selectedByQuestion[question.id] ?? 0, contexts)
-                    return <p key={question.id}><strong>{question.index + 1}.</strong> {answer?.answer ?? 'Not answered'}</p>
+                    return (
+                      <p key={question.id}>
+                        <strong>{question.index + 1}.</strong> {answer?.answer ?? t('extensionUi.notAnswered')}
+                      </p>
+                    )
                   })}
                 </div>
               )}
@@ -275,7 +298,7 @@ export function ExtensionUiModal({ request, onRespond, platform = 'darwin' }: Ex
       ) : null}
       {request.method === 'select' ? (
         <div className="extension-question">
-          <p className="modal-intro">Choose an option to let Prime continue.</p>
+          <p className="modal-intro">{t('extensionUi.choose')}</p>
           <div className="extension-question__options" role="listbox" aria-label={request.title}>
             {request.options.map((option, index) => (
               <button
@@ -284,7 +307,10 @@ export function ExtensionUiModal({ request, onRespond, platform = 'darwin' }: Ex
                 aria-selected={selected === index}
                 className={selected === index ? 'is-selected' : ''}
                 key={`${option}-${index}`}
-                onClick={() => { setSelected(index); onRespond({ value: option }) }}
+                onClick={() => {
+                  setSelected(index)
+                  onRespond({ value: option })
+                }}
                 onFocus={() => setSelected(index)}
               >
                 <span className="extension-question__option-index">{index + 1}</span>
@@ -295,8 +321,29 @@ export function ExtensionUiModal({ request, onRespond, platform = 'darwin' }: Ex
         </div>
       ) : null}
       {request.method === 'confirm' ? <p className="modal-intro extension-question__message">{request.message}</p> : null}
-      {request.method === 'input' ? <label className="field extension-question__field"><span>Response</span><input autoFocus value={value} placeholder={request.placeholder} onChange={(event) => setValue(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && value.trim()) { event.preventDefault(); onRespond({ value }) } }} /></label> : null}
-      {request.method === 'editor' ? <label className="field extension-question__field"><span>Response</span><textarea autoFocus rows={7} value={value} onChange={(event) => setValue(event.target.value)} /></label> : null}
+      {request.method === 'input' ? (
+        <label className="field extension-question__field">
+          <span>{t('extensionUi.response')}</span>
+          <input
+            autoFocus
+            value={value}
+            placeholder={request.placeholder}
+            onChange={(event) => setValue(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && value.trim()) {
+                event.preventDefault()
+                onRespond({ value })
+              }
+            }}
+          />
+        </label>
+      ) : null}
+      {request.method === 'editor' ? (
+        <label className="field extension-question__field">
+          <span>{t('extensionUi.response')}</span>
+          <textarea autoFocus rows={7} value={value} onChange={(event) => setValue(event.target.value)} />
+        </label>
+      ) : null}
     </Modal>
   )
 }

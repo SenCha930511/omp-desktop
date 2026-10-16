@@ -1,6 +1,6 @@
 import { createElement, memo, useEffect, useRef } from 'react'
 import type { StampedPointerEvent } from '@/hooks/useAgentBrowserTabs'
-import { BROWSER_PARTITION, type AgentBrowserTabRecord } from '@/types/api'
+import { type AgentBrowserTabRecord, BROWSER_PARTITION } from '@/types/api'
 
 export interface AgentSlotRect {
   left: number
@@ -83,10 +83,7 @@ export function AgentCursorOverlay({ pointerEvent }: { pointerEvent: StampedPoin
     idleTimerRef.current = window.setTimeout(() => cursor.classList.add('is-idle'), CURSOR_IDLE_MS)
     const glide = from !== null && durationMs > 0
     if (glide) {
-      cursor.animate(
-        [{ transform: `translate(${from.x}px, ${from.y}px)` }, { transform: `translate(${to.x}px, ${to.y}px)` }],
-        { duration: durationMs, easing: CURSOR_EASING, fill: 'forwards' },
-      )
+      cursor.animate([{ transform: `translate(${from.x}px, ${from.y}px)` }, { transform: `translate(${to.x}px, ${to.y}px)` }], { duration: durationMs, easing: CURSOR_EASING, fill: 'forwards' })
       const line = document.createElementNS('http://www.w3.org/2000/svg', 'line')
       line.setAttribute('x1', String(from.x))
       line.setAttribute('y1', String(from.y))
@@ -96,18 +93,18 @@ export function AgentCursorOverlay({ pointerEvent }: { pointerEvent: StampedPoin
       const length = Math.max(1, Math.hypot(to.x - from.x, to.y - from.y))
       line.style.strokeDasharray = String(length)
       trail.appendChild(line)
-      line.animate(
-        [{ strokeDashoffset: length }, { strokeDashoffset: 0 }],
-        { duration: durationMs, easing: CURSOR_EASING, fill: 'forwards' },
+      line.animate([{ strokeDashoffset: length }, { strokeDashoffset: 0 }], { duration: durationMs, easing: CURSOR_EASING, fill: 'forwards' })
+      const fade = line.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 450, delay: durationMs, fill: 'forwards' })
+      fade.finished.then(
+        () => line.remove(),
+        () => line.remove(),
       )
-      const fade = line.animate(
-        [{ opacity: 1 }, { opacity: 0 }],
-        { duration: 450, delay: durationMs, fill: 'forwards' },
-      )
-      fade.finished.then(() => line.remove(), () => line.remove())
     } else {
       cursor.animate(
-        [{ transform: `translate(${to.x}px, ${to.y}px)`, opacity: 0 }, { transform: `translate(${to.x}px, ${to.y}px)`, opacity: 1 }],
+        [
+          { transform: `translate(${to.x}px, ${to.y}px)`, opacity: 0 },
+          { transform: `translate(${to.x}px, ${to.y}px)`, opacity: 1 },
+        ],
         { duration: 140, fill: 'forwards' },
       )
     }
@@ -124,13 +121,19 @@ export function AgentCursorOverlay({ pointerEvent }: { pointerEvent: StampedPoin
         ],
         { duration: 450, delay: glide ? durationMs : 0, easing: 'ease-out', fill: 'forwards' },
       )
-      pulse.finished.then(() => ripple.remove(), () => ripple.remove())
+      pulse.finished.then(
+        () => ripple.remove(),
+        () => ripple.remove(),
+      )
     }
   }, [pointerEvent])
 
-  useEffect(() => () => {
-    if (idleTimerRef.current !== null) window.clearTimeout(idleTimerRef.current)
-  }, [])
+  useEffect(
+    () => () => {
+      if (idleTimerRef.current !== null) window.clearTimeout(idleTimerRef.current)
+    },
+    [],
+  )
 
   return (
     <div ref={overlayRef} className="agent-cursor-layer" aria-hidden>
@@ -161,7 +164,9 @@ const AgentTabView = memo(function AgentTabView({ tabId, visible, pointerEvent, 
         const webContentsId = view.getWebContentsId()
         reportedRef.current = true
         onAttachRef.current(tabId, webContentsId)
-      } catch { /* guest not attached yet; a later dom-ready will report */ }
+      } catch {
+        /* guest not attached yet; a later dom-ready will report */
+      }
     }
     view.addEventListener('dom-ready', report)
     return () => view.removeEventListener('dom-ready', report)
@@ -172,7 +177,9 @@ const AgentTabView = memo(function AgentTabView({ tabId, visible, pointerEvent, 
   return (
     <div className={`agent-browser-tab ${visible ? 'is-visible' : ''}`}>
       {createElement('webview' as never, {
-        ref: (node: AgentWebviewElement | null) => { viewRef.current = node },
+        ref: (node: AgentWebviewElement | null) => {
+          viewRef.current = node
+        },
         src: 'about:blank',
         className: 'browser-webview',
         partition: BROWSER_PARTITION,

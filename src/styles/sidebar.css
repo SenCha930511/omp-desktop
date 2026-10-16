@@ -4,21 +4,6 @@
 .sidebar__titlebar .traffic-light-clearance { width: 84px; flex-basis: 84px; }
 .app-shell[data-platform='linux'] .sidebar__titlebar, .app-shell[data-platform='win32'] .sidebar__titlebar { padding-left: 8px; }
 .app-shell[data-platform='linux'] .traffic-light-clearance, .app-shell[data-platform='win32'] .traffic-light-clearance { display: none; }
-.sidebar__brand { position: relative; min-width: 0; display: flex; align-items: center; gap: 7px; }
-.brand-switcher__trigger { display: flex; align-items: center; gap: 7px; margin-left: -5px; padding: 3px 5px; border-radius: 7px; color: inherit; background: transparent; }
-.brand-switcher__trigger:hover, .brand-switcher__trigger[aria-expanded='true'] { background: var(--surface-hover); }
-.brand-switcher__trigger > svg { flex: 0 0 auto; color: var(--text-tertiary); }
-.brand-switcher__name { min-width: 0; display: flex; flex-direction: column; line-height: 1.05; text-align: left; }
-.brand-switcher__name strong { font-size: 12px; font-weight: 650; letter-spacing: -.012em; }
-.brand-switcher__name small { margin-top: 2px; color: var(--text-tertiary); font-size: 8.5px; font-weight: 560; letter-spacing: .025em; text-transform: uppercase; }
-.brand-switcher__menu { position: absolute; z-index: 140; top: calc(100% + 4px); left: -5px; min-width: 186px; padding: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-raised); box-shadow: var(--shadow-popover); }
-.brand-switcher__menu button { width: 100%; min-height: 36px; display: flex; align-items: center; gap: 8px; padding: 0 8px; border-radius: 6px; color: var(--text-secondary); background: transparent; text-align: left; }
-.brand-switcher__menu button:hover, .brand-switcher__menu button:focus-visible { color: var(--text); background: var(--surface-hover); }
-.brand-switcher__menu button.is-active { color: var(--text); }
-.brand-switcher__menu button.is-active > svg:last-child { flex: 0 0 auto; color: var(--prime); }
-.brand-switcher__option { min-width: 0; flex: 1; display: flex; flex-direction: column; line-height: 1.15; }
-.brand-switcher__option strong { font-size: 12px; font-weight: 560; }
-.brand-switcher__option small { margin-top: 1px; color: var(--text-tertiary); font-size: 10px; }
 .sidebar__title-actions { display: flex; margin-left: auto; gap: 1px; }
 .sidebar__primary { padding: 5px 8px 7px; display: flex; flex-direction: column; gap: 1px; border-bottom: 1px solid var(--border); }
 .sidebar__primary > button, .sidebar__footer > button { width: 100%; height: 32px; display: flex; align-items: center; gap: 9px; padding: 0 8px; border-radius: 7px; color: var(--text-secondary); background: transparent; text-align: left; }

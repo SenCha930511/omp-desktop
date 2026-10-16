@@ -8,7 +8,7 @@ import { parseMcpAuthenticationCommand } from '@/lib/mcp-policy'
 import { parseSessionActionSnapshot, streamingBehaviorForIntent } from '@/lib/session-actions'
 import type { DEFAULT_SETTINGS } from '@/lib/data'
 import { type createSingleFlightAdmission, findProjectForSession, findRuntimeForWorkspace, newSessionProject, projectContainsPath, workspaceCwd } from '@/lib/workspace'
-import type { CapabilityMutationInput, ExtensionInstallInput, GitStatus, HarnessId, McpConnectionInput, McpStateInput, PrimeWorkApi, ProjectRecord, ProjectSortMode, PromptDeliveryIntent, PromptImage, ScheduleInput, SchedulePatch, SessionRecord, TranscriptMessage, WorkspaceView } from '@/types/api'
+import type { CapabilityMutationInput, ExtensionInstallInput, GitStatus, McpConnectionInput, McpStateInput, DesktopApi, ProjectRecord, ProjectSortMode, PromptDeliveryIntent, PromptImage, ScheduleInput, SchedulePatch, SessionRecord, TranscriptMessage, WorkspaceView } from '@/types/api'
 import type { useAppSettings } from '@/hooks/useAppSettings'
 import type { usePanelLayout } from '@/hooks/usePanelLayout'
 import type { usePluginSkills } from '@/hooks/usePluginSkills'
@@ -17,7 +17,7 @@ import type { useWorkspaceRuntime } from '@/hooks/useWorkspaceRuntime'
 import { mergeSessionCatalog } from '@/hooks/useBootstrap'
 
 export interface WorkspaceActionsDeps {
-  bridge: PrimeWorkApi | null
+  bridge: DesktopApi | null
   initialized: boolean
   projects: ProjectRecord[]
   sessions: SessionRecord[]
@@ -38,7 +38,6 @@ export interface WorkspaceActionsDeps {
   setToast: Dispatch<SetStateAction<string | null>>
   setSubmitting: Dispatch<SetStateAction<boolean>>
   refreshSchedules(): Promise<void>
-  refreshHeartbeats(): Promise<void>
   resetBrowserView(): void
   closeTerminalForSession(sessionPath: string): void
   clearSessionAttention(session: SessionRecord): void
@@ -48,7 +47,7 @@ export interface WorkspaceActionsDeps {
 export type McpCommand = { type: 'open' } | { type: 'authenticate'; server?: string }
 
 interface StartedSessionIndexInput {
-  bridge: PrimeWorkApi
+  bridge: DesktopApi
   harness: ProjectRecord['harness']
   sessionFile: string | undefined
   setSessions: Dispatch<SetStateAction<SessionRecord[]>>
@@ -110,10 +109,9 @@ export function parseCompactCommand(prompt: string): { customInstructions?: stri
   return undefined
 }
 
-export function parseMcpCommand(prompt: string, harness: HarnessId): McpCommand | undefined {
+export function parseMcpCommand(prompt: string): McpCommand | undefined {
   const value = prompt.trim()
-  if (harness === 'prime' && value === '/mcp') return { type: 'open' }
-  const authentication = parseMcpAuthenticationCommand(value, harness)
+  const authentication = parseMcpAuthenticationCommand(value)
   return authentication
     ? authentication.server ? { type: 'authenticate', server: authentication.server } : { type: 'authenticate' }
     : undefined
@@ -288,7 +286,7 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     const { bridge, sessions, workspace, provider, settingsState, submissionAdmissionRef, demoTimerRef, setSessions, setSubmitting, setView, setToast, reportError } = getDeps()
     const commandHarness = workspace.workspaceRef?.current?.project?.harness ?? settingsState.settings.activeHarness
     const compactCommand = parseCompactCommand(prompt)
-    const mcpCommand = parseMcpCommand(prompt, commandHarness)
+    const mcpCommand = parseMcpCommand(prompt)
     if (mcpCommand?.type === 'open' && images.length === 0) {
       setView('plugins')
       setToast('Manage MCP integrations in Capabilities.')
@@ -296,7 +294,7 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     }
     if (mcpCommand?.type === 'authenticate') {
       const target = mcpCommand.server ? ` to sign in to ${mcpCommand.server}` : ' to authenticate network MCP servers'
-      setToast(`Network MCP authentication is managed outside GooeyPi. Use ${HARNESS_AGENT_NAMES[commandHarness]} directly${target}.`)
+      setToast(`Network MCP authentication is managed outside OMP Desktop. Use ${HARNESS_AGENT_NAMES[commandHarness]} directly${target}.`)
       return
     }
     if (compactCommand && images.length > 0) {
@@ -365,12 +363,6 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
       const sentAtIso = new Date(sentAt).toISOString()
       const userMessage: TranscriptMessage = { id: `user-${sentAt}`, role: 'user', timestamp: sentAt, parts: [{ type: 'text', text: prompt }, ...images] }
       let userMessageAppended = false
-      const followUpExternalSession = async (sessionFile: string): Promise<boolean> => {
-        if (!bridge) return false
-        // The daemon owns the message once accepted; queuing it locally as
-        // well would deliver it a second time via the idle flush.
-        return bridge.sessions.followUp(sessionFile, prompt, intent)
-      }
       try {
         if (!admitted.project || !admitted.cwd) { reportError('Add a project before starting a session.'); return }
         // The harness comes from the workspace's own project, never global
@@ -397,7 +389,7 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
           const assistantId = `assistant-${Date.now()}`
           workspace.setMessages((items) => [...items, { id: assistantId, role: 'assistant', timestamp: Date.now(), startedAt: Date.now(), streaming: true, parts: [{ type: 'thinking', text: 'Reviewing the request and current workspace context.' }] }])
           demoTimerRef.current.push(window.setTimeout(() => workspace.setMessages((items) => items.map((item) => item.id === assistantId ? { ...item, parts: [...item.parts, { type: 'toolCall', id: 'demo-tool', name: 'Inspect project', args: { cwd: admitted.cwd } }] } : item)), 450))
-          demoTimerRef.current.push(window.setTimeout(() => workspace.setMessages((items) => items.map((item) => item.id === assistantId ? { ...item, streaming: false, completedAt: Date.now(), parts: [...item.parts, { type: 'toolResult', name: 'Inspect project', text: 'Project context loaded' }, { type: 'text', text: 'I’ve reviewed the project context and prepared the workspace. Connect the desktop bridge to run this request with Prime Agent.' }] } : item)), 1_250))
+          demoTimerRef.current.push(window.setTimeout(() => workspace.setMessages((items) => items.map((item) => item.id === assistantId ? { ...item, streaming: false, completedAt: Date.now(), parts: [...item.parts, { type: 'toolResult', name: 'Inspect project', text: 'Project context loaded' }, { type: 'text', text: 'I’ve reviewed the project context and prepared the workspace. Connect the desktop bridge to run this request with OMP.' }] } : item)), 1_250))
           return
         }
         await grantProject(admitted.project)
@@ -414,7 +406,7 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
         if (compactCommand && !activeRuntime) {
           if (!selected.sessionFile) { setToast('Nothing to compact yet.'); return }
           if (selectedSession?.status === 'running') {
-            setToast('Compaction is unavailable while this session is running outside GooeyPi.')
+            setToast('Compaction is unavailable while this session is running outside OMP Desktop.')
             return
           }
         }
@@ -428,25 +420,10 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
         if (!activeRuntime) {
           workspace.attachRuntime(undefined, generation)
           if (images.length > 0 && selected.sessionFile && selectedSession?.status === 'running') {
-            throw new Error('Image attachments cannot be queued while this session is active outside GooeyPi. Wait for it to finish, then try again.')
+            throw new Error('Image attachments cannot be queued while this session is active outside OMP Desktop. Wait for it to finish, then try again.')
           }
-          if (images.length === 0 && selected.sessionFile && selectedSession?.status === 'running'
-            && await followUpExternalSession(selected.sessionFile)) {
-            if (intent === 'steer') appendUserMessage()
-            completeQueuedFlush()
-            return
-          }
-          try {
-            if (!provider.model) throw new Error(`No model is available for ${HARNESS_AGENT_NAMES[activeHarness]}. Enable or connect a provider, then try again.`)
-            activeRuntime = await bridge.agent.start({ cwd: selected.cwd, sessionPath: selected.sessionFile, model: provider.model, thinking: provider.effort, fast: provider.fast, harness: activeHarness })
-          } catch (startError) {
-            if (images.length === 0 && selected.sessionFile && await followUpExternalSession(selected.sessionFile)) {
-              if (intent === 'steer') appendUserMessage()
-              completeQueuedFlush()
-              return
-            }
-            throw startError
-          }
+          if (!provider.model) throw new Error(`No model is available for ${HARNESS_AGENT_NAMES[activeHarness]}. Enable or connect a provider, then try again.`)
+          activeRuntime = await bridge.agent.start({ cwd: selected.cwd, sessionPath: selected.sessionFile, model: provider.model, thinking: provider.effort, fast: provider.fast, harness: activeHarness })
           startedRuntime = true
           if (workspace.workspaceRef.current.generation !== generation) { await bridge.agent.stop(activeRuntime.runtimeId).catch(() => false); return }
           const indexedSession = await indexStartedSession({
@@ -585,15 +562,6 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
       return response
     } catch (error) { reportError(error); return { ok: false, output: errorMessage(error) } }
   }
-  const setMcpSupport = async (enabled: boolean) => {
-    const { bridge, pluginSkills, reportError, settingsState } = getDeps()
-    if (!bridge) return { ok: false as const, reason: 'blocked' as const, output: 'MCP support can only be changed in the desktop app.' }
-    try {
-      const response = await bridge.plugins.setMcpSupport(enabled, settingsState.settings.activeHarness)
-      if (response.ok) await pluginSkills.refresh()
-      return response
-    } catch (error) { reportError(error); return { ok: false, output: errorMessage(error) } }
-  }
   const connectMcp = async (input: McpConnectionInput) => {
     const { bridge, activeProject, pluginSkills, reportError, settingsState } = getDeps()
     if (!bridge) return { ok: false as const, reason: 'blocked' as const, output: 'MCP connections are available in the desktop app.' }
@@ -651,11 +619,6 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     if (!bridge) throw new Error('Scheduled tasks are available in the desktop app.')
     try { await operation(); await refreshSchedules() } catch (error) { reportError(error); throw error }
   }
-  const manageHeartbeat = async (id: string, action: 'pause' | 'resume' | 'stop') => {
-    const { bridge, refreshHeartbeats, reportError } = getDeps()
-    if (!bridge) throw new Error('Heartbeats are available in the desktop app.')
-    try { await bridge.heartbeats.manage(id, action); await refreshHeartbeats() } catch (error) { reportError(error); throw error }
-  }
   const openScheduledSession = (sessionFile: string) => {
     const { bridge, sessions, settingsState, setSessions, reportError } = getDeps()
     const known = sessions.find((session) => session.filePath === sessionFile)
@@ -684,8 +647,8 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
   return {
     grantProject, persistPanel, toggleSidebar, toggleInspector, toggleTerminal,
     selectProject, selectSession, newSession, navigate, renameSession, setSessionArchived,
-    addProject, removeProject, togglePinProject, setProjectSortMode, sendPrompt, stopRuntime, installSkill, installExtension, setMcpSupport, connectMcp, setMcpEnabled, mutateCapability,
-    createSchedule, updateSchedule, mutateSchedule, manageHeartbeat, openScheduledSession,
+    addProject, removeProject, togglePinProject, setProjectSortMode, sendPrompt, stopRuntime, installSkill, installExtension, connectMcp, setMcpEnabled, mutateCapability,
+    createSchedule, updateSchedule, mutateSchedule, openScheduledSession,
     openBrowser, openChanges,
   }
 }

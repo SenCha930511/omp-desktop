@@ -36,10 +36,10 @@ function fakePi() {
 
 async function loadExtension(environment: NodeJS.ProcessEnv) {
   vi.resetModules()
-  if (environment.PRIME_WORK_BROWSER_URL !== undefined) vi.stubEnv('PRIME_WORK_BROWSER_URL', environment.PRIME_WORK_BROWSER_URL)
-  else vi.stubEnv('PRIME_WORK_BROWSER_URL', undefined as unknown as string)
-  if (environment.PRIME_WORK_BROWSER_TOKEN !== undefined) vi.stubEnv('PRIME_WORK_BROWSER_TOKEN', environment.PRIME_WORK_BROWSER_TOKEN)
-  else vi.stubEnv('PRIME_WORK_BROWSER_TOKEN', undefined as unknown as string)
+  if (environment.OMP_DESKTOP_BROWSER_URL !== undefined) vi.stubEnv('OMP_DESKTOP_BROWSER_URL', environment.OMP_DESKTOP_BROWSER_URL)
+  else vi.stubEnv('OMP_DESKTOP_BROWSER_URL', undefined as unknown as string)
+  if (environment.OMP_DESKTOP_BROWSER_TOKEN !== undefined) vi.stubEnv('OMP_DESKTOP_BROWSER_TOKEN', environment.OMP_DESKTOP_BROWSER_TOKEN)
+  else vi.stubEnv('OMP_DESKTOP_BROWSER_TOKEN', undefined as unknown as string)
   const module = await import('../../assets/extensions/omp-work-browser')
   return module.default
 }
@@ -76,7 +76,7 @@ afterEach(async () => {
 async function fixture() {
   const { calls, service } = fakeService()
   const terminals = { readActive: vi.fn(() => ({ label: 'zsh 1', cwd: '/project', content: '$ npm test\npassed', truncated: false })) }
-  const bridge = new AgentBrowserBridge({ service, terminals, extensionPath: '/app/extensions/omp-work-browser.ts', skillPath: '/app/skills/prime-work-browser' })
+  const bridge = new AgentBrowserBridge({ service, terminals, extensionPath: '/app/extensions/omp-work-browser.ts', skillPath: '/app/skills/omp-desktop-browser' })
   await bridge.start()
   bridges.push(bridge)
   const environment = bridge.environmentFor({ cwd: '/project', sessionPath: '/sessions/one.jsonl' })
@@ -161,7 +161,7 @@ describe('omp-work-browser extension', () => {
 
   it('surfaces broker errors as tool errors without leaking the token', async () => {
     const { bridge, environment, tool } = await fixture()
-    const denied = await loadExtension({ ...environment, PRIME_WORK_BROWSER_TOKEN: 'not-the-real-token' })
+    const denied = await loadExtension({ ...environment, OMP_DESKTOP_BROWSER_TOKEN: 'not-the-real-token' })
     const { tools: deniedTools, pi } = fakePi()
     denied(pi)
     const deniedTabs = deniedTools.find((candidate) => candidate.name === 'browser_tabs')!
@@ -170,7 +170,7 @@ describe('omp-work-browser extension', () => {
     await expect(tool('browser_tabs').execute('call-2', { action: 'list' })).rejects.toSatisfy((error: unknown) => {
       const message = String((error as Error).message)
       expect(message).toContain('OMP Work is not reachable')
-      expect(message).not.toContain(environment.PRIME_WORK_BROWSER_TOKEN)
+      expect(message).not.toContain(environment.OMP_DESKTOP_BROWSER_TOKEN)
       return true
     })
   })

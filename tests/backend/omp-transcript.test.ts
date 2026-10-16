@@ -13,7 +13,7 @@ function titleSlot(title = ''): string {
 }
 
 function ompSessionFile(entries: string[]): string {
-  const dir = mkdtempSync(join(tmpdir(), 'prime-work-omp-transcript-'))
+  const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-omp-transcript-'))
   dirs.push(dir)
   const file = join(dir, '2026-08-08T02-12-49-414Z_019fdf24-f686-7000-86fd-e1eaf84626c6.jsonl')
   writeFileSync(file, [

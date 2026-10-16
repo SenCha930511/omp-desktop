@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { PrimeWorkApi, VoiceTranscriptionProvider } from '@/types/api'
+import type { DesktopApi, VoiceTranscriptionProvider } from '@/types/api'
 
 export type DictationState = 'idle' | 'connecting' | 'recording' | 'transcribing'
 
@@ -77,7 +77,7 @@ function waitForChannel(channel: RTCDataChannel): Promise<void> {
   })
 }
 
-export function useDictation(voice: PrimeWorkApi['voice'] | null | undefined, provider: VoiceTranscriptionProvider, onError: (message: string) => void) {
+export function useDictation(voice: DesktopApi['voice'] | null | undefined, provider: VoiceTranscriptionProvider, onError: (message: string) => void) {
   const [state, setState] = useState<DictationState>('idle')
   const captureRef = useRef<Capture | null>(null)
   const generationRef = useRef(0)

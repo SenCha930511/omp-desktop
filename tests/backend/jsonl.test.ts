@@ -124,7 +124,7 @@ describe('strictJsonLines', () => {
   })
 
   it('destroys the underlying file stream when iteration aborts early', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'prime-work-jsonl-'))
+    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-jsonl-'))
     dirs.push(dir)
     const file = join(dir, 'records.jsonl')
     writeFileSync(file, `${'{"line":1}\n'.repeat(10_000)}`)
@@ -143,7 +143,7 @@ describe('strictJsonLines', () => {
   })
 
   it('propagates a frame-limit abort as stream teardown for file descriptors', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'prime-work-jsonl-'))
+    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-jsonl-'))
     dirs.push(dir)
     const file = join(dir, 'oversized.jsonl')
     writeFileSync(file, `{"ok":1}\n${'x'.repeat(4_096)}\n`)

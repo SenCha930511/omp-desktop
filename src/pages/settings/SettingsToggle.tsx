@@ -13,7 +13,9 @@ export function SettingsToggle({ checked, onChange, label, description }: Settin
         {description ? <small>{description}</small> : null}
       </span>
       <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
-      <i aria-hidden="true"><span /></i>
+      <i aria-hidden="true">
+        <span />
+      </i>
     </label>
   )
 }

@@ -1,6 +1,6 @@
 import type { PrimeModelCatalog } from '../../src/types/api'
 
-/** Applies GooeyPi's synchronized provider/model visibility policy to a raw harness catalog. */
+/** Applies OMP Desktop's synchronized provider/model visibility policy to a raw harness catalog. */
 export function withModelVisibility(
   catalog: PrimeModelCatalog,
   disabledProviders: ReadonlySet<string>,

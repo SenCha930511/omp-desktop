@@ -37,7 +37,7 @@ export function installCrashGuards(options: CrashGuardOptions): CrashGuard {
         appendFileSync(path, `[${new Date().toISOString()}] ${kind}: ${detail}\n`)
       }
     } catch { /* the crash log must never block the exit */ }
-    console.error(`GooeyPi fatal ${kind}: ${detail}`)
+    console.error(`OMP Desktop fatal ${kind}: ${detail}`)
     const deadline = setTimeout(() => exit(1), cleanupTimeoutMs)
     deadline.unref?.()
     void Promise.resolve()

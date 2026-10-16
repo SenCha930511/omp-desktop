@@ -1,12 +1,13 @@
 import { ArrowLeft, ArrowRight, Bot, ExternalLink, History, MessageCirclePlus, RefreshCw, ShieldCheck, X } from 'lucide-react'
 import { createElement, useCallback, useEffect, useRef, useState } from 'react'
+import type { StampedPointerEvent } from '@/hooks/useAgentBrowserTabs'
+import type { BrowserAnnotationsApi } from '@/hooks/useBrowserAnnotations'
 import { annotationMarkersScript, annotationPickerScript, annotationTakeScript } from '@/lib/annotation-picker'
 import { MAX_BROWSER_ANNOTATIONS, sanitizeCapturedElement } from '@/lib/browser-annotations'
+import { type MessageKey, useI18n } from '@/lib/i18n'
 import { detectRendererPlatform, shortcutLabel } from '@/lib/platform-shortcuts'
-import type { BrowserAnnotationsApi } from '@/hooks/useBrowserAnnotations'
-import type { StampedPointerEvent } from '@/hooks/useAgentBrowserTabs'
+import { type AgentBrowserTabRecord, BROWSER_PARTITION, type BrowserAnnotationElement } from '@/types/api'
 import { AgentCursorOverlay, type AgentSlotRect } from '../AgentBrowserLayer'
-import { BROWSER_PARTITION, type AgentBrowserTabRecord, type BrowserAnnotationElement } from '@/types/api'
 import { IconButton } from '../ui'
 
 type WebviewElement = HTMLElement & {
@@ -75,16 +76,38 @@ interface BrowserPanelProps {
   pollIntervalMs?: number
 }
 
-function agentTabLabel(tab: AgentBrowserTabRecord): string {
+function agentTabLabel(tab: AgentBrowserTabRecord, t: (key: MessageKey) => string): string {
   if (tab.title) return tab.title
   try {
     const host = new URL(tab.url).hostname
     if (host) return host
-  } catch { /* about:blank and friends */ }
-  return 'New tab'
+  } catch {
+    /* about:blank and friends */
+  }
+  return t('browser.newTab')
 }
 
-export function BrowserPanel({ home, navigationRequest, onNavigationRequestHandled, onOpenExternal, annotations, agentTabs = [], activeAgentTabId = null, previewSelected = true, onSelectAgentTab, onCloseAgentTab, onShowPreview, onAgentSlotRect, agentSessionKey, onPreviewContext, previewPointerEvent = null, onNavigateAgentTab, pollIntervalMs = 350, platform = detectRendererPlatform() }: BrowserPanelProps) {
+export function BrowserPanel({
+  home,
+  navigationRequest,
+  onNavigationRequestHandled,
+  onOpenExternal,
+  annotations,
+  agentTabs = [],
+  activeAgentTabId = null,
+  previewSelected = true,
+  onSelectAgentTab,
+  onCloseAgentTab,
+  onShowPreview,
+  onAgentSlotRect,
+  agentSessionKey,
+  onPreviewContext,
+  previewPointerEvent = null,
+  onNavigateAgentTab,
+  pollIntervalMs = 350,
+  platform = detectRendererPlatform(),
+}: BrowserPanelProps) {
+  const { t } = useI18n()
   const webviewRef = useRef<WebviewElement | null>(null)
   const [address, setAddress] = useState(home)
   const [currentUrl, setCurrentUrl] = useState(home)
@@ -126,7 +149,12 @@ export function BrowserPanel({ home, navigationRequest, onNavigationRequestHandl
     if (previewWebContentsId === null || !agentSessionKey) return
     onPreviewContextRef.current?.(previewWebContentsId, agentSessionKey)
   }, [previewWebContentsId, agentSessionKey])
-  useEffect(() => () => { onPreviewContextRef.current?.(null, null) }, [])
+  useEffect(
+    () => () => {
+      onPreviewContextRef.current?.(null, null)
+    },
+    [],
+  )
 
   // The agent webviews live in the always-mounted AgentBrowserLayer, not in
   // this panel; report where the layer should overlay while an agent tab is
@@ -135,14 +163,10 @@ export function BrowserPanel({ home, navigationRequest, onNavigationRequestHandl
   useEffect(() => {
     const publish = (next: AgentSlotRect | null) => {
       const previous = lastAgentSlotRectRef.current
-      const unchanged = next === null
-        ? previous === null
-        : previous !== null
-          && previous !== undefined
-          && previous.left === next.left
-          && previous.top === next.top
-          && previous.width === next.width
-          && previous.height === next.height
+      const unchanged =
+        next === null
+          ? previous === null
+          : previous !== null && previous !== undefined && previous.left === next.left && previous.top === next.top && previous.width === next.width && previous.height === next.height
       if (unchanged) return
       lastAgentSlotRectRef.current = next
       onAgentSlotRectRef.current?.(next)
@@ -224,7 +248,11 @@ export function BrowserPanel({ home, navigationRequest, onNavigationRequestHandl
     const onDomReady = () => {
       setDomReady(true)
       lastMarkersRef.current = ''
-      try { setPreviewWebContentsId(view.getWebContentsId()) } catch { /* guest not attached yet */ }
+      try {
+        setPreviewWebContentsId(view.getWebContentsId())
+      } catch {
+        /* guest not attached yet */
+      }
     }
     view.addEventListener('dom-ready', onDomReady)
     view.addEventListener('did-start-loading', didStart)
@@ -313,7 +341,7 @@ export function BrowserPanel({ home, navigationRequest, onNavigationRequestHandl
       return
     }
     if (annotationsRef.current.atCapacity) {
-      showNotice(`Prime keeps at most ${MAX_BROWSER_ANNOTATIONS} annotations. Remove one from the composer attachment to add more.`)
+      showNotice(t('browser.annotate.capacity', { count: MAX_BROWSER_ANNOTATIONS }))
       return
     }
     setNotice('')
@@ -332,7 +360,7 @@ export function BrowserPanel({ home, navigationRequest, onNavigationRequestHandl
       /* webview not ready */
     }
     if (!annotationsRef.current.add({ comment: annotationText, element: pendingElement, pageUrl, pageTitle })) {
-      showNotice(`Prime keeps at most ${MAX_BROWSER_ANNOTATIONS} annotations. Remove one from the composer attachment to add more.`)
+      showNotice(t('browser.annotate.capacity', { count: MAX_BROWSER_ANNOTATIONS }))
       return
     }
     setPendingElement(null)
@@ -355,9 +383,9 @@ export function BrowserPanel({ home, navigationRequest, onNavigationRequestHandl
   return (
     <div className="browser-panel">
       {agentTabs.length ? (
-        <div className="browser-tabstrip" role="tablist" aria-label="Browser tabs">
+        <div className="browser-tabstrip" role="tablist" aria-label={t('browser.tabs.aria')}>
           <button type="button" role="tab" aria-selected={!showAgentTab} className={showAgentTab ? '' : 'is-active'} onClick={() => onShowPreview?.()}>
-            Preview
+            {t('browser.preview')}
           </button>
           {agentTabs.map((tab) => (
             <div
@@ -375,10 +403,10 @@ export function BrowserPanel({ home, navigationRequest, onNavigationRequestHandl
               }}
             >
               <Bot size={11} aria-hidden />
-              <span>{agentTabLabel(tab)}</span>
+              <span>{agentTabLabel(tab, t)}</span>
               <button
                 type="button"
-                aria-label={`Close agent tab ${agentTabLabel(tab)}`}
+                aria-label={t('browser.closeAgentTab', { name: agentTabLabel(tab, t) })}
                 onClick={(event) => {
                   event.stopPropagation()
                   onCloseAgentTab?.(tab.tabId)
@@ -391,150 +419,155 @@ export function BrowserPanel({ home, navigationRequest, onNavigationRequestHandl
         </div>
       ) : null}
       <div className={`browser-preview ${showAgentTab ? 'browser-preview--hidden' : ''}`} inert={showAgentTab ? true : undefined}>
-      <div className="browser-toolbar">
-        <IconButton label="Back" disabled={!canBack} onClick={() => webviewRef.current?.goBack()}>
-          <ArrowLeft size={14} />
-        </IconButton>
-        <IconButton label="Forward" disabled={!canForward} onClick={() => webviewRef.current?.goForward()}>
-          <ArrowRight size={14} />
-        </IconButton>
-        <IconButton label={loading ? 'Stop loading' : 'Reload'} onClick={() => (loading ? webviewRef.current?.stop() : webviewRef.current?.reload())}>
-          {loading ? <X size={14} /> : <RefreshCw size={14} />}
-        </IconButton>
-        <form
-          className="address-field"
-          onSubmit={(event) => {
-            event.preventDefault()
-            navigate(address)
-          }}
-        >
-          <ShieldCheck size={12} />
-          <input value={address} onChange={(event) => setAddress(event.target.value)} aria-label="Browser address" spellCheck={false} />
-          <button type="button" aria-label="Browser history" onClick={() => setHistoryOpen((value) => !value)}>
-            <History size={13} />
-          </button>
-        </form>
-        <IconButton className={picking || pendingElement ? 'is-active annotation-active' : ''} label={picking ? 'Stop annotating' : 'Annotate page'} aria-pressed={picking} onClick={toggleAnnotation}>
-          <MessageCirclePlus size={15} />
-        </IconButton>
-        <IconButton label="Open in default browser" onClick={() => onOpenExternal(currentUrl)}>
-          <ExternalLink size={14} />
-        </IconButton>
-      </div>
-      {historyOpen ? (
-        <div className="browser-history">
-          <div>
-            <strong>Recent pages</strong>
-            <button type="button" onClick={() => setHistory([])}>
-              Clear
+        <div className="browser-toolbar">
+          <IconButton label={t('browser.back')} disabled={!canBack} onClick={() => webviewRef.current?.goBack()}>
+            <ArrowLeft size={14} />
+          </IconButton>
+          <IconButton label={t('browser.forward')} disabled={!canForward} onClick={() => webviewRef.current?.goForward()}>
+            <ArrowRight size={14} />
+          </IconButton>
+          <IconButton label={loading ? t('browser.stopLoading') : t('browser.reload')} onClick={() => (loading ? webviewRef.current?.stop() : webviewRef.current?.reload())}>
+            {loading ? <X size={14} /> : <RefreshCw size={14} />}
+          </IconButton>
+          <form
+            className="address-field"
+            onSubmit={(event) => {
+              event.preventDefault()
+              navigate(address)
+            }}
+          >
+            <ShieldCheck size={12} />
+            <input value={address} onChange={(event) => setAddress(event.target.value)} aria-label={t('browser.address')} spellCheck={false} />
+            <button type="button" aria-label={t('browser.history')} onClick={() => setHistoryOpen((value) => !value)}>
+              <History size={13} />
             </button>
-          </div>
-          {history
-            .slice()
-            .reverse()
-            .map((url, index) => (
-              <button
-                type="button"
-                key={`${url}-${index}`}
-                onClick={() => {
-                  navigate(url)
-                  setHistoryOpen(false)
-                }}
-              >
-                <History size={12} />
-                <span>{url}</span>
-              </button>
-            ))}
+          </form>
+          <IconButton
+            className={picking || pendingElement ? 'is-active annotation-active' : ''}
+            label={picking ? t('browser.annotate.stop') : t('browser.annotate.start')}
+            aria-pressed={picking}
+            onClick={toggleAnnotation}
+          >
+            <MessageCirclePlus size={15} />
+          </IconButton>
+          <IconButton label={t('browser.openExternal')} onClick={() => onOpenExternal(currentUrl)}>
+            <ExternalLink size={14} />
+          </IconButton>
         </div>
-      ) : null}
-      <div className={`browser-viewport ${picking ? 'is-annotating' : ''}`}>
-        {webview}
-        {picking ? (
-          <div className="annotation-hint" role="status">
-            <MessageCirclePlus size={12} /> Click an element in the page to comment on it
+        {historyOpen ? (
+          <div className="browser-history">
+            <div>
+              <strong>{t('browser.recentPages')}</strong>
+              <button type="button" onClick={() => setHistory([])}>
+                {t('browser.clear')}
+              </button>
+            </div>
+            {history
+              .slice()
+              .reverse()
+              .map((url, index) => (
+                <button
+                  type="button"
+                  key={`${url}-${index}`}
+                  onClick={() => {
+                    navigate(url)
+                    setHistoryOpen(false)
+                  }}
+                >
+                  <History size={12} />
+                  <span>{url}</span>
+                </button>
+              ))}
           </div>
         ) : null}
-        {pendingElement ? (
-          <div className="annotation-layer">
-            <div className="annotation-popover">
-              <div>
-                <MessageCirclePlus size={14} />
-                <strong>Comment on element {count + 1}</strong>
-                <button
-                  type="button"
-                  aria-label="Discard annotation"
-                  onClick={() => {
-                    setPendingElement(null)
-                    setAnnotationText('')
+        <div className={`browser-viewport ${picking ? 'is-annotating' : ''}`}>
+          {webview}
+          {picking ? (
+            <div className="annotation-hint" role="status">
+              <MessageCirclePlus size={12} /> {t('browser.annotate.hint')}
+            </div>
+          ) : null}
+          {pendingElement ? (
+            <div className="annotation-layer">
+              <div className="annotation-popover">
+                <div>
+                  <MessageCirclePlus size={14} />
+                  <strong>{t('browser.annotate.commentOn', { count: count + 1 })}</strong>
+                  <button
+                    type="button"
+                    aria-label={t('browser.annotate.discard')}
+                    onClick={() => {
+                      setPendingElement(null)
+                      setAnnotationText('')
+                    }}
+                  >
+                    <X size={13} />
+                  </button>
+                </div>
+                <textarea
+                  autoFocus
+                  value={annotationText}
+                  onChange={(event) => setAnnotationText(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key !== 'Enter' || event.shiftKey) return
+                    event.preventDefault()
+                    if (!annotationText.trim()) return
+                    saveAnnotation()
+                    // Ctrl/Cmd+Enter also fires the composer's send with the saved annotation attached.
+                    if (event.ctrlKey || event.metaKey) annotationsRef.current.requestSend()
                   }}
-                >
-                  <X size={13} />
-                </button>
-              </div>
-              <textarea
-                autoFocus
-                value={annotationText}
-                onChange={(event) => setAnnotationText(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key !== 'Enter' || event.shiftKey) return
-                  event.preventDefault()
-                  if (!annotationText.trim()) return
-                  saveAnnotation()
-                  // Ctrl/Cmd+Enter also fires the composer's send with the saved annotation attached.
-                  if (event.ctrlKey || event.metaKey) annotationsRef.current.requestSend()
-                }}
-                placeholder="Describe what should change…"
-              />
-              <p className="annotation-popover__hints">
-                <span>
-                  <kbd>{platform === 'darwin' ? '↩' : 'Enter'}</kbd> add to chat
-                </span>
-                <span>
-                  <kbd>{shortcutLabel(platform, ['Primary', 'Enter'])}</kbd> send now
-                </span>
-              </p>
-              <div>
-                <button
-                  type="button"
-                  className="button"
-                  onClick={() => {
-                    setPendingElement(null)
-                    setAnnotationText('')
-                  }}
-                >
-                  Cancel
-                </button>
-                <button type="button" className="button button--primary" disabled={!annotationText.trim()} onClick={saveAnnotation}>
-                  Add comment
-                </button>
+                  placeholder={t('browser.annotate.placeholder')}
+                />
+                <p className="annotation-popover__hints">
+                  <span>
+                    <kbd>{platform === 'darwin' ? '↩' : 'Enter'}</kbd> {t('browser.annotate.addHint')}
+                  </span>
+                  <span>
+                    <kbd>{shortcutLabel(platform, ['Primary', 'Enter'])}</kbd> {t('browser.annotate.sendHint')}
+                  </span>
+                </p>
+                <div>
+                  <button
+                    type="button"
+                    className="button"
+                    onClick={() => {
+                      setPendingElement(null)
+                      setAnnotationText('')
+                    }}
+                  >
+                    {t('browser.annotate.cancel')}
+                  </button>
+                  <button type="button" className="button button--primary" disabled={!annotationText.trim()} onClick={saveAnnotation}>
+                    {t('browser.annotate.add')}
+                  </button>
+                </div>
               </div>
             </div>
-          </div>
-        ) : null}
-        {count ? (
-          <div className="annotation-count">
-            <MessageCirclePlus size={12} /> {count} of {MAX_BROWSER_ANNOTATIONS} annotation{count === 1 ? '' : 's'}
-            {staleCount ? ` · ${staleCount} from earlier pages` : ''}
-          </div>
-        ) : null}
-        {notice ? (
-          <p className="annotation-notice" role="alert">
-            {notice}
-          </p>
-        ) : null}
-        <AgentCursorOverlay pointerEvent={previewPointerEvent} />
-      </div>
+          ) : null}
+          {count ? (
+            <div className="annotation-count">
+              <MessageCirclePlus size={12} /> {t('browser.annotate.count', { count, max: MAX_BROWSER_ANNOTATIONS })}
+              {staleCount ? t('browser.annotate.stale', { count: staleCount }) : ''}
+            </div>
+          ) : null}
+          {notice ? (
+            <p className="annotation-notice" role="alert">
+              {notice}
+            </p>
+          ) : null}
+          <AgentCursorOverlay pointerEvent={previewPointerEvent} />
+        </div>
       </div>
       {showAgentTab && activeAgentTab ? (
         <div className="browser-agent-area">
           <div className="browser-agent-urlbar">
-            <IconButton label="Back" disabled={!activeAgentTab.canGoBack} onClick={() => onNavigateAgentTab?.(activeAgentTab.tabId, 'back')}>
+            <IconButton label={t('browser.back')} disabled={!activeAgentTab.canGoBack} onClick={() => onNavigateAgentTab?.(activeAgentTab.tabId, 'back')}>
               <ArrowLeft size={14} />
             </IconButton>
-            <IconButton label="Forward" disabled={!activeAgentTab.canGoForward} onClick={() => onNavigateAgentTab?.(activeAgentTab.tabId, 'forward')}>
+            <IconButton label={t('browser.forward')} disabled={!activeAgentTab.canGoForward} onClick={() => onNavigateAgentTab?.(activeAgentTab.tabId, 'forward')}>
               <ArrowRight size={14} />
             </IconButton>
-            <IconButton label="Reload" onClick={() => onNavigateAgentTab?.(activeAgentTab.tabId, 'reload')}>
+            <IconButton label={t('browser.reload')} onClick={() => onNavigateAgentTab?.(activeAgentTab.tabId, 'reload')}>
               <RefreshCw size={14} />
             </IconButton>
             <form
@@ -552,14 +585,16 @@ export function BrowserPanel({ home, navigationRequest, onNavigationRequestHandl
                   agentAddressEditingRef.current = true
                   setAgentAddress(event.target.value)
                 }}
-                onBlur={() => { agentAddressEditingRef.current = false }}
-                aria-label="Agent tab address"
+                onBlur={() => {
+                  agentAddressEditingRef.current = false
+                }}
+                aria-label={t('browser.agent.address')}
                 spellCheck={false}
               />
             </form>
-            {!activeAgentTab.attached ? <em>connecting…</em> : null}
+            {!activeAgentTab.attached ? <em>{t('browser.agent.connecting')}</em> : null}
           </div>
-          <div className="browser-agent-slot" ref={slotRef} aria-label="Agent-controlled browser tab" />
+          <div className="browser-agent-slot" ref={slotRef} aria-label={t('browser.agent.slot')} />
         </div>
       ) : null}
     </div>

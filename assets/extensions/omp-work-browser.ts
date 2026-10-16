@@ -3,7 +3,7 @@
  *
  * Loaded by OMP via --extension when the desktop app spawns an OMP runtime.
  * Talks only to the app's loopback capability broker; the URL and bearer
- * token arrive through the environment (the same PRIME_WORK_BROWSER_* env
+ * token arrive through the environment (the same OMP_DESKTOP_BROWSER_* env
  * contract the Prime Agent extension uses) and are scoped to this runtime's
  * thread, so tools in one thread can never reach another thread's tabs.
  * Everything read back from a page is untrusted content.
@@ -114,8 +114,8 @@ async function resolveHostTypebox(): Promise<OmpTypebox> {
   }
 }
 
-const BRIDGE_URL = process.env.PRIME_WORK_BROWSER_URL
-const BRIDGE_TOKEN = process.env.PRIME_WORK_BROWSER_TOKEN
+const BRIDGE_URL = process.env.OMP_DESKTOP_BROWSER_URL
+const BRIDGE_TOKEN = process.env.OMP_DESKTOP_BROWSER_TOKEN
 
 interface BridgeResult { ok: boolean; result?: unknown; error?: string }
 

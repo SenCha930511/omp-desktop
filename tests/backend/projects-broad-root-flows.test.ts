@@ -50,7 +50,7 @@ async function authorizeNarrowProject(root: string, service: ProjectService, sto
   const canonical = realpathSync(root)
   const now = new Date().toISOString()
   await store.update((state) => { state.projects.push({
-    id: 'narrow-project', harness: 'prime', name: 'Narrow project', path: canonical, folders: [canonical], primaryFolder: canonical,
+    id: 'narrow-project', harness: 'omp', name: 'Narrow project', path: canonical, folders: [canonical], primaryFolder: canonical,
     pinned: false, createdAt: now, lastOpenedAt: now, folderIdentities: { [canonical]: folderIdentity(canonical) },
   }) })
   await service.list()

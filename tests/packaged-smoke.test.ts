@@ -32,7 +32,7 @@ describe('packaged smoke contract', () => {
   })
 
   it('refuses to report readiness for a URL the main process does not serve', () => {
-    expect(() => packagedSmokeMarker('prime-work://app/other.html', '1.2.3')).toThrow('unexpected renderer URL')
+    expect(() => packagedSmokeMarker('omp-desktop://app/other.html', '1.2.3')).toThrow('unexpected renderer URL')
   })
 
   it('caps the marker payload', () => {
@@ -106,7 +106,7 @@ describe('packaged smoke launch', () => {
   let unpacked: string
 
   const writeFakeApplication = (script: string): void => {
-    const executable = join(unpacked, 'gooeypi')
+    const executable = join(unpacked, 'omp desktop')
     writeFileSync(executable, `#!/usr/bin/env bash\nset -euo pipefail\n${script}\n`, { encoding: 'utf8' })
     chmodSync(executable, 0o755)
   }
@@ -171,7 +171,7 @@ describe('packaged smoke launch', () => {
   })
 
   it('reports a missing packaged executable rather than launching something else', async () => {
-    rmSync(join(unpacked, 'gooeypi'), { force: true })
+    rmSync(join(unpacked, 'omp desktop'), { force: true })
 
     await expect(launcher.smokePackagedApp('linux', 'x64')).rejects.toThrow('missing its executable')
 

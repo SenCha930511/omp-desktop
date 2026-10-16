@@ -4,7 +4,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAppUpdates } from '../../src/hooks/useAppUpdates'
-import type { AppUpdateState, PrimeWorkApi } from '../../src/types/api'
+import type { AppUpdateState, DesktopApi } from '../../src/types/api'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
@@ -25,7 +25,7 @@ afterEach(async () => {
 
 const reportError = () => undefined
 
-function Probe({ bridge, onAct }: { bridge: PrimeWorkApi; onAct(act: () => Promise<void>): void }) {
+function Probe({ bridge, onAct }: { bridge: DesktopApi; onAct(act: () => Promise<void>): void }) {
   const updates = useAppUpdates(bridge, reportError)
   onAct(updates.act)
   return <span data-phase={updates.state.phase}>{updates.state.version ?? ''}</span>
@@ -42,7 +42,7 @@ describe('useAppUpdates', () => {
         downloadAndInstall: vi.fn(async () => true),
         onChanged: (callback: (state: AppUpdateState) => void) => { push = callback; return () => undefined },
       },
-    } as unknown as PrimeWorkApi
+    } as unknown as DesktopApi
     let action!: () => Promise<void>
 
     await act(async () => { root.render(<Probe bridge={bridge} onAct={(next) => { action = next }} />) })

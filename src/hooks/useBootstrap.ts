@@ -5,7 +5,7 @@ import type { WorkspaceSnapshot } from '@/app/workspace'
 import type {
   AppMeta,
   HarnessId,
-  PrimeWorkApi,
+  DesktopApi,
   ProjectRecord,
   RuntimeInfo,
   AutomationScheduleRecord,
@@ -13,7 +13,7 @@ import type {
 } from '@/types/api'
 
 interface UseBootstrapOptions {
-  bridge: PrimeWorkApi | null
+  bridge: DesktopApi | null
   /** Wait until persisted settings select the authoritative startup harness. */
   ready?: boolean
   /** Harness whose projects, sessions, and runtimes populate the workspace. */
@@ -119,7 +119,7 @@ export function mergeSessionCatalog(
 export function useBootstrap({
   bridge,
   ready = true,
-  harness = 'prime',
+  harness = 'omp',
   setProjects,
   setSessions,
   setSchedules,
@@ -249,8 +249,8 @@ export function useBootstrap({
     let pendingCatalogRevision = 0
     let nextRevision = 0
     const unsubscribe = bridge.sessions.onChanged((change) => {
-      // Events that predate harness scoping carry no harness and mean prime.
-      if ((change.harness ?? 'prime') !== harness) return
+      // Events that predate harness scoping carry no harness; treat them as omp, the only remaining harness.
+      if ((change.harness ?? 'omp') !== harness) return
       const revision = ++nextRevision
       if (change.filePath) pendingChangedFiles.set(change.filePath, revision)
       else pendingCatalogRevision = revision

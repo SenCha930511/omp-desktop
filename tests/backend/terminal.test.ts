@@ -30,7 +30,7 @@ describe('TerminalService', () => {
   })
 
   it('publishes only the active terminal snapshot for its session', async () => {
-    const cwd = mkdtempSync(join(tmpdir(), 'prime-work-pty-context-')); dirs.push(cwd)
+    const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-pty-context-')); dirs.push(cwd)
     const owner = { id: 40, isDestroyed: () => false, send: vi.fn() } as unknown as WebContents
     const service = new TerminalService(async () => cwd, () => testShell, async (path) => path)
     const first = await service.create(owner, { cwd, shell: testShell, cols: 80, rows: 24 })
@@ -80,7 +80,7 @@ describe('TerminalService', () => {
 
 
   it('kills descendant processes when a terminal closes', async () => {
-    const cwd = mkdtempSync(join(tmpdir(), 'prime-work-pty-')); dirs.push(cwd)
+    const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-pty-')); dirs.push(cwd)
     const pidFile = join(cwd, 'background.pid')
     const owner = { id: 41, isDestroyed: () => false, send: vi.fn() } as unknown as WebContents
     const service = new TerminalService(async () => cwd, () => testShell)
@@ -95,7 +95,7 @@ describe('TerminalService', () => {
   }, 15_000)
 
   it('kills dev-server descendants only for terminals bound to the archived session', async () => {
-    const cwd = mkdtempSync(join(tmpdir(), 'prime-work-pty-session-')); dirs.push(cwd)
+    const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-pty-session-')); dirs.push(cwd)
     const pidFile = join(cwd, 'dev-server.pid')
     const owner = { id: 47, isDestroyed: () => false, send: vi.fn() } as unknown as WebContents
     const service = new TerminalService(async () => cwd, () => testShell, async (path) => path)
@@ -113,7 +113,7 @@ describe('TerminalService', () => {
   }, 15_000)
 
   it('escalates against a PTY leader that ignores HUP and TERM', async () => {
-    const cwd = mkdtempSync(join(tmpdir(), 'prime-work-pty-leader-')); dirs.push(cwd)
+    const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-pty-leader-')); dirs.push(cwd)
     const pidFile = join(cwd, 'leader.pid')
     const owner = { id: 42, isDestroyed: () => false, send: vi.fn() } as unknown as WebContents
     const service = new TerminalService(async () => cwd, () => testShell)
@@ -129,8 +129,8 @@ describe('TerminalService', () => {
 
 
   it('kills only terminals whose cwd is inside a removed project root', async () => {
-    const project = mkdtempSync(join(tmpdir(), 'prime-work-pty-project-')); dirs.push(project)
-    const outside = mkdtempSync(join(tmpdir(), 'prime-work-pty-outside-')); dirs.push(outside)
+    const project = mkdtempSync(join(tmpdir(), 'omp-desktop-pty-project-')); dirs.push(project)
+    const outside = mkdtempSync(join(tmpdir(), 'omp-desktop-pty-outside-')); dirs.push(outside)
     const owner = { id: 43, isDestroyed: () => false, send: vi.fn() } as unknown as WebContents
     const service = new TerminalService(async (cwd) => cwd, () => testShell)
     const projectTerminal = await service.create(owner, { cwd: project, shell: testShell, cols: 80, rows: 24 })
@@ -169,7 +169,7 @@ describe('TerminalService', () => {
   })
 
   it('makes concurrent app shutdown await an owner teardown already in progress', async () => {
-    const cwd = mkdtempSync(join(tmpdir(), 'prime-work-pty-shutdown-')); dirs.push(cwd)
+    const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-pty-shutdown-')); dirs.push(cwd)
     const owner = { id: 44, isDestroyed: () => false, send: vi.fn() } as unknown as WebContents
     const service = new TerminalService(async () => cwd, () => testShell)
     const created = await service.create(owner, { cwd, shell: testShell, cols: 80, rows: 24 })
@@ -185,7 +185,7 @@ describe('TerminalService', () => {
   })
 
   it('short-circuits kill for a terminal that already exited on its own', async () => {
-    const cwd = mkdtempSync(join(tmpdir(), 'prime-work-pty-exited-')); dirs.push(cwd)
+    const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-pty-exited-')); dirs.push(cwd)
     const exits: unknown[] = []
     const owner = {
       id: 45,
@@ -210,7 +210,7 @@ describe('TerminalService', () => {
   }, 15_000)
 
   it('deduplicates overlapping kill requests for the same terminal', async () => {
-    const cwd = mkdtempSync(join(tmpdir(), 'prime-work-pty-dedupe-')); dirs.push(cwd)
+    const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-pty-dedupe-')); dirs.push(cwd)
     const owner = { id: 46, isDestroyed: () => false, send: vi.fn() } as unknown as WebContents
     const service = new TerminalService(async () => cwd, () => testShell)
     const created = await service.create(owner, { cwd, shell: testShell, cols: 80, rows: 24 })

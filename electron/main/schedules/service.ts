@@ -164,7 +164,7 @@ export class AutomationService {
           if (run.status !== 'queued' && run.status !== 'running') continue
           run.status = 'interrupted'
           run.finishedAt = finishedAt
-          run.error = 'GooeyPi quit before this run could finish.'
+          run.error = 'OMP Desktop quit before this run could finish.'
         }
       }
     })
@@ -210,7 +210,7 @@ export class AutomationService {
     return { timing, occurrences: previewScheduleOccurrences(timing, count, now) }
   }
 
-  async create(inputValue: unknown, createdBy: 'user' | 'agent' = 'user', harness: HarnessId = 'prime'): Promise<AutomationScheduleRecord> {
+  async create(inputValue: unknown, createdBy: 'user' | 'agent' = 'user', harness: HarnessId = 'omp'): Promise<AutomationScheduleRecord> {
     const now = this.now()
     const input = parseInput(inputValue, now)
     this.options.validatePrompt?.(input.prompt, harness)
@@ -235,7 +235,7 @@ export class AutomationService {
       runs: [],
     }
     await this.store.update((state) => {
-      if (state.schedules.length >= MAX_TASKS) throw new Error(`GooeyPi supports at most ${MAX_TASKS} scheduled tasks`)
+      if (state.schedules.length >= MAX_TASKS) throw new Error(`OMP Desktop supports at most ${MAX_TASKS} scheduled tasks`)
       state.schedules.push(task)
     })
     this.changed({ taskId: task.id, reason: 'created' })
@@ -405,7 +405,7 @@ export class AutomationService {
     const run: ScheduleRunRecord = {
       id: randomUUID(), taskId: snapshot.id, taskRevision: snapshot.revision, trigger: 'scheduled',
       scheduledFor, queuedAt: now.toISOString(), finishedAt: now.toISOString(), status: 'skipped',
-      execution: snapshot.execution, skippedCount: Math.max(1, missed), error: 'GooeyPi was not available when this task was due.',
+      execution: snapshot.execution, skippedCount: Math.max(1, missed), error: 'OMP Desktop was not available when this task was due.',
     }
     await this.store.update((state) => {
       const task = state.schedules.find((candidate) => candidate.id === snapshot.id)

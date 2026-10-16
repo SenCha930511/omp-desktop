@@ -130,11 +130,11 @@ describe('Sidebar memoization and scale bounds', () => {
 
   it('indexes 5,000 sessions once and bounds rendered rows per project', () => {
     const project: ProjectRecord = {
-      id: 'large', harness: 'prime', name: 'Large', path: '/large', folders: ['/large'], primaryFolder: '/large',
+      id: 'large', harness: 'omp', name: 'Large', path: '/large', folders: ['/large'], primaryFolder: '/large',
       pinned: false, createdAt: '2026-01-01T00:00:00.000Z', lastOpenedAt: '2026-01-01T00:00:00.000Z', sessionCount: 5_000,
     }
     const sessions: SessionRecord[] = Array.from({ length: 5_000 }, (_, index) => ({
-      id: `session-${index}`, harness: 'prime' as const, projectPath: '/large', filePath: `/sessions/${index}.jsonl`, title: `Session ${index}`,
+      id: `session-${index}`, harness: 'omp' as const, projectPath: '/large', filePath: `/sessions/${index}.jsonl`, title: `Session ${index}`,
       createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z', status: 'idle', depth: 0,
     }))
     const stats = { projectPaths: 0, sessionScans: 0 }
@@ -463,7 +463,7 @@ describe('external sync reconciliation', () => {
 
 describe('catalog tick session identity', () => {
   const record = (filePath: string, overrides: Partial<SessionRecord> = {}): SessionRecord => ({
-    id: filePath, harness: 'prime', projectPath: '/project', filePath, title: 'Session',
+    id: filePath, harness: 'omp', projectPath: '/project', filePath, title: 'Session',
     createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
     status: 'idle', depth: 0, ...overrides,
   })

@@ -23,11 +23,9 @@ function task(harness: HarnessId, prompt: string): AutomationScheduleRecord {
 }
 
 describe('ScheduledRunExecutor MCP auth policy', () => {
-  it.each([
-    ['prime', '/mcp login notion'],
-    ['omp', '/mcp reauth docs'],
-    ['pi', '/mcp-auth files'],
-  ] as const)('rejects a persisted %s auth task before project lookup or runtime start', async (harness, prompt) => {
+  it('rejects a persisted omp auth task before project lookup or runtime start', async () => {
+    const harness = 'omp'
+    const prompt = '/mcp reauth docs'
     const projects = { list: vi.fn(), authorizeCwd: vi.fn() }
     const sessions = { harness, list: vi.fn(), requireSessionPath: vi.fn() }
     const agents = { startUnattended: vi.fn() }
@@ -36,7 +34,7 @@ describe('ScheduledRunExecutor MCP auth policy', () => {
 
     const result = executor.run(task(harness, prompt))
     await expect(result).rejects.toBeInstanceOf(ScheduleBlockedError)
-    await expect(result).rejects.toThrow('Network MCP authentication is managed outside GooeyPi')
+    await expect(result).rejects.toThrow('Network MCP authentication is managed outside OMP Desktop')
     expect(projects.list).not.toHaveBeenCalled()
     expect(agents.startUnattended).not.toHaveBeenCalled()
   })

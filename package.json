@@ -1,15 +1,15 @@
 {
-  "name": "gooeypi",
+  "name": "omp-desktop",
   "version": "1.1.17",
   "private": true,
-  "description": "A desktop workspace for Pi, OMP, and Prime Agent",
+  "description": "A desktop workspace for OMP",
   "main": "out/main/index.js",
-  "desktopName": "gooeypi.desktop",
+  "desktopName": "omp-desktop.desktop",
   "author": {
-    "name": "GooeyPi contributors",
-    "email": "42459108+am-will@users.noreply.github.com"
+    "name": "OMP Desktop contributors",
+    "email": "69847839+SenCha930511@users.noreply.github.com"
   },
-  "homepage": "https://github.com/am-will/gooey-pi",
+  "homepage": "https://github.com/SenCha930511/omp-desktop",
   "license": "MIT",
   "type": "module",
   "scripts": {
@@ -27,10 +27,9 @@
     "test:e2e": "npm run build && npm run test:e2e:hermetic",
     "test:e2e:hermetic": "playwright test",
     "release:verify": "npm run release:verify:package && npm run test:e2e:hermetic",
-    "release:verify:package": "node scripts/release/preflight.mjs --toolchain-only && npm run vendor:verify-patches && npm run typecheck && npm run check && npm run test:coverage && npm run build:bundle && npm run release:bundle-size",
+    "release:verify:package": "node scripts/release/preflight.mjs --toolchain-only && npm run typecheck && npm run check && npm run test:coverage && npm run build:bundle && npm run release:bundle-size",
     "release:bundle-size": "node scripts/release/preflight.mjs --toolchain-only && node scripts/release/verify-bundle-size.mjs",
     "audit:production": "node scripts/release/audit-production.mjs",
-    "vendor:verify-patches": "node scripts/release/verify-vendor-patches.mjs",
     "package:mac": "node scripts/release/package.mjs --public --platform mac",
     "package:mac:local-qa": "node scripts/release/package.mjs --qa --platform mac",
     "package:linux": "node scripts/release/package.mjs --public --platform linux",
@@ -40,21 +39,15 @@
     "release:preflight": "node scripts/release/preflight.mjs",
     "release:preflight:toolchain": "node scripts/release/preflight.mjs --toolchain-only",
     "toolchain:bootstrap": "node scripts/release/bootstrap-npm.mjs",
-    "postinstall": "node scripts/release/install-app-deps.mjs"
+    "postinstall": "node scripts/release/install-app-deps.mjs && node scripts/release/brand-dev-electron.mjs"
   },
   "dependencies": {
     "electron-updater": "^6.8.9",
     "js-yaml": "^5.3.0",
     "node-pty": "^1.1.0",
-    "prime-agent": "file:vendor/prime-agent-0.7.0-gooeypi.1.tgz",
-    "prime-agent-ai": "file:vendor/prime-agent-ai-0.7.0-gooeypi.1.tgz",
-    "rrule": "^2.8.1",
-    "zeromq": "^6.1.2"
+    "rrule": "^2.8.1"
   },
   "overrides": {
-    "@earendil-works/pi-agent-core": "file:vendor/prime-agent-core-0.7.0.tgz",
-    "@earendil-works/pi-ai": "$prime-agent-ai",
-    "@earendil-works/pi-tui": "file:vendor/prime-agent-tui-0.7.0.tgz",
     "extract-zip": "npm:@electron-internal/extract-zip@1.0.5"
   },
   "devDependencies": {
@@ -85,21 +78,14 @@
     "vitest": "^4.1.10"
   },
   "build": {
-    "appId": "app.gooeypi.desktop",
-    "productName": "GooeyPi",
+    "appId": "app.ompdesktop.desktop",
+    "productName": "OMP Desktop",
     "asar": {
       "smartUnpack": false
     },
     "files": [
       "out/**/*",
-      "package.json",
-      "!**/node_modules/prime-agent/docs/**",
-      "!**/node_modules/prime-agent/dist/bundle/**",
-      "!**/node_modules/prime-agent/dist/modes/**",
-      "!**/node_modules/prime-agent/**/*.map",
-      "!**/node_modules/prime-agent/**/*.d.ts",
-      "!**/node_modules/@earendil-works/pi-tui/**",
-      "!**/node_modules/koffi/**"
+      "package.json"
     ],
     "mac": {
       "category": "public.app-category.developer-tools",
@@ -107,39 +93,29 @@
         "dmg",
         "zip"
       ],
-      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "artifactName": "OMP-Desktop-${version}-${arch}.${ext}",
       "icon": "assets/icon.icns",
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.inherit.plist",
       "extendInfo": {
         "LSUIElement": true,
-        "NSMicrophoneUsageDescription": "GooeyPi uses the microphone for dictation and realtime voice sessions you start."
+        "NSMicrophoneUsageDescription": "OMP Desktop uses the microphone for dictation and realtime voice sessions you start."
       },
       "notarize": true,
       "asarUnpack": [
         "**/node_modules/node-pty/build/Release/pty.node",
-        "**/node_modules/node-pty/build/Release/spawn-helper",
-        "**/node_modules/zeromq/build/darwin/${arch}/node/*-Release/addon.node"
+        "**/node_modules/node-pty/build/Release/spawn-helper"
       ],
       "files": [
         "out/**/*",
         "package.json",
-        "!**/node_modules/prime-agent/docs/**",
-        "!**/node_modules/prime-agent/dist/bundle/**",
-        "!**/node_modules/prime-agent/dist/modes/**",
-        "!**/node_modules/prime-agent/**/*.map",
-        "!**/node_modules/prime-agent/**/*.d.ts",
-        "!**/node_modules/@earendil-works/pi-tui/**",
-        "!**/node_modules/koffi/**",
-        "!**/node_modules/zeromq/build/linux/**",
-        "!**/node_modules/zeromq/build/win32/**",
         "!**/node_modules/extract-zip/index.linux-*.node",
         "!**/node_modules/extract-zip/index.win32-*.node"
       ]
     },
     "linux": {
       "category": "Development",
-      "synopsis": "A desktop workspace for Pi, OMP, and Prime Agent",
+      "synopsis": "A desktop workspace for OMP",
       "syncDesktopName": true,
       "target": [
         "AppImage",
@@ -147,24 +123,14 @@
         "rpm",
         "pacman"
       ],
-      "artifactName": "${productName}-${version}-linux-${arch}.${ext}",
+      "artifactName": "OMP-Desktop-${version}-linux-${arch}.${ext}",
       "icon": "assets/icon.png",
       "asarUnpack": [
-        "**/node_modules/node-pty/build/Release/pty.node",
-        "**/node_modules/zeromq/build/linux/${arch}/node/*-Release/addon.node"
+        "**/node_modules/node-pty/build/Release/pty.node"
       ],
       "files": [
         "out/**/*",
         "package.json",
-        "!**/node_modules/prime-agent/docs/**",
-        "!**/node_modules/prime-agent/dist/bundle/**",
-        "!**/node_modules/prime-agent/dist/modes/**",
-        "!**/node_modules/prime-agent/**/*.map",
-        "!**/node_modules/prime-agent/**/*.d.ts",
-        "!**/node_modules/@earendil-works/pi-tui/**",
-        "!**/node_modules/koffi/**",
-        "!**/node_modules/zeromq/build/darwin/**",
-        "!**/node_modules/zeromq/build/win32/**",
         "!**/node_modules/extract-zip/index.darwin-*.node",
         "!**/node_modules/extract-zip/index.win32-*.node"
       ]
@@ -175,7 +141,7 @@
         "zip",
         "appx"
       ],
-      "artifactName": "${productName}-${version}-win-${arch}.${ext}",
+      "artifactName": "OMP-Desktop-${version}-win-${arch}.${ext}",
       "icon": "assets/icon.png",
       "asarUnpack": [
         "**/node_modules/node-pty/prebuilds/win32-${arch}/pty.node",
@@ -184,21 +150,11 @@
         "**/node_modules/node-pty/prebuilds/win32-${arch}/winpty-agent.exe",
         "**/node_modules/node-pty/prebuilds/win32-${arch}/winpty.dll",
         "**/node_modules/node-pty/prebuilds/win32-${arch}/conpty/OpenConsole.exe",
-        "**/node_modules/node-pty/prebuilds/win32-${arch}/conpty/conpty.dll",
-        "**/node_modules/zeromq/build/win32/${arch}/node/*-Release/addon.node"
+        "**/node_modules/node-pty/prebuilds/win32-${arch}/conpty/conpty.dll"
       ],
       "files": [
         "out/**/*",
         "package.json",
-        "!**/node_modules/prime-agent/docs/**",
-        "!**/node_modules/prime-agent/dist/bundle/**",
-        "!**/node_modules/prime-agent/dist/modes/**",
-        "!**/node_modules/prime-agent/**/*.map",
-        "!**/node_modules/prime-agent/**/*.d.ts",
-        "!**/node_modules/@earendil-works/pi-tui/**",
-        "!**/node_modules/koffi/**",
-        "!**/node_modules/zeromq/build/darwin/**",
-        "!**/node_modules/zeromq/build/linux/**",
         "!**/node_modules/extract-zip/index.darwin-*.node",
         "!**/node_modules/extract-zip/index.linux-*.node"
       ]
@@ -208,8 +164,8 @@
     },
     "publish": {
       "provider": "github",
-      "owner": "am-will",
-      "repo": "gooey-pi"
+      "owner": "SenCha930511",
+      "repo": "omp-desktop"
     },
     "afterPack": "scripts/release/after-pack.cjs",
     "extraResources": [
@@ -224,20 +180,16 @@
       {
         "from": "assets/extensions",
         "to": "extensions"
-      },
-      {
-        "from": "assets/pets",
-        "to": "pets"
       }
     ],
     "electronLanguages": [
       "en-US"
     ],
     "appx": {
-      "applicationId": "GooeyPi",
-      "identityName": "GooeyPi",
-      "publisherDisplayName": "GooeyPi",
-      "displayName": "GooeyPi",
+      "applicationId": "OMPDesktop",
+      "identityName": "OMPDesktop",
+      "publisherDisplayName": "OMP Desktop",
+      "displayName": "OMP Desktop",
       "backgroundColor": "#171716",
       "languages": [
         "en-US"

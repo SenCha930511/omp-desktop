@@ -46,24 +46,6 @@ export const DEEPGRAM_MODELS: VoiceOption[] = [
   { value: 'nova-2-conversationalai', label: 'Nova-2 Conversational AI', detail: 'Voice assistants and automated conversations.' },
 ]
 
-export const REALTIME_MODELS: VoiceOption[] = [
-  { value: 'gpt-realtime-2.1', label: 'GPT Realtime 2.1', detail: 'Best voice orchestration and tool use.', recommended: true },
-  { value: 'gpt-realtime-2.1-mini', label: 'GPT Realtime 2.1 mini', detail: 'Lower-cost realtime voice orchestration.' },
-]
-
-export const REALTIME_VOICES: VoiceOption[] = [
-  { value: 'marin', label: 'Marin', detail: 'Natural and conversational.', recommended: true },
-  { value: 'cedar', label: 'Cedar', detail: 'Warm and grounded.', recommended: true },
-  { value: 'alloy', label: 'Alloy', detail: 'Balanced and neutral.' },
-  { value: 'ash', label: 'Ash', detail: 'Clear and direct.' },
-  { value: 'ballad', label: 'Ballad', detail: 'Expressive and measured.' },
-  { value: 'coral', label: 'Coral', detail: 'Bright and friendly.' },
-  { value: 'echo', label: 'Echo', detail: 'Smooth and steady.' },
-  { value: 'sage', label: 'Sage', detail: 'Calm and composed.' },
-  { value: 'shimmer', label: 'Shimmer', detail: 'Light and energetic.' },
-  { value: 'verse', label: 'Verse', detail: 'Dynamic and articulate.' },
-]
-
 export function optionsWithCurrent(options: VoiceOption[], current: string): VoiceOption[] {
   return options.some((option) => option.value === current)
     ? options

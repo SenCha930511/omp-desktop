@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { TranscriptMessage } from '@/types/api'
+import { useI18n } from '@/lib/i18n'
 import { newestWindow } from '@/lib/render-bounds'
+import type { TranscriptMessage } from '@/types/api'
 
 export function useTranscriptScroll(messages: TranscriptMessage[]) {
+  const { t } = useI18n()
   const scrollRef = useRef<HTMLDivElement>(null)
   const previousCountRef = useRef(0)
   const previousStreamingRef = useRef(false)
@@ -23,12 +25,14 @@ export function useTranscriptScroll(messages: TranscriptMessage[]) {
     } else if (streaming && pinnedToBottomRef.current) {
       frame = requestAnimationFrame(() => scroller && typeof scroller.scrollTo === 'function' && scroller.scrollTo({ top: scroller.scrollHeight, behavior: 'auto' }))
     }
-    if (previousStreamingRef.current && !streaming) setAnnouncement('Prime response complete.')
-    else if (!previousStreamingRef.current && streaming) setAnnouncement('Prime is working.')
+    if (previousStreamingRef.current && !streaming) setAnnouncement(t('transcript.announcement.complete'))
+    else if (!previousStreamingRef.current && streaming) setAnnouncement(t('transcript.announcement.working'))
     previousStreamingRef.current = streaming
     previousCountRef.current = messages.length
-    return () => { if (frame !== undefined) cancelAnimationFrame(frame) }
-  }, [messages, streaming])
+    return () => {
+      if (frame !== undefined) cancelAnimationFrame(frame)
+    }
+  }, [messages, streaming, t])
 
   const updatePinnedState = () => {
     const scroller = scrollRef.current

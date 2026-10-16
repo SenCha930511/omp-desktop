@@ -3,14 +3,14 @@
  * webview attribute must match the main process's will-attach-webview gate
  * exactly, or webview attach is silently blocked.
  */
-export const BROWSER_PARTITION = 'persist:prime-work-browser'
+export const BROWSER_PARTITION = 'persist:omp-desktop-browser'
 
 export type ThemeMode = 'system' | 'light' | 'dark'
 export type WorkspaceView = 'session' | 'projects' | 'activity' | 'scheduled' | 'plugins' | 'settings'
 export type InspectorTab = 'summary' | 'changes' | 'browser' | 'files'
 export type SessionStatus = 'idle' | 'running' | 'waiting' | 'complete' | 'failed' | 'unknown'
 
-export const HARNESS_IDS = ['omp', 'prime', 'pi'] as const
+export const HARNESS_IDS = ['omp'] as const
 export type HarnessId = (typeof HARNESS_IDS)[number]
 
 /**
@@ -238,7 +238,7 @@ export interface PrimeModelDescriptor {
   availableThinkingLevels: PrimeThinkingLevel[]
   fastModeSupported: boolean
   available: boolean
-  /** GooeyPi visibility policy for this harness; absent catalogs predate per-model controls. */
+  /** OMP Desktop visibility policy for this model; absent catalogs predate per-model controls. */
   enabled?: boolean
 }
 
@@ -261,14 +261,6 @@ export interface PrimeModelCatalog {
   providers: PrimeProviderDescriptor[]
   warning?: string
 }
-
-export type ProviderAuthEvent =
-  | { flowId: string; providerId: string; type: 'auth'; url: string; instructions?: string }
-  | { flowId: string; providerId: string; type: 'progress'; message: string }
-  | { flowId: string; providerId: string; type: 'prompt'; promptId: string; message: string; placeholder?: string; allowEmpty?: boolean }
-  | { flowId: string; providerId: string; type: 'select'; promptId: string; message: string; options: Array<{ id: string; label: string }> }
-  | { flowId: string; providerId: string; type: 'complete' | 'cancelled' }
-  | { flowId: string; providerId: string; type: 'error'; error: string }
 
 export interface PrimeEventEnvelope {
   runtimeId: string
@@ -433,18 +425,6 @@ export interface TerminalActiveContext { label: string; content: string; truncat
 
 export type MessageEnterAction = 'queue' | 'steer'
 export type PromptDeliveryIntent = 'queue' | 'steer'
-
-export interface PetDefinition {
-  /** Stable settings key. Codex pets are namespaced as codex/<folder>. */
-  id: string
-  /** Package manifest id, used to deduplicate bundled and Codex copies. */
-  petId: string
-  displayName: string
-  description: string
-  source: 'built-in' | 'codex'
-  kind: 'orb' | 'spritesheet'
-}
-
 export interface QueuedPrompt {
   id: string
   text: string
@@ -469,7 +449,7 @@ export interface SessionActionSnapshot {
 
 export const INTERFACE_FONT_SCALES = [105, 110, 115] as const
 export type InterfaceFontScale = typeof INTERFACE_FONT_SCALES[number]
-export const LOCALE_PREFERENCES = ['system', 'en', 'zh-CN'] as const
+export const LOCALE_PREFERENCES = ['system', 'en', 'zh-CN', 'zh-TW'] as const
 export type LocalePreference = typeof LOCALE_PREFERENCES[number]
 export const PROJECT_SORT_MODES = ['recent', 'alphabetical'] as const
 export type ProjectSortMode = typeof PROJECT_SORT_MODES[number]
@@ -487,7 +467,7 @@ export interface AppSettings {
   checkoutStrategy: CheckoutStrategy
   /** Keep the desktop process available for scheduled work after its window closes. */
   keepRunningInBackground: boolean
-  /** Ask the operating system to launch GooeyPi when the user signs in. */
+  /** Ask the operating system to launch OMP Desktop when the user signs in. */
   launchAtLogin: boolean
   terminalOpen: boolean
   defaultInspectorTab: InspectorTab
@@ -498,45 +478,29 @@ export interface AppSettings {
   showReasoningSummaries: boolean
   showToolCalls: boolean
   messageEnterAction: MessageEnterAction
-  /** Optional absolute executable overrides; blank keeps automatic discovery. */
+  /** Optional absolute executable override; blank keeps automatic discovery. */
   runtimePaths: Record<HarnessId, string>
-  /** Legacy visibility preference retained for state compatibility; executable detection is authoritative. */
-  enabledHarnesses: HarnessId[]
   /**
    * Legacy diagnostics preference retained for persisted-state compatibility.
    * The Privacy UI deliberately ignores this field; any reporting use needs separate review.
    */
   telemetry: boolean
-  /** GooeyPi-managed ask_user tool, shared by every interactive harness. */
+  /** OMP Desktop-managed ask_user tool for interactive sessions. */
   askUserEnabled: boolean
-  /** Expose GooeyPi's thread-scoped in-app browser controls to new sessions. */
+  /** Expose OMP Desktop's thread-scoped in-app browser controls to new sessions. */
   browserEnabled: boolean
   /** Expose the separately installed TryCUA driver to new sessions through its official CLI. */
   computerUseEnabled: boolean
-  /** Providers hidden from Prime Work's Prime model picker. */
-  disabledProviders: string[]
-  /** Models hidden from Prime Work's Prime model picker, stored as provider/model keys. */
-  disabledModels: string[]
-  /** Providers hidden from Prime Work's OMP model picker; OMP config is untouched. */
+  /** Providers hidden from the OMP model picker; OMP's own config is untouched. */
   ompDisabledProviders: string[]
-  /** Models hidden from Prime Work's OMP model picker; OMP config is untouched. */
+  /** Models hidden from the OMP model picker, stored as provider/model keys. */
   ompDisabledModels: string[]
-  /** Providers hidden from Prime Work's pi model picker; pi config is untouched. */
-  piDisabledProviders: string[]
-  /** Models hidden from Prime Work's pi model picker; pi config is untouched. */
-  piDisabledModels: string[]
-  /** Last usable model selected in each harness; blank falls back to the first usable catalog model. */
+  /** Last usable model selected; blank falls back to the first usable catalog model. */
   lastSelectedModels: Record<HarnessId, string>
-  /** Harness whose workspace the renderer shows; new installs default to 'omp'. */
+  /** Harness whose workspace the renderer shows; always 'omp'. */
   activeHarness: HarnessId
   /** OMP tool-approval override; 'inherit' leaves OMP's own config in charge. */
   ompApprovalMode: OmpApprovalMode
-  /** Desktop companion shown above the workspace. */
-  petEnabled: boolean
-  /** Built-in or discovered pet selection id. */
-  petId: string
-  /** Desktop companion size as a percentage of its native workspace size. */
-  petSize: number
   /** Speech-to-text path used by the composer microphone. */
   voiceTranscriptionProvider: VoiceTranscriptionProvider
   /** Provider model IDs stay configurable without exposing provider credentials. */
@@ -550,9 +514,6 @@ export interface AppSettings {
   /** User-managed whisper.cpp installation for offline transcription. */
   voiceLocalWhisperExecutable: string
   voiceLocalWhisperModel: string
-  /** Realtime orb model and synthesized voice. */
-  voiceRealtimeModel: string
-  voiceRealtimeVoice: string
 }
 
 export const VOICE_TRANSCRIPTION_PROVIDERS = ['openai-live', 'openai', 'groq', 'deepgram', 'self-hosted', 'local-whisper'] as const
@@ -571,9 +532,10 @@ export interface VoiceCredentialStatus {
   storage: VoiceCredentialStorageStatus
 }
 
-export type VoiceRealtimeCallRequest =
-  | { mode: 'conversation'; sdp: string; harness: HarnessId }
-  | { mode: 'transcription'; sdp: string }
+export interface VoiceRealtimeCallRequest {
+  mode: 'transcription'
+  sdp: string
+}
 
 export interface VoiceTranscriptionRequest {
   provider: Exclude<VoiceTranscriptionProvider, 'openai-live'>
@@ -583,36 +545,6 @@ export interface VoiceTranscriptionRequest {
 export interface VoiceSelfHostedTestRequest {
   url: string
   model: string
-}
-
-export interface VoiceProjectSummary {
-  id: string
-  harness: HarnessId
-  name: string
-  lastOpenedAt: string
-}
-
-export interface VoiceTaskStarted {
-  projectId: string
-  projectName: string
-  harness: HarnessId
-  runtimeId: string
-  sessionId?: string
-  sessionFile: string
-  model?: Pick<PrimeModelDescriptor, 'key' | 'provider' | 'id' | 'name'>
-  reasoning?: PrimeThinkingLevel
-}
-
-export type VoiceToolRequest =
-  | { name: 'list_projects'; arguments: { query?: string } }
-  | { name: 'list_models'; arguments: { query?: string } }
-  | { name: 'start_task'; arguments: { project_id: string; prompt: string; title?: string; model?: string; reasoning?: string } }
-  | { name: 'get_local_context'; arguments: Record<string, never> }
-  | { name: 'search_web'; arguments: { query: string } }
-
-export interface VoiceToolResult {
-  output: string
-  task?: VoiceTaskStarted
 }
 
 export type ScheduleDefinitionStatus = 'active' | 'paused' | 'completed' | 'blocked'
@@ -698,22 +630,6 @@ export interface ScheduleChangeEvent {
   reason: 'created' | 'updated' | 'deleted' | 'run'
 }
 
-export interface NativeHeartbeatRecord {
-  id: string
-  source: 'heartbeat' | 'rlm_heartbeat'
-  status: 'active' | 'paused'
-  prompt: string
-  schedule: string
-  sessionId: string
-  sessionFile: string
-  activeSessionId: string
-  deliveryMode?: 'steer' | 'follow_up'
-  nextRunAt?: string
-  lastRunAt?: string
-  label?: string
-  runtimeId?: string
-}
-
 /** One agent-controlled browser tab. The registry lives in the main process; the renderer hosts the webview guests and mirrors this state. */
 export interface AgentBrowserTabRecord {
   tabId: string
@@ -751,7 +667,7 @@ export interface AgentBrowserPointerEvent {
   durationMs: number
 }
 
-export interface PrimeWorkApi {
+export interface DesktopApi {
   app: { getMeta(): Promise<AppMeta>; refreshHarnesses(): Promise<{ meta: AppMeta; settings: AppSettings }>; openExternal(url: string): Promise<boolean>; revealPath(path: string): Promise<boolean>; popupMenu(menu: ApplicationMenuName, x: number, y: number): Promise<boolean>; setTitleBarTheme(theme: Exclude<ThemeMode, 'system'>): Promise<boolean>; onOpenSettings(callback: () => void): () => void }
   updates: {
     getState(): Promise<AppUpdateState>
@@ -776,7 +692,6 @@ export interface PrimeWorkApi {
   sessions: {
     list(projectPath?: string, includeArchived?: boolean, harness?: HarnessId, force?: boolean): Promise<SessionRecord[]>
     read(filePath: string): Promise<TranscriptMessage[]>
-    followUp(filePath: string, message: string, intent?: PromptDeliveryIntent): Promise<boolean>
     rename(filePath: string, title: string): Promise<boolean>
     archive(filePath: string, archived?: boolean): Promise<boolean>
     onChanged(callback: (event: SessionChangeEvent) => void): () => void
@@ -790,15 +705,9 @@ export interface PrimeWorkApi {
   }
   providers: {
     catalog(force?: boolean, harness?: HarnessId): Promise<PrimeModelCatalog>
-    saveApiKey(providerId: string, apiKey: string): Promise<PrimeModelCatalog>
-    logout(providerId: string): Promise<PrimeModelCatalog>
     setEnabled(providerId: string, enabled: boolean, harness?: HarnessId): Promise<PrimeModelCatalog>
     setDisabled(providerIds: string[], harness?: HarnessId): Promise<PrimeModelCatalog>
     setModelEnabled(modelKey: string, enabled: boolean, harness?: HarnessId): Promise<PrimeModelCatalog>
-    startOAuth(providerId: string): Promise<{ flowId: string }>
-    respondOAuth(flowId: string, promptId: string, value?: string): Promise<boolean>
-    cancelOAuth(flowId: string): Promise<boolean>
-    onAuthEvent(callback: (event: ProviderAuthEvent) => void): () => void
   }
   voice: {
     credentialStatus(): Promise<VoiceCredentialStatus>
@@ -807,11 +716,6 @@ export interface PrimeWorkApi {
     createRealtimeCall(request: VoiceRealtimeCallRequest): Promise<string>
     transcribe(request: VoiceTranscriptionRequest): Promise<string>
     testSelfHosted(request: VoiceSelfHostedTestRequest): Promise<boolean>
-    executeTool(request: VoiceToolRequest, harness: HarnessId): Promise<VoiceToolResult>
-  }
-  pets: {
-    list(): Promise<PetDefinition[]>
-    sprite(id: string): Promise<string | null>
   }
   terminal: {
     create(options: TerminalSpawnOptions): Promise<{ terminalId: string; shell: string }>
@@ -829,7 +733,6 @@ export interface PrimeWorkApi {
     list(projectPath?: string, harness?: HarnessId): Promise<PluginCatalog>
     install(source: string, harness?: HarnessId): Promise<ProcessOutcome>
     installExtension(input: ExtensionInstallInput, harness?: HarnessId): Promise<ProcessOutcome>
-    setMcpSupport(enabled: boolean, harness?: HarnessId): Promise<ProcessOutcome>
     connectMcp(input: McpConnectionInput, harness?: HarnessId): Promise<ProcessOutcome>
     setMcpEnabled(input: McpStateInput, harness?: HarnessId): Promise<ProcessOutcome>
     mutateCapability(input: CapabilityMutationInput, harness?: HarnessId): Promise<ProcessOutcome>
@@ -847,10 +750,6 @@ export interface PrimeWorkApi {
     onPointer(callback: (event: AgentBrowserPointerEvent) => void): () => void
     onActivity(callback: (event: AgentBrowserActivityEvent) => void): () => void
   }
-  heartbeats: {
-    list(): Promise<NativeHeartbeatRecord[]>
-    manage(id: string, action: 'pause' | 'resume' | 'stop'): Promise<NativeHeartbeatRecord | null>
-  }
   schedules: {
     list(harness?: HarnessId): Promise<AutomationScheduleRecord[]>
     get(id: string): Promise<AutomationScheduleRecord>
@@ -865,4 +764,4 @@ export interface PrimeWorkApi {
   }
 }
 
-declare global { interface Window { prime: PrimeWorkApi } }
+declare global { interface Window { desktop: DesktopApi } }

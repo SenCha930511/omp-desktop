@@ -30,7 +30,7 @@ describe('requireWebUrl', () => {
       'ftp://example.com/',
       'data:text/html,<script>alert(1)</script>',
       'chrome://settings',
-      'prime-work://app/',
+      'omp-desktop://app/',
       'vbscript:msgbox(1)',
     ]) expect(() => requireWebUrl(url), url).toThrow(/scheme is not allowed/)
   })
@@ -95,7 +95,7 @@ describe('requireGitPath', () => {
 
 describe('requireExistingPath', () => {
   it('resolves symlinks to their real path', async () => {
-    const dir = temp('prime-work-validation-')
+    const dir = temp('omp-desktop-validation-')
     const target = join(dir, 'target.txt')
     writeFileSync(target, 'data')
     const link = join(dir, 'link.txt')
@@ -106,7 +106,7 @@ describe('requireExistingPath', () => {
   })
 
   it('collapses dot-dot traversal through realpath resolution', async () => {
-    const dir = temp('prime-work-validation-')
+    const dir = temp('omp-desktop-validation-')
     mkdirSync(join(dir, 'nested'))
     writeFileSync(join(dir, 'file.txt'), 'data')
     const resolved = await requireExistingPath(join(dir, 'nested', '..', 'file.txt'))
@@ -114,7 +114,7 @@ describe('requireExistingPath', () => {
   })
 
   it('rejects relative, missing, and malformed paths', async () => {
-    const dir = temp('prime-work-validation-')
+    const dir = temp('omp-desktop-validation-')
     await expect(requireExistingPath('relative/path')).rejects.toThrow(/absolute/)
     await expect(requireExistingPath(join(dir, 'missing.txt'))).rejects.toThrow()
     await expect(requireExistingPath(`${dir}\0`)).rejects.toThrow(/NUL/)
@@ -147,8 +147,8 @@ describe('isPathWithin', () => {
     // Pins current behavior: a symlink inside the root that points outside
     // still counts as "within"; callers needing physical containment must
     // realpath first (as requireExistingPath does).
-    const dir = temp('prime-work-validation-')
-    const outside = temp('prime-work-validation-outside-')
+    const dir = temp('omp-desktop-validation-')
+    const outside = temp('omp-desktop-validation-outside-')
     const link = join(dir, 'escape')
     symlinkSync(outside, link)
     expect(isPathWithin(dir, link)).toBe(true)

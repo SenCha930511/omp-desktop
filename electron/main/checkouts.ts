@@ -103,7 +103,7 @@ export class CheckoutService {
     }
     if (outcome.kind === 'dirty') {
       const detail = outcome.changedPaths.length ? ` ${outcome.changedPaths.length} changed path${outcome.changedPaths.length === 1 ? '' : 's'} must be resolved first.` : ''
-      return { kind: 'refused', code: 'dirty-worktree', message: `Branch checkout requires a clean project. GooeyPi did not modify your files.${detail}` }
+      return { kind: 'refused', code: 'dirty-worktree', message: `Branch checkout requires a clean project. OMP Desktop did not modify your files.${detail}` }
     }
     if (outcome.kind === 'unchanged') return { kind: 'unchanged', project, checkout: { strategy: 'branch', branch } }
     return { kind: 'applied', project: await this.projects.refreshCheckoutProject(project.id), checkout: { strategy: 'branch', branch } }

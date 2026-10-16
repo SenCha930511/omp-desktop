@@ -89,10 +89,10 @@ beforeEach(() => {
 
 describe('macOS background startup', () => {
   it('recognizes login launches and the explicit flag only on macOS', () => {
-    expect(shouldStartInBackground(['/Applications/GooeyPi', '--background'], false, 'darwin')).toBe(true)
-    expect(shouldStartInBackground(['/Applications/GooeyPi'], true, 'darwin')).toBe(true)
-    expect(shouldStartInBackground(['/Applications/GooeyPi'], false, 'darwin')).toBe(false)
-    expect(shouldStartInBackground(['GooeyPi.exe', '--background'], true, 'win32')).toBe(false)
+    expect(shouldStartInBackground(['/Applications/OMP Desktop', '--background'], false, 'darwin')).toBe(true)
+    expect(shouldStartInBackground(['/Applications/OMP Desktop'], true, 'darwin')).toBe(true)
+    expect(shouldStartInBackground(['/Applications/OMP Desktop'], false, 'darwin')).toBe(false)
+    expect(shouldStartInBackground(['OMP Desktop.exe', '--background'], true, 'win32')).toBe(false)
   })
 
   it('starts normally without a tray or login-item mutation by default in development', () => {
@@ -131,7 +131,7 @@ describe('MacBackgroundController', () => {
     expect(electron.nativeImage.createFromPath).toHaveBeenCalledWith('/app/icon.png')
     expect(electron.trayImage.resize).toHaveBeenCalledWith({ width: 18, height: 18 })
     expect(electron.trayImage.setTemplateImage).toHaveBeenCalledWith(true)
-    expect(electron.templates[0].map((item) => item.label ?? item.type)).toEqual(['Open GooeyPi', 'separator', 'Settings...', 'Quit'])
+    expect(electron.templates[0].map((item) => item.label ?? item.type)).toEqual(['Open OMP Desktop', 'separator', 'Settings...', 'Quit'])
     expect(electron.templates[0].every((item) => item.accelerator === undefined)).toBe(true)
     expect(electron.templates[0].filter((item) => item.label).every((item) => item.icon)).toBe(true)
     expect(electron.nativeImage.createFromDataURL).toHaveBeenCalledTimes(3)

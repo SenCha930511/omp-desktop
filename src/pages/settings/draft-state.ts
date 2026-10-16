@@ -1,3 +1,11 @@
+import { type MessageKey, translate } from '@/lib/i18n'
+
+/** Translates a catalog key with interpolated values. */
+export type Translate = (key: MessageKey, values?: Record<string, string | number>) => string
+
+/** English fallback shown when a settings update fails; localized at render time by DraftSettingField. */
+export const DRAFT_SAVE_ERROR = 'The setting could not be saved.'
+
 export interface DraftCommit {
   id: number
   value: string
@@ -53,7 +61,7 @@ export function reduceDraftState(state: DraftState, action: DraftAction): DraftS
           baseline: action.value,
           dirty: state.value !== action.value,
           settlement: null,
-          error: 'The setting could not be saved.',
+          error: DRAFT_SAVE_ERROR,
         }
       }
       if (!state.dirty) return { ...state, value: action.value, source: action.value, baseline: action.value, settlement: null }
@@ -90,7 +98,7 @@ export function reduceDraftState(state: DraftState, action: DraftAction): DraftS
           dirty: state.value !== submitted.baseline,
           pending: null,
           settlement: null,
-          error: state.revision === submitted.revision ? 'The setting could not be saved.' : '',
+          error: state.revision === submitted.revision ? DRAFT_SAVE_ERROR : '',
         }
       }
       const committed = state.source !== submitted.baseline ? state.source : submitted.value
@@ -130,17 +138,17 @@ export function reduceDraftState(state: DraftState, action: DraftAction): DraftS
   }
 }
 
-export function browserHomeValidation(value: string): string {
-  if (value.trim().length === 0) return 'Enter a home page URL.'
-  if (value.trim().length > 8192) return 'The home page URL is too long.'
+export function browserHomeValidation(value: string, t: Translate = (key, values) => translate('en', key, values)): string {
+  if (value.trim().length === 0) return t('browserHome.urlRequired')
+  if (value.trim().length > 8192) return t('browserHome.tooLong')
   let parsed: URL
   try {
     parsed = new URL(value.trim())
   } catch {
-    return 'Enter a complete http:// or https:// URL.'
+    return t('browserHome.invalid')
   }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return 'Use an http:// or https:// URL.'
-  if (parsed.username || parsed.password) return 'URLs containing credentials are not allowed.'
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return t('browserHome.protocol')
+  if (parsed.username || parsed.password) return t('browserHome.credentials')
   return ''
 }
 
@@ -148,14 +156,14 @@ export function normalizeBrowserHome(value: string): string {
   return new URL(value.trim()).toString()
 }
 
-export function terminalShellValidation(value: string): string {
-  if (value.length === 0) return 'Enter a shell executable path.'
-  if (value.includes('\0')) return 'The shell path cannot contain a NUL character.'
-  if (value.length > 4096) return 'The shell path is too long.'
-  if (!value.startsWith('/')) return 'Enter an absolute shell path beginning with /.'
+export function terminalShellValidation(value: string, t: Translate = (key, values) => translate('en', key, values)): string {
+  if (value.length === 0) return t('terminalShell.required')
+  if (value.includes('\0')) return t('terminalShell.nul')
+  if (value.length > 4096) return t('terminalShell.tooLong')
+  if (!value.startsWith('/')) return t('terminalShell.absolute')
   return ''
 }
 
 export function errorMessage(error: unknown): string {
-  return error instanceof Error && error.message ? error.message : 'The setting could not be saved.'
+  return error instanceof Error && error.message ? error.message : DRAFT_SAVE_ERROR
 }

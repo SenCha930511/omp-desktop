@@ -22,7 +22,7 @@ export const BUNDLE_SIZE_BUDGETS = Object.freeze({
 
 /**
  * Ceilings for one packaged macOS build: `asarBytes` the packed app.asar,
- * `appBytes` the regular-file bytes inside GooeyPi.app, and `dmgBytes`/
+ * `appBytes` the regular-file bytes inside OMP Desktop.app, and `dmgBytes`/
  * `zipBytes` the compressed distributables users download (Electron runtime,
  * unpacked native addons, and the bundled agent included).
  *

@@ -6,7 +6,8 @@ import { isRecord } from '../validation'
 
 const BEGIN = '===== BEGIN GOOEYPI AGENT MESSAGE ====='
 const END = '===== END GOOEYPI AGENT MESSAGE ====='
-const HARNESSES = new Set<HarnessId>(['prime', 'omp', 'pi'])
+/** Envelope metadata persisted by OMP Desktop may still name 'prime' or 'pi'; both parse as 'omp'. */
+const HARNESSES = new Set<string>(['prime', 'omp', 'pi'])
 const KEY_BYTES = 32
 let signingKey: Buffer | undefined
 
@@ -22,7 +23,7 @@ interface SignedMetadataV1 {
   version: 1
   from_session_id: string
   from_title: string
-  from_harness: HarnessId
+  from_harness: string
   reply_with?: 'session_send'
   nonce: string
   sent_at: string
@@ -47,7 +48,7 @@ interface SignedMetadataV3 {
 type SignedMetadata = SignedMetadataV1 | SignedMetadataV2 | SignedMetadataV3
 
 function signature(metadata: SignedMetadata, text: string): Buffer {
-  if (!signingKey) throw new Error('GooeyPi agent-message signing is not initialized')
+  if (!signingKey) throw new Error('OMP Desktop agent-message signing is not initialized')
   return createHmac('sha256', signingKey).update(JSON.stringify(metadata)).update('\0').update(text).digest()
 }
 
@@ -55,10 +56,10 @@ function signature(metadata: SignedMetadata, text: string): Buffer {
 export function loadOrCreateGooeyPiAgentMessageKey(path: string): Buffer {
   const readExisting = (): Buffer => {
     const stat = lstatSync(path)
-    if (!stat.isFile() || stat.size !== KEY_BYTES) throw new Error('The GooeyPi agent-message signing key is invalid')
+    if (!stat.isFile() || stat.size !== KEY_BYTES) throw new Error('The OMP Desktop agent-message signing key is invalid')
     if (process.platform !== 'win32' && (stat.mode & 0o077) !== 0) chmodSync(path, 0o600)
     const existing = readFileSync(path)
-    if (existing.length !== KEY_BYTES) throw new Error('The GooeyPi agent-message signing key is invalid')
+    if (existing.length !== KEY_BYTES) throw new Error('The OMP Desktop agent-message signing key is invalid')
     return existing
   }
   try {
@@ -77,7 +78,7 @@ export function loadOrCreateGooeyPiAgentMessageKey(path: string): Buffer {
 }
 
 export function configureGooeyPiAgentMessageSigning(key: Uint8Array): void {
-  if (key.byteLength !== KEY_BYTES) throw new Error('The GooeyPi agent-message signing key must be 32 bytes')
+  if (key.byteLength !== KEY_BYTES) throw new Error('The OMP Desktop agent-message signing key must be 32 bytes')
   signingKey = Buffer.from(key)
 }
 
@@ -121,11 +122,14 @@ export function parseGooeyPiAgentMessage(value: string): GooeyPiAgentMessage | u
   let unsigned: SignedMetadata
   if (metadata.version === 1) {
     if (typeof metadata.from_title !== 'string' || metadata.from_title.length < 1 || metadata.from_title.length > 200) return undefined
-    if (typeof metadata.from_harness !== 'string' || !HARNESSES.has(metadata.from_harness as HarnessId)) return undefined
+    if (typeof metadata.from_harness !== 'string' || !HARNESSES.has(metadata.from_harness)) return undefined
     fromTitle = metadata.from_title
-    fromHarness = metadata.from_harness as HarnessId
+    // The signature covers the persisted metadata verbatim, so the legacy
+    // harness name stays in the verified blob; only the parsed result maps
+    // the pre-fork names onto the one supported harness.
+    fromHarness = 'omp'
     unsigned = {
-      version: 1, from_session_id: fromSessionId, from_title: fromTitle, from_harness: fromHarness,
+      version: 1, from_session_id: fromSessionId, from_title: fromTitle, from_harness: metadata.from_harness,
       ...(replyWith === 'session_send' ? { reply_with: replyWith } : {}), nonce, sent_at: sentAt,
     }
   } else if (metadata.version === 2) {

@@ -47,13 +47,13 @@ export function findCapabilityMentions(value: string, skills: readonly SkillReco
 
 function routingInstruction(mention: CapabilityMention): string {
   const token = mention.text
-  if (mention.skill.id === 'prime-work-browser' || mention.skill.id === 'omp-work-browser') {
-    return `${token}: use GooeyPi's in-app Browser capability and its own browser tools. Do not substitute Chrome, an external browser, or another connected browser tool.`
+  if (mention.skill.id === 'omp-desktop-browser' || mention.skill.id === 'omp-work-browser') {
+    return `${token}: use OMP Desktop's in-app Browser capability and its own browser tools. Do not substitute Chrome, an external browser, or another connected browser tool.`
   }
-  if (mention.skill.id === 'prime-work-schedules' || mention.skill.id === 'omp-work-schedules') {
-    return `${token}: use GooeyPi's Scheduled tasks capability and its own schedule tools.`
+  if (mention.skill.id === 'omp-desktop-schedules' || mention.skill.id === 'omp-work-schedules') {
+    return `${token}: use OMP Desktop's Scheduled tasks capability and its own schedule tools.`
   }
-  return `${token}: use the enabled GooeyPi ${mention.skill.kind} with the exact catalog id ${JSON.stringify(mention.skill.id)}. Do not substitute a similarly named capability.`
+  return `${token}: use the enabled OMP Desktop ${mention.skill.kind} with the exact catalog id ${JSON.stringify(mention.skill.id)}. Do not substitute a similarly named capability.`
 }
 
 /** Adds explicit routing semantics while keeping the user's visible prompt unchanged. */

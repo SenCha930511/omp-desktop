@@ -2,14 +2,9 @@
 import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ProviderAuthModal } from '../../src/components/ProviderAuthModal'
 import { useProviderCatalog } from '../../src/hooks/useProviderCatalog'
 import { ProviderSettings } from '../../src/pages/settings/ProviderSettings'
-import type { HarnessId, PrimeModelCatalog, PrimeWorkApi, RuntimeInfo } from '../../src/types/api'
-
-vi.mock('../../src/components/ui', () => ({
-  Modal: ({ title, children, footer }: { title: string; children: ReactNode; footer?: ReactNode }) => <div role="dialog" aria-label={title}>{children}{footer}</div>,
-}))
+import type { HarnessId, PrimeModelCatalog, DesktopApi, RuntimeInfo } from '../../src/types/api'
 
 const model = {
   key: 'openai-codex/gpt-5.6', provider: 'openai-codex', id: 'gpt-5.6', name: 'GPT-5.6', reasoning: true,
@@ -30,7 +25,7 @@ const catalog: PrimeModelCatalog = {
   ],
 }
 const runtime: RuntimeInfo = {
-  runtimeId: 'runtime-1', harness: 'prime', cwd: '/tmp/project', isStreaming: false,
+  runtimeId: 'runtime-1', harness: 'omp', cwd: '/tmp/project', isStreaming: false,
   model: { provider: model.provider, id: model.id, name: model.name },
   thinkingLevel: 'medium', serviceTier: 'default',
 }
@@ -65,13 +60,6 @@ async function click(element: HTMLElement) {
   await act(async () => { element.click() })
 }
 
-async function enter(input: HTMLInputElement, value: string) {
-  await act(async () => {
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, value)
-    input.dispatchEvent(new Event('input', { bubbles: true }))
-  })
-}
-
 function deferred<T = void>() {
   let resolve!: (value: T | PromiseLike<T>) => void
   let reject!: (reason?: unknown) => void
@@ -82,7 +70,7 @@ function deferred<T = void>() {
 describe('provider settings behavior and accessibility', () => {
   it('gives each enable checkbox a provider-specific accessible name and reports toggle failure', async () => {
     const onSetEnabled = vi.fn().mockRejectedValue(new Error('Provider policy was not saved'))
-    await render(<ProviderSettings catalog={catalog} onRefresh={noop} onSaveApiKey={noop} onLogout={noop} onSetEnabled={onSetEnabled} onSetAllEnabled={noop} onSetAllDisabled={noop} onSetModelEnabled={noop} onStartOAuth={noop} onOpenDocs={() => undefined} />)
+    await render(<ProviderSettings catalog={catalog} onRefresh={noop} onSetEnabled={onSetEnabled} onSetAllEnabled={noop} onSetAllDisabled={noop} onSetModelEnabled={noop} onOpenDocs={() => undefined} />)
 
     const checkbox = container.querySelector<HTMLInputElement>('input[aria-label="Show Anthropic provider"]')
     expect(checkbox).not.toBeNull()
@@ -96,7 +84,7 @@ describe('provider settings behavior and accessibility', () => {
     const onSetEnabled = vi.fn().mockResolvedValue(undefined)
     const onSetAllEnabled = vi.fn().mockResolvedValue(undefined)
     const onSetAllDisabled = vi.fn().mockResolvedValue(undefined)
-    await render(<ProviderSettings catalog={catalog} onRefresh={noop} onSaveApiKey={noop} onLogout={noop} onSetEnabled={onSetEnabled} onSetAllEnabled={onSetAllEnabled} onSetAllDisabled={onSetAllDisabled} onSetModelEnabled={noop} onStartOAuth={noop} onOpenDocs={() => undefined} />)
+    await render(<ProviderSettings catalog={catalog} onRefresh={noop} onSetEnabled={onSetEnabled} onSetAllEnabled={onSetAllEnabled} onSetAllDisabled={onSetAllDisabled} onSetModelEnabled={noop} onOpenDocs={() => undefined} />)
 
     expect(container.textContent).toContain('2 providers · 3 models')
     expect(container.textContent).toContain('ChatGPT Plus/Pro')
@@ -104,14 +92,15 @@ describe('provider settings behavior and accessibility', () => {
     const providerRows = [...container.querySelectorAll('.provider-row')]
     expect(providerRows[0]?.textContent).toContain('ChatGPT Plus/Pro')
     expect(providerRows[1]?.textContent).toContain('Anthropic')
-    expect(button('Reconnect')).toBeTruthy()
-    expect(button('Add key')).toBeTruthy()
-    await click(button('Enable all'))
+    expect(button('Credential setup')).toBeTruthy()
+    await click(button('Show all'))
     expect(onSetAllEnabled).toHaveBeenCalledTimes(1)
     expect(onSetEnabled).not.toHaveBeenCalled()
-    await click(button('Disable all'))
+    await click(button('Hide all'))
     expect(onSetAllDisabled).toHaveBeenCalledTimes(1)
     expect(onSetEnabled).not.toHaveBeenCalled()
+
+    expect(container.textContent).toContain('OMP catalogue')
 
     await click(button('Models'))
     expect(container.textContent).toContain('GPT-5.6')
@@ -141,7 +130,7 @@ describe('provider settings behavior and accessibility', () => {
 
   it('puts each model switch at the far right and sends the model key', async () => {
     const onSetModelEnabled = vi.fn().mockResolvedValue(undefined)
-    await render(<ProviderSettings catalog={catalog} onRefresh={noop} onSaveApiKey={noop} onLogout={noop} onSetEnabled={noop} onSetAllEnabled={noop} onSetAllDisabled={noop} onSetModelEnabled={onSetModelEnabled} onStartOAuth={noop} onOpenDocs={() => undefined} />)
+    await render(<ProviderSettings catalog={catalog} onRefresh={noop} onSetEnabled={noop} onSetAllEnabled={noop} onSetAllDisabled={noop} onSetModelEnabled={onSetModelEnabled} onOpenDocs={() => undefined} />)
 
     await click(button('Models'))
     const row = container.querySelector('.provider-model-row')
@@ -151,64 +140,14 @@ describe('provider settings behavior and accessibility', () => {
     await click(toggle!)
     expect(onSetModelEnabled).toHaveBeenCalledWith('openai-codex/gpt-5.6', false)
   })
-
-  it('keeps API-key failures announced inside the active modal', async () => {
-    const onSaveApiKey = vi.fn().mockRejectedValue(new Error('Credential rejected'))
-    await render(<ProviderSettings catalog={catalog} onRefresh={noop} onSaveApiKey={onSaveApiKey} onLogout={noop} onSetEnabled={noop} onSetAllEnabled={noop} onSetAllDisabled={noop} onSetModelEnabled={noop} onStartOAuth={noop} onOpenDocs={() => undefined} />)
-
-    await click(button('Add key'))
-    const dialog = container.querySelector<HTMLElement>('[role="dialog"]')
-    const input = dialog?.querySelector<HTMLInputElement>('input[type="password"]')
-    expect(input).not.toBeNull()
-    await enter(input!, 'not-a-real-secret')
-    await click(button('Save API key'))
-
-    expect(onSaveApiKey).toHaveBeenCalledWith('anthropic', 'not-a-real-secret')
-    const alert = dialog?.querySelector('[role="alert"]')
-    expect(alert?.textContent).toBe('Credential rejected')
-    expect(container.querySelector('[role="dialog"]')).toBe(dialog)
-  })
-
-  it('uses ordinary buttons for OAuth choices and submits the selected id', async () => {
-    const onRespond = vi.fn()
-    await render(<ProviderAuthModal event={{ type: 'select', flowId: 'flow-1', providerId: 'openai-codex', promptId: 'prompt-1', message: 'Choose an account', options: [{ id: 'personal', label: 'Personal' }, { id: 'work', label: 'Work' }] }} onOpen={() => undefined} onRespond={onRespond} onCancel={() => undefined} />)
-
-    expect(container.querySelector('[role="listbox"]')).toBeNull()
-    expect(container.querySelector('[role="option"]')).toBeNull()
-    expect(container.querySelector('[role="group"]')?.getAttribute('aria-labelledby')).toBeTruthy()
-    await click(button('Work'))
-    expect(onRespond).toHaveBeenCalledWith('prompt-1', 'work')
-  })
-
-  it('renders provider prompts without MCP-specific authentication claims', async () => {
-    await render(<ProviderAuthModal event={{ type: 'prompt', flowId: 'flow-1', providerId: 'openai-codex', promptId: 'prompt-1', message: 'Paste the authorization code from your browser.', placeholder: 'Authorization code' }} onOpen={() => undefined} onRespond={() => undefined} onCancel={() => undefined} />)
-
-    expect(container.textContent).not.toContain('GooeyPi will finish automatically')
-    expect(container.querySelector('label span')?.textContent).toBe('Paste the authorization code from your browser.')
-    expect(container.querySelector('input')?.getAttribute('placeholder')).toBe('Authorization code')
-  })
-
-  it('keeps provider authentication success and failure results visible until closed', async () => {
-    const onClose = vi.fn()
-    await render(<ProviderAuthModal event={{ type: 'complete', flowId: 'flow-1', providerId: 'openai-codex' }} onOpen={() => undefined} onRespond={() => undefined} onCancel={onClose} />)
-    expect(container.querySelector('[role="dialog"]')?.getAttribute('aria-label')).toBe('Authentication successful')
-    expect(container.textContent).toContain('Provider is connected. Start a new Prime session to use it.')
-    await click(button('Close'))
-    expect(onClose).toHaveBeenCalledOnce()
-
-    await render(<ProviderAuthModal event={{ type: 'error', flowId: 'flow-2', providerId: 'openai-codex', error: 'Provider rejected the callback' }} onOpen={() => undefined} onRespond={() => undefined} onCancel={() => undefined} />)
-    expect(container.querySelector('[role="dialog"]')?.getAttribute('aria-label')).toBe('Authentication failed')
-    expect(container.querySelector('[role="alert"]')?.textContent).toBe('Provider rejected the callback')
-  })
-
 })
 
 describe('provider runtime mutations', () => {
   function mountCatalogHook(options: {
-    command: PrimeWorkApi['agent']['command']
+    command: DesktopApi['agent']['command']
     syncRuntime?: (runtimeId: string) => Promise<void>
-    setEnabled?: PrimeWorkApi['providers']['setEnabled']
-    setDisabled?: PrimeWorkApi['providers']['setDisabled']
+    setEnabled?: DesktopApi['providers']['setEnabled']
+    setDisabled?: DesktopApi['providers']['setDisabled']
     harness?: HarnessId
     reportError?: (error: unknown) => void
   }) {
@@ -222,7 +161,7 @@ describe('provider runtime mutations', () => {
         setEnabled: options.setEnabled ?? vi.fn().mockResolvedValue(catalog),
         setDisabled: options.setDisabled ?? vi.fn().mockResolvedValue(catalog),
       },
-    } as unknown as PrimeWorkApi
+    } as unknown as DesktopApi
     const syncRuntime = options.syncRuntime ?? vi.fn().mockResolvedValue(undefined)
     const reportError = options.reportError ?? vi.fn()
     function Harness() {
@@ -276,7 +215,7 @@ describe('provider runtime mutations', () => {
     const hook = await mountCatalogHook({ command: vi.fn(), setEnabled })
 
     await act(async () => { await hook.value.setEnabled('anthropic', true) })
-    expect(setEnabled).toHaveBeenCalledWith('anthropic', true, 'prime')
+    expect(setEnabled).toHaveBeenCalledWith('anthropic', true, 'omp')
     expect(hook.value.catalog?.providers.find((provider) => provider.id === 'anthropic')?.enabled).toBe(true)
   })
 
@@ -284,7 +223,7 @@ describe('provider runtime mutations', () => {
     const hook = await mountCatalogHook({ command: vi.fn() })
 
     await act(async () => { await hook.value.setAllEnabled() })
-    expect(hook.setDisabled).toHaveBeenCalledWith([], 'prime')
+    expect(hook.setDisabled).toHaveBeenCalledWith([], 'omp')
   })
 
   it('keeps an optimistic fast-mode toggle across a catalog refresh', async () => {
@@ -306,7 +245,7 @@ describe('provider runtime mutations', () => {
     await act(async () => { await Promise.resolve() })
 
     await act(async () => { await hook.value.setAllDisabled() })
-    expect(hook.setDisabled).toHaveBeenCalledWith(['anthropic', 'openai-codex'], 'prime')
+    expect(hook.setDisabled).toHaveBeenCalledWith(['anthropic', 'openai-codex'], 'omp')
     expect(hook.value.model).toBe('')
     expect(hook.value.fast).toBe(false)
   })
@@ -321,17 +260,5 @@ describe('provider runtime mutations', () => {
     expect(setEnabled).toHaveBeenCalledWith('anthropic', true, 'omp')
     await act(async () => { await hook.value.setAllEnabled() })
     expect(setDisabled).toHaveBeenCalledWith([], 'omp')
-  })
-
-  it('routes Pi provider visibility to the Pi desktop-settings bucket', async () => {
-    const next = { ...catalog, providers: catalog.providers.map((provider) => provider.id === 'anthropic' ? { ...provider, enabled: true } : provider) }
-    const setEnabled = vi.fn().mockResolvedValue(next)
-    const setDisabled = vi.fn().mockResolvedValue(next)
-    const hook = await mountCatalogHook({ command: vi.fn(), harness: 'pi', setEnabled, setDisabled })
-
-    await act(async () => { await hook.value.setEnabled('anthropic', true) })
-    expect(setEnabled).toHaveBeenCalledWith('anthropic', true, 'pi')
-    await act(async () => { await hook.value.setAllEnabled() })
-    expect(setDisabled).toHaveBeenCalledWith([], 'pi')
   })
 })

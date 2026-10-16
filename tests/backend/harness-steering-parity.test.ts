@@ -1,26 +1,23 @@
 import { describe, expect, it } from 'vitest'
-import { OMP_RPC_ADAPTER, PI_RPC_ADAPTER, PRIME_RPC_ADAPTER } from '../../electron/main/agent-rpc'
+import { OMP_RPC_ADAPTER } from '../../electron/main/agent-rpc'
 import { parseSessionActionSnapshot } from '../../src/lib/session-actions'
 
-const adapters = [
-  ['Prime Agent', PRIME_RPC_ADAPTER],
-  ['OMP', OMP_RPC_ADAPTER],
-  ['Pi', PI_RPC_ADAPTER],
-] as const
-
-describe.each(adapters)('%s steering protocol parity', (_name, adapter) => {
+describe('OMP steering protocol parity', () => {
   it('passes steer commands through the shared RPC vocabulary', () => {
     const command = { type: 'steer', message: 'change direction' }
-    expect(adapter.translateCommand(command)).toBe(command)
+    expect(OMP_RPC_ADAPTER.translateCommand(command)).toBe(command)
   })
 
   it('preserves the existing image payload for prompts and steers', () => {
     const images = [{ type: 'image', mimeType: 'image/png', data: 'iVBORw0KGgo=' }]
-    const prompt = { type: 'prompt', message: 'inspect', images }
     const steer = { type: 'steer', message: 'inspect this instead', images }
 
-    expect(adapter.translateCommand(prompt)).toBe(prompt)
-    expect(adapter.translateCommand(steer)).toBe(steer)
+    expect(OMP_RPC_ADAPTER.translateCommand(steer)).toBe(steer)
+    const prompt = { type: 'prompt', message: 'inspect', images, streamingBehavior: 'steer' }
+    const translated = OMP_RPC_ADAPTER.translateCommand(prompt)
+    expect(translated).not.toBe(prompt)
+    expect(translated).not.toHaveProperty('streamingBehavior')
+    expect(translated).toMatchObject({ type: 'prompt', message: 'inspect', images })
   })
 
   it('preserves both queued and picked-up session action snapshots', () => {
@@ -38,8 +35,8 @@ describe.each(adapters)('%s steering protocol parity', (_name, adapter) => {
       },
     }
 
-    const normalizedQueued = adapter.normalizeEvent(queued)
-    const normalizedPickedUp = adapter.normalizeEvent(pickedUp)
+    const normalizedQueued = OMP_RPC_ADAPTER.normalizeEvent(queued)
+    const normalizedPickedUp = OMP_RPC_ADAPTER.normalizeEvent(pickedUp)
     expect(normalizedQueued).toBe(queued)
     expect(normalizedPickedUp).toBe(pickedUp)
     expect(parseSessionActionSnapshot(normalizedQueued?.actions)).toEqual(queued.actions)

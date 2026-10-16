@@ -1,4 +1,5 @@
 import { AlertTriangle } from 'lucide-react'
+import { useI18n } from '@/lib/i18n'
 import type { RuntimeInfo } from '@/types/api'
 
 export interface ExecutingModelChipProps {
@@ -6,14 +7,11 @@ export interface ExecutingModelChipProps {
 }
 
 export function ExecutingModelChip({ executingModel }: ExecutingModelChipProps) {
+  const { t } = useI18n()
   if (!executingModel?.isFallback) return null
   return (
-    <span
-      className="model-fallback-chip"
-      role="status"
-      title={`Provider fallback: running on ${executingModel.label} instead of the selected model.`}
-    >
-      <AlertTriangle size={12} /> Running on {executingModel.label}
+    <span className="model-fallback-chip" role="status" title={t('executingModel.title', { model: executingModel.label })}>
+      <AlertTriangle size={12} /> {t('executingModel.runningOn', { model: executingModel.label })}
     </span>
   )
 }

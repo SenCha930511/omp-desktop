@@ -1,5 +1,5 @@
 {
-  "name": "GooeyPi",
+  "name": "OMP Desktop",
   "user": "ubuntu",
   "install": "bash .cursor/install.sh"
 }

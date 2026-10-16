@@ -39,18 +39,18 @@ export interface ManualUpdateNotification {
 export function manualUpdateNotification(state: AppUpdateState): ManualUpdateNotification {
   if (state.phase === 'error') return {
     type: 'error',
-    message: 'GooeyPi Update Check Failed',
+    message: 'OMP Desktop Update Check Failed',
     detail: state.message,
   }
   if (state.phase === 'unsupported') return {
     type: 'info',
-    message: 'GooeyPi Updates Unavailable',
+    message: 'OMP Desktop Updates Unavailable',
     detail: state.message ?? 'Automatic updates are available in installed builds.',
   }
   const available = state.phase === 'available' || state.phase === 'downloading' || state.phase === 'downloaded'
   return {
     type: 'info',
-    message: available ? 'GooeyPi Update Available' : 'No GooeyPi Update Available',
+    message: available ? 'OMP Desktop Update Available' : 'No OMP Desktop Update Available',
   }
 }
 
@@ -65,7 +65,7 @@ export function createManualUpdateCheck(
     inFlight = true
     void check()
       .then((state) => notify(manualUpdateNotification(state)))
-      .catch((error) => notify({ type: 'error', message: 'GooeyPi Update Check Failed', detail: errorMessage(error) }))
+      .catch((error) => notify({ type: 'error', message: 'OMP Desktop Update Check Failed', detail: errorMessage(error) }))
       .finally(() => { inFlight = false })
   }
 }

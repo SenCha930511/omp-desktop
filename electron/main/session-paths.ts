@@ -8,7 +8,7 @@ const MAX_CANONICAL_CACHE = 1_024
  * Canonicalizes a session file path once at the boundary so paths reported by
  * agent runtimes and paths produced by the session catalog and validators
  * (which realpath) compare equal even when the session root is reached
- * through a symlink (for example a symlinked ~/.prime). Falls back to
+ * through a symlink (for example a symlinked ~/.omp). Falls back to
  * canonicalizing the parent directory when the file does not exist yet, and
  * to the resolved lexical path when nothing exists.
  */

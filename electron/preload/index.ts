@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { AgentBrowserActivityEvent, AgentBrowserPointerEvent, AgentBrowserState, AppUpdateState, PrimeEventEnvelope, PrimeWorkApi, ProviderAuthEvent, ScheduleChangeEvent, SessionChangeEvent, TerminalDataEvent, TerminalExitEvent } from '../../src/types/api'
+import type { AgentBrowserActivityEvent, AgentBrowserPointerEvent, AgentBrowserState, AppUpdateState, PrimeEventEnvelope, DesktopApi, ScheduleChangeEvent, SessionChangeEvent, TerminalDataEvent, TerminalExitEvent } from '../../src/types/api'
 
 function subscribe<T>(channel: string, callback: (payload: T) => void): () => void {
   if (typeof callback !== 'function') throw new TypeError('callback must be a function')
@@ -31,7 +31,7 @@ function invoke<T>(channel: string, ...args: unknown[]): Promise<T> {
   })
 }
 
-const api: PrimeWorkApi = {
+const api: DesktopApi = {
   app: {
     getMeta: () => invoke('app:get-meta'),
     refreshHarnesses: () => invoke('app:refresh-harnesses'),
@@ -64,7 +64,6 @@ const api: PrimeWorkApi = {
   sessions: {
     list: (projectPath, includeArchived, harness, force) => invoke('sessions:list', projectPath, includeArchived, harness, force),
     read: (filePath) => invoke('sessions:read', filePath),
-    followUp: (filePath, message, intent) => invoke('sessions:follow-up', filePath, message, intent),
     rename: (filePath, title) => invoke('sessions:rename', filePath, title),
     archive: (filePath, archived) => invoke('sessions:archive', filePath, archived),
     onChanged: (callback) => subscribe<SessionChangeEvent>('sessions:changed', callback),
@@ -78,15 +77,9 @@ const api: PrimeWorkApi = {
   },
   providers: {
     catalog: (force, harness) => invoke('providers:catalog', force, harness),
-    saveApiKey: (providerId, apiKey) => invoke('providers:save-api-key', providerId, apiKey),
-    logout: (providerId) => invoke('providers:logout', providerId),
     setEnabled: (providerId, enabled, harness) => invoke('providers:set-enabled', providerId, enabled, harness),
     setDisabled: (providerIds, harness) => invoke('providers:set-disabled', providerIds, harness),
     setModelEnabled: (modelKey, enabled, harness) => invoke('providers:set-model-enabled', modelKey, enabled, harness),
-    startOAuth: (providerId) => invoke('providers:start-oauth', providerId),
-    respondOAuth: (flowId, promptId, value) => invoke('providers:respond-oauth', flowId, promptId, value),
-    cancelOAuth: (flowId) => invoke('providers:cancel-oauth', flowId),
-    onAuthEvent: (callback) => subscribe<ProviderAuthEvent>('providers:auth-event', callback),
   },
   voice: {
     credentialStatus: () => invoke('voice:credential-status'),
@@ -95,11 +88,6 @@ const api: PrimeWorkApi = {
     createRealtimeCall: (request) => invoke('voice:create-realtime-call', request),
     transcribe: (request) => invoke('voice:transcribe', request),
     testSelfHosted: (request) => invoke('voice:test-self-hosted', request),
-    executeTool: (request, harness) => invoke('voice:execute-tool', request, harness),
-  },
-  pets: {
-    list: () => invoke('pets:list'),
-    sprite: (id) => invoke('pets:sprite', id),
   },
   terminal: {
     create: (options) => invoke('terminal:create', options),
@@ -124,7 +112,6 @@ const api: PrimeWorkApi = {
     list: (projectPath, harness) => invoke('plugins:list', projectPath, harness),
     install: (source, harness) => invoke('plugins:install', source, harness),
     installExtension: (input, harness) => invoke('plugins:install-extension', input, harness),
-    setMcpSupport: (enabled, harness) => invoke('plugins:set-mcp-support', enabled, harness),
     connectMcp: (input, harness) => invoke('plugins:connect-mcp', input, harness),
     setMcpEnabled: (input, harness) => invoke('plugins:set-mcp-enabled', input, harness),
     mutateCapability: (input, harness) => invoke('plugins:mutate-capability', input, harness),
@@ -146,10 +133,6 @@ const api: PrimeWorkApi = {
     onPointer: (callback) => subscribe<AgentBrowserPointerEvent>('browser:pointer', callback),
     onActivity: (callback) => subscribe<AgentBrowserActivityEvent>('browser:activity', callback),
   },
-  heartbeats: {
-    list: () => invoke('heartbeats:list'),
-    manage: (id, action) => invoke('heartbeats:manage', id, action),
-  },
   schedules: {
     list: (harness) => invoke('schedules:list', harness),
     get: (id) => invoke('schedules:get', id),
@@ -165,4 +148,4 @@ const api: PrimeWorkApi = {
 }
 
 for (const domain of Object.values(api)) Object.freeze(domain)
-contextBridge.exposeInMainWorld('prime', Object.freeze(api))
+contextBridge.exposeInMainWorld('desktop', Object.freeze(api))

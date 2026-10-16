@@ -142,7 +142,7 @@ function cursorFor(session: SessionRecord, messages: CollaborationMessage[], liv
 /**
  * App-owned session collaboration for all harnesses. Session files remain
  * read-only: reads use each harness's bounded SessionService, while writes are
- * delivered through a live runtime owned by this GooeyPi process (waking an
+ * delivered through a live runtime owned by this OMP Desktop process (waking an
  * authorized saved target through the normal manager when needed).
  */
 export class AgentCollaborationBridge extends CapabilityBridge {
@@ -233,9 +233,9 @@ export class AgentCollaborationBridge extends CapabilityBridge {
 
   private async peersFor(source: CollaborationTarget): Promise<CollaborationTarget[]> {
     const peers: CollaborationTarget[] = []
-    // Project grants are harness-scoped. A Prime session can collaborate with
-    // Prime peers (and likewise for OMP/pi), but its token never grants access
-    // to another harness's session catalog even when the cwd text matches.
+    // Project grants are harness-scoped. An OMP session collaborates with OMP
+    // peers; its token never grants access to another harness's session
+    // catalog even when the cwd text matches.
     const harness = source.session.harness
     const service = this.options.sessions[harness]
     const sessions = await service.list(source.session.projectPath, false, true)
@@ -279,7 +279,7 @@ export class AgentCollaborationBridge extends CapabilityBridge {
 
   private async create(source: CollaborationTarget, params: Record<string, unknown>): Promise<Record<string, unknown>> {
     const prompt = requireString(params.prompt, 'prompt', { min: 1, max: MAX_CREATE_PROMPT_CHARS, trim: true })
-    assertNoMcpAuthenticationCommand(prompt, source.session.harness)
+    assertNoMcpAuthenticationCommand(prompt)
     const title = params.title === undefined ? undefined : requireString(params.title, 'title', { min: 1, max: 200, trim: true })
     const modelQuery = params.model === undefined ? undefined : requireString(params.model, 'model', { min: 1, max: 512, trim: true })
     const reasoningQuery = params.reasoning === undefined ? undefined : requireString(params.reasoning, 'reasoning', { min: 1, max: 64, trim: true })
@@ -326,7 +326,7 @@ export class AgentCollaborationBridge extends CapabilityBridge {
     if (!created) {
       this.pendingRuntimeTokens.delete(runtime.runtimeId)
       await manager.stop(runtime.runtimeId).catch(() => false)
-      throw new Error('The harness created a runtime but its session is not yet readable from GooeyPi')
+      throw new Error('The harness created a runtime but its session is not yet readable from OMP Desktop')
     }
     return {
       created: true,
@@ -380,7 +380,7 @@ export class AgentCollaborationBridge extends CapabilityBridge {
 
   private async send(source: CollaborationTarget, target: CollaborationTarget, rawMessage: unknown): Promise<Record<string, unknown>> {
     const message = requireString(rawMessage, 'message', { min: 1, max: MAX_SEND_CHARS, trim: true })
-    assertNoMcpAuthenticationCommand(message, source.session.harness)
+    assertNoMcpAuthenticationCommand(message)
     const existing = target.manager.getForSession(target.session.filePath)
     const runtime = existing ?? await this.wake(target)
     const before = await this.snapshot(target)

@@ -153,7 +153,7 @@ function capDiffLines(text: string): { text: string; truncated: boolean } {
     if (lines > GIT_DIFF_LINE_LIMIT) {
       return {
         text: `${text.slice(0, index)}
-[GooeyPi: diff truncated at ${GIT_DIFF_LINE_LIMIT.toLocaleString('en-US')} lines.]`,
+[OMP Desktop: diff truncated at ${GIT_DIFF_LINE_LIMIT.toLocaleString('en-US')} lines.]`,
         truncated: true,
       }
     }
@@ -599,7 +599,7 @@ export class GitService {
     const result = await runGit(cwd, args, { timeoutMs: 30_000, maxBytes: GIT_DIFF_OUTPUT_LIMIT }, overrides)
     if (result.outputExceeded) {
       const error = `Diff output exceeded ${GIT_DIFF_OUTPUT_LIMIT / (1024 * 1024)} MiB and was not displayed.`
-      return { path, staged, text: `[GooeyPi: ${error}]`, truncated: true, error }
+      return { path, staged, text: `[OMP Desktop: ${error}]`, truncated: true, error }
     }
     requireProcessSuccess('Git diff', result)
     const capped = capDiffLines(result.stdout)

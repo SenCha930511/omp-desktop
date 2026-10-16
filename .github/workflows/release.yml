@@ -178,7 +178,7 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: gooeypi-public-macos-${{ matrix.arch }}
+          name: omp-desktop-public-macos-${{ matrix.arch }}
           path: |
             release/mac/${{ matrix.arch }}/*.dmg
             release/mac/${{ matrix.arch }}/*.zip
@@ -239,7 +239,7 @@ jobs:
           if-no-files-found: error
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: gooeypi-public-linux-${{ matrix.arch }}
+          name: omp-desktop-public-linux-${{ matrix.arch }}
           path: |
             release/linux/${{ matrix.arch }}/*.AppImage
             release/linux/${{ matrix.arch }}/*.deb
@@ -292,7 +292,7 @@ jobs:
           if-no-files-found: error
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: gooeypi-public-windows
+          name: omp-desktop-public-windows
           path: |
             release/win/**/*.exe
             release/win/**/*.zip
@@ -337,7 +337,7 @@ jobs:
       - run: npm run release:preflight:toolchain
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
-          pattern: gooeypi-public-*
+          pattern: omp-desktop-public-*
           path: downloaded-release-artifacts
       - name: Select release assets and generate SHA-256 checksums
         run: |
@@ -371,7 +371,7 @@ jobs:
               --fail-on-no-commits \
               --generate-notes \
               --notes "Every installer and archive is covered by SHA256SUMS.txt and GitHub build-provenance attestations." \
-              --title "GooeyPi ${RELEASE_TAG#v}" \
+              --title "OMP Desktop ${RELEASE_TAG#v}" \
               --latest
           fi
         env:

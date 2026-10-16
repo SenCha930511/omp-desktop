@@ -20,10 +20,10 @@ export class AgentBrowserBridge extends CapabilityBridge {
 
   protected environmentEntries(url: string, token: string): NodeJS.ProcessEnv {
     return {
-      PRIME_WORK_BROWSER_URL: url,
-      PRIME_WORK_BROWSER_TOKEN: token,
-      PRIME_WORK_BROWSER_EXTENSION_PATH: this.options.extensionPath,
-      PRIME_WORK_BROWSER_SKILL_PATH: this.options.skillPath,
+      OMP_DESKTOP_BROWSER_URL: url,
+      OMP_DESKTOP_BROWSER_TOKEN: token,
+      OMP_DESKTOP_BROWSER_EXTENSION_PATH: this.options.extensionPath,
+      OMP_DESKTOP_BROWSER_SKILL_PATH: this.options.skillPath,
     }
   }
 

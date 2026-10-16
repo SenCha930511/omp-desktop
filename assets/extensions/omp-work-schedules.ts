@@ -93,8 +93,8 @@ interface ScheduleRecord {
   execution?: { model?: string; thinking?: string; speed?: string }
 }
 
-const BRIDGE_URL = process.env.PRIME_WORK_SCHEDULE_URL
-const BRIDGE_TOKEN = process.env.PRIME_WORK_SCHEDULE_TOKEN
+const BRIDGE_URL = process.env.OMP_DESKTOP_SCHEDULE_URL
+const BRIDGE_TOKEN = process.env.OMP_DESKTOP_SCHEDULE_TOKEN
 
 async function call(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
   if (!BRIDGE_URL || !BRIDGE_TOKEN) throw new Error('GooeyPi scheduling is not available in this OMP runtime')

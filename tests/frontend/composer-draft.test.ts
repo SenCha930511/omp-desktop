@@ -34,7 +34,7 @@ describe('composer draft storage', () => {
   })
 
   it('falls back to the crash snapshot when a scoped draft is missing', () => {
-    window.sessionStorage.setItem('prime-work.composer-draft', 'recovered after crash')
+    window.sessionStorage.setItem('omp-desktop.composer-draft', 'recovered after crash')
     expect(readComposerDraft('project:new')).toEqual({ text: 'recovered after crash' })
     expect(takeComposerDraft()).toBe('recovered after crash')
     expect(takeComposerDraft()).toBe('')

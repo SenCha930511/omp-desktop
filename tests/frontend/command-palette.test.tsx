@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 /// <reference types="vite/client" />
 
+import './jsdom-storage'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -10,18 +11,8 @@ import App from '../../src/App'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
-const harnessState = vi.hoisted(() => ({ activeHarness: 'prime' as HarnessId }))
+const harness: HarnessId = 'omp'
 
-vi.mock('../../src/hooks/useAppSettings', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../src/hooks/useAppSettings')>()
-  return {
-    ...actual,
-    useAppSettings(options: Parameters<typeof actual.useAppSettings>[0]) {
-      const state = actual.useAppSettings(options)
-      return { ...state, settings: { ...state.settings, activeHarness: harnessState.activeHarness } }
-    },
-  }
-})
 
 let container: HTMLDivElement
 let root: Root
@@ -94,9 +85,8 @@ const expectedOrder = [
   'Open Settings',
 ]
 
-describe.each<HarnessId>(['prime', 'omp', 'pi'])('command palette for %s', (harness) => {
+describe('command palette for OMP', () => {
   it('keeps Scheduled searchable and activatable by keyboard and pointer', async () => {
-    harnessState.activeHarness = harness
     await act(async () => { root.render(<App />) })
 
     let dialog = await openPalette()

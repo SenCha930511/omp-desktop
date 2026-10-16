@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createScopedRequestGuard } from '@/app/scoped-request'
-import type { HarnessId, PluginWarning, PrimeWorkApi, SkillRecord } from '@/types/api'
+import type { HarnessId, PluginWarning, DesktopApi, SkillRecord } from '@/types/api'
 
 interface UsePluginSkillsOptions {
-  bridge: PrimeWorkApi | null
+  bridge: DesktopApi | null
   harness: HarnessId
   scope?: string
   generation: number

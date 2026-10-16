@@ -32,7 +32,7 @@ afterEach(() => {
 })
 
 function setup(): { root: string; service: ProjectService; store: JsonStateStore } {
-  const dir = mkdtempSync(join(tmpdir(), 'prime-work-files-')); dirs.push(dir)
+  const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-files-')); dirs.push(dir)
   const root = join(dir, 'project'); mkdirSync(root)
   const store = new JsonStateStore(join(dir, 'state.json'))
   const service = new ProjectService(store, () => null)
@@ -42,7 +42,7 @@ function setup(): { root: string; service: ProjectService; store: JsonStateStore
 function session(id: string, projectPath: string, createdAt: string, updatedAt: string): SessionRecord {
   return {
     id,
-    harness: 'prime',
+    harness: 'omp',
     filePath: join(projectPath, `${id}.jsonl`),
     projectPath,
     title: id,
@@ -158,7 +158,7 @@ describe('ProjectService list enrichment', () => {
     const now = '2026-01-01T00:00:00.000Z'
     await store.update((state) => {
       state.projects.push({
-        id: 'persisted', harness: 'prime', name: 'Persisted', path: root,
+        id: 'persisted', harness: 'omp', name: 'Persisted', path: root,
         // Canonical aliases and repeated folders must not multiply counts.
         folders: [root, projectAlias, additionalFolder, additionalFolder], primaryFolder: root, pinned: true,
         createdAt: now, lastOpenedAt: '2026-05-01T00:00:00.000Z', folderIdentities: identities(root, additionalFolder),
@@ -200,7 +200,7 @@ describe('ProjectService list enrichment', () => {
     await store.update((state) => {
       state.projects.push({
         id: 'persisted',
-        harness: 'prime',
+        harness: 'omp',
         name: 'Persisted',
         path: root,
         folders: [root],
@@ -240,7 +240,7 @@ describe('ProjectService list enrichment', () => {
     const now = '2026-01-01T00:00:00.000Z'
     await store.update((state) => {
       for (const [index, path] of projectRoots.entries()) state.projects.push({
-        id: `project-${index}`, harness: 'prime', name: `Project ${index}`, path,
+        id: `project-${index}`, harness: 'omp', name: `Project ${index}`, path,
         folders: [path], primaryFolder: path, pinned: false,
         createdAt: now, lastOpenedAt: now, folderIdentities: identities(path),
       })
@@ -292,7 +292,7 @@ describe('ProjectService list enrichment', () => {
     const { root, service, store } = setup()
     const now = new Date().toISOString()
     await store.update((state) => { state.projects.push({
-      id: 'project', harness: 'prime', name: 'Project', path: root, folders: [root], primaryFolder: root,
+      id: 'project', harness: 'omp', name: 'Project', path: root, folders: [root], primaryFolder: root,
       pinned: false, createdAt: now, lastOpenedAt: now, folderIdentities: identities(root),
     }) })
     service.bindProviders({ sessions: async () => [], branch: async (cwd) => {
@@ -316,7 +316,7 @@ describe('ProjectService list enrichment', () => {
     const now = new Date().toISOString()
     await store.update((state) => {
       for (const [index, path] of projectRoots.entries()) state.projects.push({
-        id: `failure-${index}`, harness: 'prime', name: `Failure ${index}`, path,
+        id: `failure-${index}`, harness: 'omp', name: `Failure ${index}`, path,
         folders: [path], primaryFolder: path, pinned: false,
         createdAt: now, lastOpenedAt: now, folderIdentities: identities(path),
       })
@@ -398,7 +398,7 @@ describe('broad project root authorization', () => {
     const { root, service, store } = setup()
     const now = new Date().toISOString()
     await store.update((state) => { state.projects.push({
-      id: 'broad-project', harness: 'prime', name: 'Broad project', path, folders: [path], primaryFolder: path,
+      id: 'broad-project', harness: 'omp', name: 'Broad project', path, folders: [path], primaryFolder: path,
       pinned: false, createdAt: now, lastOpenedAt: now, folderIdentities: identities(path),
     }) })
 
@@ -412,11 +412,11 @@ describe('broad project root authorization', () => {
     const now = new Date().toISOString()
     await store.update((state) => { state.projects.push(
       {
-        id: 'broad-project', harness: 'prime', name: 'Broad project', path: filesystemRoot, folders: [filesystemRoot], primaryFolder: filesystemRoot,
+        id: 'broad-project', harness: 'omp', name: 'Broad project', path: filesystemRoot, folders: [filesystemRoot], primaryFolder: filesystemRoot,
         pinned: false, createdAt: now, lastOpenedAt: now, folderIdentities: identities(filesystemRoot),
       },
       {
-        id: 'narrow-project', harness: 'prime', name: 'Narrow project', path: root, folders: [root], primaryFolder: root,
+        id: 'narrow-project', harness: 'omp', name: 'Narrow project', path: root, folders: [root], primaryFolder: root,
         pinned: false, createdAt: now, lastOpenedAt: now, folderIdentities: identities(root),
       },
     ) })
@@ -439,7 +439,7 @@ describe('ProjectService file listing', () => {
     writeFileSync(join(root, 'vendor', 'autoload.php'), 'generated vendor file')
     writeFileSync(join(root, 'release', 'Prime Work.dmg'), 'generated')
     symlinkSync('/etc/hosts', join(root, 'hosts-link'))
-    await store.update((state) => { state.projects.push({ id: 'project', harness: 'prime', name: 'Project', path: root, folders: [root], primaryFolder: root, pinned: false, createdAt: new Date().toISOString(), lastOpenedAt: new Date().toISOString(), folderIdentities: identities(root) }) })
+    await store.update((state) => { state.projects.push({ id: 'project', harness: 'omp', name: 'Project', path: root, folders: [root], primaryFolder: root, pinned: false, createdAt: new Date().toISOString(), lastOpenedAt: new Date().toISOString(), folderIdentities: identities(root) }) })
 
     await service.list()
     expect(await service.listFiles(root)).toEqual({
@@ -459,7 +459,7 @@ describe('ProjectService file listing', () => {
     mkdirSync(join(root, 'unreadable'))
     writeFileSync(join(root, 'unreadable', 'hidden.txt'), 'hidden')
     chmodSync(join(root, 'unreadable'), 0o000)
-    await store.update((state) => { state.projects.push({ id: 'project', harness: 'prime', name: 'Project', path: root, folders: [root], primaryFolder: root, pinned: false, createdAt: new Date().toISOString(), lastOpenedAt: new Date().toISOString(), folderIdentities: identities(root) }) })
+    await store.update((state) => { state.projects.push({ id: 'project', harness: 'omp', name: 'Project', path: root, folders: [root], primaryFolder: root, pinned: false, createdAt: new Date().toISOString(), lastOpenedAt: new Date().toISOString(), folderIdentities: identities(root) }) })
     await service.list()
     try {
       const listing = await service.listFiles(root)
@@ -473,7 +473,7 @@ describe('ProjectService file listing', () => {
 
   it('rejects paths that have not been added as projects', async () => {
     const { root, service } = setup()
-    await expect(service.listFiles(root)).rejects.toThrow(/not inside an added Prime Work project/)
+    await expect(service.listFiles(root)).rejects.toThrow(/not inside an added OMP Desktop project/)
   })
 
   it('lists files for an inferred project discovered from sessions without manual addition', async () => {
@@ -492,35 +492,6 @@ describe('ProjectService file listing', () => {
         { path: 'src', type: 'directory' },
         { path: 'src/main.ts', type: 'file' },
         { path: 'README.md', type: 'file' },
-      ],
-      skipped: 0,
-    })
-  })
-
-  it('lists files for an inferred Pi Work project discovered from Pi agent sessions', async () => {
-    const { root, store } = setup()
-    const piService = new ProjectService(store, () => null, 'pi')
-    writeFileSync(join(root, 'config.json'), '{}')
-    piService.bindProviders({
-      sessions: async () => [{
-        id: 'pi-session-1',
-        harness: 'pi',
-        filePath: join(root, 'pi-session-1.jsonl'),
-        projectPath: root,
-        title: 'Pi Session',
-        createdAt: '2026-03-01T00:00:00.000Z',
-        updatedAt: '2026-03-02T00:00:00.000Z',
-        status: 'idle',
-        depth: 0,
-        archived: false,
-      }],
-      branch: async () => undefined,
-    })
-
-    const listing = await piService.listFiles(root)
-    expect(listing).toEqual({
-      entries: [
-        { path: 'config.json', type: 'file' },
       ],
       skipped: 0,
     })
@@ -568,7 +539,7 @@ describe('ProjectService file listing', () => {
     expect(await service.listFiles(root)).toEqual({ entries: [{ path: 'README.md', type: 'file' }], skipped: 0 })
 
     expect(await service.remove(listed[0].id)).toBe(true)
-    await expect(service.listFiles(root)).rejects.toThrow(/not inside an added Prime Work project/)
+    await expect(service.listFiles(root)).rejects.toThrow(/not inside an added OMP Desktop project/)
   })
 
   it('revokes read-only authorization when a symlinked dismissal names the project', async () => {
@@ -583,7 +554,7 @@ describe('ProjectService file listing', () => {
     await service.list()
     await expect(service.authorizeReadOnlyCwd(root)).resolves.toBe(realpathSync(root))
     await store.update((state) => { state.dismissedProjectPaths.push(alias) })
-    await expect(service.authorizeReadOnlyCwd(root)).rejects.toThrow(/not inside an added Prime Work project/)
+    await expect(service.authorizeReadOnlyCwd(root)).rejects.toThrow(/not inside an added OMP Desktop project/)
   })
 
   it('safely ignores stale and nonexistent session project paths during file listing', async () => {
@@ -658,7 +629,7 @@ describe('ProjectService file listing', () => {
   it.skipIf(process.platform === 'win32')('preserves backslashes in POSIX filenames', async () => {
     const { root, service, store } = setup()
     writeFileSync(join(root, 'weird\\name.txt'), 'posix filename with a backslash')
-    await store.update((state) => { state.projects.push({ id: 'project', harness: 'prime', name: 'Project', path: root, folders: [root], primaryFolder: root, pinned: false, createdAt: new Date().toISOString(), lastOpenedAt: new Date().toISOString(), folderIdentities: identities(root) }) })
+    await store.update((state) => { state.projects.push({ id: 'project', harness: 'omp', name: 'Project', path: root, folders: [root], primaryFolder: root, pinned: false, createdAt: new Date().toISOString(), lastOpenedAt: new Date().toISOString(), folderIdentities: identities(root) }) })
 
     await service.list()
     expect(await service.listFiles(root)).toEqual({ entries: [{ path: 'weird\\name.txt', type: 'file' }], skipped: 0 })
@@ -668,7 +639,7 @@ describe('ProjectService file listing', () => {
     const { root, service, store } = setup()
     writeFileSync(join(root, 'README.md'), 'read me')
     await store.update((state) => { state.projects.push({
-      id: 'legacy-project', harness: 'prime', name: 'Legacy project', path: root, folders: [root], primaryFolder: root, pinned: false,
+      id: 'legacy-project', harness: 'omp', name: 'Legacy project', path: root, folders: [root], primaryFolder: root, pinned: false,
       createdAt: new Date().toISOString(), lastOpenedAt: new Date().toISOString(),
     }) })
 
@@ -682,7 +653,7 @@ describe('ProjectService file listing', () => {
     expect(current.birthtimeNs).toBeDefined()
     const legacy = { dev: (BigInt(current.dev) + 1n).toString(), ino: current.ino }
     await store.update((state) => { state.projects.push({
-      id: 'legacy-remount', harness: 'prime', name: 'Legacy remount', path: root, folders: [root], primaryFolder: root,
+      id: 'legacy-remount', harness: 'omp', name: 'Legacy remount', path: root, folders: [root], primaryFolder: root,
       pinned: false, createdAt: new Date().toISOString(), lastOpenedAt: new Date().toISOString(), folderIdentities: { [realpathSync(root)]: legacy },
     }) })
 
@@ -696,7 +667,7 @@ describe('ProjectService file listing', () => {
     expect(current.birthtimeNs).toBeDefined()
     const legacy = { dev: (BigInt(current.dev) + 1n).toString(), ino: current.ino }
     await store.update((state) => { state.projects.push({
-      id: 'legacy-replacement', harness: 'prime', name: 'Legacy replacement', path: root, folders: [root], primaryFolder: root,
+      id: 'legacy-replacement', harness: 'omp', name: 'Legacy replacement', path: root, folders: [root], primaryFolder: root,
       pinned: false, createdAt: new Date(0).toISOString(), lastOpenedAt: new Date().toISOString(), folderIdentities: { [realpathSync(root)]: legacy },
     }) })
 
@@ -710,7 +681,7 @@ describe('ProjectService file listing', () => {
     expect(current.birthtimeNs).toBeDefined()
     const legacy = { dev: current.dev, ino: current.ino }
     await store.update((state) => { state.projects.push({
-      id: 'legacy-same-device-replacement', harness: 'prime', name: 'Legacy same-device replacement', path: root, folders: [root], primaryFolder: root,
+      id: 'legacy-same-device-replacement', harness: 'omp', name: 'Legacy same-device replacement', path: root, folders: [root], primaryFolder: root,
       pinned: false, createdAt: new Date(0).toISOString(), lastOpenedAt: new Date().toISOString(), folderIdentities: { [realpathSync(root)]: legacy },
     }) })
 
@@ -724,7 +695,7 @@ describe('ProjectService file listing', () => {
     const replacement = `${root}-replacement`
     mkdirSync(replacement)
     let swapped = false
-    const service = new ProjectService(store, () => null, 'prime', {
+    const service = new ProjectService(store, () => null, 'omp', {
       lstat: (path) => lstat(path, { bigint: true }),
       realpath: async (path) => {
         if (!swapped) {
@@ -748,7 +719,7 @@ describe('ProjectService file listing', () => {
     expect(current.birthtimeNs).toBeDefined()
     const beforeRemount = { ...current, dev: (BigInt(current.dev) + 1n).toString() }
     await store.update((state) => { state.projects.push({
-      id: 'fingerprinted-remount', harness: 'prime', name: 'Fingerprinted remount', path: root, folders: [root], primaryFolder: root,
+      id: 'fingerprinted-remount', harness: 'omp', name: 'Fingerprinted remount', path: root, folders: [root], primaryFolder: root,
       pinned: false, createdAt: new Date().toISOString(), lastOpenedAt: new Date().toISOString(), folderIdentities: { [realpathSync(root)]: beforeRemount },
     }) })
 
@@ -762,7 +733,7 @@ describe('ProjectService file listing', () => {
     expect(current.birthtimeNs).toBeDefined()
     const replaced = { ...current, birthtimeNs: (BigInt(current.birthtimeNs!) + 1n).toString() }
     await store.update((state) => { state.projects.push({
-      id: 'replaced', harness: 'prime', name: 'Replaced', path: root, folders: [root], primaryFolder: root,
+      id: 'replaced', harness: 'omp', name: 'Replaced', path: root, folders: [root], primaryFolder: root,
       pinned: false, createdAt: new Date().toISOString(), lastOpenedAt: new Date().toISOString(), folderIdentities: { [realpathSync(root)]: replaced },
     }) })
 
@@ -776,7 +747,7 @@ describe('ProjectService file listing', () => {
     const unrelated = `${root}-unrelated`
     mkdirSync(unrelated)
     await store.update((state) => { state.projects.push({
-      id: 'project', harness: 'prime', name: 'Project', path: root, folders: [root], primaryFolder: root, pinned: false,
+      id: 'project', harness: 'omp', name: 'Project', path: root, folders: [root], primaryFolder: root, pinned: false,
       createdAt: new Date().toISOString(), lastOpenedAt: new Date().toISOString(), folderIdentities: identities(root),
     }) })
     await service.list()
@@ -796,7 +767,7 @@ describe('ProjectService file listing', () => {
   it('revokes a grant when its directory is replaced by a regular file', async () => {
     const { root, service, store } = setup()
     await store.update((state) => { state.projects.push({
-      id: 'project', harness: 'prime', name: 'Project', path: root, folders: [root], primaryFolder: root, pinned: false,
+      id: 'project', harness: 'omp', name: 'Project', path: root, folders: [root], primaryFolder: root, pinned: false,
       createdAt: new Date().toISOString(), lastOpenedAt: new Date().toISOString(), folderIdentities: identities(root),
     }) })
     await service.list()
@@ -813,8 +784,8 @@ describe('ProjectService file listing', () => {
     mkdirSync(second)
     const now = new Date().toISOString()
     await store.update((state) => { state.projects.push(
-      { id: 'project-a', harness: 'prime', name: 'A', path: root, folders: [root], primaryFolder: root, pinned: false, createdAt: now, lastOpenedAt: now, folderIdentities: identities(root) },
-      { id: 'project-b', harness: 'prime', name: 'B', path: second, folders: [second], primaryFolder: second, pinned: false, createdAt: now, lastOpenedAt: now, folderIdentities: identities(second) },
+      { id: 'project-a', harness: 'omp', name: 'A', path: root, folders: [root], primaryFolder: root, pinned: false, createdAt: now, lastOpenedAt: now, folderIdentities: identities(root) },
+      { id: 'project-b', harness: 'omp', name: 'B', path: second, folders: [second], primaryFolder: second, pinned: false, createdAt: now, lastOpenedAt: now, folderIdentities: identities(second) },
     ) })
     let armed = false
     let markEntered!: () => void
@@ -842,7 +813,7 @@ describe('ProjectService file listing', () => {
   it('revokes a grant when a different directory is recreated at the same path', async () => {
     const { root, service, store } = setup()
     await store.update((state) => { state.projects.push({
-      id: 'project', harness: 'prime', name: 'Project', path: root, folders: [root], primaryFolder: root, pinned: false,
+      id: 'project', harness: 'omp', name: 'Project', path: root, folders: [root], primaryFolder: root, pinned: false,
       createdAt: new Date().toISOString(), lastOpenedAt: new Date().toISOString(), folderIdentities: identities(root),
     }) })
     await service.list()
@@ -857,172 +828,103 @@ describe('ProjectService file listing', () => {
 })
 
 describe('ProjectService harness scoping', () => {
-  it('repairs remounted project grants for both harnesses without crossing scopes', async () => {
-    const { root, service: primeService, store } = setup()
-    const ompRoot = `${root}-omp`
-    mkdirSync(ompRoot)
-    const ompService = new ProjectService(store, () => null, 'omp')
-    const primeCurrent = identity(root)
-    const ompCurrent = identity(ompRoot)
-    expect(primeCurrent.birthtimeNs).toBeDefined()
-    expect(ompCurrent.birthtimeNs).toBeDefined()
+  it('repairs remounted project grants without crossing project roots', async () => {
+    const { root, service, store } = setup()
+    const otherRoot = `${root}-other`
+    mkdirSync(otherRoot)
+    const rootIdentity = identity(root)
+    const otherIdentity = identity(otherRoot)
+    expect(rootIdentity.birthtimeNs).toBeDefined()
+    expect(otherIdentity.birthtimeNs).toBeDefined()
     const now = new Date().toISOString()
     await store.update((state) => { state.projects.push(
       {
-        id: 'prime-remount', harness: 'prime', name: 'Prime', path: root, folders: [root], primaryFolder: root,
+        id: 'remount-a', harness: 'omp', name: 'Remount A', path: root, folders: [root], primaryFolder: root,
         pinned: false, createdAt: now, lastOpenedAt: now,
-        folderIdentities: { [realpathSync(root)]: { ...primeCurrent, dev: (BigInt(primeCurrent.dev) + 1n).toString() } },
+        folderIdentities: { [realpathSync(root)]: { ...rootIdentity, dev: (BigInt(rootIdentity.dev) + 1n).toString() } },
       },
       {
-        id: 'omp-remount', harness: 'omp', name: 'OMP', path: ompRoot, folders: [ompRoot], primaryFolder: ompRoot,
+        id: 'remount-b', harness: 'omp', name: 'Remount B', path: otherRoot, folders: [otherRoot], primaryFolder: otherRoot,
         pinned: false, createdAt: now, lastOpenedAt: now,
-        folderIdentities: { [realpathSync(ompRoot)]: { ...ompCurrent, dev: (BigInt(ompCurrent.dev) + 1n).toString() } },
+        folderIdentities: { [realpathSync(otherRoot)]: { ...otherIdentity, dev: (BigInt(otherIdentity.dev) + 1n).toString() } },
       },
     ) })
 
-    await expect(primeService.authorizeCwd(root)).resolves.toBe(realpathSync(root))
-    await expect(ompService.authorizeCwd(ompRoot)).resolves.toBe(realpathSync(ompRoot))
-    await expect(primeService.authorizeCwd(ompRoot)).rejects.toThrow(/Prime Work/)
-    await expect(ompService.authorizeCwd(root)).rejects.toThrow(/OMP Work/)
-    expect(store.snapshot().projects.find((project) => project.id === 'prime-remount')?.folderIdentities?.[realpathSync(root)]).toEqual(primeCurrent)
-    expect(store.snapshot().projects.find((project) => project.id === 'omp-remount')?.folderIdentities?.[realpathSync(ompRoot)]).toEqual(ompCurrent)
+    await expect(service.authorizeCwd(root)).resolves.toBe(realpathSync(root))
+    await expect(service.authorizeCwd(otherRoot)).resolves.toBe(realpathSync(otherRoot))
+    expect(store.snapshot().projects.find((project) => project.id === 'remount-a')?.folderIdentities?.[realpathSync(root)]).toEqual(rootIdentity)
+    expect(store.snapshot().projects.find((project) => project.id === 'remount-b')?.folderIdentities?.[realpathSync(otherRoot)]).toEqual(otherIdentity)
   })
 
-  it('never authorizes a cwd through the other harness\'s grants', async () => {
-    const { root, service: primeService, store } = setup()
-    const ompRoot = `${root}-omp`
-    mkdirSync(ompRoot)
-    const ompService = new ProjectService(store, () => null, 'omp')
+  it('pins and unpins its own projects and ignores missing ids', async () => {
+    const { root, service, store } = setup()
     const now = new Date().toISOString()
     await store.update((state) => { state.projects.push(
-      { id: 'prime-project', harness: 'prime', name: 'Prime', path: root, folders: [root], primaryFolder: root, pinned: false, createdAt: now, lastOpenedAt: now, folderIdentities: identities(root) },
-      { id: 'omp-project', harness: 'omp', name: 'OMP', path: ompRoot, folders: [ompRoot], primaryFolder: ompRoot, pinned: false, createdAt: now, lastOpenedAt: now, folderIdentities: identities(ompRoot) },
+      { id: 'project', harness: 'omp', name: 'Project', path: root, folders: [root], primaryFolder: root, pinned: false, createdAt: now, lastOpenedAt: now, folderIdentities: identities(root) },
     ) })
+    service.bindProviders({ sessions: async () => [], branch: async () => undefined })
 
-    await expect(primeService.authorizeCwd(root)).resolves.toBe(realpathSync(root))
-    await expect(primeService.authorizeCwd(ompRoot)).rejects.toThrow(/not inside an added Prime Work project/)
-    await expect(ompService.authorizeCwd(ompRoot)).resolves.toBe(realpathSync(ompRoot))
-    await expect(ompService.authorizeCwd(root)).rejects.toThrow(/not inside an added OMP Work project/)
+    await expect(service.setPinned('project', true)).resolves.toBe(true)
+    expect(store.snapshot().projects.find((project) => project.id === 'project')?.pinned).toBe(true)
+    expect((await service.list()).map((project) => project.id)).toEqual(['project'])
+    await expect(service.setPinned('project', false)).resolves.toBe(true)
+    expect(store.snapshot().projects.find((project) => project.id === 'project')?.pinned).toBe(false)
+    await expect(service.setPinned('missing', true)).resolves.toBe(false)
   })
 
-  it('lists, tags, and removes only its own harness\'s records against the shared store', async () => {
-    const { root, service: primeService, store } = setup()
-    const ompRoot = `${root}-omp`
-    mkdirSync(ompRoot)
-    const ompService = new ProjectService(store, () => null, 'omp')
-    ompService.bindProviders({ sessions: async () => [], branch: async () => undefined })
-    const now = new Date().toISOString()
-    await store.update((state) => { state.projects.push(
-      { id: 'prime-project', harness: 'prime', name: 'Prime', path: root, folders: [root], primaryFolder: root, pinned: false, createdAt: now, lastOpenedAt: now, folderIdentities: identities(root) },
-      { id: 'omp-project', harness: 'omp', name: 'OMP', path: ompRoot, folders: [ompRoot], primaryFolder: ompRoot, pinned: false, createdAt: now, lastOpenedAt: now, folderIdentities: identities(ompRoot) },
-    ) })
-
-    expect((await primeService.list()).map((record) => `${record.harness}:${record.id}`)).toEqual(['prime:prime-project'])
-    expect((await ompService.list()).map((record) => `${record.harness}:${record.id}`)).toEqual(['omp:omp-project'])
-
-    // Removing through the wrong harness's service is a no-op that leaves the grant intact.
-    await expect(primeService.remove('omp-project')).resolves.toBe(false)
-    await expect(primeService.touch('omp-project')).resolves.toBe(false)
-    await expect(primeService.setPinned('omp-project', true)).resolves.toBe(false)
-    expect(store.snapshot().projects.map((project) => project.id).sort()).toEqual(['omp-project', 'prime-project'])
-    await expect(ompService.authorizeCwd(ompRoot)).resolves.toBe(realpathSync(ompRoot))
-
-    await expect(ompService.remove('omp-project')).resolves.toBe(true)
-    expect(store.snapshot().projects.map((project) => project.id)).toEqual(['prime-project'])
-    await expect(primeService.authorizeCwd(root)).resolves.toBe(realpathSync(root))
-  })
-
-  it('pins and unpins its own projects while keeping other harnesses isolated', async () => {
-    const { root, service: primeService, store } = setup()
-    const ompRoot = `${root}-omp`
-    mkdirSync(ompRoot)
-    const ompService = new ProjectService(store, () => null, 'omp')
-    const now = new Date().toISOString()
-    await store.update((state) => { state.projects.push(
-      { id: 'prime-project', harness: 'prime', name: 'Prime', path: root, folders: [root], primaryFolder: root, pinned: false, createdAt: now, lastOpenedAt: now, folderIdentities: identities(root) },
-      { id: 'omp-project', harness: 'omp', name: 'OMP', path: ompRoot, folders: [ompRoot], primaryFolder: ompRoot, pinned: false, createdAt: now, lastOpenedAt: now, folderIdentities: identities(ompRoot) },
-    ) })
-    primeService.bindProviders({ sessions: async () => [], branch: async () => undefined })
-
-    await expect(primeService.setPinned('prime-project', true)).resolves.toBe(true)
-    expect(store.snapshot().projects.find((project) => project.id === 'prime-project')?.pinned).toBe(true)
-    expect((await primeService.list()).map((project) => project.id)).toEqual(['prime-project'])
-    await expect(primeService.setPinned('prime-project', false)).resolves.toBe(true)
-    expect(store.snapshot().projects.find((project) => project.id === 'prime-project')?.pinned).toBe(false)
-    await expect(primeService.setPinned('missing', true)).resolves.toBe(false)
-    await expect(primeService.setPinned('omp-project', true)).resolves.toBe(false)
-    expect(store.snapshot().projects.find((project) => project.id === 'omp-project')?.pinned).toBe(false)
-    expect(await ompService.list()).toHaveLength(1)
-  })
-
-  it('revokes session-derived read-only authorization across sibling harnesses when dismissed on one harness', async () => {
-    const { root, service: primeService, store } = setup()
-    const ompService = new ProjectService(store, () => null, 'omp')
-    const piService = new ProjectService(store, () => null, 'pi')
+  it('revokes session-derived read-only authorization when the inferred project is dismissed', async () => {
+    const { root, service } = setup()
     writeFileSync(join(root, 'file.txt'), 'content')
 
     const sessions = [session('session-1', root, '2026-03-01T00:00:00.000Z', '2026-03-02T00:00:00.000Z')]
-    primeService.bindProviders({ sessions: async () => sessions, branch: async () => undefined })
-    ompService.bindProviders({ sessions: async () => sessions, branch: async () => undefined })
-    piService.bindProviders({ sessions: async () => sessions, branch: async () => undefined })
+    service.bindProviders({ sessions: async () => sessions, branch: async () => undefined })
 
-    const [primeRecord] = await primeService.list()
-    const [ompRecord] = await ompService.list()
-    const [piRecord] = await piService.list()
-    expect(primeRecord.inferred).toBe(true)
-    expect(ompRecord.inferred).toBe(true)
-    expect(piRecord.inferred).toBe(true)
+    const [record] = await service.list()
+    expect(record.inferred).toBe(true)
 
-    expect(await primeService.listFiles(root)).toEqual({ entries: [{ path: 'file.txt', type: 'file' }], skipped: 0 })
-    expect(await ompService.listFiles(root)).toEqual({ entries: [{ path: 'file.txt', type: 'file' }], skipped: 0 })
-    expect(await piService.listFiles(root)).toEqual({ entries: [{ path: 'file.txt', type: 'file' }], skipped: 0 })
+    expect(await service.listFiles(root)).toEqual({ entries: [{ path: 'file.txt', type: 'file' }], skipped: 0 })
 
-    // Prime dismisses the inferred project -> shared dismissedProjectPaths is updated
-    expect(await primeService.remove(primeRecord.id)).toBe(true)
+    expect(await service.remove(record.id)).toBe(true)
 
-    // OMP and Pi must immediately reject without needing an explicit list() call
-    await expect(ompService.listFiles(root)).rejects.toThrow(/not inside an added OMP Work project/)
-    await expect(ompService.authorizeReadOnlyCwd(root)).rejects.toThrow(/not inside an added OMP Work project/)
-    await expect(piService.listFiles(root)).rejects.toThrow(/not inside an added Pi Work project/)
-    await expect(piService.authorizeReadOnlyCwd(root)).rejects.toThrow(/not inside an added Pi Work project/)
+    await expect(service.listFiles(root)).rejects.toThrow(/not inside an added OMP Desktop project/)
+    await expect(service.authorizeReadOnlyCwd(root)).rejects.toThrow(/not inside an added OMP Desktop project/)
   })
 
-  it('does not revoke an independent persisted grant on a sibling harness when an inferred project is removed', async () => {
-    const { root, service: primeService, store } = setup()
-    const ompRoot = `${root}-omp`
-    mkdirSync(ompRoot)
-    const ompService = new ProjectService(store, () => null, 'omp')
-    ompService.bindProviders({ sessions: async () => [], branch: async () => undefined })
+  it('does not revoke an independent persisted grant when an inferred project is removed', async () => {
+    const { root, service, store } = setup()
+    const persistedRoot = `${root}-persisted`
+    mkdirSync(persistedRoot)
+    service.bindProviders({ sessions: async () => [], branch: async () => undefined })
     const now = new Date().toISOString()
     await store.update((state) => {
       state.projects.push({
-        id: 'omp-project', harness: 'omp', name: 'OMP Persisted', path: ompRoot,
-        folders: [ompRoot], primaryFolder: ompRoot, pinned: false, createdAt: now, lastOpenedAt: now,
-        folderIdentities: identities(ompRoot),
+        id: 'persisted-project', harness: 'omp', name: 'Persisted', path: persistedRoot,
+        folders: [persistedRoot], primaryFolder: persistedRoot, pinned: false, createdAt: now, lastOpenedAt: now,
+        folderIdentities: identities(persistedRoot),
       })
     })
 
-    primeService.bindProviders({
-      sessions: async () => [session('prime-inferred-session', root, '2026-03-01T00:00:00.000Z', '2026-03-02T00:00:00.000Z')],
+    service.bindProviders({
+      sessions: async () => [session('inferred-session', root, '2026-03-01T00:00:00.000Z', '2026-03-02T00:00:00.000Z')],
       branch: async () => undefined,
     })
 
-    const [inferred] = await primeService.list()
-    expect(inferred.inferred).toBe(true)
+    const inferred = (await service.list()).find((record) => record.inferred)
+    expect(inferred).toBeDefined()
+    expect(inferred!.inferred).toBe(true)
 
-    expect(await primeService.remove(inferred.id)).toBe(true)
-    await expect(ompService.authorizeCwd(ompRoot)).resolves.toBe(realpathSync(ompRoot))
-    await expect(ompService.authorizeReadOnlyCwd(ompRoot)).resolves.toBe(realpathSync(ompRoot))
+    expect(await service.remove(inferred!.id)).toBe(true)
+    await expect(service.authorizeCwd(persistedRoot)).resolves.toBe(realpathSync(persistedRoot))
+    await expect(service.authorizeReadOnlyCwd(persistedRoot)).resolves.toBe(realpathSync(persistedRoot))
   })
 })
-
 
 describe('ProjectService worktrees', () => {
   it('returns no checkout choices for an authorized non-Git project', async () => {
     const { root, service, store } = setup()
     const now = new Date().toISOString()
     await store.update((state) => { state.projects.push({
-      id: 'plain-project', harness: 'prime', name: 'Plain project', path: root, folders: [root], primaryFolder: root,
+      id: 'plain-project', harness: 'omp', name: 'Plain project', path: root, folders: [root], primaryFolder: root,
       pinned: false, createdAt: now, lastOpenedAt: now, folderIdentities: identities(root),
     }) })
     await service.list()
@@ -1050,7 +952,7 @@ describe('ProjectService worktrees', () => {
     mkdirSync(outsider)
     const now = new Date().toISOString()
     await store.update((state) => { state.projects.push({
-      id: 'project', harness: 'prime', name: 'Project', path: root, folders: [root], primaryFolder: root,
+      id: 'project', harness: 'omp', name: 'Project', path: root, folders: [root], primaryFolder: root,
       pinned: false, createdAt: now, lastOpenedAt: now, folderIdentities: identities(root),
     }) })
     await service.list()
@@ -1067,7 +969,7 @@ describe('ProjectService worktrees', () => {
     expect(opened.path).toBe(root)
     expect(opened.primaryFolder).toBe(realpathSync(linked))
     expect(opened.folders).toEqual(expect.arrayContaining([root, realpathSync(linked)]))
-    expect(store.snapshot().projects.filter((project) => project.harness === 'prime')).toHaveLength(1)
+    expect(store.snapshot().projects.filter((project) => project.harness === 'omp')).toHaveLength(1)
     await expect(service.authorizeCwd(linked)).resolves.toBe(realpathSync(linked))
     await expect(checkouts.execute('project', { strategy: 'worktree', operation: 'open', path: outsider })).resolves.toMatchObject({ kind: 'refused', code: 'checkout-not-found' })
     expect(store.snapshot().projects.some((project) => resolve(project.path) === resolve(outsider))).toBe(false)
@@ -1091,8 +993,8 @@ describe('ProjectService worktrees', () => {
     const linkedPath = realpathSync(linked)
     const now = new Date().toISOString()
     await store.update((state) => { state.projects.push(
-      { id: 'repository', harness: 'prime', name: 'Repository', path: root, folders: [root], primaryFolder: root, pinned: false, createdAt: now, lastOpenedAt: now, folderIdentities: identities(root) },
-      { id: 'stray-worktree', harness: 'prime', name: 'Stray worktree', path: linkedPath, folders: [linkedPath], primaryFolder: linkedPath, pinned: false, createdAt: now, lastOpenedAt: now, folderIdentities: identities(linkedPath) },
+      { id: 'repository', harness: 'omp', name: 'Repository', path: root, folders: [root], primaryFolder: root, pinned: false, createdAt: now, lastOpenedAt: now, folderIdentities: identities(root) },
+      { id: 'stray-worktree', harness: 'omp', name: 'Stray worktree', path: linkedPath, folders: [linkedPath], primaryFolder: linkedPath, pinned: false, createdAt: now, lastOpenedAt: now, folderIdentities: identities(linkedPath) },
     ) })
 
     const listed = await service.list()
@@ -1121,8 +1023,8 @@ describe('ProjectService worktrees', () => {
     const now = new Date().toISOString()
     const linkedPath = realpathSync(linked)
     await store.update((state) => { state.projects.push(
-      { id: 'project', harness: 'prime', name: 'Project', path: root, folders: [root], primaryFolder: root, pinned: false, createdAt: now, lastOpenedAt: now, folderIdentities: identities(root) },
-      { id: 'worktree-project', harness: 'prime', name: 'Worktree', path: linkedPath, folders: [linkedPath], primaryFolder: linkedPath, pinned: false, createdAt: now, lastOpenedAt: now, folderIdentities: identities(linkedPath) },
+      { id: 'project', harness: 'omp', name: 'Project', path: root, folders: [root], primaryFolder: root, pinned: false, createdAt: now, lastOpenedAt: now, folderIdentities: identities(root) },
+      { id: 'worktree-project', harness: 'omp', name: 'Worktree', path: linkedPath, folders: [linkedPath], primaryFolder: linkedPath, pinned: false, createdAt: now, lastOpenedAt: now, folderIdentities: identities(linkedPath) },
     ) })
     await service.list()
 
@@ -1143,7 +1045,7 @@ describe('ProjectService scripts', () => {
     const { root, service, store } = setup()
     const now = new Date().toISOString()
     await store.update((state) => { state.projects.push({
-      id: 'script-project', harness: 'prime', name: 'Script project', path: root, folders: [root], primaryFolder: root,
+      id: 'script-project', harness: 'omp', name: 'Script project', path: root, folders: [root], primaryFolder: root,
       pinned: false, createdAt: now, lastOpenedAt: now, folderIdentities: identities(root),
     }) })
 

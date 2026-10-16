@@ -147,29 +147,10 @@ describe('validateRpcCommand session commands', () => {
     await expect(validate({ type: 'set_session_name', name: '   ' })).rejects.toThrow('name is too short')
   })
 
-  it('validates cross-session messaging and observation', async () => {
-    await expect(validate({ type: 'send_message', targetActiveSessionId: 'session-2', message: 'ping' })).resolves.toEqual({ type: 'send_message', targetActiveSessionId: 'session-2', message: 'ping' })
-    await expect(validate({ type: 'send_message', targetActiveSessionId: 'session-2', message: '' })).rejects.toThrow('message is too short')
-    await expect(validate({ type: 'observe', activeSessionId: 'session-2' })).resolves.toEqual({ type: 'observe', activeSessionId: 'session-2' })
-    await expect(validate({ type: 'unobserve', activeSessionId: 'session-2' })).resolves.toEqual({ type: 'unobserve', activeSessionId: 'session-2' })
-    await expect(validate({ type: 'observe', activeSessionId: '' })).rejects.toThrow('activeSessionId is too short')
-  })
-})
-
-describe('validateRpcCommand heartbeat commands', () => {
-  it('validates set_heartbeat with an optional delivery mode', async () => {
-    await expect(validate({ type: 'set_heartbeat', schedule: ' every hour ', prompt: 'check CI' })).resolves.toEqual({ type: 'set_heartbeat', schedule: 'every hour', prompt: 'check CI' })
-    await expect(validate({ type: 'set_heartbeat', schedule: 'every hour', prompt: 'check CI', deliveryMode: 'follow_up' })).resolves.toEqual({ type: 'set_heartbeat', schedule: 'every hour', prompt: 'check CI', deliveryMode: 'follow_up' })
-    await expect(validate({ type: 'set_heartbeat', schedule: 'every hour', prompt: 'check CI', deliveryMode: 'followUp' })).rejects.toThrow('Invalid deliveryMode')
-    await expect(validate({ type: 'set_heartbeat', schedule: '   ', prompt: 'check CI' })).rejects.toThrow('schedule is too short')
-  })
-
-  it('validates heartbeat updates and management', async () => {
-    await expect(validate({ type: 'update_heartbeat', action: 'pause' })).resolves.toEqual({ type: 'update_heartbeat', action: 'pause' })
-    await expect(validate({ type: 'update_heartbeat', action: 'stop' })).rejects.toThrow('Invalid heartbeat action')
-    await expect(validate({ type: 'manage_heartbeat', activeSessionId: 'session-3', jobId: 'job-1', action: 'stop' })).resolves.toEqual({ type: 'manage_heartbeat', activeSessionId: 'session-3', jobId: 'job-1', action: 'stop' })
-    await expect(validate({ type: 'manage_heartbeat', activeSessionId: 'session-3', jobId: 'job-1', action: 'clear' })).rejects.toThrow('Invalid heartbeat management action')
-    await expect(validate({ type: 'manage_heartbeat', activeSessionId: 'session-3', action: 'stop' })).rejects.toThrow('jobId must be a string')
+  it('rejects removed cross-session and heartbeat commands before they reach an adapter', async () => {
+    for (const type of ['send_message', 'observe', 'unobserve', 'set_heartbeat', 'update_heartbeat', 'manage_heartbeat']) {
+      await expect(validate({ type } as never)).rejects.toThrow(`RPC command ${type} is not exposed to the renderer`)
+    }
   })
 })
 

@@ -157,7 +157,7 @@ export class SessionMetadataCatalog {
 
   /**
    * Marks the catalog content stale without discarding the last snapshot: the
-   * `prime-agent list` spawn stays rate limited independently of change events,
+   * The legacy live-CLI overlay spawn stays rate limited independently of change
    * so append bursts keep serving the previous snapshot instead of respawning.
    */
   invalidateLiveCatalog(): void {
@@ -166,7 +166,7 @@ export class SessionMetadataCatalog {
     this.preparedView = null
   }
 
-  /** Live Prime Agent session records keyed by canonical session file path. */
+  /** Live OMP agent session records keyed by canonical session file path. */
   liveSessions(): Promise<ReadonlyMap<string, JsonRecord>> {
     return this.liveCatalog()
   }

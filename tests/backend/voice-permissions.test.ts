@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { isAllowedRendererAudioPermission } from '../../electron/main/voice-permissions'
 
 describe('renderer microphone permission', () => {
-  const expected = 'prime-work://app/index.html'
+  const expected = 'omp-desktop://app/index.html'
 
   it('allows audio only for the exact main renderer document', () => {
     expect(isAllowedRendererAudioPermission(expected, expected, expected, ['audio'])).toBe(true)

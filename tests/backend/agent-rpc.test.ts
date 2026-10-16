@@ -5,13 +5,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { AgentRpcManager, OMP_RPC_ADAPTER, PI_RPC_ADAPTER, PRIME_RPC_ADAPTER } from '../../electron/main/agent-rpc'
+import { AgentRpcManager, OMP_RPC_ADAPTER } from '../../electron/main/agent-rpc'
+import type { ProviderCatalog } from '../../electron/main/agent-rpc/manager'
 import { validateRpcCommand } from '../../electron/main/agent-rpc/command-schema'
 import { MAX_RPC_WRITE_FRAME_BYTES, rpcRequestFrameBytes } from '../../electron/main/agent-rpc/limits'
 import { RpcRuntime } from '../../electron/main/agent-rpc/runtime'
 import { FramedRpcTransport } from '../../electron/main/agent-rpc/transport'
 import type { RpcObject } from '../../electron/main/agent-rpc/types'
-import { PrimeProviderService } from '../../electron/main/providers'
 import { RepositoryUseGate } from '../../electron/main/repository-use-gate'
 import type { RuntimeInfo } from '../../src/types/api'
 import { waitUntil } from '../helpers/wait'
@@ -26,7 +26,7 @@ afterEach(async () => {
 
 describe('agent RPC exit details', () => {
   const writeExitingAgent = (body: string): { cwd: string; executable: string } => {
-    const cwd = mkdtempSync(join(tmpdir(), 'prime-work-rpc-exit-'))
+    const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-rpc-exit-'))
     dirs.push(cwd)
     const executable = join(cwd, 'exit-agent.cjs')
     writeFileSync(executable, `#!/usr/bin/env node
@@ -65,7 +65,9 @@ process.exit(1)`)
     const fake = writeExitingAgent(`const readline = require('node:readline')
 readline.createInterface({ input: process.stdin }).on('line', (line) => {
   const command = JSON.parse(line)
-  if (command.type === 'get_state') {
+  if (command.type === 'negotiate_protocol') {
+    process.stdout.write(JSON.stringify({ id: command.id, type: 'response', command: 'negotiate_protocol', success: true, data: { protocolVersion: command.protocolVersion } }) + '\\n')
+  } else if (command.type === 'get_state') {
     process.stdout.write(JSON.stringify({ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'framed', isStreaming: false } }) + '\\n')
   } else if (command.type === 'trigger_exit') {
     process.stderr.write('secret')
@@ -78,7 +80,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
       const request = (runtime as unknown as { request(command: RpcObject, timeoutMs: number): Promise<RpcObject> }).request.bind(runtime)
       const error = await request({ type: 'trigger_exit' }, 10_000).catch((reason: unknown) => reason)
       expect(error).toBeInstanceOf(Error)
-      expect((error as Error).message).toBe('Prime Agent RPC exited (1)')
+      expect((error as Error).message).toBe('OMP RPC exited (1)')
     } finally {
       await runtime.stop()
     }
@@ -86,7 +88,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
 })
 
 function fakeAgent(promptResponse: string, stateResponse?: string, exitDelayMs = 0): { cwd: string; executable: string } {
-  const cwd = mkdtempSync(join(tmpdir(), 'prime-work-rpc-'))
+  const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-rpc-'))
   dirs.push(cwd)
   const executable = join(cwd, 'fake-agent.cjs')
   writeFileSync(executable, `#!/usr/bin/env node
@@ -96,7 +98,9 @@ let stateCalls = 0
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
 input.on('line', (line) => {
   const command = JSON.parse(line)
-  if (command.type === 'get_state') {
+  if (command.type === 'negotiate_protocol') {
+    send({ id: command.id, type: 'response', command: 'negotiate_protocol', success: true, data: { protocolVersion: command.protocolVersion } })
+  } else if (command.type === 'get_state') {
     send(${stateResponse ?? "{ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'session-1', thinkingLevel: 'medium', isStreaming: false } }"})
   } else if (command.type === 'get_session_stats') {
     send({ id: command.id, type: 'response', command: 'get_session_stats', success: true, data: { contextUsage: { tokens: 25000, contextWindow: 100000, percent: 25 } } })
@@ -104,8 +108,8 @@ input.on('line', (line) => {
     send(${promptResponse})
   } else if (command.type === 'abort') {
     send({ id: command.id, type: 'response', command: 'abort', success: true })
-  } else if (command.type === 'set_service_tier') {
-    send({ id: command.id, type: 'response', command: 'set_service_tier', success: true })
+  } else if (command.type === 'set_fast_mode') {
+    send({ id: command.id, type: 'response', command: 'set_fast_mode', success: true })
   }
 })
 input.on('close', () => {
@@ -140,7 +144,7 @@ describe('agent RPC command frame bounds', () => {
     manager.setWorkspaceUseProvider(begin)
 
     const runtime = await manager.start({ cwd: fake.cwd })
-    expect(begin).toHaveBeenCalledWith(fake.cwd, expect.objectContaining({ kind: 'agent', harness: 'prime' }), expect.any(Function))
+    expect(begin).toHaveBeenCalledWith(fake.cwd, expect.objectContaining({ kind: 'agent', harness: 'omp' }), expect.any(Function))
     expect(release).not.toHaveBeenCalled()
 
     await manager.stop(runtime.runtimeId)
@@ -238,28 +242,23 @@ describe('agent RPC command frame bounds', () => {
     await expect(validateRpcCommand(command(Buffer.from('GIF89a').toString('base64')), async (path) => path)).rejects.toThrow('does not match')
   })
 
-  it.each([
-    ['prime', PRIME_RPC_ADAPTER, '/mcp login notion'],
-    ['omp', OMP_RPC_ADAPTER, '/mcp reauth docs'],
-    ['pi', PI_RPC_ADAPTER, '/mcp-auth files'],
-  ] as const)('rejects forged %s auth commands for every main-process delivery mode', async (harness, adapter, message) => {
+  it('rejects forged omp auth commands for every main-process delivery mode', async () => {
     const wireCommand = vi.fn(async () => ({ type: 'response', command: 'prompt', success: true, data: {} }))
     const runtime = {
-      snapshot: () => ({ runtimeId: 'runtime-auth-policy', harness, cwd: '/tmp', isStreaming: false, imageInputSupported: true }),
+      snapshot: () => ({ runtimeId: 'runtime-auth-policy', harness: 'omp', cwd: '/tmp', isStreaming: false, imageInputSupported: true }),
       command: wireCommand,
     }
-    const manager = new AgentRpcManager(null, async (cwd) => cwd, async (path) => path, undefined, () => new Set(), adapter)
+    const manager = new AgentRpcManager(null, async (cwd) => cwd, async (path) => path, undefined, () => new Set(), OMP_RPC_ADAPTER)
     ;(manager as unknown as { runtimes: Map<string, unknown> }).runtimes.set('runtime-auth-policy', runtime)
     const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).toString('base64')
     const errorLog = vi.spyOn(console, 'error').mockImplementation(() => undefined)
     try {
       for (const command of [
-        { type: 'prompt', message, images: [{ type: 'image', data: png, mimeType: 'image/png' }] },
-        { type: 'steer', message },
-        { type: 'follow_up', message },
-        { type: 'set_heartbeat', schedule: '0 * * * *', prompt: message },
+        { type: 'prompt', message: '/mcp reauth docs', images: [{ type: 'image', data: png, mimeType: 'image/png' }] },
+        { type: 'steer', message: '/mcp reauth docs' },
+        { type: 'follow_up', message: '/mcp reauth docs' },
       ]) {
-        await expect(manager.command('runtime-auth-policy', command)).rejects.toThrow('Network MCP authentication is managed outside GooeyPi')
+        await expect(manager.command('runtime-auth-policy', command)).rejects.toThrow('Network MCP authentication is managed outside OMP Desktop')
       }
       expect(wireCommand).not.toHaveBeenCalled()
     } finally {
@@ -269,12 +268,8 @@ describe('agent RPC command frame bounds', () => {
 })
 
 describe('agent RPC prompt admission capabilities', () => {
-  it.each([
-    ['prime', PRIME_RPC_ADAPTER, true],
-    ['omp', OMP_RPC_ADAPTER, false],
-    ['pi', PI_RPC_ADAPTER, false],
-  ] as const)('keeps or strips streamingBehavior for %s at the wire seam', async (harness, adapter, accepts) => {
-    const cwd = mkdtempSync(join(tmpdir(), `prompt-capability-${harness}-`))
+  it('strips streamingBehavior for omp at the wire seam', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'prompt-capability-omp-'))
     dirs.push(cwd)
     const executable = join(cwd, 'fake-agent.cjs')
     const wirePath = join(cwd, 'wire-command.json')
@@ -298,7 +293,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
 })
 `)
     chmodSync(executable, 0o755)
-    const manager = new AgentRpcManager(executable, async (path) => path, async (path) => path, undefined, () => new Set(), adapter)
+    const manager = new AgentRpcManager(executable, async (path) => path, async (path) => path, undefined, () => new Set(), OMP_RPC_ADAPTER)
     managers.push(manager)
     const runtime = await manager.start({ cwd })
     await manager.command(runtime.runtimeId, {
@@ -312,11 +307,10 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     expect(wire).toMatchObject({
       type: 'prompt',
       message: 'admit this prompt',
-      ...(accepts ? { streamingBehavior: 'steer' } : {}),
       images: [{ type: 'image', mimeType: 'image/png', data: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).toString('base64') }],
     })
     expect(wire.id).toEqual(expect.any(String))
-    if (!accepts) expect(wire).not.toHaveProperty('streamingBehavior')
+    expect(wire).not.toHaveProperty('streamingBehavior')
   })
 })
 
@@ -327,13 +321,13 @@ describe('agent RPC responses', () => {
     const manager = new AgentRpcManager(() => executable, async (cwd) => cwd, async (path) => path)
     managers.push(manager)
 
-    await expect(manager.start({ cwd: fake.cwd })).rejects.toThrow('Prime Agent executable was not found')
+    await expect(manager.start({ cwd: fake.cwd })).rejects.toThrow('OMP executable was not found')
     executable = fake.executable
-    await expect(manager.start({ cwd: fake.cwd })).resolves.toMatchObject({ harness: 'prime', cwd: fake.cwd })
+    await expect(manager.start({ cwd: fake.cwd })).resolves.toMatchObject({ harness: 'omp', cwd: fake.cwd })
   })
 
   it('hydrates and refreshes authoritative context-window usage', async () => {
-    const cwd = mkdtempSync(join(tmpdir(), 'prime-work-rpc-context-'))
+    const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-rpc-context-'))
     dirs.push(cwd)
     const executable = join(cwd, 'context-agent.cjs')
     writeFileSync(executable, `#!/usr/bin/env node
@@ -342,7 +336,9 @@ let stats = 0
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
 readline.createInterface({ input: process.stdin }).on('line', (line) => {
   const command = JSON.parse(line)
-  if (command.type === 'get_state') send({ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'context', isStreaming: false } })
+  if (command.type === 'negotiate_protocol') {
+    send({ id: command.id, type: 'response', command: 'negotiate_protocol', success: true, data: { protocolVersion: command.protocolVersion } })
+  } else if (command.type === 'get_state') send({ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'context', isStreaming: false } })
   else if (command.type === 'get_session_stats') {
     stats += 1
     send({ id: command.id, type: 'response', command: 'get_session_stats', success: true, data: { contextUsage: { tokens: stats * 25000, contextWindow: 100000, percent: stats * 25 }, cost: stats * 0.21, tokens: { input: stats * 20000, output: stats * 5000, cacheRead: 0, cacheWrite: 0, total: stats * 25000 } } })
@@ -379,7 +375,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   })
 
   it('projects context usage while a response streams and corrects it at message boundaries', async () => {
-    const cwd = mkdtempSync(join(tmpdir(), 'prime-work-rpc-live-context-'))
+    const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-rpc-live-context-'))
     dirs.push(cwd)
     const executable = join(cwd, 'live-context-agent.cjs')
     writeFileSync(executable, `#!/usr/bin/env node
@@ -388,7 +384,9 @@ let contextTokens = 40000
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
 readline.createInterface({ input: process.stdin }).on('line', (line) => {
   const command = JSON.parse(line)
-  if (command.type === 'get_state') {
+  if (command.type === 'negotiate_protocol') {
+    send({ id: command.id, type: 'response', command: 'negotiate_protocol', success: true, data: { protocolVersion: command.protocolVersion } })
+  } else if (command.type === 'get_state') {
     send({ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'live-context', isStreaming: false } })
   } else if (command.type === 'get_session_stats') {
     send({ id: command.id, type: 'response', command: 'get_session_stats', success: true, data: { contextUsage: { tokens: contextTokens, contextWindow: 100000, percent: contextTokens / 1000 } } })
@@ -448,7 +446,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   })
 
   it('runs a trailing authoritative refresh when agent_end lands during an in-flight refresh', async () => {
-    const cwd = mkdtempSync(join(tmpdir(), 'prime-work-rpc-trailing-context-'))
+    const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-rpc-trailing-context-'))
     dirs.push(cwd)
     const executable = join(cwd, 'trailing-context-agent.cjs')
     writeFileSync(executable, `#!/usr/bin/env node
@@ -457,7 +455,9 @@ let statsRequests = 0
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
 readline.createInterface({ input: process.stdin }).on('line', (line) => {
   const command = JSON.parse(line)
-  if (command.type === 'get_state') {
+  if (command.type === 'negotiate_protocol') {
+    send({ id: command.id, type: 'response', command: 'negotiate_protocol', success: true, data: { protocolVersion: command.protocolVersion } })
+  } else if (command.type === 'get_state') {
     send({ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'trailing-context', isStreaming: false } })
   } else if (command.type === 'get_session_stats') {
     statsRequests += 1
@@ -495,7 +495,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   })
 
   it('stays busy while an overflow compaction is waiting to restart', async () => {
-    const cwd = mkdtempSync(join(tmpdir(), 'prime-work-rpc-compaction-'))
+    const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-rpc-compaction-'))
     dirs.push(cwd)
     const executable = join(cwd, 'compaction-agent.cjs')
     writeFileSync(executable, `#!/usr/bin/env node
@@ -503,7 +503,9 @@ const readline = require('node:readline')
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
 readline.createInterface({ input: process.stdin }).on('line', (line) => {
   const command = JSON.parse(line)
-  if (command.type === 'get_state') {
+  if (command.type === 'negotiate_protocol') {
+    send({ id: command.id, type: 'response', command: 'negotiate_protocol', success: true, data: { protocolVersion: command.protocolVersion } })
+  } else if (command.type === 'get_state') {
     send({ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'compaction', isStreaming: false, isCompacting: false } })
   } else if (command.type === 'get_session_stats') {
     send({ id: command.id, type: 'response', command: 'get_session_stats', success: true, data: { contextUsage: { tokens: 50000, contextWindow: 100000, percent: 50 } } })
@@ -538,7 +540,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   })
 
   it('stays busy while a provider auto-retry is waiting to restart', async () => {
-    const cwd = mkdtempSync(join(tmpdir(), 'prime-work-rpc-retry-'))
+    const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-rpc-retry-'))
     dirs.push(cwd)
     const executable = join(cwd, 'retry-agent.cjs')
     writeFileSync(executable, `#!/usr/bin/env node
@@ -546,7 +548,9 @@ const readline = require('node:readline')
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
 readline.createInterface({ input: process.stdin }).on('line', (line) => {
   const command = JSON.parse(line)
-  if (command.type === 'get_state') {
+  if (command.type === 'negotiate_protocol') {
+    send({ id: command.id, type: 'response', command: 'negotiate_protocol', success: true, data: { protocolVersion: command.protocolVersion } })
+  } else if (command.type === 'get_state') {
     send({ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'retry', isStreaming: false, isCompacting: false } })
   } else if (command.type === 'get_session_stats') {
     send({ id: command.id, type: 'response', command: 'get_session_stats', success: true, data: { contextUsage: { tokens: 50000, contextWindow: 100000, percent: 50 } } })
@@ -614,7 +618,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   it('releases a minted environment when admission fails before a runtime exists', async () => {
     const fake = fakeAgent("{ id: command.id, type: 'response', command: 'prompt', success: true }")
     const manager = managerFor(fake.executable)
-    const environment = { PRIME_WORK_BROWSER_TOKEN: 'never-spawned-token' }
+    const environment = { OMP_DESKTOP_BROWSER_TOKEN: 'never-spawned-token' }
     const ended = vi.fn()
     manager.setRuntimeEnvironmentProvider(() => {
       manager.beginShutdown()
@@ -630,7 +634,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   it('notifies runtime termination once after explicit stop while active claims remain owned', async () => {
     const fake = fakeAgent("{ id: command.id, type: 'response', command: 'prompt', success: true }")
     const manager = managerFor(fake.executable)
-    const environment = { PRIME_WORK_SCHEDULE_TOKEN: 'active-token' }
+    const environment = { OMP_DESKTOP_SCHEDULE_TOKEN: 'active-token' }
     const ended = vi.fn()
     manager.setRuntimeEnvironmentProvider(() => environment)
     manager.setRuntimeEndListener(ended)
@@ -648,7 +652,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   })
 
   it('notifies runtime termination after natural child exit', async () => {
-    const cwd = mkdtempSync(join(tmpdir(), 'prime-work-rpc-natural-exit-'))
+    const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-rpc-natural-exit-'))
     dirs.push(cwd)
     const executable = join(cwd, 'natural-exit-agent.cjs')
     writeFileSync(executable, `#!/usr/bin/env node
@@ -656,7 +660,9 @@ const readline = require('node:readline')
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
 readline.createInterface({ input: process.stdin }).on('line', (line) => {
   const command = JSON.parse(line)
-  if (command.type === 'get_state') send({ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'natural-exit', isStreaming: false } })
+  if (command.type === 'negotiate_protocol') {
+    send({ id: command.id, type: 'response', command: 'negotiate_protocol', success: true, data: { protocolVersion: command.protocolVersion } })
+  } else if (command.type === 'get_state') send({ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'natural-exit', isStreaming: false } })
   else if (command.type === 'get_session_stats') {
     send({ id: command.id, type: 'response', command: 'get_session_stats', success: true, data: { contextUsage: { tokens: 1, contextWindow: 100, percent: 1 } } })
     setTimeout(() => process.exit(0), 500)
@@ -665,7 +671,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
 `)
     chmodSync(executable, 0o755)
     const manager = managerFor(executable)
-    const environment = { PRIME_WORK_BROWSER_TOKEN: 'natural-exit-token' }
+    const environment = { OMP_DESKTOP_BROWSER_TOKEN: 'natural-exit-token' }
     const ended = vi.fn()
     manager.setRuntimeEnvironmentProvider(() => environment)
     manager.setRuntimeEndListener(ended)
@@ -679,10 +685,10 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   })
 
   it('releases the runtime slot on a failed start even when the child cannot be stopped', async () => {
-    const cwd = mkdtempSync(join(tmpdir(), 'prime-work-rpc-stuck-'))
+    const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-rpc-stuck-'))
     dirs.push(cwd)
     const manager = managerFor('/bin/cat')
-    const environment = { PRIME_WORK_SCHEDULE_TOKEN: 'unreapable-start-token' }
+    const environment = { OMP_DESKTOP_SCHEDULE_TOKEN: 'unreapable-start-token' }
     const ended = vi.fn()
     manager.setRuntimeEnvironmentProvider(() => environment)
     manager.setRuntimeEndListener(ended)
@@ -770,10 +776,16 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     expect(manager.list()).toHaveLength(5)
   })
 
-  it('decorates runtime reasoning and fast-mode capabilities from the Prime catalog', async () => {
+  it('decorates runtime reasoning and fast-mode capabilities from the model catalog', async () => {
     const state = "{ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'session-1', thinkingLevel: 'high', isStreaming: false, model: { provider: 'openai-codex', id: 'gpt-5.4', name: 'GPT-5.4' } } }"
     const fake = fakeAgent("{ id: command.id, type: 'response', command: 'prompt', success: true }", state)
-    const providers = new PrimeProviderService({ authPath: join(fake.cwd, 'auth.json'), modelsPath: join(fake.cwd, 'models.json') })
+    const providers: ProviderCatalog = {
+      requireAvailableModel: async () => { throw new Error('not used') },
+      capabilities: async () => ({
+        key: 'openai-codex/gpt-5.4', provider: 'openai-codex', id: 'gpt-5.4', name: 'GPT-5.4', reasoning: true,
+        input: ['text'], contextWindow: 1_000_000, maxTokens: 100_000, availableThinkingLevels: ['off', 'medium', 'high', 'xhigh'], fastModeSupported: true, available: true,
+      }),
+    }
     const manager = new AgentRpcManager(fake.executable, async (cwd) => cwd, async (path) => path, providers)
     managers.push(manager)
 
@@ -788,13 +800,13 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   it('rejects images authoritatively when the active runtime model is text-only', async () => {
     const state = "{ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'session-1', isStreaming: false, model: { provider: 'fixture', id: 'text-model', name: 'Text model' } } }"
     const fake = fakeAgent("{ id: command.id, type: 'response', command: 'prompt', success: true }", state)
-    const providers = {
+    const providers: ProviderCatalog = {
       capabilities: async () => ({
         key: 'fixture/text-model', provider: 'fixture', id: 'text-model', name: 'Text model', reasoning: false,
         input: ['text'], contextWindow: 1_000, maxTokens: 100, availableThinkingLevels: ['off'], fastModeSupported: false, available: true,
       }),
       requireAvailableModel: async () => { throw new Error('not used') },
-    } as unknown as PrimeProviderService
+    }
     const manager = new AgentRpcManager(fake.executable, async (cwd) => cwd, async (path) => path, providers)
     managers.push(manager)
     const runtime = await manager.start({ cwd: fake.cwd })
@@ -806,7 +818,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   })
 
   it('terminates a process group that keeps writing after an oversized frame', async () => {
-    const cwd = mkdtempSync(join(tmpdir(), 'prime-work-rpc-overflow-'))
+    const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-rpc-overflow-'))
     dirs.push(cwd)
     const executable = join(cwd, 'overflow-agent.cjs')
     const pidFile = join(cwd, 'pid')
@@ -817,7 +829,9 @@ fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid))
 process.on('SIGTERM', () => {})
 readline.createInterface({ input: process.stdin }).on('line', (line) => {
   const command = JSON.parse(line)
-  if (command.type === 'get_state') {
+  if (command.type === 'negotiate_protocol') {
+    process.stdout.write(JSON.stringify({ id: command.id, type: 'response', command: 'negotiate_protocol', success: true, data: { protocolVersion: command.protocolVersion } }) + '\\n')
+  } else if (command.type === 'get_state') {
     process.stdout.write(JSON.stringify({ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'overflow', isStreaming: false } }) + '\\n')
     setTimeout(() => process.stdout.write('x'.repeat(17 * 1024 * 1024)), 25)
   } else if (command.type === 'get_session_stats') {
@@ -889,7 +903,7 @@ setInterval(() => {}, 1000)
   })
 
   it('reports delivery-uncertain timeouts and consumes the late response instead of orphaning it', async () => {
-    const cwd = mkdtempSync(join(tmpdir(), 'prime-work-rpc-uncertain-'))
+    const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-rpc-uncertain-'))
     dirs.push(cwd)
     const executable = join(cwd, 'sleepy-agent.cjs')
     writeFileSync(executable, `#!/usr/bin/env node
@@ -961,7 +975,7 @@ setInterval(() => {}, 1000)
 
 describe('compaction watchdog', () => {
   const watchdogAgent = (name: string, promptScript: string): { cwd: string; executable: string } => {
-    const cwd = mkdtempSync(join(tmpdir(), `prime-work-rpc-${name}-`))
+    const cwd = mkdtempSync(join(tmpdir(), `omp-desktop-rpc-${name}-`))
     dirs.push(cwd)
     const executable = join(cwd, `${name}.cjs`)
     writeFileSync(executable, `#!/usr/bin/env node
@@ -970,7 +984,9 @@ const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
 let compacting = false
 readline.createInterface({ input: process.stdin }).on('line', (line) => {
   const command = JSON.parse(line)
-  if (command.type === 'get_state') {
+  if (command.type === 'negotiate_protocol') {
+    send({ id: command.id, type: 'response', command: 'negotiate_protocol', success: true, data: { protocolVersion: command.protocolVersion } })
+  } else if (command.type === 'get_state') {
     send({ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'watchdog', isStreaming: false, isCompacting: compacting } })
   } else if (command.type === 'get_session_stats') {
     send({ id: command.id, type: 'response', command: 'get_session_stats', success: true, data: { contextUsage: { tokens: 50000, contextWindow: 100000, percent: 50 } } })

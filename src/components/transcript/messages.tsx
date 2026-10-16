@@ -1,39 +1,41 @@
-import { Fragment, memo, useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { Check, ChevronDown, ChevronRight, Copy, Target } from 'lucide-react'
-import type { HarnessId, MessagePart, TranscriptMessage } from '@/types/api'
+import { Fragment, memo, type ReactNode, useEffect, useId, useRef, useState } from 'react'
 import { splitAnnotationBlock } from '@/lib/browser-annotations'
 import { splitCapabilityRouting } from '@/lib/capability-mentions'
-import { routedSessionReferences, splitSessionRouting, type RoutedSessionReference } from '@/lib/session-mentions'
-import { splitTerminalContextBlock } from '@/lib/terminal-context'
 import { writeClipboardText } from '@/lib/clipboard'
-import { boundText } from '@/lib/render-bounds'
 import { HARNESS_SHORT_NAMES } from '@/lib/harness'
+import { type MessageKey, useI18n } from '@/lib/i18n'
+import { boundText } from '@/lib/render-bounds'
+import { type RoutedSessionReference, routedSessionReferences, splitSessionRouting } from '@/lib/session-mentions'
+import { splitTerminalContextBlock } from '@/lib/terminal-context'
+import type { HarnessId, MessagePart, TranscriptMessage } from '@/types/api'
 import { MarkdownText } from '../MarkdownText'
-import { OmpMark, PiMark, PrimeMark } from '../ui'
 import { InlineText } from './syntax'
 import { TranscriptImage } from './TranscriptImage'
 import { ThinkingDots, WorkDisclosure, WorkTimeline } from './timeline'
+
+const MESSAGE_COPY_KEYS = {
+  user: { copy: 'transcript.copy.user', copied: 'transcript.copied.user' },
+  assistant: { copy: 'transcript.copy.assistant', copied: 'transcript.copied.assistant' },
+  agent: { copy: 'transcript.copy.agent', copied: 'transcript.copied.agent' },
+} as const satisfies Record<'user' | 'assistant' | 'agent', { copy: MessageKey; copied: MessageKey }>
 
 function imageSource(part: Extract<MessagePart, { type: 'image' }>): string | undefined {
   if (part.dataTruncated || !part.data || !part.mimeType || !/^image\/(png|jpeg|gif|webp)$/i.test(part.mimeType) || !/^[a-z\d+/=\s]+$/i.test(part.data)) return undefined
   return `data:${part.mimeType};base64,${part.data.replace(/\s/g, '')}`
 }
 
-function renderImage(part: Extract<MessagePart, { type: 'image' }>, key: string) {
+function ImagePart({ part }: { part: Extract<MessagePart, { type: 'image' }> }) {
+  const { t } = useI18n()
   const source = imageSource(part)
-  return source ? (
-    <TranscriptImage key={key} source={source} alt="User attachment" />
-  ) : (
-    <div key={key} className="image-part image-part--unavailable">
-      Image attachment unavailable
-    </div>
-  )
+  if (source) return <TranscriptImage source={source} alt={t('transcript.image.userAttachment')} />
+  return <div className="image-part image-part--unavailable">{t('transcript.image.unavailable')}</div>
 }
 
 function renderNarrative(parts: MessagePart[], keyPrefix: string, streaming = false) {
   return parts.map((part, index) => {
     if (part.type === 'text') return <MarkdownText key={`${keyPrefix}-${index}`} text={part.text} streaming={streaming} />
-    if (part.type === 'image') return renderImage(part, `${keyPrefix}-${index}`)
+    if (part.type === 'image') return <ImagePart key={`${keyPrefix}-${index}`} part={part} />
     return null
   })
 }
@@ -68,7 +70,7 @@ function isNarrative(part: MessagePart): part is Extract<MessagePart, { type: 't
 function primaryNarrativeStart(parts: MessagePart[], start: number): number {
   let bestStart = -1
   let bestScore = 0
-  for (let index = start; index < parts.length;) {
+  for (let index = start; index < parts.length; ) {
     if (!isNarrative(parts[index])) {
       index += 1
       continue
@@ -96,6 +98,7 @@ function messageText(message: TranscriptMessage): string {
 }
 
 function MessageActions({ message, text: suppliedText }: { message: TranscriptMessage; text?: string }) {
+  const { t } = useI18n()
   const [copied, setCopied] = useState(false)
   const resetTimerRef = useRef<number | null>(null)
   const text = suppliedText ?? messageText(message)
@@ -121,24 +124,20 @@ function MessageActions({ message, text: suppliedText }: { message: TranscriptMe
     }
   }
 
+  const copyKeys = MESSAGE_COPY_KEYS[role]
+
   return (
     <div className="message-actions">
-      <button type="button" disabled={!text} aria-label={`${copied ? 'Copied' : 'Copy'} ${role} message`} onClick={() => void copyMessage()}>
-        {copied ? <Check size={12} /> : <Copy size={12} />} {copied ? 'Copied' : 'Copy'}
+      <button type="button" disabled={!text} aria-label={copied ? t(copyKeys.copied) : t(copyKeys.copy)} onClick={() => void copyMessage()}>
+        {copied ? <Check size={12} /> : <Copy size={12} />} {copied ? t('transcript.copied.label') : t('transcript.copy.label')}
       </button>
     </div>
   )
 }
 
-const HARNESS_MARKS = { omp: OmpMark, prime: PrimeMark, pi: PiMark } satisfies Record<HarnessId, unknown>
-
-function AssistantHarnessMark({ harness, size = 24 }: { harness: HarnessId; size?: number }) {
-  const Mark = HARNESS_MARKS[harness]
-  return <Mark size={size} />
-}
-
 export const AssistantMessage = memo(
-  function AssistantMessage({ message, harness = 'prime', showReasoning, showTools }: { message: TranscriptMessage; harness?: HarnessId; showReasoning: boolean; showTools: boolean }) {
+  function AssistantMessage({ message, harness = 'omp', showReasoning, showTools }: { message: TranscriptMessage; harness?: HarnessId; showReasoning: boolean; showTools: boolean }) {
+    const { t } = useI18n()
     const isActivity = (part: MessagePart) => part.type === 'thinking' || part.type === 'toolCall' || part.type === 'toolResult' || part.type === 'agentMessage' || part.type === 'compaction'
     const firstActivity = message.parts.findIndex(isActivity)
     let lastActivity = -1
@@ -161,9 +160,6 @@ export const AssistantMessage = memo(
     const copyableText = copyableNarrative.flatMap((part) => (part.type === 'text' ? [part.text] : [])).join('\n')
     return (
       <article className="message message--assistant">
-        <div className="assistant-mark">
-          <AssistantHarnessMark harness={harness} />
-        </div>
         <div className="message__content">
           {renderNarrative(before, 'before', message.streaming)}
           {hasVisibleActivity ? (
@@ -174,7 +170,7 @@ export const AssistantMessage = memo(
           {renderNarrativeWithActivity(after, 'after', showReasoning, showTools, message.streaming)}
           {message.streaming && !hasVisibleActivity ? (
             <div className="streaming-state" aria-live="polite">
-              <ThinkingDots /> {HARNESS_SHORT_NAMES[harness]} is working
+              <ThinkingDots /> {t('transcript.working', { harness: HARNESS_SHORT_NAMES[harness] })}
             </div>
           ) : null}
           {!message.streaming ? <MessageActions message={message} text={copyableText} /> : null}
@@ -186,39 +182,57 @@ export const AssistantMessage = memo(
 )
 
 function SessionReferenceText({ text, references, onOpen }: { text: string; references: RoutedSessionReference[]; onOpen?(sessionId: string, harness: HarnessId): void }) {
+  const { t } = useI18n()
   if (!references.length) return <InlineText text={text} />
   const ordered = [...references].sort((left, right) => right.label.length - left.label.length)
   const lines = text.split('\n')
-  return <>{lines.map((line, lineIndex) => {
-    const parts: ReactNode[] = []
-    let cursor = 0
-    while (cursor < line.length) {
-      let foundIndex = -1
-      let found: RoutedSessionReference | undefined
-      for (let index = cursor; index < line.length; index += 1) {
-        const before = line[index - 1]
-        found = ordered.find((reference) => {
-          const after = line[index + reference.label.length]
-          return (before === undefined || /[\s([{"'`]/.test(before))
-            && line.startsWith(reference.label, index)
-            && (after === undefined || /[\s.,!?;:()[\]{}"'`]/.test(after))
-        })
-        if (found) { foundIndex = index; break }
-      }
-      if (!found || foundIndex < 0) { parts.push(line.slice(cursor)); break }
-      if (foundIndex > cursor) parts.push(line.slice(cursor, foundIndex))
-      const reference = found
-      parts.push(<button
-        type="button"
-        key={`${reference.harness}:${reference.sessionId}:${foundIndex}`}
-        className="session-reference"
-        aria-label={`Open session ${reference.label.slice(1)}`}
-        onClick={() => onOpen?.(reference.sessionId, reference.harness)}
-      >{reference.label}</button>)
-      cursor = foundIndex + reference.label.length
-    }
-    return <Fragment key={`${lineIndex}-${line.slice(0, 12)}`}>{parts}{lineIndex < lines.length - 1 ? <br /> : null}</Fragment>
-  })}</>
+  return (
+    <>
+      {lines.map((line, lineIndex) => {
+        const parts: ReactNode[] = []
+        let cursor = 0
+        while (cursor < line.length) {
+          let foundIndex = -1
+          let found: RoutedSessionReference | undefined
+          for (let index = cursor; index < line.length; index += 1) {
+            const before = line[index - 1]
+            found = ordered.find((reference) => {
+              const after = line[index + reference.label.length]
+              return (before === undefined || /[\s([{"'`]/.test(before)) && line.startsWith(reference.label, index) && (after === undefined || /[\s.,!?;:()[\]{}"'`]/.test(after))
+            })
+            if (found) {
+              foundIndex = index
+              break
+            }
+          }
+          if (!found || foundIndex < 0) {
+            parts.push(line.slice(cursor))
+            break
+          }
+          if (foundIndex > cursor) parts.push(line.slice(cursor, foundIndex))
+          const reference = found
+          parts.push(
+            <button
+              type="button"
+              key={`${reference.harness}:${reference.sessionId}:${foundIndex}`}
+              className="session-reference"
+              aria-label={t('transcript.sessionReference.open', { label: reference.label.slice(1) })}
+              onClick={() => onOpen?.(reference.sessionId, reference.harness)}
+            >
+              {reference.label}
+            </button>,
+          )
+          cursor = foundIndex + reference.label.length
+        }
+        return (
+          <Fragment key={`${lineIndex}-${line.slice(0, 12)}`}>
+            {parts}
+            {lineIndex < lines.length - 1 ? <br /> : null}
+          </Fragment>
+        )
+      })}
+    </>
+  )
 }
 
 function visibleUserText(text: string): string {
@@ -229,6 +243,7 @@ function visibleUserText(text: string): string {
 }
 
 function UserText({ text, onOpenSessionReference }: { text: string; onOpenSessionReference?(sessionId: string, harness: HarnessId): void }) {
+  const { t } = useI18n()
   // Sent prompts can carry verbose model-facing context blocks. Keep both
   // attachments collapsed and capability routing hidden while preserving the
   // user's own message.
@@ -240,16 +255,18 @@ function UserText({ text, onOpenSessionReference }: { text: string; onOpenSessio
   if (!sessions.block && !capability.block && !annotations.block && !terminal.block) return <InlineText text={text} />
   return (
     <>
-      {sessions.text && sessions.text !== '[Page annotations]' && sessions.text !== '[Terminal selection]' ? <SessionReferenceText text={sessions.text} references={references} onOpen={onOpenSessionReference} /> : null}
+      {sessions.text && sessions.text !== '[Page annotations]' && sessions.text !== '[Terminal selection]' ? (
+        <SessionReferenceText text={sessions.text} references={references} onOpen={onOpenSessionReference} />
+      ) : null}
       {annotations.block ? (
         <details className="user-annotations">
-          <summary>{annotations.count > 0 ? `${annotations.count} page annotation${annotations.count === 1 ? '' : 's'}` : 'Page annotations'}</summary>
+          <summary>{annotations.count > 0 ? t('transcript.annotations.count', { count: annotations.count }) : t('transcript.annotations.title')}</summary>
           <pre>{annotations.block}</pre>
         </details>
       ) : null}
       {terminal.selection ? (
         <details className="user-annotations user-terminal-context">
-          <summary>{`Selected text from ${terminal.label ?? 'terminal'}`}</summary>
+          <summary>{t('transcript.terminalContext.title', { source: terminal.label ?? t('transcript.terminalContext.terminal') })}</summary>
           <pre>{terminal.selection}</pre>
         </details>
       ) : null}
@@ -258,24 +275,44 @@ function UserText({ text, onOpenSessionReference }: { text: string; onOpenSessio
 }
 
 export const UserMessage = memo(function UserMessage({ message, onOpenSessionReference }: { message: TranscriptMessage; onOpenSessionReference?(sessionId: string, harness: HarnessId): void }) {
-  const copyableText = message.parts.filter((part) => part.type === 'text').map((part) => visibleUserText(part.text)).filter(Boolean).join('\n')
+  const { t } = useI18n()
+  const copyableText = message.parts
+    .filter((part) => part.type === 'text')
+    .map((part) => visibleUserText(part.text))
+    .filter(Boolean)
+    .join('\n')
   return (
     <article className="message message--user">
       <div className="user-bubble">
-        {message.parts.map((part, index) => (part.type === 'text' ? <UserText key={index} text={part.text} onOpenSessionReference={onOpenSessionReference} /> : part.type === 'image' ? renderImage(part, `user-${index}`) : null))}
+        {message.parts.map((part, index) =>
+          part.type === 'text' ? (
+            <UserText key={index} text={part.text} onOpenSessionReference={onOpenSessionReference} />
+          ) : part.type === 'image' ? (
+            <ImagePart key={`user-${index}`} part={part} />
+          ) : null,
+        )}
       </div>
-      {message.steerState ? <div className={`message__steer-state is-${message.steerState}`} role="status">{message.steerState === 'accepted' ? 'Accepted — waiting for the next safe steering point' : 'Read by agent'}</div> : null}
+      {message.steerState ? (
+        <div className={`message__steer-state is-${message.steerState}`} role="status">
+          {message.steerState === 'accepted' ? t('transcript.steer.accepted') : t('transcript.steer.read')}
+        </div>
+      ) : null}
       <MessageActions message={message} text={copyableText} />
     </article>
   )
 })
 
 export const SteerReadMarker = memo(function SteerReadMarker({ message }: { message: TranscriptMessage }) {
-  return <div className="message message--steer-read" role="status"><span>{messageText(message)}</span></div>
+  return (
+    <div className="message message--steer-read" role="status">
+      <span>{messageText(message)}</span>
+    </div>
+  )
 })
 
-export const ActivityMessage = memo(function ActivityMessage({ message, harness = 'prime' }: { message: TranscriptMessage; harness?: HarnessId }) {
-  const activityLabel = `${HARNESS_SHORT_NAMES[harness]} message`
+export const ActivityMessage = memo(function ActivityMessage({ message, harness = 'omp' }: { message: TranscriptMessage; harness?: HarnessId }) {
+  const { t } = useI18n()
+  const activityLabel = t('transcript.activity.message', { harness: HARNESS_SHORT_NAMES[harness] })
   const sourceParts: MessagePart[] =
     message.role === 'system' && !message.parts.some((part) => part.type === 'compaction')
       ? [
@@ -284,7 +321,7 @@ export const ActivityMessage = memo(function ActivityMessage({ message, harness 
         ]
       : message.parts
   const parts = sourceParts.flatMap((part, index) =>
-    part.type === 'toolResult' && sourceParts[index - 1]?.type !== 'toolCall' ? [{ type: 'toolCall' as const, id: `${message.id}-${index}`, name: part.name ?? 'Tool' }, part] : [part],
+    part.type === 'toolResult' && sourceParts[index - 1]?.type !== 'toolCall' ? [{ type: 'toolCall' as const, id: `${message.id}-${index}`, name: t('transcript.tool.fallbackName') }, part] : [part],
   )
   return (
     <article className="message message--activity">
@@ -294,21 +331,21 @@ export const ActivityMessage = memo(function ActivityMessage({ message, harness 
 })
 
 export const AgentMessage = memo(function AgentMessage({ message }: { message: TranscriptMessage }) {
+  const { t } = useI18n()
   const [open, setOpen] = useState(false)
   const contentId = useId()
   const text = messageText(message)
-  const label = message.agentName ? `Message from agent: ${message.agentName}` : 'Message from agent'
+  const label = message.agentName ? t('transcript.agent.summaryNamed', { name: message.agentName }) : t('transcript.agent.summary')
   return (
     <article className={`message message--agent ${open ? 'is-open' : ''}`}>
       <button type="button" className="agent-message__summary" aria-expanded={open} aria-controls={contentId} aria-label={label} onClick={() => setOpen((value) => !value)}>
-        <PrimeMark size={18} />
-        <span className="agent-message__label">Message from agent</span>
+        <span className="agent-message__label">{t('transcript.agent.summary')}</span>
         {message.agentName ? <span className="agent-message__name">{message.agentName}</span> : null}
         {open ? <ChevronDown className="agent-message__chevron" size={13} /> : <ChevronRight className="agent-message__chevron" size={13} />}
       </button>
       {open ? (
         <div className="agent-message__content" id={contentId}>
-          <MarkdownText text={boundText(text, 40_000, '\n… [Agent message truncated in the desktop view.]')} />
+          <MarkdownText text={boundText(text, 40_000, t('transcript.agent.truncated'))} />
           <MessageActions message={message} />
         </div>
       ) : null}
@@ -317,21 +354,22 @@ export const AgentMessage = memo(function AgentMessage({ message }: { message: T
 })
 
 export const GoalMessage = memo(function GoalMessage({ message }: { message: TranscriptMessage }) {
+  const { t } = useI18n()
   const [open, setOpen] = useState(false)
   const contentId = useId()
   const text = messageText(message)
   return (
     <article className={`message message--goal ${open ? 'is-open' : ''}`}>
-      <button type="button" className="goal-message__summary" aria-expanded={open} aria-controls={contentId} aria-label="Goal summary" onClick={() => setOpen((value) => !value)}>
+      <button type="button" className="goal-message__summary" aria-expanded={open} aria-controls={contentId} aria-label={t('transcript.goal.summary')} onClick={() => setOpen((value) => !value)}>
         <span className="goal-message__icon">
           <Target size={15} />
         </span>
-        <span className="goal-message__label">Goal summary</span>
+        <span className="goal-message__label">{t('transcript.goal.summary')}</span>
         {open ? <ChevronDown className="goal-message__chevron" size={13} /> : <ChevronRight className="goal-message__chevron" size={13} />}
       </button>
       {open ? (
         <div className="goal-message__content" id={contentId}>
-          <MarkdownText text={boundText(text, 40_000, '\n… [Goal summary truncated in the desktop view.]')} />
+          <MarkdownText text={boundText(text, 40_000, t('transcript.goal.truncated'))} />
         </div>
       ) : null}
     </article>

@@ -32,7 +32,7 @@ describe('PrivacySettings', () => {
     const onUpdate = vi.fn()
     act(() => root.render(<PrivacySettings settings={{ ...DEFAULT_SETTINGS, activeHarness: harness, telemetry }} onUpdate={onUpdate} />))
 
-    expect(container.textContent).toContain('Understand how GooeyPi stores settings and connects to agents.')
+    expect(container.textContent).toContain('Understand how OMP Desktop stores settings and connects to agents.')
     expect(container.textContent).toContain('Settings stay on this device')
     expect(container.textContent).toContain('Project metadata and interface settings are stored locally on this device.')
     expect(container.textContent).toContain('Requests use your selected agent')

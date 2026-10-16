@@ -55,7 +55,7 @@ function rewriteTitleSlot(file: string, title: string): void {
 }
 
 function setup(maxSessionFiles?: number): { root: string; project: string; service: SessionService } {
-  const dir = mkdtempSync(join(tmpdir(), 'prime-work-omp-sessions-')); dirs.push(dir)
+  const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-omp-sessions-')); dirs.push(dir)
   const root = join(dir, 'sessions'); mkdirSync(root)
   const project = join(dir, 'project'); mkdirSync(project)
   const store = new JsonStateStore(join(dir, 'state.json'))
@@ -136,7 +136,7 @@ describe('OMP metadata reader', () => {
   })
 
   it('picks up an in-place title-slot rewrite without losing incremental tail state', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'prime-work-omp-title-')); dirs.push(dir)
+    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-omp-title-')); dirs.push(dir)
     const file = join(dir, NAME_A)
     const bulk = Array.from({ length: 8 }, (_, index) => ompEntry('message', `aa11bb2${index}`, index ? `aa11bb2${index - 1}` : null, {
       message: { role: 'user', content: `filler ${'x'.repeat(600)}` },
@@ -318,7 +318,7 @@ describe('OMP file-level rename fallback', () => {
   })
 
   it('leaves a file whose first line is the session header untouched', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'prime-work-omp-no-slot-')); dirs.push(dir)
+    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-omp-no-slot-')); dirs.push(dir)
     const file = join(dir, NAME_A)
     const body = `${JSON.stringify({ type: 'session', version: 3, id: 'no-slot', timestamp: '2026-08-08T02:12:49.414Z', cwd: '/tmp' })}\n`
     writeFileSync(file, body)

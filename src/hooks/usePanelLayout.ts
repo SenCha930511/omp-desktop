@@ -36,8 +36,8 @@ export function usePanelLayout({
   const [smallestLayout, setSmallestLayout] = useState(() => window.matchMedia(`(max-width: ${SMALLEST_LAYOUT_BREAKPOINT}px)`).matches)
   const [smallestSidebarAllowed, setSmallestSidebarAllowed] = useState(false)
   const [smallestInspectorAllowed, setSmallestInspectorAllowed] = useState(false)
-  const [inspectorWidth, setInspectorWidth] = useState(() => readPanelSize('prime-work.inspector-width', INSPECTOR_DEFAULT))
-  const [terminalHeight, setTerminalHeight] = useState(() => readPanelSize('prime-work.terminal-height', TERMINAL_DEFAULT))
+  const [inspectorWidth, setInspectorWidth] = useState(() => readPanelSize('omp-desktop.inspector-width', INSPECTOR_DEFAULT))
+  const [terminalHeight, setTerminalHeight] = useState(() => readPanelSize('omp-desktop.terminal-height', TERMINAL_DEFAULT))
   const [inspectorMax, setInspectorMax] = useState(660)
   const [terminalMax, setTerminalMax] = useState(520)
   const workspaceRowRef = useRef<HTMLDivElement>(null)
@@ -110,8 +110,8 @@ export function usePanelLayout({
 
   useEffect(() => setInspectorWidth((value) => Math.min(inspectorMax, Math.max(INSPECTOR_MIN, value))), [inspectorMax])
   useEffect(() => setTerminalHeight((value) => Math.min(terminalMax, Math.max(TERMINAL_MIN, value))), [terminalMax])
-  useEffect(() => { window.localStorage.setItem('prime-work.inspector-width', String(inspectorWidth)) }, [inspectorWidth])
-  useEffect(() => { window.localStorage.setItem('prime-work.terminal-height', String(terminalHeight)) }, [terminalHeight])
+  useEffect(() => { window.localStorage.setItem('omp-desktop.inspector-width', String(inspectorWidth)) }, [inspectorWidth])
+  useEffect(() => { window.localStorage.setItem('omp-desktop.terminal-height', String(terminalHeight)) }, [terminalHeight])
 
   return {
     compactLayout,

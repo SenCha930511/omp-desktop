@@ -7,7 +7,7 @@ import { PassThrough } from 'node:stream'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { probeHarnessExecutable } from '../../electron/main/harness-discovery'
 import { HARNESSES } from '../../electron/main/harness'
-import { PROCESS_CONCURRENCY_LIMIT, executableChildEnvironment, harnessExecutableCandidates, isAbsolutePathForPlatform, killProcessTree, prepareExecutableSpawn, nvmHarnessExecutableCandidates, primeAgentCandidates, primeAgentExecutableName, processFailureReason, processOutcome, runProcess, stopChildProcesses, waitForProcessExit, type ProcessResult } from '../../electron/main/process-utils'
+import { PROCESS_CONCURRENCY_LIMIT, executableChildEnvironment, harnessExecutableCandidates, isAbsolutePathForPlatform, killProcessTree, prepareExecutableSpawn, processFailureReason, processOutcome, runProcess, stopChildProcesses, waitForProcessExit, nvmHarnessExecutableCandidates, type ProcessResult } from '../../electron/main/process-utils'
 import { waitUntil } from '../helpers/wait'
 
 const spawnOverride = vi.hoisted(() => ({ current: null as null | ((...args: unknown[]) => unknown) }))
@@ -21,7 +21,7 @@ vi.mock('node:child_process', async (importOriginal) => {
 
 const dirs: string[] = []
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }) })
-const temp = () => { const dir = mkdtempSync(join(tmpdir(), 'prime-work-process-')); dirs.push(dir); return dir }
+const temp = () => { const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-process-')); dirs.push(dir); return dir }
 describe('runProcess resource bounds', () => {
   it('runs a pnpm CLI under a Finder-style minimal PATH', async () => {
     const home = temp()
@@ -29,7 +29,7 @@ describe('runProcess resource bounds', () => {
     const runtimeDirectory = join(home, '.nvm', 'versions', 'node', 'v25.2.1', 'bin')
     mkdirSync(shimDirectory, { recursive: true })
     mkdirSync(runtimeDirectory, { recursive: true })
-    const executable = join(shimDirectory, 'pi')
+    const executable = join(shimDirectory, 'omp')
     symlinkSync(process.execPath, join(runtimeDirectory, 'node'))
     writeFileSync(executable, '#!/usr/bin/env node\nprocess.stdout.write("0.84.1\\n")\n')
     chmodSync(executable, 0o755)
@@ -45,10 +45,10 @@ describe('runProcess resource bounds', () => {
       runtimeDirectory,
     ])
 
-    const primeExecutable = join(runtimeDirectory, 'prime-agent')
-    writeFileSync(primeExecutable, '#!/usr/bin/env node\nprocess.stderr.write("0.7.2\\n")\n')
-    chmodSync(primeExecutable, 0o755)
-    await expect(probeHarnessExecutable(primeExecutable)).resolves.toEqual({ runnable: true, version: '0.7.2' })
+    const ompExecutable = join(runtimeDirectory, 'omp')
+    writeFileSync(ompExecutable, '#!/usr/bin/env node\nprocess.stderr.write("0.7.2\\n")\n')
+    chmodSync(ompExecutable, 0o755)
+    await expect(probeHarnessExecutable(ompExecutable)).resolves.toEqual({ runnable: true, version: '0.7.2' })
   })
 
   it('runs an official Bun-installed OMP shim under a Finder-style minimal PATH', async () => {
@@ -253,35 +253,17 @@ describe('waitForProcessExit', () => {
   }, 10_000)
 })
 
-describe('Prime Agent discovery candidates', () => {
-  it('uses native executable names and absolute paths for every supported desktop platform', () => {
-    expect(primeAgentExecutableName('darwin')).toBe('prime-agent')
-    expect(primeAgentExecutableName('linux')).toBe('prime-agent')
-    expect(primeAgentExecutableName('win32')).toBe('prime-agent.exe')
-    expect(isAbsolutePathForPlatform('/opt/prime-agent', 'linux')).toBe(true)
-    expect(isAbsolutePathForPlatform('C:\\Tools\\prime-agent.exe', 'win32')).toBe(true)
-    expect(isAbsolutePathForPlatform('prime-agent.exe', 'win32')).toBe(false)
-  })
-
-  it('accepts explicit Windows binaries and searches the Windows PATH without speculative install locations', () => {
-    const candidates = primeAgentCandidates({
-      PRIME_AGENT_BINARY: 'C:\\Tools\\prime-agent.exe',
-      Path: 'C:\\Program Files\\Prime Agent;D:\\bin',
-      LOCALAPPDATA: 'C:\\Users\\Ada\\AppData\\Local',
-    }, 'win32')
-    expect(candidates).toContain('C:\\Tools\\prime-agent.exe')
-    expect(candidates).toContain('C:\\Program Files\\Prime Agent\\prime-agent.exe')
-    expect(candidates).toContain('D:\\bin\\prime-agent.exe')
-    expect(candidates).not.toContain('C:\\Users\\Ada\\AppData\\Local\\Programs\\Prime Agent\\prime-agent.exe')
-  })
-})
-
 describe('OMP discovery candidates', () => {
-  it('uses native executable names for every supported desktop platform', () => {
+  it('uses native executable names and absolute paths for every supported desktop platform', () => {
     expect(HARNESSES.omp.executableName('darwin')).toBe('omp')
     expect(HARNESSES.omp.executableName('linux')).toBe('omp')
     expect(HARNESSES.omp.executableName('win32')).toBe('omp.exe')
+    expect(isAbsolutePathForPlatform('/opt/omp', 'linux')).toBe(true)
+    expect(isAbsolutePathForPlatform('C:\\Tools\\omp.exe', 'win32')).toBe(true)
+    expect(isAbsolutePathForPlatform('omp.exe', 'win32')).toBe(false)
   })
+
+
 
   it('honors only absolute OMP_BINARY overrides and scans absolute PATH entries', () => {
     const relative = harnessExecutableCandidates(HARNESSES.omp, { OMP_BINARY: 'bin/omp', PATH: '/usr/bin:relative/bin' }, 'linux')
@@ -329,116 +311,24 @@ describe('OMP discovery candidates', () => {
     expect(candidates.some((candidate) => candidate.includes('resources'))).toBe(false)
   })
 
-  it('discovers only the official Pi npm command shim alongside native Windows executables', () => {
-    const candidates = harnessExecutableCandidates(HARNESSES.pi, {
-      Path: 'C:\\Windows', APPDATA: 'C:\\Users\\Ada\\AppData\\Roaming', LOCALAPPDATA: 'C:\\Users\\Ada\\AppData\\Local',
-    }, 'win32', undefined, 'C:\\Users\\Ada')
-    expect(candidates).toContain('C:\\Users\\Ada\\AppData\\Roaming\\npm\\pi.exe')
-    expect(candidates).toContain('C:\\Users\\Ada\\AppData\\Roaming\\npm\\pi.cmd')
-    expect(candidates.some((candidate) => candidate.endsWith('omp.cmd') || candidate.endsWith('prime-agent.cmd'))).toBe(false)
+  it('normalizes the environment for a plain executable without rewriting the file or arguments', () => {
+    const env = { HOME: '/home/ada', PATH: '/usr/bin' }
+    const invocation = prepareExecutableSpawn('/opt/tools/omp', ['--version'], env)
+    expect(invocation.file).toBe('/opt/tools/omp')
+    expect(invocation.args).toEqual(['--version'])
+    expect(invocation.env.PATH).toContain('/usr/bin')
+    expect(invocation.env).not.toBe(env)
   })
 
-  it('discovers the official Prime Agent npm command shim alongside native Windows executables', () => {
-    const candidates = harnessExecutableCandidates(HARNESSES.prime, {
-      Path: 'C:\\Windows', APPDATA: 'C:\\Users\\Ada\\AppData\\Roaming', LOCALAPPDATA: 'C:\\Users\\Ada\\AppData\\Local',
-    }, 'win32', undefined, 'C:\\Users\\Ada')
-    expect(candidates).toContain('C:\\Users\\Ada\\AppData\\Roaming\\npm\\prime-agent.exe')
-    expect(candidates).toContain('C:\\Users\\Ada\\AppData\\Roaming\\npm\\prime-agent.cmd')
-    expect(candidates.some((candidate) => candidate.endsWith('omp.cmd') || candidate.endsWith('pi.cmd'))).toBe(false)
-  })
-
-  it('resolves the official Windows Pi npm shim to Node without invoking a shell', () => {
-    const shim = 'C:\\Users\\Ada\\AppData\\Roaming\\npm\\pi.cmd'
-    const entrypoint = 'C:\\Users\\Ada\\AppData\\Roaming\\npm\\node_modules\\@earendil-works\\pi-coding-agent\\dist\\cli.js'
-    const node = 'C:\\Program Files\\nodejs\\node.exe'
-    const accessible = new Set([entrypoint.toLowerCase(), node.toLowerCase()])
-    const invocation = prepareExecutableSpawn(shim, ['--version'], {
-      Path: 'C:\\Windows',
-      ProgramFiles: 'C:\\Program Files',
-      USERPROFILE: 'C:\\Users\\Ada',
-    }, {
-      platform: 'win32',
-      home: 'C:\\Users\\Ada',
-      canAccess: (candidate) => accessible.has(candidate.toLowerCase()),
-    })
-
-    expect(invocation.file).toBe(node)
-    expect(invocation.args).toEqual([entrypoint, '--version'])
-    expect(invocation.env.Path).toContain('C:\\Users\\Ada\\AppData\\Roaming\\npm')
-  })
-
-  it('resolves the official Windows Prime Agent npm shim to Node without invoking a shell', () => {
-    const shim = 'C:\\Users\\Ada\\AppData\\Roaming\\npm\\prime-agent.cmd'
-    const entrypoint = 'C:\\Users\\Ada\\AppData\\Roaming\\npm\\node_modules\\prime-agent\\dist\\bundle\\cli.js'
-    const node = 'C:\\Program Files\\nodejs\\node.exe'
-    const accessible = new Set([entrypoint.toLowerCase(), node.toLowerCase()])
-    const invocation = prepareExecutableSpawn(shim, ['--version'], {
-      Path: 'C:\\Windows',
-      ProgramFiles: 'C:\\Program Files',
-      USERPROFILE: 'C:\\Users\\Ada',
-    }, {
-      platform: 'win32',
-      home: 'C:\\Users\\Ada',
-      canAccess: (candidate) => accessible.has(candidate.toLowerCase()),
-    })
-
-    expect(invocation.file).toBe(node)
-    expect(invocation.args).toEqual([entrypoint, '--version'])
-    expect(invocation.env.Path).toContain('C:\\Users\\Ada\\AppData\\Roaming\\npm')
-  })
-
-  it('rejects missing official Pi entrypoints without enabling arbitrary Windows shims', () => {
-    expect(prepareExecutableSpawn('C:\\Tools\\omp.cmd', ['--version'], {}, { platform: 'win32' })).toMatchObject({
-      file: 'C:\\Tools\\omp.cmd',
-    })
-    expect(() => prepareExecutableSpawn('C:\\Tools\\pi.cmd', ['--version'], {}, {
-      platform: 'win32',
-      home: 'C:\\Users\\Ada',
-      canAccess: () => false,
-    })).toThrow(/official Pi installation/)
-    expect(() => prepareExecutableSpawn('C:\\Tools\\prime-agent.cmd', ['--version'], {}, {
-      platform: 'win32',
-      home: 'C:\\Users\\Ada',
-      canAccess: () => false,
-    })).toThrow(/official Prime Agent installation/)
-  })
-
-  it('does not recognize a prime-agent.cmd outside an npm prefix', () => {
-    const shim = 'C:\\Users\\Ada\\AppData\\Local\\Programs\\prime-agent-win\\bin\\prime-agent.cmd'
-    const expectedOutsideEntrypoint = 'C:\\Users\\Ada\\AppData\\Local\\Programs\\prime-agent-win\\packages\\coding-agent\\dist\\bundle\\cli.js'
-    const node = 'C:\\Program Files\\nodejs\\node.exe'
-    const accessible = new Set([expectedOutsideEntrypoint.toLowerCase(), node.toLowerCase()])
-    expect(() => prepareExecutableSpawn(shim, ['--version'], {}, {
-      platform: 'win32',
-      home: 'C:\\Users\\Ada',
-      canAccess: (candidate) => accessible.has(candidate.toLowerCase()),
-    })).toThrow(/official Prime Agent installation/)
-  })
-
-  it('reports when Node.js is missing for the official Prime Agent npm command shim', () => {
-    const shim = 'C:\\Users\\Ada\\AppData\\Roaming\\npm\\prime-agent.cmd'
-    const entrypoint = 'C:\\Users\\Ada\\AppData\\Roaming\\npm\\node_modules\\prime-agent\\dist\\bundle\\cli.js'
-    expect(() => prepareExecutableSpawn(shim, ['--version'], {
-      Path: 'C:\\Windows',
-      ProgramFiles: 'C:\\Program Files',
-      USERPROFILE: 'C:\\Users\\Ada',
-    }, {
-      platform: 'win32',
-      home: 'C:\\Users\\Ada',
-      canAccess: (candidate, mode) => mode === 0 && candidate.toLowerCase() === entrypoint.toLowerCase(),
-    })).toThrow(/Node\.js was not found for the Prime Agent/)
-  })
 
   it('keeps E2E discovery hermetic when a fixture executable disappears', async () => {
-    const env = { PRIME_WORK_E2E_HIDE_WINDOWS: '1', PATH: '/fixture/bin' }
-    expect(harnessExecutableCandidates(HARNESSES.pi, env, 'darwin', undefined, '/fixture/home')).toEqual(['/fixture/bin/pi'])
-    await expect(nvmHarnessExecutableCandidates(HARNESSES.pi, env, 'darwin', '/fixture/home')).resolves.toEqual([])
+    const env = { OMP_DESKTOP_E2E_HIDE_WINDOWS: '1', PATH: '/fixture/bin' }
+    expect(harnessExecutableCandidates(HARNESSES.omp, env, 'darwin', undefined, '/fixture/home')).toEqual(['/fixture/bin/omp'])
+    await expect(nvmHarnessExecutableCandidates(HARNESSES.omp, env, 'darwin', '/fixture/home')).resolves.toEqual([])
   })
 
-  it('adds official standalone-node locations for Pi and Prime on Linux', () => {
+  it('adds the Linuxbrew location for OMP on Linux', () => {
     const env = { PATH: '/usr/bin', XDG_DATA_HOME: '/data' }
-    expect(harnessExecutableCandidates(HARNESSES.pi, env, 'linux', undefined, '/home/ada')).toContain('/data/pi-node/current/bin/pi')
-    expect(harnessExecutableCandidates(HARNESSES.prime, env, 'linux', undefined, '/home/ada')).toContain('/data/prime-agent-node/current/bin/prime-agent')
     expect(harnessExecutableCandidates(HARNESSES.omp, env, 'linux', undefined, '/home/ada')).toContain('/home/linuxbrew/.linuxbrew/bin/omp')
   })
 
@@ -448,10 +338,10 @@ describe('OMP discovery candidates', () => {
     for (const version of ['v20.1.0', 'v22.12.0', 'v23.0.0']) {
       mkdirSync(join(versions, version), { recursive: true })
     }
-    await expect(nvmHarnessExecutableCandidates(HARNESSES.pi, {}, 'linux', home)).resolves.toEqual([
-      join(versions, 'v23.0.0', 'bin', 'pi'),
-      join(versions, 'v22.12.0', 'bin', 'pi'),
-      join(versions, 'v20.1.0', 'bin', 'pi'),
+    await expect(nvmHarnessExecutableCandidates(HARNESSES.omp, {}, 'linux', home)).resolves.toEqual([
+      join(versions, 'v23.0.0', 'bin', 'omp'),
+      join(versions, 'v22.12.0', 'bin', 'omp'),
+      join(versions, 'v20.1.0', 'bin', 'omp'),
     ])
   })
 })
@@ -502,7 +392,7 @@ describe('runProcess stdio pipe failures', () => {
     const spy: NodeJS.UncaughtExceptionListener = (error) => { uncaught.push(error) }
     process.on('uncaughtException', spy)
     try {
-      const pending = run('/fake/prime-agent', ['--version'], { timeoutMs: 5_000 })
+      const pending = run('/fake/omp', ['--version'], { timeoutMs: 5_000 })
       await waitUntil(() => child.stdout.listenerCount('error') > 0)
       const pipeError = new Error('read EPIPE')
       child.stdout.emit('error', pipeError)
@@ -520,7 +410,7 @@ describe('runProcess stdio pipe failures', () => {
     const run = await freshRunProcess()
     const child = fakeChild()
     spawnOverride.current = () => child
-    const pending = run('/fake/prime-agent', [], { timeoutMs: 5_000 })
+    const pending = run('/fake/omp', [], { timeoutMs: 5_000 })
     await waitUntil(() => child.stderr.listenerCount('error') > 0)
     child.stderr.emit('error', new Error('read ECONNRESET'))
     await expect(pending).rejects.toThrow('read ECONNRESET')

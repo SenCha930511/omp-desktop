@@ -144,7 +144,7 @@ body { color: var(--text); background: var(--canvas); font-size: 13px; line-heig
 button, input, textarea, select { color: inherit; font: inherit; }
 /* Chromium's Linux native select popup does not reliably inherit the page's
    scheme or transparent control background. Keep every native menu surface
-   explicit while still following GooeyPi's resolved light/dark theme. */
+   explicit while still following OMP Desktop's resolved light/dark theme. */
 select, option, optgroup { color-scheme: light; }
 option, optgroup { color: var(--text); background-color: var(--surface-raised); }
 option:disabled { color: var(--text-tertiary); }

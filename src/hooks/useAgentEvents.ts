@@ -4,10 +4,10 @@ import { applySessionLifecycleEvent, sessionLifecycleChange } from '@/app/sessio
 import { fallbackModelFromRecord } from '@/lib/events/model-fallback'
 import { parseSessionActionSnapshot } from '@/lib/session-actions'
 import type { WorkspaceSnapshot } from '@/app/workspace'
-import type { PrimeWorkApi, RuntimeInfo, SessionActionSnapshot, SessionRecord } from '@/types/api'
+import type { DesktopApi, RuntimeInfo, SessionActionSnapshot, SessionRecord } from '@/types/api'
 
 interface UseAgentEventsOptions {
-  bridge: PrimeWorkApi | null
+  bridge: DesktopApi | null
   runtimeIdRef: React.RefObject<string | null>
   runtimeSessionsRef: React.RefObject<Map<string, string>>
   runtimeOwnerRef: React.RefObject<{ runtimeId: string; generation: number } | null>

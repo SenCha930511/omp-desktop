@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 const electron = vi.hoisted(() => ({
   app: {
-    getAppPath: vi.fn(() => '/tmp/prime-work'),
+    getAppPath: vi.fn(() => '/tmp/omp-desktop'),
     isPackaged: false,
     on: vi.fn(),
     quit: vi.fn(),
@@ -30,16 +30,16 @@ describe('application window lifecycle', () => {
   it('gives migration failures a dedicated actionable startup dialog', () => {
     const migration = new StateMigrationError(
       'Legacy authority retirement failed.',
-      'C:\\Users\\alice\\GooeyPi\\prime-work-state-v4.json',
-      'C:\\Users\\alice\\GooeyPi\\prime-work-state.json',
-      'C:\\Users\\alice\\GooeyPi\\prime-work-state.json.migrated-v4-backup',
+      'C:\\Users\\alice\\GooeyPi\\omp-desktop-state-v4.json',
+      'C:\\Users\\alice\\GooeyPi\\omp-desktop-state.json',
+      'C:\\Users\\alice\\GooeyPi\\omp-desktop-state.json.migrated-v4-backup',
     )
 
     expect(startupFailureDialog(migration)).toMatchObject({
-      title: 'GooeyPi state migration failed',
-      detail: expect.stringMatching(/startup stopped.*retry.*prime-work-state-v4\.json.*prime-work-state\.json.*migrated-v4-backup.*do not delete/i),
+      title: 'OMP Desktop state migration failed',
+      detail: expect.stringMatching(/startup stopped.*retry.*omp-desktop-state-v4\.json.*omp-desktop-state\.json.*migrated-v4-backup.*do not delete/i),
     })
-    expect(startupFailureDialog(new UnsupportedStateVersionError(99, '/tmp/state.json'))?.title).toBe('GooeyPi update required')
+    expect(startupFailureDialog(new UnsupportedStateVersionError(99, '/tmp/state.json'))?.title).toBe('OMP Desktop update required')
     expect(startupFailureDialog(new Error('ordinary startup failure'))).toBeNull()
   })
 
@@ -84,7 +84,7 @@ describe('application window lifecycle', () => {
   })
 
   it('asks nothing when no agent run or schedule is active', () => {
-    const idle: RuntimeInfo = { runtimeId: 'a', harness: 'prime', cwd: '/tmp', isStreaming: false }
+    const idle: RuntimeInfo = { runtimeId: 'a', harness: 'omp', cwd: '/tmp', isStreaming: false }
 
     expect(activeShutdownWork([idle], false)).toEqual({ runningAgents: 0, activeSchedules: false })
     expect(shutdownPrompt(activeShutdownWork([idle], false))).toBeNull()
@@ -92,7 +92,7 @@ describe('application window lifecycle', () => {
   })
 
   it('names the work at risk for streaming, compacting, queued, and scheduled state', () => {
-    const base = { harness: 'prime' as const, cwd: '/tmp', isStreaming: false }
+    const base = { harness: 'omp' as const, cwd: '/tmp', isStreaming: false }
     const actions = { queuedCount: 0, steering: [], followUps: [] }
     const runtimes: RuntimeInfo[] = [
       { ...base, runtimeId: 'a', isStreaming: true },
@@ -104,32 +104,32 @@ describe('application window lifecycle', () => {
 
     expect(activeShutdownWork(runtimes, true)).toEqual({ runningAgents: 4, activeSchedules: true })
     expect(shutdownPrompt({ runningAgents: 4, activeSchedules: true })).toEqual({
-      message: 'Close GooeyPi while an agent is running?',
-      detail: '4 agent runs are still in progress and will be stopped. Scheduled automations will not run while GooeyPi is closed.',
+      message: 'Close OMP Desktop while an agent is running?',
+      detail: '4 agent runs are still in progress and will be stopped. Scheduled automations will not run while OMP Desktop is closed.',
     })
     expect(shutdownPrompt({ runningAgents: 1, activeSchedules: false })).toEqual({
-      message: 'Close GooeyPi while an agent is running?',
+      message: 'Close OMP Desktop while an agent is running?',
       detail: 'An agent run is still in progress and will be stopped.',
     })
     expect(shutdownPrompt({ runningAgents: 0, activeSchedules: true })).toEqual({
-      message: 'Close GooeyPi?',
-      detail: 'Scheduled automations will not run while GooeyPi is closed.',
+      message: 'Close OMP Desktop?',
+      detail: 'Scheduled automations will not run while OMP Desktop is closed.',
     })
   })
 
   it('defaults to cancel and uses the non-blocking dialog', async () => {
     const window = { isDestroyed: () => false } as unknown as BrowserWindow
-    const prompt = { message: 'Close GooeyPi?', detail: 'Scheduled automations will not run while GooeyPi is closed.' }
+    const prompt = { message: 'Close OMP Desktop?', detail: 'Scheduled automations will not run while OMP Desktop is closed.' }
     electron.dialog.showMessageBox.mockResolvedValueOnce({ response: 0 })
 
     await expect(confirmAppClose(window, prompt)).resolves.toBe(false)
     expect(electron.dialog.showMessageBox).toHaveBeenCalledWith(window, {
       type: 'warning',
-      buttons: ['Cancel', 'Close GooeyPi'],
+      buttons: ['Cancel', 'Close OMP Desktop'],
       defaultId: 0,
       cancelId: 0,
       noLink: true,
-      title: 'GooeyPi',
+      title: 'OMP Desktop',
       ...prompt,
     })
 
@@ -161,7 +161,7 @@ describe('application window lifecycle', () => {
   })
 })
 
-function hardenedWindow(currentUrl = 'prime-work://app/index.html') {
+function hardenedWindow(currentUrl = 'omp-desktop://app/index.html') {
   const handlers = new Map<string, Handler>()
   const webContents = {
     on: (name: string, listener: Handler) => { handlers.set(name, listener) },
@@ -172,7 +172,7 @@ function hardenedWindow(currentUrl = 'prime-work://app/index.html') {
     copyImageAt: vi.fn(),
   }
   const window = { webContents, isDestroyed: vi.fn(() => false) }
-  hardenRenderer(window as unknown as BrowserWindow, () => 'prime-work://app/index.html')
+  hardenRenderer(window as unknown as BrowserWindow, () => 'omp-desktop://app/index.html')
   const handler = (name: string): Handler => {
     const listener = handlers.get(name)
     if (!listener) throw new Error(`No ${name} handler was registered`)
@@ -186,7 +186,7 @@ describe('renderer hardening', () => {
     const { handler } = hardenedWindow()
     const preferences: Record<string, unknown> = { preload: '/tmp/evil.js', nodeIntegration: true, webviewTag: true, sandbox: false }
     const event = { preventDefault: vi.fn() }
-    handler('will-attach-webview')(...[event, preferences, { partition: 'persist:prime-work-browser', src: 'https://example.test/' }] as never[])
+    handler('will-attach-webview')(...[event, preferences, { partition: 'persist:omp-desktop-browser', src: 'https://example.test/' }] as never[])
 
     expect(event.preventDefault).not.toHaveBeenCalled()
     expect(preferences).toMatchObject({
@@ -205,7 +205,7 @@ describe('renderer hardening', () => {
     const { handler } = hardenedWindow()
     for (const params of [
       { partition: 'persist:other', src: 'https://example.test/' },
-      { partition: 'persist:prime-work-browser', src: 'file:///etc/passwd' },
+      { partition: 'persist:omp-desktop-browser', src: 'file:///etc/passwd' },
     ]) {
       const event = { preventDefault: vi.fn() }
       handler('will-attach-webview')(...[event, {}, params] as never[])
@@ -235,7 +235,7 @@ describe('renderer hardening', () => {
       handler(name)(...[blocked] as never[])
       expect(blocked.preventDefault, name).toHaveBeenCalledOnce()
 
-      const trusted = { url: 'prime-work://app/index.html', preventDefault: vi.fn() }
+      const trusted = { url: 'omp-desktop://app/index.html', preventDefault: vi.fn() }
       handler(name)(...[trusted] as never[])
       expect(trusted.preventDefault, name).not.toHaveBeenCalled()
     }
@@ -247,7 +247,7 @@ describe('initial renderer window lifecycle', () => {
     let resolveLoad!: () => void
     const loadURL = vi.fn(() => new Promise<void>((resolve) => { resolveLoad = resolve }))
     const destroy = vi.fn()
-    const loading = loadInitialRenderer({ loadURL, isDestroyed: () => false, destroy }, 'prime-work://app/index.html')
+    const loading = loadInitialRenderer({ loadURL, isDestroyed: () => false, destroy }, 'omp-desktop://app/index.html')
     let settled = false
     void loading.then(() => { settled = true })
 
@@ -258,7 +258,7 @@ describe('initial renderer window lifecycle', () => {
     resolveLoad()
     await loading
     expect(settled).toBe(true)
-    expect(loadURL).toHaveBeenCalledWith('prime-work://app/index.html')
+    expect(loadURL).toHaveBeenCalledWith('omp-desktop://app/index.html')
     expect(destroy).not.toHaveBeenCalled()
   })
 
@@ -270,7 +270,7 @@ describe('initial renderer window lifecycle', () => {
       loadURL: vi.fn(async () => { throw failure }),
       isDestroyed: () => false,
       destroy,
-    }, 'prime-work://app/index.html')).rejects.toBe(failure)
+    }, 'omp-desktop://app/index.html')).rejects.toBe(failure)
 
     expect(destroy).toHaveBeenCalledOnce()
   })
@@ -282,7 +282,7 @@ describe('initial renderer window lifecycle', () => {
       loadURL: vi.fn(async () => { throw new Error('ERR_ABORTED') }),
       isDestroyed: () => true,
       destroy,
-    }, 'prime-work://app/index.html')).rejects.toThrow('ERR_ABORTED')
+    }, 'omp-desktop://app/index.html')).rejects.toThrow('ERR_ABORTED')
 
     expect(destroy).not.toHaveBeenCalled()
   })

@@ -15,7 +15,7 @@ describe('RepositoryUseGate', () => {
       lease.release()
       return true
     }
-    lease = await gate.beginWorkspaceUse('/repo/packages/app', { kind: 'agent', harness: 'prime', runtimeId: 'runtime-1' }, retireIfIdle)
+    lease = await gate.beginWorkspaceUse('/repo/packages/app', { kind: 'agent', harness: 'omp', runtimeId: 'runtime-1' }, retireIfIdle)
 
     await expect(gate.runBranchCheckout('/repo', async () => 'changed')).resolves.toBe('changed')
   })
@@ -24,7 +24,7 @@ describe('RepositoryUseGate', () => {
     const gate = new RepositoryUseGate()
     const lease = await gate.beginWorkspaceUse(
       '/repo/packages/app',
-      { kind: 'agent', harness: 'prime', runtimeId: 'runtime-1' },
+      { kind: 'agent', harness: 'omp', runtimeId: 'runtime-1' },
       async () => false,
     )
 
@@ -35,15 +35,15 @@ describe('RepositoryUseGate', () => {
   it('names mixed workspace owners blocking branch checkout', async () => {
     const gate = new RepositoryUseGate()
     const terminal = await gate.beginWorkspaceUse('/repo', { kind: 'terminal', terminalId: 'terminal-1' })
-    const prime = await gate.beginWorkspaceUse('/repo', { kind: 'agent', harness: 'prime', runtimeId: 'prime-runtime' })
-    const omp = await gate.beginWorkspaceUse('/repo', { kind: 'agent', harness: 'omp', runtimeId: 'omp-runtime' })
+    const first = await gate.beginWorkspaceUse('/repo', { kind: 'agent', harness: 'omp', runtimeId: 'first-runtime' })
+    const second = await gate.beginWorkspaceUse('/repo', { kind: 'agent', harness: 'omp', runtimeId: 'second-runtime' })
 
     await expect(gate.runBranchCheckout('/repo', async () => 'changed')).rejects.toMatchObject({
-      message: 'Branch checkout is unavailable while 1 terminal and 2 agents (prime, omp) are using this folder. Close the terminal or wait for the agent to finish.',
+      message: 'Branch checkout is unavailable while 1 terminal and 2 agents (omp) are using this folder. Close the terminal or wait for the agent to finish.',
     })
     terminal.release()
-    prime.release()
-    omp.release()
+    first.release()
+    second.release()
   })
 
   it('holds new workspace users until a branch checkout finishes', async () => {

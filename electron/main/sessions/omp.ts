@@ -29,7 +29,7 @@ import { compactText, type TranscriptFileReader } from './transcript'
  *   from the name prefix, not UUIDv7 bits.
  *
  * Everything except the title slot and the display-name and `model_change`
- * record shapes is shared with pi through `./bucketed`.
+ * record shapes lives in `./bucketed`.
  */
 export const OMP_TITLE_SLOT_BYTES = 256
 
@@ -138,7 +138,7 @@ export const readOmpTranscript: TranscriptFileReader = createBranchSummaryTransc
 
 /**
  * Fully wired SessionService options for an OMP session root. Construct the
- * service with a null CLI path: OMP has no `prime-agent list` live overlay.
+ * service with a null CLI path: OMP has no `omp list` live overlay.
  */
 export function ompSessionServiceOptions(sessionRoot = ompSessionRoot()): SessionServiceOptions {
   return {

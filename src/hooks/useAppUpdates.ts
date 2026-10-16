@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { AppUpdateState, PrimeWorkApi } from '@/types/api'
+import type { AppUpdateState, DesktopApi } from '@/types/api'
 
 const FALLBACK_STATE: AppUpdateState = { phase: 'unsupported', message: 'Automatic updates are available in installed builds.' }
 
-export function useAppUpdates(bridge: PrimeWorkApi | null, reportError: (error: unknown) => void) {
+export function useAppUpdates(bridge: DesktopApi | null, reportError: (error: unknown) => void) {
   const [state, setState] = useState<AppUpdateState>(bridge ? { phase: 'idle' } : FALLBACK_STATE)
 
   useEffect(() => {

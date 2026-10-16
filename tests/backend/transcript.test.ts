@@ -13,7 +13,7 @@ afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: tru
 
 describe('session file record tolerance', () => {
   it('opens a record beyond the old 8 MiB transcript cap in both same-file readers', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'prime-work-transcript-'))
+    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-transcript-'))
     dirs.push(dir)
     const file = join(dir, 'session.jsonl')
     const oversized = 'x'.repeat(9 * 1024 * 1024)
@@ -34,9 +34,9 @@ describe('session file record tolerance', () => {
   })
 })
 
-describe('GooeyPi agent messages', () => {
+describe('OMP Desktop agent messages', () => {
   it('creates and reuses an owner-only signing key in a fresh user-data directory', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'prime-work-message-key-'))
+    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-message-key-'))
     dirs.push(dir)
     const path = join(dir, 'fresh-user-data', 'agent-message-signing.key')
     const created = loadOrCreateGooeyPiAgentMessageKey(path)
@@ -85,7 +85,7 @@ describe('GooeyPi agent messages', () => {
       version: 1,
       from_session_id: 'legacy-source',
       from_title: 'Legacy planner title',
-      from_harness: 'prime',
+      from_harness: 'omp',
       reply_with: 'session_send',
       nonce: '00000000-0000-4000-8000-000000000000',
       sent_at: '2026-08-13T12:00:00.000Z',
@@ -106,7 +106,7 @@ describe('GooeyPi agent messages', () => {
     expect(parseGooeyPiAgentMessage(envelope)).toEqual({
       fromSessionId: 'legacy-source',
       fromTitle: 'Legacy planner title',
-      fromHarness: 'prime',
+      fromHarness: 'omp',
       text,
     })
   })
@@ -152,7 +152,7 @@ describe('GooeyPi agent messages', () => {
 
 describe('tool result placement in assembled turns', () => {
   it('splices results after their call by id, appends unmatched results, and pairs duplicate ids with the first call', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'prime-work-transcript-tools-'))
+    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-transcript-tools-'))
     dirs.push(dir)
     const file = join(dir, 'session.jsonl')
     const records = [
@@ -192,7 +192,7 @@ describe('tool result placement in assembled turns', () => {
 })
 
 function makeSessionFile(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'prime-work-transcript-'))
+  const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-transcript-'))
   dirs.push(dir)
   return join(dir, 'session.jsonl')
 }
@@ -234,7 +234,7 @@ describe('transcript graph budgets', () => {
 })
 
 function sessionFile(lines: string[]): string {
-  const dir = mkdtempSync(join(tmpdir(), 'prime-work-transcript-'))
+  const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-transcript-'))
   dirs.push(dir)
   const file = join(dir, 'session.jsonl')
   writeFileSync(file, `${lines.join('\n')}\n`)
@@ -270,7 +270,7 @@ describe('persisted compaction transcript entries', () => {
   })
 
   it('keeps completed compaction summaries visible after a session reload', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'prime-work-transcript-'))
+    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-transcript-'))
     dirs.push(dir)
     const file = join(dir, 'session.jsonl')
     writeFileSync(file, [

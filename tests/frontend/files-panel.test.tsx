@@ -27,7 +27,7 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount())
   container.remove()
-  Reflect.deleteProperty(window, 'prime')
+  Reflect.deleteProperty(window, 'desktop')
   vi.restoreAllMocks()
 })
 
@@ -53,7 +53,7 @@ const sampleEntries: ProjectFileEntry[] = [
 
 const sampleProject: ProjectRecord = {
   id: 'test-project',
-  harness: 'prime',
+  harness: 'omp',
   name: 'test-project',
   path: '/workspace/test-project',
   folders: ['/workspace/test-project'],
@@ -234,7 +234,7 @@ describe('FilesPanel component', () => {
       entries: sampleEntries,
       skipped: 0,
     }))
-    Object.defineProperty(window, 'prime', {
+    Object.defineProperty(window, 'desktop', {
       configurable: true,
       value: { projects: { listFiles } },
     })
@@ -245,7 +245,7 @@ describe('FilesPanel component', () => {
       await Promise.resolve()
     })
 
-    expect(listFiles).toHaveBeenCalledWith('/workspace/test-project', 'prime')
+    expect(listFiles).toHaveBeenCalledWith('/workspace/test-project', 'omp')
 
     // Root button should show project name
     const treeRoot = container.querySelector('.tree-root')
@@ -330,7 +330,7 @@ describe('FilesPanel component', () => {
       entries: sampleEntries,
       skipped: 0,
     }))
-    Object.defineProperty(window, 'prime', {
+    Object.defineProperty(window, 'desktop', {
       configurable: true,
       value: { projects: { listFiles } },
     })
@@ -369,7 +369,7 @@ describe('FilesPanel component', () => {
       entries: sampleEntries,
       skipped: 0,
     }))
-    Object.defineProperty(window, 'prime', {
+    Object.defineProperty(window, 'desktop', {
       configurable: true,
       value: { projects: { listFiles } },
     })
@@ -404,7 +404,7 @@ describe('FilesPanel component', () => {
       entries: [{ path: 'App.tsx', type: 'file' as const }],
       skipped: 2,
     }))
-    Object.defineProperty(window, 'prime', {
+    Object.defineProperty(window, 'desktop', {
       configurable: true,
       value: { projects: { listFiles } },
     })
@@ -422,7 +422,7 @@ describe('FilesPanel component', () => {
       entries: sampleEntries,
       skipped: 0,
     }))
-    Object.defineProperty(window, 'prime', {
+    Object.defineProperty(window, 'desktop', {
       configurable: true,
       value: { projects: { listFiles } },
     })
@@ -482,7 +482,7 @@ describe('FilesPanel component', () => {
         skipped: 0,
       }
     })
-    Object.defineProperty(window, 'prime', {
+    Object.defineProperty(window, 'desktop', {
       configurable: true,
       value: { projects: { listFiles } },
     })
@@ -505,7 +505,7 @@ describe('FilesPanel component', () => {
     const listFiles = vi.fn(async () => {
       throw new Error('Permission denied')
     })
-    Object.defineProperty(window, 'prime', {
+    Object.defineProperty(window, 'desktop', {
       configurable: true,
       value: { projects: { listFiles } },
     })
@@ -523,7 +523,7 @@ describe('FilesPanel component', () => {
       entries: sampleEntries,
       skipped: 0,
     }))
-    Object.defineProperty(window, 'prime', {
+    Object.defineProperty(window, 'desktop', {
       configurable: true,
       value: { projects: { listFiles } },
     })
@@ -543,7 +543,7 @@ describe('FilesPanel component', () => {
     const inferredProject: ProjectRecord = {
       ...sampleProject,
       id: 'inferred-123',
-      harness: 'pi',
+      harness: 'omp',
       inferred: true,
     }
 
@@ -551,7 +551,7 @@ describe('FilesPanel component', () => {
       entries: sampleEntries,
       skipped: 0,
     }))
-    Object.defineProperty(window, 'prime', {
+    Object.defineProperty(window, 'desktop', {
       configurable: true,
       value: { projects: { listFiles } },
     })
@@ -561,7 +561,7 @@ describe('FilesPanel component', () => {
       await Promise.resolve()
     })
 
-    expect(listFiles).toHaveBeenCalledWith('/workspace/test-project', 'pi')
+    expect(listFiles).toHaveBeenCalledWith('/workspace/test-project', 'omp')
     expect(container.textContent).toContain('test-project')
     expect(container.textContent).toContain('src')
     expect(container.textContent).toContain('package.json')

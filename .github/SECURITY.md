@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Security fixes are provided for the latest GooeyPi release published on GitHub Releases.
+Security fixes are provided for the latest OMP Desktop release published on GitHub Releases.
 
 | Version | Supported |
 | --- | --- |
@@ -15,7 +15,7 @@ When it is safe to do so, confirm whether the issue affects the latest release b
 
 Do not disclose suspected vulnerabilities in a public issue, discussion, or pull request.
 
-1. Open GooeyPi's [private vulnerability reporting form](https://github.com/am-will/gooey-pi/security/advisories/new).
+1. Open OMP Desktop's [private vulnerability reporting form](https://github.com/SenCha930511/omp-desktop/security/advisories/new).
 2. Complete and submit the private advisory form.
 3. Use the advisory for all sensitive follow-up information.
 

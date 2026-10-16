@@ -25,7 +25,7 @@ on `PATH`, so select the pinned toolchain before running `node`/`npm` if `node
 export NVM_DIR="$HOME/.nvm"; . "$NVM_DIR/nvm.sh"; nvm use >/dev/null
 ```
 
-GooeyPi is a GUI Electron app with no background services, so there is nothing to
+OMP Desktop is a GUI Electron app with no background services, so there is nothing to
 auto-start. To run the app or the Playwright Electron e2e suite headlessly, wrap
 the command with a virtual display:
 

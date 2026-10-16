@@ -30,8 +30,8 @@ function fakePi() {
 
 async function loadExtension(url?: string, token?: string) {
   vi.resetModules()
-  vi.stubEnv('PRIME_WORK_SCHEDULE_URL', url ?? undefined as unknown as string)
-  vi.stubEnv('PRIME_WORK_SCHEDULE_TOKEN', token ?? undefined as unknown as string)
+  vi.stubEnv('OMP_DESKTOP_SCHEDULE_URL', url ?? undefined as unknown as string)
+  vi.stubEnv('OMP_DESKTOP_SCHEDULE_TOKEN', token ?? undefined as unknown as string)
   return (await import('../../assets/extensions/omp-work-schedules')).default
 }
 
@@ -50,7 +50,7 @@ async function fixture() {
   await bridge.start()
   cleanups.push(async () => { await bridge.stop(); rmSync(dir, { recursive: true, force: true }) })
   const environment = bridge.environmentFor({ cwd: '/project', sessionPath: '/sessions/omp.jsonl' })
-  const factory = await loadExtension(environment.PRIME_WORK_SCHEDULE_URL, environment.PRIME_WORK_SCHEDULE_TOKEN)
+  const factory = await loadExtension(environment.OMP_DESKTOP_SCHEDULE_URL, environment.OMP_DESKTOP_SCHEDULE_TOKEN)
   const { tools, pi } = fakePi()
   factory(pi)
   const tool = (name: string) => tools.find((candidate) => candidate.name === name)!

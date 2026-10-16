@@ -5,8 +5,8 @@ export interface ComposerDraftSnapshot {
   fast?: boolean
 }
 
-const LEGACY_COMPOSER_DRAFT_KEY = 'prime-work.composer-draft'
-const COMPOSER_DRAFT_PREFIX = 'prime-work.composer-draft.v2:'
+const LEGACY_COMPOSER_DRAFT_KEY = 'omp-desktop.composer-draft'
+const COMPOSER_DRAFT_PREFIX = 'omp-desktop.composer-draft.v2:'
 
 export function composerDraftStorageKey(scope: string): string {
   return `${COMPOSER_DRAFT_PREFIX}${scope}`

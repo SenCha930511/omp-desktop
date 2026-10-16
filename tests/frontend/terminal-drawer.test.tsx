@@ -4,7 +4,7 @@ import { act, type RefObject } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TerminalDrawer, type TerminalDrawerHandle } from '../../src/components/TerminalDrawer'
-import type { PrimeWorkApi, TerminalExitEvent } from '../../src/types/api'
+import type { DesktopApi, TerminalExitEvent } from '../../src/types/api'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
@@ -51,8 +51,8 @@ describe('TerminalDrawer project command handle', () => {
         setActiveContext: vi.fn(),
         clearActiveContext: vi.fn(),
       },
-    } as unknown as PrimeWorkApi
-    Object.defineProperty(window, 'prime', { configurable: true, value: bridge })
+    } as unknown as DesktopApi
+    Object.defineProperty(window, 'desktop', { configurable: true, value: bridge })
     Object.defineProperty(globalThis, 'ResizeObserver', { configurable: true, value: class { observe() {} disconnect() {} } })
   })
 

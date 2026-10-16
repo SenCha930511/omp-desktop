@@ -153,14 +153,12 @@ describe('transcript rendering', () => {
     expect(html).toContain('Worked for 1s')
     expect(html).not.toContain('Prior completed reasoning.')
     expect(html).toContain('transcript-active-placeholder')
-    expect(html).toContain('Prime is working')
+    expect(html).toContain('OMP is working')
   })
 
-  it.each([
-    ['prime', 'Prime'],
-    ['omp', 'OMP'],
-    ['pi', 'Pi'],
-  ] as const)('keeps an accepted %s steer in history without duplicating the working indicator', (harness, shortName) => {
+  it('keeps an accepted omp steer in history without duplicating the working indicator', () => {
+    const harness = 'omp'
+    const shortName = 'OMP'
     const html = renderToStaticMarkup(createElement(Transcript, {
       messages: [
         { id: 'before', role: 'assistant', timestamp: 1_000, parts: [{ type: 'text', text: 'Current response' }] },
@@ -351,7 +349,7 @@ describe('transcript rendering', () => {
   it('renders system failures as compact expandable activity instead of red boxes', () => {
     const html = render([{ id: 'failure', role: 'system', parts: [{ type: 'text', text: 'Request failed with details.' }] }])
     expect(html).toContain('message--activity')
-    expect(html).toContain('Prime message')
+    expect(html).toContain('OMP message')
     expect(html).toContain('failed')
     expect(html).toContain('aria-expanded="false"')
     expect(html).not.toContain('Request failed with details.')
@@ -369,7 +367,7 @@ describe('transcript rendering', () => {
     expect(html).toContain('overflow recovery')
     expect(html).toContain('99,175 tokens before')
     expect(html).toContain('aria-expanded="false"')
-    expect(html).not.toContain('Prime message')
+    expect(html).not.toContain('OMP message')
   })
 
   it('renders standalone informational output as a collapsed tool row', () => {

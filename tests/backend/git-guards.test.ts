@@ -25,7 +25,7 @@ const git = (cwd: string, ...args: string[]) => {
   if (result.status !== 0) throw new Error(result.stderr)
 }
 const repository = () => {
-  const cwd = mkdtempSync(join(tmpdir(), 'prime-work-git-guards-'))
+  const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-git-guards-'))
   dirs.push(cwd)
   git(cwd, 'init', '-q')
   git(cwd, 'config', 'user.name', 'Prime Work Test')
@@ -78,7 +78,7 @@ describe('withRepositoryGuards spawn dedupe', () => {
 
   it('falls back to the global scope only for identity values missing locally', async () => {
     const cwd = repository()
-    const home = mkdtempSync(join(tmpdir(), 'prime-work-git-guards-home-'))
+    const home = mkdtempSync(join(tmpdir(), 'omp-desktop-git-guards-home-'))
     dirs.push(home)
     git(cwd, 'config', '--unset', 'user.email')
     writeFileSync(join(home, '.gitconfig'), '[user]\n  email = global@example.com\n')

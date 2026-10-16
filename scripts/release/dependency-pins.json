@@ -1,39 +1,6 @@
 {
   "//": "Tamper-evidence pins for vendored dependencies and bootstrap artifacts. Guard tests bind lockfile entries and vendor/*.tgz bytes to these sha512 values. Runtime bootstrap code separately verifies executable toolchain artifacts before use. Treat every change to this file or vendor/ as security-sensitive.",
-  "packages": {
-    "node_modules/@earendil-works/pi-agent-core": {
-      "resolved": "file:vendor/prime-agent-core-0.7.0.tgz",
-      "integrity": "sha512-lx+juh3pTKb8hVFjtVEKjcVttsNBpKh8anWO15cQ4uuYVeHOFXYs/SjHPEEO7/m1PbmuXHpz1E3qEBxoM6AwaQ=="
-    },
-    "node_modules/@earendil-works/pi-ai": {
-      "resolved": "file:vendor/prime-agent-ai-0.7.0-gooeypi.1.tgz",
-      "integrity": "sha512-TdQwiJ46eWwao40lXOW01SGY4K4je7+lm/llIcC+KTwU0gP0C91xQnZTxA8+ncBNsNiJ4KgfJAwKSL711Oyhlw=="
-    },
-    "node_modules/@earendil-works/pi-tui": {
-      "resolved": "file:vendor/prime-agent-tui-0.7.0.tgz",
-      "integrity": "sha512-mbypMOaUYrrQCBc59YZ34RQHWmsnzJNhd1ISF5E39L9qEKpVU5ZpctTqrA9Dhdo7IGDk0WfSnppNls/uyAcMjw=="
-    },
-    "node_modules/prime-agent": {
-      "resolved": "file:vendor/prime-agent-0.7.0-gooeypi.1.tgz",
-      "integrity": "sha512-WrsxPwAFfhuTnpL2q6x7wftoZJuzFJDVZ4YbmfkFLqqum05rE8GB8H6HGFAM9rCWa4mXBou4qoOpe7ryWU5j9Q=="
-    },
-    "node_modules/prime-agent-ai": {
-      "resolved": "file:vendor/prime-agent-ai-0.7.0-gooeypi.1.tgz",
-      "integrity": "sha512-TdQwiJ46eWwao40lXOW01SGY4K4je7+lm/llIcC+KTwU0gP0C91xQnZTxA8+ncBNsNiJ4KgfJAwKSL711Oyhlw=="
-    }
-  },
-  "reference-artifacts": {
-    "prime-agent-base": {
-      "path": "vendor/prime-agent-0.7.0.tgz",
-      "integrity": "sha512-pgrjR4QFg4VqgcPg+50VSmttjISuFQgv2a5Bx6L7jD/Mk72/XGd6strBuQPIJ0+KKNekaiEf7cclt7RWvw8s7w==",
-      "note": "Upstream base release documented by vendor/prime-agent-0.7.0-gooeypi.1.md; kept for provenance, never installed."
-    },
-    "prime-agent-ai-base": {
-      "path": "vendor/prime-agent-ai-0.7.0.tgz",
-      "integrity": "sha512-UUYRmIA4SG3wg2v0Dnpj16DxgwZu3GtzZuZhtyEUMeXbdG3Bv7bmHowPCQC/6+GDepd82mwRmV4RVe4IrMlNUg==",
-      "note": "Upstream base release documented by vendor/prime-agent-ai-0.7.0-gooeypi.1.md; kept for provenance, never installed."
-    }
-  },
+  "packages": {},
   "artifacts": {
     "npm": {
       "version": "12.0.2",

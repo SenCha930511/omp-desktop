@@ -1,17 +1,18 @@
 // @vitest-environment jsdom
 
+import './jsdom-storage'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '../../src/App'
 import { DEFAULT_SETTINGS } from '../../src/lib/data'
-import type { AppMeta, PrimeWorkApi, ProjectRecord } from '../../src/types/api'
+import type { AppMeta, DesktopApi, ProjectRecord } from '../../src/types/api'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
 const project = (id: string, name: string, lastOpenedAt: string, overrides: Partial<ProjectRecord> = {}): ProjectRecord => ({
   id,
-  harness: 'prime',
+  harness: 'omp',
   name,
   path: `/${id}`,
   folders: [`/${id}`],
@@ -34,19 +35,17 @@ const meta: AppMeta = {
   platform: 'linux',
   homeDir: '/home/test',
   harnesses: {
-    prime: { path: '/usr/bin/prime', version: 'test' },
-    omp: { path: null, version: null },
-    pi: { path: null, version: null },
+    omp: { path: '/usr/bin/omp', version: 'test' },
   },
 }
 
-let settings = { ...DEFAULT_SETTINGS, activeHarness: 'prime' as const }
-let bridge: PrimeWorkApi
+let settings = { ...DEFAULT_SETTINGS, activeHarness: 'omp' as const }
+let bridge: DesktopApi
 let container: HTMLDivElement
 let root: Root
 
 beforeEach(() => {
-  settings = { ...DEFAULT_SETTINGS, activeHarness: 'prime' }
+  settings = { ...DEFAULT_SETTINGS, activeHarness: 'omp' }
   bridge = {
     app: {
       getMeta: vi.fn(async () => meta),
@@ -90,10 +89,6 @@ beforeEach(() => {
       list: vi.fn(async () => []),
       onEvent: vi.fn(() => () => undefined),
     },
-    pets: {
-      list: vi.fn(async () => []),
-      sprite: vi.fn(async () => null),
-    },
     providers: {
       catalog: vi.fn(async () => ({ models: [], providers: [] })),
       saveApiKey: vi.fn(async () => true),
@@ -126,10 +121,6 @@ beforeEach(() => {
       onPointer: vi.fn(() => () => undefined),
       onActivity: vi.fn(() => () => undefined),
     },
-    heartbeats: {
-      list: vi.fn(async () => []),
-      manage: vi.fn(async () => true),
-    },
     schedules: {
       list: vi.fn(async () => []),
       create: vi.fn(async () => undefined),
@@ -154,8 +145,8 @@ beforeEach(() => {
       diff: vi.fn(async () => ''),
       restore: vi.fn(async () => true),
     },
-  } as unknown as PrimeWorkApi
-  Object.defineProperty(window, 'prime', { configurable: true, value: bridge })
+  } as unknown as DesktopApi
+  Object.defineProperty(window, 'desktop', { configurable: true, value: bridge })
   Object.defineProperty(window, 'matchMedia', { configurable: true, value: () => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() }) })
   Object.defineProperty(globalThis, 'ResizeObserver', { configurable: true, value: class { observe() {} unobserve() {} disconnect() {} } })
   container = document.createElement('div')
@@ -166,7 +157,7 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount())
   container.remove()
-  Object.defineProperty(window, 'prime', { configurable: true, value: undefined })
+  Object.defineProperty(window, 'desktop', { configurable: true, value: undefined })
   vi.restoreAllMocks()
 })
 
@@ -205,7 +196,7 @@ describe('project ordering controls in App', () => {
     const pin = [...container.querySelectorAll('[aria-label^="Project options"] button')].find((button) => button.textContent?.includes('Pin project'))
     expect(pin).toBeDefined()
     await press(pin!)
-    expect(bridge.projects.setPinned).toHaveBeenCalledWith('alpha', true, 'prime')
+    expect(bridge.projects.setPinned).toHaveBeenCalledWith('alpha', true, 'omp')
     expect([...container.querySelectorAll('[aria-label^="Project options"] button')].some((button) => button.textContent?.includes('Pin project'))).toBe(false)
   })
 })

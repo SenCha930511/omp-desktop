@@ -40,7 +40,7 @@ interface FakeOmpOptions {
 }
 
 function fakeOmpAgent(options: FakeOmpOptions = {}): { cwd: string; executable: string } {
-  const cwd = mkdtempSync(join(tmpdir(), 'prime-work-omp-rpc-'))
+  const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-omp-rpc-'))
   dirs.push(cwd)
   const executable = join(cwd, 'fake-omp.cjs')
   writeFileSync(executable, `#!/usr/bin/env node
@@ -238,11 +238,11 @@ describe('OMP RPC adapter argv', () => {
 
   it('appends the enabled computer-use skill and forwards the scoped app extensions', () => {
     const environment = {
-      PRIME_WORK_SCHEDULE_SKILL_PATH: '/skills/schedule.md',
-      PRIME_WORK_BROWSER_SKILL_PATH: '/skills/browser.md',
-      PRIME_WORK_SCHEDULE_EXTENSION_PATH: '/extensions/schedules.ts',
-      PRIME_WORK_BROWSER_EXTENSION_PATH: '/extensions/browser.ts',
-      PRIME_WORK_ASK_USER_EXTENSION_PATH: '/extensions/ask-user.ts',
+      OMP_DESKTOP_SCHEDULE_SKILL_PATH: '/skills/schedule.md',
+      OMP_DESKTOP_BROWSER_SKILL_PATH: '/skills/browser.md',
+      OMP_DESKTOP_SCHEDULE_EXTENSION_PATH: '/extensions/schedules.ts',
+      OMP_DESKTOP_BROWSER_EXTENSION_PATH: '/extensions/browser.ts',
+      OMP_DESKTOP_ASK_USER_EXTENSION_PATH: '/extensions/ask-user.ts',
       GOOEYPI_COLLABORATION_EXTENSION_PATH: '/extensions/collaboration.ts',
       GOOEYPI_COMPUTER_USE_SKILL_PATH: '/skills/computer-use.md',
     } as NodeJS.ProcessEnv
@@ -311,11 +311,11 @@ describe('OMP RPC handshake', () => {
     const fake = fakeOmpAgent()
     const manager = ompManager(fake.executable, { providers: ompCatalog, approvalMode: () => 'yolo' })
     manager.setRuntimeEnvironmentProvider(() => ({
-      PRIME_WORK_SCHEDULE_SKILL_PATH: '/skills/schedule.md',
-      PRIME_WORK_BROWSER_SKILL_PATH: '/skills/browser.md',
-      PRIME_WORK_SCHEDULE_EXTENSION_PATH: '/extensions/schedules.ts',
-      PRIME_WORK_BROWSER_EXTENSION_PATH: '/extensions/browser.ts',
-      PRIME_WORK_ASK_USER_EXTENSION_PATH: '/extensions/ask-user.ts',
+      OMP_DESKTOP_SCHEDULE_SKILL_PATH: '/skills/schedule.md',
+      OMP_DESKTOP_BROWSER_SKILL_PATH: '/skills/browser.md',
+      OMP_DESKTOP_SCHEDULE_EXTENSION_PATH: '/extensions/schedules.ts',
+      OMP_DESKTOP_BROWSER_EXTENSION_PATH: '/extensions/browser.ts',
+      OMP_DESKTOP_ASK_USER_EXTENSION_PATH: '/extensions/ask-user.ts',
       GOOEYPI_COLLABORATION_EXTENSION_PATH: '/extensions/collaboration.ts',
     }))
     const events: Array<Record<string, unknown>> = []
@@ -441,9 +441,9 @@ describe('OMP RPC command translation', () => {
     const runtime = await manager.start({ cwd: fake.cwd })
 
     await expect(manager.command(runtime.runtimeId, { type: 'send_message', targetActiveSessionId: 'session-1', message: 'hello' }))
-      .rejects.toThrow('RPC command send_message is not supported by the OMP harness')
+      .rejects.toThrow('RPC command send_message is not exposed to the renderer')
     await expect(manager.command(runtime.runtimeId, { type: 'clone' }))
-      .rejects.toThrow('RPC command clone is not supported by the OMP harness')
+      .rejects.toThrow('RPC command clone is not exposed to the renderer')
   })
 
   it('maps set_service_tier onto set_fast_mode', async () => {

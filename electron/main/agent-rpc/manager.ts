@@ -5,7 +5,7 @@ import { resolveExecutable, type ExecutableSource } from '../process-utils'
 import { canonicalSessionPath } from '../session-paths'
 import { isPathWithin, isRecord, rejectUnknownKeys, requireId, requireRecord, requireString } from '../validation'
 import { isThinkingLevel, validateRpcCommand } from './command-schema'
-import { PRIME_RPC_ADAPTER, type HarnessRpcAdapter } from './harness-adapter'
+import { OMP_RPC_ADAPTER, type HarnessRpcAdapter } from './harness-adapter'
 import { RpcRuntime } from './runtime'
 import type { RpcObject } from './types'
 import type { WorkspaceUseLease, WorkspaceUseOwner } from '../repository-use-gate'
@@ -44,8 +44,8 @@ export class AgentRpcManager {
     private readonly validateSessionPath: (path: string) => Promise<string>,
     private readonly providers?: ProviderCatalog,
     private readonly disabledProviders: () => ReadonlySet<string> = () => new Set(),
-    private readonly adapter: HarnessRpcAdapter = PRIME_RPC_ADAPTER,
-    /** Approval-mode override consumed only by harness arg builders that support it (OMP). */
+    private readonly adapter: HarnessRpcAdapter = OMP_RPC_ADAPTER,
+    /** OMP approval-mode override consumed by the harness arg builder. */
     private readonly approvalMode: () => string | undefined = () => undefined,
   ) {}
 
@@ -220,8 +220,8 @@ export class AgentRpcManager {
     this.requireOpen()
     const policyPrompt = command.type === 'prompt' || command.type === 'steer' || command.type === 'follow_up'
       ? command.message
-      : command.type === 'set_heartbeat' ? command.prompt : undefined
-    if (typeof policyPrompt === 'string') assertNoMcpAuthenticationCommand(policyPrompt, this.adapter.id)
+      : undefined
+    if (typeof policyPrompt === 'string') assertNoMcpAuthenticationCommand(policyPrompt)
     // Validation is harness-independent; the harness vocabulary applies after
     // it. set_service_tier passes through untranslated because the fast-mode
     // interception below routes it via runtime.setServiceTier instead.
@@ -240,15 +240,15 @@ export class AgentRpcManager {
     }
     const response = await runtime.command(translated)
     if (command.type === 'steer' || command.type === 'follow_up') {
-      // OMP reports only queuedMessageCount, while Prime reports the full
-      // scheduler snapshot. Refresh after admission so both shapes reach the
-      // renderer before a queued row can appear to vanish.
+      // OMP reports only queuedMessageCount. Refresh after admission so the
+      // refreshed count reaches the renderer before a queued row can appear
+      // to vanish.
       try {
         const state = await runtime.command({ type: 'get_state' })
         const explicitActions = isRecord(state.data) ? parseSessionActionSnapshot(state.data.sessionActions) : null
         const sessionActions = explicitActions ?? runtime.snapshot().sessionActions
         // Zero without an active-turn marker is not proof that a steer was read.
-        if (explicitActions || (this.adapter.id === 'omp' && sessionActions && sessionActions.queuedCount > 0)) {
+        if (explicitActions || (sessionActions && sessionActions.queuedCount > 0)) {
           return { ...response, sessionActions }
         }
       } catch { /* action events remain the fallback */ }

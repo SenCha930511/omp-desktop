@@ -1,4 +1,3 @@
-import { supportsFastMode } from 'prime-agent-ai'
 import type { PrimeModelCatalog, PrimeModelDescriptor, PrimeProviderDescriptor } from '../../src/types/api'
 import { catalogLimitWarnings, limitCatalogRelations, type ModelCatalogProvider } from './model-catalog'
 import { withModelVisibility } from './model-visibility'
@@ -6,13 +5,13 @@ import { resolveExecutable, runProcess, type ExecutableSource } from './process-
 import { requireString } from './validation'
 
 /**
- * Shared model-catalog machinery for the harnesses whose catalog comes from an
- * external CLI (OMP's `omp models --json`, pi's RPC probe) instead of
- * in-process npm modules. Everything here is harness-agnostic: caching,
- * single-flight refresh, stale-catalog degradation, untrusted-entry validation,
- * provider derivation, and the version probe. Subclasses supply only how raw
- * model entries are fetched, how one entry maps to a descriptor, and how the
- * CLI reports its version.
+ * Shared model-catalog machinery for the OMP harness, whose catalog comes
+ * from the external `omp models --json` CLI instead of in-process npm
+ * modules. Everything here is harness-agnostic: caching, single-flight
+ * refresh, stale-catalog degradation, untrusted-entry validation, provider
+ * derivation, and the version probe. Subclasses supply only how raw model
+ * entries are fetched, how one entry maps to a descriptor, and how the CLI
+ * reports its version.
  */
 const CATALOG_TTL_MS = 30_000
 export { MAX_CATALOG_PROVIDERS } from './model-catalog'
@@ -35,15 +34,13 @@ export function boundedInteger(value: unknown): number {
 }
 
 /**
- * Neither CLI carries per-model fast-mode metadata, so both delegate to the
- * same `supportsFastMode` predicate Prime uses and the model family can never
- * drift between harnesses. The API variant is not reported either, but the
- * openai-codex provider maps 1:1 onto the openai-codex-responses API the
- * predicate requires, and every other provider fails its provider check
- * regardless of the API value.
+ * The omp CLI does not carry per-model fast-mode metadata, so the catalog
+ * derives it from the model identity itself: OMP's `set_fast_mode` maps to
+ * OpenAI Codex service tiers, which exist for the GPT-5.4/5.5/5.6 Codex
+ * families on the responses API.
  */
 export function toFastModeSupported(provider: string, id: string): boolean {
-  return supportsFastMode({ provider, id, api: 'openai-codex-responses' } as Parameters<typeof supportsFastMode>[0])
+  return provider === 'openai-codex' && (id === 'gpt-5.4' || id === 'gpt-5.5' || id === 'gpt-5.6' || id.startsWith('gpt-5.6-'))
 }
 
 /** The fields every CLI model entry shares, or null when any of them is hostile or malformed. */
@@ -213,7 +210,7 @@ export abstract class CliModelCatalogService implements ModelCatalogProvider {
     const warnings = [
       ...catalogLimitWarnings(this.harnessLabel, relation, { uniqueModels: true }),
       invalidEntries > 0
-        ? `${this.harnessLabel} returned ${invalidEntries.toLocaleString('en-US')} model entries GooeyPi could not validate; they were skipped.`
+        ? `${this.harnessLabel} returned ${invalidEntries.toLocaleString('en-US')} model entries OMP Desktop could not validate; they were skipped.`
         : undefined,
     ].filter((warning): warning is string => Boolean(warning))
 

@@ -10,7 +10,7 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
 const project: ProjectRecord = {
   id: 'project-1',
-  harness: 'prime',
+  harness: 'omp',
   name: 'GooeyPi',
   path: '/repo',
   folders: ['/repo'],
