@@ -63,57 +63,57 @@
 .markdown-link-unsupported { color: var(--text-secondary); text-decoration: underline dotted; text-underline-offset: 2px; cursor: help; }
 .work-disclosure { margin: 10px 0 10px; }
 .work-disclosure.is-running { margin-top: 0; padding: 0 0 4px; }
-.work-disclosure__button { width: fit-content; max-width: 100%; min-height: 32px; display: flex; align-items: center; gap: 8px; padding: 4px 0; color: var(--text-tertiary); background: transparent; text-align: left; font-size: 12px; font-weight: 500; }
-.work-disclosure__button > svg { width: 20px; flex: 0 0 20px; }
+.work-disclosure__button { width: fit-content; max-width: 100%; min-height: 26px; display: flex; align-items: center; gap: 8px; padding: 3px 0; color: var(--text-tertiary); background: transparent; text-align: left; font-size: 12px; font-weight: 500; }
+.work-disclosure__button > svg { width: 16px; flex: 0 0 16px; }
 .work-disclosure__button:hover { color: var(--text); }
 .work-disclosure__live { min-width: 0; }
-.work-disclosure__status { min-height: 24px; display: flex; align-items: center; gap: 6px; margin: 0 0 6px 28px; color: var(--text-tertiary); font-size: 11px; font-weight: 500; }
+.work-disclosure__status { min-height: 20px; display: flex; align-items: center; gap: 6px; margin: 0 0 4px 24px; color: var(--text-tertiary); font-size: 11px; font-weight: 500; }
 .work-disclosure__status .thinking-dots { min-width: 29px; }
 /* Live elapsed clock on running work rows: tabular digits keep the 1-second
    updates from shifting the adjacent dots around. */
 .live-elapsed { font-variant-numeric: tabular-nums; opacity: 0.78; }
-.work-timeline { display: flex; flex-direction: column; gap: 5px; padding: 6px 0; }
+.work-timeline { display: flex; flex-direction: column; gap: 2px; padding: 4px 0; }
 .work-disclosure.is-running .work-timeline { padding: 0 0 8px; }
 .work-disclosure.is-running .activity-line--reasoning { color: var(--text-tertiary); font-size: 12.5px; line-height: 1.55; }
 .activity-line { position: relative; min-width: 0; color: var(--text-secondary); font-size: 11.5px; line-height: 1.45; }
 .activity-line--reasoning.reasoning-disclosure { margin: 0; padding: 0; color: var(--text-secondary); }
 .activity-line--reasoning .prose { margin: 0; color: inherit; font-size: inherit; line-height: inherit; }
 .activity-line--reasoning strong { font-weight: inherit; }
-.activity-line__icon { width: 20px; height: 20px; display: inline-grid; place-items: center; flex: 0 0 auto; color: var(--text-tertiary); }
+.activity-line__icon { width: 16px; height: 16px; display: inline-grid; place-items: center; flex: 0 0 auto; color: var(--text-tertiary); }
 .activity-line__kind { flex: 0 0 auto; color: var(--text-secondary); font-weight: 540; white-space: nowrap; }
 .activity-line--tool, .activity-line--agent { border-radius: 8px; }
 .activity-line--tool:hover, .activity-line--agent:hover { background: color-mix(in srgb, var(--surface-subtle) 72%, transparent); }
 .activity-line--compaction { margin: 5px 0; overflow: hidden; border: 1px solid color-mix(in srgb, var(--prime) 20%, var(--border)); border-radius: 9px; color: var(--text-secondary); background: color-mix(in srgb, var(--prime-soft) 40%, var(--canvas)); }
-.activity-line--compaction .activity-tool__summary { min-height: 27px; }
+.activity-line--compaction .activity-tool__summary { min-height: 22px; }
 .activity-line--compaction.is-running { border-color: color-mix(in srgb, var(--prime) 45%, var(--border)); }
 .activity-line--compaction.is-done .activity-line__icon, .activity-line--compaction.is-done .activity-tool__state { color: var(--success); }
 .activity-line--compaction.is-failed .activity-line__icon, .activity-line--compaction.is-failed .activity-tool__state, .activity-line--compaction.is-cancelled .activity-line__icon, .activity-line--compaction.is-cancelled .activity-tool__state { color: var(--danger); }
 .activity-compaction__reason, .activity-compaction__tokens { min-width: 0; overflow: hidden; color: var(--text-tertiary); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .activity-compaction__tokens { margin-left: auto; }
 .activity-line--compaction .activity-tool__state { margin-left: 6px; }
-.activity-compaction__details { max-height: 260px; margin: 0 5px 7px 30px; padding: 8px 10px; overflow: auto; border-left: 2px solid color-mix(in srgb, var(--prime) 42%, var(--border)); color: var(--text-secondary); background: color-mix(in srgb, var(--canvas) 64%, transparent); }
+.activity-compaction__details { max-height: 260px; margin: 0 5px 5px 26px; padding: 8px 10px; overflow: auto; border-left: 2px solid color-mix(in srgb, var(--prime) 42%, var(--border)); color: var(--text-secondary); background: color-mix(in srgb, var(--canvas) 64%, transparent); }
 .activity-compaction__details.is-error { border-left-color: var(--danger); color: var(--danger); }
 .activity-compaction__details .prose { margin: 0; font-size: 11.5px; line-height: 1.5; }
 .activity-agent__name { min-width: 0; flex: 1; overflow: hidden; color: var(--prime); font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
-.activity-agent__details { margin: 0 5px 6px 30px; padding: 7px 9px; border-left: 2px solid color-mix(in srgb, var(--prime) 45%, var(--border)); color: var(--text-secondary); }
+.activity-agent__details { margin: 0 5px 5px 26px; padding: 7px 9px; border-left: 2px solid color-mix(in srgb, var(--prime) 45%, var(--border)); color: var(--text-secondary); }
 .activity-agent__details .prose { margin: 0; font-size: 11.5px; line-height: 1.5; }
 .activity-line--question { color: var(--warning); background: color-mix(in srgb, var(--warning-soft) 58%, transparent); }
 .activity-line--question:hover { background: var(--warning-soft); }
 .activity-line--question .activity-line__icon, .activity-line--question .activity-line__kind, .activity-line--question .activity-tool__state { color: var(--warning); }
-.activity-tool__summary { width: 100%; min-height: 28px; display: flex; align-items: center; gap: 8px; padding: 3px 0; color: inherit; background: transparent; text-align: left; }
+.activity-tool__summary { width: 100%; min-height: 22px; display: flex; align-items: center; gap: 8px; padding: 2px 0; color: inherit; background: transparent; text-align: left; }
 .activity-tool__summary:disabled { opacity: 1; pointer-events: none; }
 .activity-tool__preview { min-width: 0; flex: 1; overflow: hidden; color: var(--text-tertiary); background: transparent; border: 0; padding: 0; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; }
 .activity-tool__state { margin-left: auto; display: inline-flex; align-items: center; gap: 3px; color: var(--text-tertiary); font-size: 10px; white-space: nowrap; }
 .activity-line.is-done .activity-tool__state { color: var(--success); }
 .activity-line.is-error .activity-tool__state { color: var(--danger); }
-.activity-tool__details { max-height: 260px; margin: 8px 0 4px 28px; overflow: auto; border: 1px solid var(--border); border-radius: 11px; background: var(--surface-subtle); color: var(--text-secondary); font-size: 11.5px; line-height: 1.6; }
+.activity-tool__details { max-height: 260px; margin: 6px 0 3px 24px; overflow: auto; border: 1px solid var(--border); border-radius: 11px; background: var(--surface-subtle); color: var(--text-secondary); font-size: 11.5px; line-height: 1.6; }
 .activity-tool__details-toolbar { display: flex; justify-content: flex-end; padding: 3px 4px 0; }
 .activity-tool__copy { min-height: 22px; display: inline-flex; align-items: center; gap: 4px; padding: 0 6px; border-radius: 5px; color: var(--text-tertiary); background: transparent; font-size: 10.5px; }
 .activity-tool__copy:hover { color: var(--text-secondary); background: var(--surface-hover); }
 .activity-tool__contents { margin: 0; padding: 4px 9px 7px; white-space: pre-wrap; word-break: break-word; }
 .activity-line--result { display: flex; align-items: flex-start; gap: 5px; padding: 2px 5px; color: var(--text-tertiary); }
 .activity-line--result.is-error { color: var(--danger); }
-.activity-line--note { padding: 0 0 0 28px; color: var(--text-secondary); }
+.activity-line--note { padding: 0 0 0 24px; color: var(--text-secondary); }
 .activity-line--note .prose { margin-bottom: 0; font-size: 13px; line-height: 1.7; }
 .syntax-key { color: var(--annotation); }
 .syntax-string { color: var(--success); }
