@@ -47,10 +47,11 @@ interface TranscriptProps {
   onOpenChanges(): void
   onSuggestion(prompt: string): void
   suggestionsDisabled?: boolean
-  /** Render the pinned changes card here; the app docks it beside the composer when false. */
-  showPinnedChanges?: boolean
-  /** Reserve room for bottom-docked changes and queued-message affordances. */
-  bottomDockHasChanges?: boolean
+  /** Render the changes card inline under the latest turn instead of beside the composer. */
+  showChangesCard?: boolean
+  onDismissChanges?(): void
+  /** Restores every changed file to its last commit. */
+  onUndoChanges?(): void
   queuedMessageCount?: number
   onOpenSessionReference?(sessionId: string, harness: HarnessId): void
 }
@@ -89,8 +90,9 @@ export function Transcript({
   onOpenChanges,
   onSuggestion,
   suggestionsDisabled,
-  showPinnedChanges = true,
-  bottomDockHasChanges = false,
+  showChangesCard = false,
+  onDismissChanges,
+  onUndoChanges,
   queuedMessageCount = 0,
   onOpenSessionReference,
 }: TranscriptProps) {
@@ -101,8 +103,6 @@ export function Transcript({
   const transcriptClasses = [
     'transcript',
     'scroll-area',
-    showPinnedChanges && git.files.length ? 'has-pinned-changes' : '',
-    bottomDockHasChanges ? 'has-docked-changes' : '',
     queuedMessageCount > 0 ? 'has-queued-messages' : '',
   ]
     .filter(Boolean)
@@ -180,14 +180,14 @@ export function Transcript({
               </div>
             </article>
           ) : null}
+          {showChangesCard && git.files.length ? (
+            <div className="transcript__changes">
+              <ChangesCard git={git} onOpenChanges={onOpenChanges} onClose={onDismissChanges} onUndo={onUndoChanges} />
+            </div>
+          ) : null}
           <div />
         </div>
       </div>
-      {showPinnedChanges && git.files.length ? (
-        <div className="transcript-changes-pin">
-          <ChangesCard git={git} onOpenChanges={onOpenChanges} />
-        </div>
-      ) : null}
       {awayFromBottom ? (
         <button type="button" className="transcript__jump-to-bottom" onClick={scrollToBottom} aria-label={t('transcript.jumpToBottom')} title={t('transcript.jumpToBottom')}>
           <ChevronDown size={17} />

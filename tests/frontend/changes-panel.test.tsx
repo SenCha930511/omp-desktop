@@ -56,6 +56,35 @@ describe('ChangesPanel status states', () => {
     expect(onOpenChanges).not.toHaveBeenCalled()
   })
 
+  it('confirms before undoing every changed file and opens the inspector from the review pill', async () => {
+    const onOpenChanges = vi.fn()
+    const onUndo = vi.fn()
+    await act(async () => {
+      root.render(
+        <ChangesCard
+          git={{ isRepo: true, files: [
+            { path: 'src/one.ts', status: 'M', staged: false, additions: 3, deletions: 1 },
+            { path: 'src/two.ts', status: 'M', staged: false, additions: 5, deletions: 2 },
+          ] }}
+          onOpenChanges={onOpenChanges}
+          onUndo={onUndo}
+        />,
+      )
+    })
+
+    expect(container.textContent).toContain('2 files changed')
+    const undo = container.querySelector<HTMLButtonElement>('.changes-card__undo')!
+    act(() => { undo.click() })
+    expect(onUndo).not.toHaveBeenCalled()
+    expect(container.textContent).toContain('Undo changes to 2 files?')
+
+    act(() => { container.querySelector<HTMLButtonElement>('.changes-card__undo')!.click() })
+    expect(onUndo).toHaveBeenCalledTimes(1)
+
+    act(() => { container.querySelector<HTMLButtonElement>('.changes-card__review')!.click() })
+    expect(onOpenChanges).toHaveBeenCalledTimes(1)
+  })
+
   it('confirms undoing the selected file before restoring it', async () => {
     const restore = vi.fn(async () => true)
     const diff = vi.fn(async () => ({ path: 'file.txt', staged: false, text: '', truncated: false }))

@@ -212,16 +212,19 @@ describe('transcript rendering', () => {
   })
 
 
-  it('renders one file changes card in the pinned transcript footer', () => {
+  it('renders the changes card inline under the latest turn when asked', () => {
     const html = renderToStaticMarkup(createElement(Transcript, {
       messages: [{ id: 'assistant', role: 'assistant', parts: [{ type: 'text', text: 'Done' }] }],
       git: { isRepo: true, files: [{ path: 'src/App.tsx', status: 'modified', additions: 2, deletions: 1, staged: false }] },
       onOpenChanges: noop,
       onSuggestion: noop,
+      showChangesCard: true,
     }))
-    expect(html).toContain('transcript-changes-pin')
+    expect(html).not.toContain('transcript-changes-pin')
+    expect(html).toContain('transcript__changes')
     expect(html.match(/class="changes-card"/g)).toHaveLength(1)
-    expect(html).toContain('1 file changed')
+    expect(html).toContain('Edited src/App.tsx')
+    expect(html).toContain('View changes')
   })
 
   it('renders valid user images and keeps truncated history as a safe placeholder', () => {

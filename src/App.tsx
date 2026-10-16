@@ -2,7 +2,6 @@ import type { CSSProperties } from 'react'
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { activityNotificationSignature, readClearedActivity, readClearedAttention, sessionCompanionNotificationSignature } from '@/app/session-attention'
 import { AgentBrowserLayer, type AgentSlotRect } from '@/components/AgentBrowserLayer'
-import { ChangesCard } from '@/components/ChangesCard'
 import { Composer } from '@/components/Composer'
 import { NoHarnessPrompt } from '@/components/NoHarnessPrompt'
 import type { ProjectScriptKind } from '@/components/ProjectRunControl'
@@ -346,6 +345,13 @@ export default function App() {
       if (gitRequestRef.current === requestId && workspace.workspaceRef.current.cwd === cwd) reportError(error)
     }
   }, [activeCwd, bridge, reportError, workspace.workspaceRef])
+  const undoChanges = useCallback(async () => {
+    if (!bridge || !activeCwd || !git.files.length) return
+    const paths = git.files.map((file) => file.path)
+    const restored = await bridge.git.restore(activeCwd, paths)
+    setToast(restored ? t('changes.card.undone') : t('changes.error.restore', { count: paths.length }))
+    if (restored) void refreshGit()
+  }, [bridge, activeCwd, git.files, refreshGit, t])
 
   useAgentEvents({
     bridge,
@@ -999,8 +1005,11 @@ export default function App() {
                           void sendPrompt(prompt).catch(() => undefined)
                         }}
                         suggestionsDisabled={!activeProject || workspace.loadingSession || submitting}
-                        showPinnedChanges={false}
-                        bottomDockHasChanges={Boolean(git.files.length && settingsState.settings.showFileChangesPopup && !changesCardDismissed)}
+                        showChangesCard={Boolean(git.files.length && settingsState.settings.showFileChangesPopup && !changesCardDismissed)}
+                        onDismissChanges={() => setChangesCardDismissed(true)}
+                        onUndoChanges={() => {
+                          void undoChanges()
+                        }}
                         queuedMessageCount={queuedMessages.length + harnessQueuedMessageCount}
                         onOpenSessionReference={(sessionId, harness) => {
                           const session = sessions.find((candidate) => candidate.id === sessionId && candidate.harness === harness && !candidate.archived && candidate.depth === 0)
@@ -1010,9 +1019,6 @@ export default function App() {
                       />
                     </Suspense>
                     <div className="conversation-bottom-dock">
-                      {git.files.length && settingsState.settings.showFileChangesPopup && !changesCardDismissed ? (
-                        <ChangesCard git={git} onOpenChanges={openChanges} onClose={() => setChangesCardDismissed(true)} />
-                      ) : null}
                       <Composer
                         key={
                           workspace.activeSessionId ? `${activeProject?.id ?? 'no-project'}:${workspace.activeSessionId}` : `${activeProject?.id ?? 'no-project'}:new:${workspace.workspaceGeneration}`
