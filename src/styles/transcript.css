@@ -153,7 +153,7 @@
 .thinking-dots > span:nth-child(2) { animation-delay: 140ms; }
 .thinking-dots > span:nth-child(3) { animation-delay: 280ms; }
 @keyframes thinking-dot { 0%, 62%, 100% { transform: translateY(1px) scale(.72); opacity: .3; } 31% { transform: translateY(-4px) scale(1); opacity: 1; box-shadow: 0 4px 8px color-mix(in srgb, var(--prime) 24%, transparent); } }
-.message-actions { min-height: 28px; display: flex; align-items: center; gap: 5px; margin-top: 10px; opacity: 0; transition: opacity 130ms ease-out; }
+.message-actions { min-height: 24px; display: flex; align-items: center; gap: 5px; margin-top: 3px; opacity: 0; transition: opacity 130ms ease-out; }
 .message--assistant:last-of-type .message-actions { opacity: 1; }
 .message:hover .message-actions, .message:focus-within .message-actions { opacity: 1; }
 .message-actions button, .message-actions span { min-height: 23px; display: inline-flex; align-items: center; gap: 4px; padding: 0 6px; border-radius: 5px; color: var(--text-tertiary); background: transparent; font-size: 10.5px; }
