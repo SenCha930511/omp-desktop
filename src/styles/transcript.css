@@ -17,8 +17,8 @@
 .prompt-suggestions button { min-height: 31px; padding: 0 13px; border: 1px solid var(--border); border-radius: 999px; color: var(--text-secondary); background: var(--surface-raised); }
 .prompt-suggestions button:hover { color: var(--text); background: var(--surface-hover); }
 /* Turn rhythm: pi-desktop-style airy gaps between conversational turns. */
-.message { width: 100%; margin-bottom: 52px; }
-.message--user { display: flex; flex-direction: column; align-items: flex-end; padding-left: 16%; margin-top: 20px; margin-bottom: 48px; }
+.message { width: 100%; margin-bottom: 38px; }
+.message--user { display: flex; flex-direction: column; align-items: flex-end; padding-left: 16%; margin-top: 14px; margin-bottom: 38px; }
 .message__steer-state { margin-top: 6px; color: var(--text-tertiary); font-size: 11px; }
 .message__steer-state.is-read { color: var(--success); }
 .message--steer-read { display: flex; align-items: center; gap: 10px; margin: -8px 0 29px; color: var(--text-tertiary); font-size: 10.5px; }
@@ -26,7 +26,7 @@
 .message--steer-read span { flex: 0 0 auto; }
 /* User turns are compact right-hugging bubbles with a soft tail corner;
    assistant prose uses the shared reading column, uncontained. */
-.user-bubble { max-width: min(100%, 640px); padding: 10px 15px; border-radius: 18px 18px 5px 18px; background: var(--surface-subtle); color: var(--text); font-size: 14px; line-height: 1.66; overflow-wrap: anywhere; }
+.user-bubble { max-width: min(100%, 640px); padding: 9px 14px; border-radius: 18px 18px 5px 18px; background: var(--surface-subtle); color: var(--text); font-size: 13px; line-height: 1.58; overflow-wrap: anywhere; }
 .user-annotations { margin-top: 6px; }
 .user-annotations > summary { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border: 1px solid color-mix(in srgb, var(--annotation) 35%, var(--border)); border-radius: 15px; border-bottom-right-radius: 5px; color: var(--annotation); background: color-mix(in srgb, var(--annotation) 8%, transparent); cursor: pointer; font-size: 11px; font-weight: 600; list-style: none; user-select: none; }
 .user-annotations > summary::-webkit-details-marker { display: none; }
@@ -34,18 +34,18 @@
 .user-annotations[open] > summary { margin-bottom: 5px; }
 .user-annotations > pre { max-height: 220px; margin: 0; padding: 8px 10px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text-secondary); font-size: 10.5px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
 .message--assistant { display: grid; grid-template-columns: minmax(0, 1fr); }
-.message__content { min-width: 0; font-size: 14px; line-height: 1.7; }
-.prose { margin: 0 0 17px; white-space: normal; overflow-wrap: anywhere; }
+.message__content { min-width: 0; font-size: 13px; line-height: 1.58; }
+.prose { margin: 0 0 13px; white-space: normal; overflow-wrap: anywhere; }
 .prose:last-child { margin-bottom: 0; }
 .prose > :first-child { margin-top: 0; }
 .prose > :last-child { margin-bottom: 0; }
-.prose p, .prose ul, .prose ol, .prose blockquote, .prose pre, .prose table { margin: 0 0 17px; }
-.prose h1, .prose h2, .prose h3, .prose h4 { margin: 28px 0 10px; line-height: 1.4; font-weight: 600; letter-spacing: -.015em; }
+.prose p, .prose ul, .prose ol, .prose blockquote, .prose pre, .prose table { margin: 0 0 13px; }
+.prose h1, .prose h2, .prose h3, .prose h4 { margin: 22px 0 8px; line-height: 1.4; font-weight: 600; letter-spacing: -.015em; }
 .prose h1 { font-size: 1.3em; }
 .prose h2 { font-size: 1.18em; }
 .prose h3, .prose h4 { font-size: 1.05em; }
 .prose ul, .prose ol { padding-inline-start: 22px; }
-.prose li + li { margin-top: 6px; }
+.prose li + li { margin-top: 4px; }
 .prose blockquote { padding-inline-start: 12px; border-inline-start: 3px solid var(--border-strong); color: var(--text-secondary); }
 .prose a { color: var(--annotation); text-decoration: underline; text-underline-offset: 2px; }
 .prose code { padding: 1px 5px; border: 1px solid var(--border); border-radius: 5px; direction: ltr; unicode-bidi: isolate; background: var(--surface-subtle); font-size: .88em; }
