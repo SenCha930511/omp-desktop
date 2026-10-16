@@ -26,7 +26,7 @@
 .message--steer-read span { flex: 0 0 auto; }
 /* User turns are compact right-hugging bubbles with a soft tail corner;
    assistant prose uses the shared reading column, uncontained. */
-.user-bubble { max-width: min(100%, 640px); padding: 10px 15px; border-radius: 18px 18px 5px 18px; background: var(--surface-subtle); color: var(--text); font-size: 13.5px; line-height: 1.62; overflow-wrap: anywhere; }
+.user-bubble { max-width: min(100%, 640px); padding: 10px 15px; border-radius: 18px 18px 5px 18px; background: var(--surface-subtle); color: var(--text); font-size: 14px; line-height: 1.66; overflow-wrap: anywhere; }
 .user-annotations { margin-top: 6px; }
 .user-annotations > summary { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border: 1px solid color-mix(in srgb, var(--annotation) 35%, var(--border)); border-radius: 15px; border-bottom-right-radius: 5px; color: var(--annotation); background: color-mix(in srgb, var(--annotation) 8%, transparent); cursor: pointer; font-size: 11px; font-weight: 600; list-style: none; user-select: none; }
 .user-annotations > summary::-webkit-details-marker { display: none; }
