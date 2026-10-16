@@ -61,8 +61,8 @@
 .prose hr { margin: 17px 0; border: 0; border-top: 1px solid var(--border); }
 .markdown-image-placeholder { color: var(--text-tertiary); font-style: italic; }
 .markdown-link-unsupported { color: var(--text-secondary); text-decoration: underline dotted; text-underline-offset: 2px; cursor: help; }
-.work-disclosure { margin: 10px 0 24px; }
-.work-disclosure.is-running { margin-top: 0; padding: 0 0 8px; }
+.work-disclosure { margin: 10px 0 10px; }
+.work-disclosure.is-running { margin-top: 0; padding: 0 0 4px; }
 .work-disclosure__button { width: fit-content; max-width: 100%; min-height: 32px; display: flex; align-items: center; gap: 8px; padding: 4px 0; color: var(--text-tertiary); background: transparent; text-align: left; font-size: 12px; font-weight: 500; }
 .work-disclosure__button > svg { width: 20px; flex: 0 0 20px; }
 .work-disclosure__button:hover { color: var(--text); }
