@@ -17,7 +17,7 @@ const CATALOG_TTL_MS = 30_000
 export { MAX_CATALOG_PROVIDERS } from './model-catalog'
 export const DEFAULT_CATALOG_TIMEOUT_MS = 15_000
 export const DEFAULT_CATALOG_MAX_OUTPUT_BYTES = 8 * 1024 * 1024
-const VERSION_MAX_OUTPUT_BYTES = 4_096
+export const VERSION_MAX_OUTPUT_BYTES = 4_096
 
 export function modelKey(provider: string, id: string): string { return `${provider}/${id}` }
 
@@ -178,10 +178,20 @@ export abstract class CliModelCatalogService implements ModelCatalogProvider {
     return (container as Record<string, unknown>).models as unknown[]
   }
 
+  /**
+   * Harness-specific catalog flags resolved during a refresh. Runs alongside
+   * the model fetch; a rejection fails closed by leaving the flags unset, so
+   * capability gates keep their default conservative behaviour.
+   */
+  protected async fetchCatalogFlags(_executable: string): Promise<Pick<PrimeModelCatalog, 'visionDelegation'>> {
+    return {}
+  }
+
   private async refreshCatalog(executable: string): Promise<PrimeModelCatalog> {
-    const [rawModels, version] = await Promise.all([
+    const [rawModels, version, flags] = await Promise.all([
       this.fetchModelEntries(executable),
       this.resolveVersion(executable),
+      this.fetchCatalogFlags(executable).catch(() => ({})),
     ])
 
     const validModels: PrimeModelDescriptor[] = []
@@ -220,6 +230,7 @@ export abstract class CliModelCatalogService implements ModelCatalogProvider {
       models: relation.models,
       providers: relation.providers,
       warning: warnings.length ? warnings.join(' ') : undefined,
+      ...flags,
     }
     if (this.cachedExecutable === executable) {
       this.cachedCatalog = catalog

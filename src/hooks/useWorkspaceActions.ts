@@ -370,7 +370,7 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
         // bootstrap effect's workspace reset would otherwise start the new
         // harness against the old workspace's cwd and session.
         const activeHarness = admitted.project.harness
-        if (images.length > 0 && !provider.selectedModel?.input.includes('image')) {
+        if (images.length > 0 && !provider.selectedModel?.input.includes('image') && !provider.catalog?.visionDelegation) {
           reportError('This model does not accept images. Remove the attachment or choose a vision model.')
           return
         }

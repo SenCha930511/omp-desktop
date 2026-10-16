@@ -785,6 +785,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
         key: 'openai-codex/gpt-5.4', provider: 'openai-codex', id: 'gpt-5.4', name: 'GPT-5.4', reasoning: true,
         input: ['text'], contextWindow: 1_000_000, maxTokens: 100_000, availableThinkingLevels: ['off', 'medium', 'high', 'xhigh'], fastModeSupported: true, available: true,
       }),
+      catalog: async () => ({ primeVersion: 'test', refreshedAt: '2026-01-01T00:00:00.000Z', models: [], providers: [] }),
     }
     const manager = new AgentRpcManager(fake.executable, async (cwd) => cwd, async (path) => path, providers)
     managers.push(manager)
@@ -806,6 +807,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
         input: ['text'], contextWindow: 1_000, maxTokens: 100, availableThinkingLevels: ['off'], fastModeSupported: false, available: true,
       }),
       requireAvailableModel: async () => { throw new Error('not used') },
+      catalog: async () => ({ primeVersion: 'test', refreshedAt: '2026-01-01T00:00:00.000Z', models: [], providers: [] }),
     }
     const manager = new AgentRpcManager(fake.executable, async (cwd) => cwd, async (path) => path, providers)
     managers.push(manager)
@@ -815,6 +817,27 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     await expect(manager.command(runtime.runtimeId, {
       type: 'prompt', message: 'inspect', images: [{ type: 'image', mimeType: 'image/png', data: 'iVBORw0KGgo=' }],
     })).rejects.toThrow('active model does not accept images')
+  })
+
+  it('accepts images for a text-only model when the catalog reports vision delegation', async () => {
+    const state = "{ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'session-1', isStreaming: false, model: { provider: 'fixture', id: 'text-model', name: 'Text model' } } }"
+    const fake = fakeAgent("{ id: command.id, type: 'response', command: 'prompt', success: true }", state)
+    const providers: ProviderCatalog = {
+      capabilities: async () => ({
+        key: 'fixture/text-model', provider: 'fixture', id: 'text-model', name: 'Text model', reasoning: false,
+        input: ['text'], contextWindow: 1_000, maxTokens: 100, availableThinkingLevels: ['off'], fastModeSupported: false, available: true,
+      }),
+      requireAvailableModel: async () => { throw new Error('not used') },
+      catalog: async () => ({ primeVersion: 'test', refreshedAt: '2026-01-01T00:00:00.000Z', models: [], providers: [], visionDelegation: true }),
+    }
+    const manager = new AgentRpcManager(fake.executable, async (cwd) => cwd, async (path) => path, providers)
+    managers.push(manager)
+    const runtime = await manager.start({ cwd: fake.cwd })
+
+    expect(runtime.imageInputSupported).toBe(true)
+    await expect(manager.command(runtime.runtimeId, {
+      type: 'prompt', message: 'inspect', images: [{ type: 'image', mimeType: 'image/png', data: 'iVBORw0KGgo=' }],
+    })).resolves.toMatchObject({ success: true })
   })
 
   it('terminates a process group that keeps writing after an oversized frame', async () => {

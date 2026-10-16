@@ -260,6 +260,8 @@ export interface PrimeModelCatalog {
   models: PrimeModelDescriptor[]
   providers: PrimeProviderDescriptor[]
   warning?: string
+  /** OMP harness has a vision model role configured, so images are delegated to it even for text-only models. */
+  visionDelegation?: boolean
 }
 
 export interface PrimeEventEnvelope {

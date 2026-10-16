@@ -183,10 +183,10 @@ export class RpcRuntime {
     return this.snapshot()
   }
 
-  applyCapabilities(model: PrimeModelDescriptor | undefined): void {
+  applyCapabilities(model: PrimeModelDescriptor | undefined, visionDelegation = false): void {
     this.info.availableThinkingLevels = model?.availableThinkingLevels ?? ['off']
     this.info.fastModeSupported = model?.fastModeSupported ?? false
-    this.info.imageInputSupported = model ? model.input.includes('image') : undefined
+    this.info.imageInputSupported = model ? model.input.includes('image') || visionDelegation : undefined
     if (!this.info.fastModeSupported) {
       this.requestedServiceTier = 'default'
       this.info.serviceTier = 'default'

@@ -111,6 +111,7 @@ const lunaModel: PrimeModelDescriptor = {
 const ompCatalog: ProviderCatalog = {
   requireAvailableModel: async () => lunaModel,
   capabilities: async (provider, modelId) => provider === 'openai-codex' && modelId === 'gpt-5.6-luna' ? lunaModel : undefined,
+  catalog: async () => ({ primeVersion: 'test', refreshedAt: '2026-01-01T00:00:00.000Z', models: [lunaModel], providers: [], visionDelegation: true }),
 }
 
 function ompManager(executable: string, options: { providers?: ProviderCatalog; approvalMode?: () => string | undefined } = {}): AgentRpcManager {

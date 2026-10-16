@@ -1039,7 +1039,7 @@ export default function App() {
                         onExecuteCheckout={bridge && activeProject && !activeProject.inferred && checkoutCatalog ? executeCheckout : undefined}
                         agentName={HARNESS_AGENT_NAMES[activeHarness]}
                         shortName={HARNESS_SHORT_NAMES[activeHarness]}
-                        imageInputSupported={Boolean(provider.selectedModel?.input.includes('image'))}
+                        imageInputSupported={Boolean(provider.selectedModel?.input.includes('image') || provider.catalog?.visionDelegation)}
                         contextUsage={workspace.runtime?.contextUsage}
                         sessionUsage={workspace.runtime?.sessionUsage}
                         executingModel={workspace.runtime?.executingModel}

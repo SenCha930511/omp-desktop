@@ -5,6 +5,8 @@
 .transcript.has-queued-messages { padding-bottom: 325px; }
 .transcript.has-docked-changes.has-queued-messages { padding-bottom: 405px; }
 .transcript-changes-pin { z-index: 9; bottom: 137px; }
+.transcript__jump-to-bottom { position: absolute; z-index: 9; left: 50%; bottom: 150px; width: 34px; height: 34px; display: grid; place-items: center; padding: 0; border: 1px solid var(--border); border-radius: 50%; color: var(--text-secondary); background: var(--surface-raised); box-shadow: var(--shadow-popover); cursor: pointer; transform: translateX(-50%); animation: fade-in 130ms ease-out; }
+.transcript__jump-to-bottom:hover { color: var(--text); background: var(--surface-hover); border-color: var(--border-strong); }
 .conversation-pane .changes-card { margin: 0; box-shadow: 0 4px 18px color-mix(in srgb, #000 12%, transparent); }
 .transcript__inner { min-height: 100%; padding: 0 28px; }
 .transcript__show-earlier { min-height: 30px; display: block; margin: 16px auto 26px; padding: 0 12px; border: 1px solid var(--border); border-radius: 999px; color: var(--text-secondary); background: var(--surface-raised); font-size: 11px; }

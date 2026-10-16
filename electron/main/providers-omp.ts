@@ -1,5 +1,5 @@
-import { PRIME_THINKING_LEVELS, type PrimeModelDescriptor, type PrimeThinkingLevel } from '../../src/types/api'
-import { CliModelCatalogService, validateModelEntry, type CliModelCatalogOptions } from './model-catalog-cli'
+import { PRIME_THINKING_LEVELS, type PrimeModelCatalog, type PrimeModelDescriptor, type PrimeThinkingLevel } from '../../src/types/api'
+import { CliModelCatalogService, validateModelEntry, VERSION_MAX_OUTPUT_BYTES, type CliModelCatalogOptions } from './model-catalog-cli'
 import { runProcess, safeChildEnvironment } from './process-utils'
 
 export { MAX_CATALOG_PROVIDERS } from './model-catalog-cli'
@@ -68,5 +68,26 @@ export class OmpModelCatalogService extends CliModelCatalogService {
     const { thinking } = entry.record
     if (thinking !== undefined && thinking !== null && !Array.isArray(thinking)) return null
     return { ...entry.descriptor, availableThinkingLevels: toThinkingLevels(entry.reasoning, thinking) }
+  }
+
+  /**
+   * OMP can delegate image analysis to a configured vision model role, which
+   * lets text-only models accept image attachments. The role comes from
+   * `omp config get modelRoles` (untrusted CLI output): any shape other than a
+   * non-empty `vision` string reports no delegation, and a failed run leaves
+   * the flag unset so image gates stay conservative.
+   */
+  protected override async fetchCatalogFlags(executable: string): Promise<Pick<PrimeModelCatalog, 'visionDelegation'>> {
+    const result = await runProcess(executable, ['config', 'get', 'modelRoles'], {
+      timeoutMs: this.timeoutMs,
+      maxBytes: VERSION_MAX_OUTPUT_BYTES,
+      env: safeChildEnvironment(),
+    })
+    if (result.code !== 0 || result.timedOut || result.outputExceeded) return {}
+    let roles: unknown
+    try { roles = JSON.parse(result.stdout.trim()) } catch { return {} }
+    if (typeof roles !== 'object' || roles === null || Array.isArray(roles)) return {}
+    const vision = (roles as Record<string, unknown>).vision
+    return typeof vision === 'string' && vision.trim().length > 0 ? { visionDelegation: true } : {}
   }
 }

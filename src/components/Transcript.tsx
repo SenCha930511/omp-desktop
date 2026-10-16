@@ -1,4 +1,4 @@
-import { LoaderCircle } from 'lucide-react'
+import { ChevronDown, LoaderCircle } from 'lucide-react'
 import { useMemo } from 'react'
 import { HARNESS_SHORT_NAMES } from '@/lib/harness'
 import { useI18n } from '@/lib/i18n'
@@ -96,7 +96,7 @@ export function Transcript({
 }: TranscriptProps) {
   const { t } = useI18n()
   const groupedMessages = useMemo(() => coalesceAssistantTurns(messages), [messages])
-  const { announcement, hiddenCount, scrollRef, showEarlier, updatePinnedState, visibleMessages } = useTranscriptScroll(groupedMessages)
+  const { announcement, awayFromBottom, hiddenCount, scrollRef, scrollToBottom, showEarlier, updatePinnedState, visibleMessages } = useTranscriptScroll(groupedMessages)
   const activeAssistantId = useMemo(() => (active && groupedMessages.at(-1)?.role === 'assistant' ? groupedMessages.at(-1)?.id : undefined), [active, groupedMessages])
   const transcriptClasses = [
     'transcript',
@@ -187,6 +187,11 @@ export function Transcript({
         <div className="transcript-changes-pin">
           <ChangesCard git={git} onOpenChanges={onOpenChanges} />
         </div>
+      ) : null}
+      {awayFromBottom ? (
+        <button type="button" className="transcript__jump-to-bottom" onClick={scrollToBottom} aria-label={t('transcript.jumpToBottom')} title={t('transcript.jumpToBottom')}>
+          <ChevronDown size={17} />
+        </button>
       ) : null}
     </>
   )

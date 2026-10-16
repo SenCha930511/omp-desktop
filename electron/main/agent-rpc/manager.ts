@@ -1,4 +1,4 @@
-import type { PrimeEventEnvelope, PrimeModelDescriptor, RuntimeInfo } from '../../../src/types/api'
+import type { PrimeEventEnvelope, PrimeModelCatalog, PrimeModelDescriptor, RuntimeInfo } from '../../../src/types/api'
 import { assertNoMcpAuthenticationCommand } from '../../../src/lib/mcp-policy'
 import { parseSessionActionSnapshot, streamingBehaviorForIntent } from '../../../src/lib/session-actions'
 import { resolveExecutable, type ExecutableSource } from '../process-utils'
@@ -17,6 +17,7 @@ import type { WorkspaceUseLease, WorkspaceUseOwner } from '../repository-use-gat
 export interface ProviderCatalog {
   requireAvailableModel(rawKey: unknown, disabledProviders?: ReadonlySet<string>, disabledModels?: ReadonlySet<string>): Promise<PrimeModelDescriptor>
   capabilities(provider: string | undefined, modelId: string | undefined): Promise<PrimeModelDescriptor | undefined>
+  catalog(force?: boolean, disabledProviders?: ReadonlySet<string>, disabledModels?: ReadonlySet<string>): Promise<PrimeModelCatalog>
 }
 
 export class AgentRpcManager {
@@ -416,7 +417,11 @@ export class AgentRpcManager {
   private async decorate(runtime: RpcRuntime): Promise<void> {
     if (!this.providers) return
     const snapshot = runtime.snapshot()
-    runtime.applyCapabilities(await this.providers.capabilities(snapshot.model?.provider, snapshot.model?.id))
+    const [model, catalog] = await Promise.all([
+      this.providers.capabilities(snapshot.model?.provider, snapshot.model?.id),
+      this.providers.catalog(),
+    ])
+    runtime.applyCapabilities(model, catalog.visionDelegation === true)
   }
 
   private requireRuntime(value: unknown): RpcRuntime {

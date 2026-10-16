@@ -11,6 +11,7 @@ export function useTranscriptScroll(messages: TranscriptMessage[]) {
   const pinnedToBottomRef = useRef(true)
   const [visibleLimit, setVisibleLimit] = useState(250)
   const [announcement, setAnnouncement] = useState('')
+  const [awayFromBottom, setAwayFromBottom] = useState(false)
   const streaming = messages.some((message) => message.streaming)
   const visibleMessages = useMemo(() => newestWindow(messages, visibleLimit), [messages, visibleLimit])
   const hiddenCount = messages.length - visibleMessages.length
@@ -36,10 +37,21 @@ export function useTranscriptScroll(messages: TranscriptMessage[]) {
 
   const updatePinnedState = () => {
     const scroller = scrollRef.current
-    if (scroller) pinnedToBottomRef.current = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 120
+    if (!scroller) return
+    const pinned = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 120
+    pinnedToBottomRef.current = pinned
+    // Same-value updates bail out in React, so streaming scroll events stay cheap.
+    setAwayFromBottom((away) => (away === !pinned ? away : !pinned))
+  }
+
+  const scrollToBottom = () => {
+    const scroller = scrollRef.current
+    if (scroller && typeof scroller.scrollTo === 'function') scroller.scrollTo({ top: scroller.scrollHeight, behavior: 'smooth' })
+    pinnedToBottomRef.current = true
+    setAwayFromBottom(false)
   }
 
   const showEarlier = () => setVisibleLimit((limit) => Math.min(messages.length, limit + 250))
 
-  return { announcement, hiddenCount, scrollRef, showEarlier, updatePinnedState, visibleMessages }
+  return { announcement, awayFromBottom, hiddenCount, scrollRef, scrollToBottom, showEarlier, updatePinnedState, visibleMessages }
 }
