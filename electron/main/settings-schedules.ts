@@ -54,6 +54,7 @@ export class SettingsService {
       reduceMotion: (value) => requireBoolean(value, 'reduceMotion'),
       showReasoningSummaries: (value) => requireBoolean(value, 'showReasoningSummaries'),
       reasoningExpandedByDefault: (value) => requireBoolean(value, 'reasoningExpandedByDefault'),
+      subagentsPanelPinned: (value) => requireBoolean(value, 'subagentsPanelPinned'),
       showToolCalls: (value) => requireBoolean(value, 'showToolCalls'),
       telemetry: (value) => requireBoolean(value, 'telemetry'),
       askUserEnabled: (value) => requireBoolean(value, 'askUserEnabled'),

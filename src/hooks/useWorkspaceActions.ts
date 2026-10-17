@@ -580,7 +580,10 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
         || currentOwner?.generation !== stoppedOwnerGeneration
       ) return
       workspace.setRuntime((current) => current?.runtimeId === stoppedRuntimeId ? { ...current, isStreaming: false } : current)
-      workspace.setMessages((items) => items.map((item) => item.streaming ? { ...item, streaming: false } : item))
+      workspace.setMessages((items) => {
+        const lastAssistant = [...items].reverse().find((item) => item.role === 'assistant')
+        return items.map((item) => item.id === lastAssistant?.id ? { ...item, streaming: false, completedAt: Date.now(), outcome: 'cancelled' } : item.streaming ? { ...item, streaming: false } : item)
+      })
     } catch (error) { reportError(error) }
   }
 

@@ -14,7 +14,7 @@ describe('subagent observability', () => {
     const root = createRoot(host)
     const agent = { id: 'a', agent: 'Explore', status: 'running', messages: [{ role: 'assistant', timestamp: 1, content: [{ type: 'thinking', thinking: 'Original model output' }] }] }
     try {
-      for (const [preference, back, running] of [['zh-TW', '主對話', '執行中'], ['zh-CN', '主对话', '运行中'], ['en', 'Conversation', 'running']] as const) {
+      for (const [preference, back, running] of [['zh-TW', '主對話', '思考中'], ['zh-CN', '主对话', '思考中'], ['en', 'Conversation', 'Thinking']] as const) {
         act(() => root.render(<I18nProvider preference={preference}><SubagentsPanel connected state={{ agents: [agent], selectedId: 'a', select: vi.fn(), error: undefined }} /></I18nProvider>))
         expect(host.textContent).toContain(back)
         expect(host.textContent).toContain(running)
@@ -41,7 +41,7 @@ describe('subagent observability', () => {
       act(() => host.querySelector<HTMLButtonElement>('.work-disclosure__button')!.click())
       expect(host.textContent).toContain('Inspecting files')
       expect(host.querySelector('h2')?.textContent).toBe('Explore')
-      expect(host.textContent).toContain('completed')
+      expect(host.textContent).toContain('Completed')
     } finally { act(() => root.unmount()) }
   })
   it('reconciles durable messages by identity and bounds history', () => {

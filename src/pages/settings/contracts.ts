@@ -34,6 +34,7 @@ export const SETTINGS_FIELD_SECTIONS = {
   showReasoningSummaries: 'agent',
   reasoningExpandedByDefault: 'agent',
   conversationDensity: 'general',
+  subagentsPanelPinned: 'agent',
   showToolCalls: 'agent',
   messageEnterAction: 'agent',
   runtimePaths: 'agent',

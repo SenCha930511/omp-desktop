@@ -9,6 +9,7 @@ export interface SubagentView {
   revision?: number
   description?: string
   task?: string
+  error?: string
   progress?: Record<string, unknown>
   messages: Record<string, unknown>[]
 }
@@ -40,6 +41,7 @@ export function applySubagentFrame(current: SubagentView[], frame: Record<string
     agent: string(payload.agent) ?? item.agent,
     description: string(payload.description) ?? string(progress?.description) ?? item.description,
     task: string(payload.task) ?? item.task,
+    error: string(payload.error) ?? string(progress?.error) ?? item.error,
     status: string(progress?.status) ?? (payload.status === 'started' ? 'running' : string(payload.status)) ?? item.status,
     progress: progress ?? item.progress,
     messages: message ? mergeSubagentMessages(item.messages, [message]) : item.messages,

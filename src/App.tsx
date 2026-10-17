@@ -8,6 +8,7 @@ import { ConversationDock } from '@/components/ConversationDock'
 import { CommandOutputPanel } from '@/components/CommandOutputPanel'
 import { useCommandOutput } from '@/hooks/useCommandOutput'
 import { SubagentsPanel } from '@/components/SubagentsPanel'
+import { conversationExecution } from '@/lib/execution-state'
 import { useSubagents } from '@/hooks/useSubagents'
 import { NoHarnessPrompt } from '@/components/NoHarnessPrompt'
 import type { ProjectScriptKind } from '@/components/ProjectRunControl'
@@ -137,6 +138,7 @@ export default function App() {
   const [browserNavigationRequest, setBrowserNavigationRequest] = useState<{ id: number; url: string }>()
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [submitting, setSubmitting] = useState(false)
+  const submissionGenerationRef = useRef<number | undefined>(undefined)
   const { toast, setToast } = useToast()
   const [changesCardDismissed, setChangesCardDismissed] = useState(false)
   /** Edits attributed to the last completed turn; null until a turn finishes in this window. */
@@ -571,7 +573,10 @@ export default function App() {
     setView,
     setPaletteOpen,
     setToast,
-    setSubmitting,
+    setSubmitting: (value) => {
+      if (value === true) submissionGenerationRef.current = workspace.workspaceRef.current.generation
+      setSubmitting(value)
+    },
     refreshSchedules,
     resetBrowserView: () => setBrowserGeneration((value) => value + 1),
     closeTerminalForSession: (sessionPath) => {
@@ -858,6 +863,9 @@ export default function App() {
 
   const harnessQueuedMessageCount = workspace.runtime?.sessionActions?.queuedCount ?? 0
   const busy = Boolean(workspace.runtime?.isStreaming || workspace.runtime?.isCompacting || harnessQueuedMessageCount > 0 || workspace.messages.some((message) => message.streaming))
+  const execution = conversationExecution({ runtime: workspace.runtime, messages: workspace.messages,
+    submitting: submitting && submissionGenerationRef.current === workspace.workspaceGeneration,
+    waiting: Boolean(extension.extensionUi && extension.extensionUi.runtimeId === workspace.runtime?.runtimeId), sessionStatus: activeSession?.status })
   /* The changes card reports only what a completed turn introduced: the dirty
      set captured when the turn began is the baseline, and per-file deltas are
      recomputed on every status refresh until the next turn starts. A fresh
@@ -1034,7 +1042,8 @@ export default function App() {
                 style={{ '--inspector-width': `${layout.inspectorWidth}px`, '--terminal-height': `${layout.terminalHeight}px` } as CSSProperties}
               >
                 <div ref={layout.sessionWorkspaceRef} className="conversation-column">
-                  <SubagentsPanel key={workspace.workspaceGeneration} state={subagents} connected={Boolean(workspace.runtime)} showReasoning={settingsState.settings.showReasoningSummaries} showTools={settingsState.settings.showToolCalls} />
+                  <SubagentsPanel key={workspace.workspaceGeneration} state={subagents} connected={Boolean(workspace.runtime)} showReasoning={settingsState.settings.showReasoningSummaries} showTools={settingsState.settings.showToolCalls}
+                    execution={execution} pinned={settingsState.settings.subagentsPanelPinned} onPinnedChange={(subagentsPanelPinned) => { void settingsState.updateSettings({ subagentsPanelPinned }) }}>
                   <main className="conversation-pane" style={subagents.selectedId ? { display: 'none' } : undefined}>
                     <Suspense fallback={<LoadingPanel label={t('app.panel.conversation')} />}>
                       <Transcript
@@ -1118,6 +1127,7 @@ export default function App() {
                       />
                     </ConversationDock>
                   </main>
+                  </SubagentsPanel>
                   {terminalSessions.map((terminal) => (
                     <Suspense key={terminal.id} fallback={terminal.id === activeTerminalSession?.id ? <TerminalLoadingPanel /> : null}>
                       <TerminalDrawer

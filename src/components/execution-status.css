@@ -1,0 +1,10 @@
+.execution-status { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--text-tertiary); font-size: 11px; }
+.execution-status__phase { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; white-space: nowrap; }
+.execution-status__detail { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.execution-status .live-elapsed { flex-shrink: 0; margin-left: auto; }
+.execution-status.is-waiting { color: var(--warning); }
+.execution-status.is-failed { color: var(--danger); }
+.execution-status.is-completed { color: var(--success); }
+.execution-status.is-starting, .execution-status.is-thinking, .execution-status.is-running, .execution-status.is-compacting { color: var(--text-secondary); }
+.subagents__toolbar > .execution-status { flex: 0 1 330px; margin-left: 10px; }
+@container (max-width: 620px) { .subagents__toolbar > .execution-status { flex-basis: auto; } .subagents__toolbar > .execution-status .execution-status__detail, .subagents__toolbar > .execution-status .live-elapsed { display: none; } }

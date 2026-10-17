@@ -163,6 +163,8 @@ export type MessagePart =
     }
 
 export interface TranscriptMessage {
+  /** Renderer-known outcome; absent on legacy harness history. */
+  outcome?: 'failed' | 'cancelled'
   id: string
   role: 'user' | 'assistant' | 'agent' | 'goal' | 'tool' | 'system'
   /** Renderer-local steering lifecycle. Persisted transcripts remain harness-owned. */
@@ -462,6 +464,7 @@ export type ProjectSortMode = typeof PROJECT_SORT_MODES[number]
 
 export interface AppSettings {
   conversationDensity: 'compact' | 'comfortable'
+  subagentsPanelPinned: boolean
   theme: ThemeMode
   locale: LocalePreference
   /** Bounded interface text scale; 110 is the designed default. */
