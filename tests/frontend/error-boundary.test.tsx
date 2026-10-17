@@ -14,6 +14,7 @@ let container: HTMLDivElement
 let root: Root
 
 beforeEach(() => {
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
   Object.defineProperty(HTMLElement.prototype, 'scrollTo', { configurable: true, writable: true, value: () => undefined })
   container = document.createElement('div')
   document.body.append(container)

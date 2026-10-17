@@ -160,6 +160,8 @@ describe('settings field ownership', () => {
       terminalShell: 'terminal',
       reduceMotion: 'appearance',
       showReasoningSummaries: 'agent',
+      reasoningExpandedByDefault: 'agent',
+      conversationDensity: 'general',
       showToolCalls: 'agent',
       messageEnterAction: 'agent',
       runtimePaths: 'agent',

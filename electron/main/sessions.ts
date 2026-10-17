@@ -1,5 +1,5 @@
 import { watch, type Dirent, type Stats } from 'node:fs'
-import { readdir, realpath } from 'node:fs/promises'
+import { readdir, realpath, unlink } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
 import type { HarnessId, SessionChangeEvent, SessionRecord, TranscriptMessage } from '../../src/types/api'
@@ -234,6 +234,19 @@ export class SessionService {
       state.archivedSessions = state.archivedSessions.filter((path) => resolve(path) !== resolve(safePath))
       if (archived) state.archivedSessions.push(safePath)
     })
+    return true
+  }
+
+  async delete(filePath: unknown): Promise<boolean> {
+    const safePath = await this.requireSessionPath(filePath)
+    await this.stopRuntimeForSession(safePath)
+    // Recheck containment after the runtime has stopped and flushed its file.
+    await unlink(await this.requireSessionPath(safePath))
+    this.catalog.invalidateLiveCatalog()
+    await this.store.update((state) => {
+      state.archivedSessions = state.archivedSessions.filter((path) => resolve(path) !== resolve(safePath))
+    })
+    this.emitChange({ harness: this.harness })
     return true
   }
 

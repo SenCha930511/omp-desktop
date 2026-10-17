@@ -66,6 +66,7 @@ const api: DesktopApi = {
     read: (filePath) => invoke('sessions:read', filePath),
     rename: (filePath, title) => invoke('sessions:rename', filePath, title),
     archive: (filePath, archived) => invoke('sessions:archive', filePath, archived),
+    delete: (filePath) => invoke('sessions:delete', filePath),
     onChanged: (callback) => subscribe<SessionChangeEvent>('sessions:changed', callback),
   },
   agent: {

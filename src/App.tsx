@@ -3,6 +3,12 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { activityNotificationSignature, readClearedActivity, readClearedAttention, sessionCompanionNotificationSignature } from '@/app/session-attention'
 import { AgentBrowserLayer, type AgentSlotRect } from '@/components/AgentBrowserLayer'
 import { Composer } from '@/components/Composer'
+import { ReasoningExpandedContext } from '@/components/ReasoningDisclosure'
+import { ConversationDock } from '@/components/ConversationDock'
+import { CommandOutputPanel } from '@/components/CommandOutputPanel'
+import { useCommandOutput } from '@/hooks/useCommandOutput'
+import { SubagentsPanel } from '@/components/SubagentsPanel'
+import { useSubagents } from '@/hooks/useSubagents'
 import { NoHarnessPrompt } from '@/components/NoHarnessPrompt'
 import type { ProjectScriptKind } from '@/components/ProjectRunControl'
 import { ResizeHandle } from '@/components/ResizeHandle'
@@ -235,6 +241,8 @@ export default function App() {
     [activeHarness, settingsState.settings.lastSelectedModels, settingsState.updateSettings],
   )
   const activeSession = useMemo(() => sessions.find((session) => session.id === workspace.activeSessionId), [sessions, workspace.activeSessionId])
+  const subagents = useSubagents(bridge, workspace.runtime?.runtimeId)
+  const commandOutput = useCommandOutput(workspace.workspaceGeneration)
   const provider = useProviderCatalog({
     bridge,
     ready: settingsState.initialized,
@@ -363,6 +371,7 @@ export default function App() {
     }
   }, [bridge, activeCwd, turnChanges, refreshGit, t])
 
+
   useAgentEvents({
     bridge,
     runtimeIdRef: workspace.runtimeIdRef,
@@ -375,6 +384,7 @@ export default function App() {
     clearQueuedPromptFlushFailures: workspace.clearQueuedPromptFlushFailures,
     clearQueuedPrompts: workspace.clearQueuedPrompts,
     queueAgentEvent: workspace.queueAgentEvent,
+    onCommandOutput: commandOutput.append,
     reconcileTranscriptForEvent: workspace.reconcileTranscriptForEvent,
     showExtensionUi: extension.showExtensionUi,
     clearExtensionUi: extension.clearExtensionUi,
@@ -523,7 +533,7 @@ export default function App() {
     newSession,
     navigate,
     renameSession,
-    setSessionArchived,
+    deleteSession,
     addProject,
     removeProject,
     togglePinProject,
@@ -819,7 +829,7 @@ export default function App() {
     onClose: toggleSidebar,
     onOpenPalette: () => setPaletteOpen(true),
     onRenameSession: renameSession,
-    onArchiveSession: (session) => setSessionArchived(session, true),
+    onArchiveSession: deleteSession,
   })
 
   const onAppKeyDown = useStableCallback(
@@ -977,7 +987,8 @@ export default function App() {
 
   return (
     <I18nProvider preference={settingsState.settings.locale}>
-      <div className="app-shell" aria-busy={!initialized} data-platform={platform} data-ready={initialized ? 'true' : 'false'}>
+      <ReasoningExpandedContext.Provider value={settingsState.settings.reasoningExpandedByDefault}>
+      <div className="app-shell" data-density={settingsState.settings.conversationDensity} aria-busy={!initialized} data-platform={platform} data-ready={initialized ? 'true' : 'false'}>
         {sidebarVisible && initialized ? (
           <Sidebar
             projects={projects}
@@ -1023,7 +1034,8 @@ export default function App() {
                 style={{ '--inspector-width': `${layout.inspectorWidth}px`, '--terminal-height': `${layout.terminalHeight}px` } as CSSProperties}
               >
                 <div ref={layout.sessionWorkspaceRef} className="conversation-column">
-                  <main className="conversation-pane">
+                  <SubagentsPanel key={workspace.workspaceGeneration} state={subagents} connected={Boolean(workspace.runtime)} showReasoning={settingsState.settings.showReasoningSummaries} showTools={settingsState.settings.showToolCalls} />
+                  <main className="conversation-pane" style={subagents.selectedId ? { display: 'none' } : undefined}>
                     <Suspense fallback={<LoadingPanel label={t('app.panel.conversation')} />}>
                       <Transcript
                         key={workspace.activeSessionId ?? 'new-session'}
@@ -1052,8 +1064,10 @@ export default function App() {
                         }}
                       />
                     </Suspense>
-                    <div className="conversation-bottom-dock">
+                    <ConversationDock>
+                      <CommandOutputPanel text={commandOutput.text} onClose={commandOutput.dismiss} />
                       <Composer
+                        availableCommands={workspace.runtime?.availableCommands}
                         key={
                           workspace.activeSessionId ? `${activeProject?.id ?? 'no-project'}:${workspace.activeSessionId}` : `${activeProject?.id ?? 'no-project'}:new:${workspace.workspaceGeneration}`
                         }
@@ -1102,7 +1116,7 @@ export default function App() {
                         onClearAnnotations={browserAnnotations.clear}
                         onClearTerminalSelection={clearTerminalSelection}
                       />
-                    </div>
+                    </ConversationDock>
                   </main>
                   {terminalSessions.map((terminal) => (
                     <Suspense key={terminal.id} fallback={terminal.id === activeTerminalSession?.id ? <TerminalLoadingPanel /> : null}>
@@ -1238,6 +1252,7 @@ export default function App() {
           />
         ) : null}
       </div>
+      </ReasoningExpandedContext.Provider>
     </I18nProvider>
   )
 }

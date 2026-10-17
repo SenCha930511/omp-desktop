@@ -3,6 +3,7 @@ import { contextUsageFromEvent, sessionUsageFromEvent } from '@/app/agent-events
 import { applySessionLifecycleEvent, sessionLifecycleChange } from '@/app/session-attention'
 import { fallbackModelFromRecord } from '@/lib/events/model-fallback'
 import { parseSessionActionSnapshot } from '@/lib/session-actions'
+import { parseSlashCommands } from '@/lib/slash-commands'
 import type { WorkspaceSnapshot } from '@/app/workspace'
 import type { DesktopApi, RuntimeInfo, SessionActionSnapshot, SessionRecord } from '@/types/api'
 
@@ -18,6 +19,7 @@ interface UseAgentEventsOptions {
   clearQueuedPromptFlushFailures?(): void
   clearQueuedPrompts?(): void
   queueAgentEvent(event: Record<string, unknown>): void
+  onCommandOutput?(text: string): void
   reconcileTranscriptForEvent(runtimeId: string, event: Record<string, unknown>): void
   showExtensionUi(runtimeId: string, event: Record<string, unknown>): void
   clearExtensionUi(runtimeId?: string): void
@@ -38,6 +40,7 @@ export function useAgentEvents({
   clearQueuedPromptFlushFailures = () => undefined,
   clearQueuedPrompts = () => undefined,
   queueAgentEvent,
+  onCommandOutput,
   reconcileTranscriptForEvent,
   showExtensionUi,
   clearExtensionUi,
@@ -77,6 +80,23 @@ export function useAgentEvents({
       if (type === 'context_usage') {
         const contextUsage = contextUsageFromEvent(event)
         if (contextUsage) setRuntime((current) => current?.runtimeId === runtimeId ? { ...current, contextUsage } : current)
+        return
+      }
+      if (type === 'command_output') {
+        if (typeof event.text === 'string') onCommandOutput?.(event.text)
+        return
+      }
+      if (type === 'available_commands_update') {
+        setRuntime((current) => current?.runtimeId === runtimeId ? { ...current, availableCommands: parseSlashCommands(event.commands) } : current)
+        return
+      }
+      if (type === 'thinking_level_changed') {
+        setRuntime((current) => current?.runtimeId === runtimeId ? { ...current, thinkingLevel: event.thinkingLevel as string | undefined, configuredThinkingLevel: (event.configured ?? event.thinkingLevel) as RuntimeInfo['configuredThinkingLevel'] } : current)
+        return
+      }
+      if (type === 'runtime_state') {
+        const state = event.state as RuntimeInfo | undefined
+        if (state?.runtimeId === runtimeId) setRuntime((current) => current?.runtimeId === runtimeId ? state : current)
         return
       }
       if (type === 'session_usage') {
@@ -149,6 +169,7 @@ export function useAgentEvents({
     reconcileQueuedPrompts,
     workspaceRef,
     queueAgentEvent,
+    onCommandOutput,
     reconcileTranscriptForEvent,
     refreshGit,
     refreshGitOnTerminalEvent,

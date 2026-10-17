@@ -1,4 +1,4 @@
-import { PRIME_THINKING_LEVELS, type PrimeThinkingLevel } from '../../../src/types/api'
+import { PRIME_THINKING_LEVELS, type PrimeEffortSelector } from '../../../src/types/api'
 import { rejectUnknownKeys, requireBoolean, requireId, requireRecord, requireString } from '../validation'
 import { MAX_RPC_WRITE_FRAME_BYTES, rpcRequestFrameBytes } from './limits'
 import type { RpcObject } from './types'
@@ -6,9 +6,9 @@ import type { RpcObject } from './types'
 const SIMPLE_COMMANDS = new Set([
   'abort', 'new_session', 'get_state', 'cycle_model', 'get_available_models', 'cycle_thinking_level',
   'abort_retry', 'get_session_stats', 'get_fork_messages', 'get_last_assistant_text',
-  'get_messages', 'get_commands',
+  'get_messages', 'get_commands', 'get_available_commands', 'get_subagents',
 ])
-const THINKING_LEVELS: ReadonlySet<string> = new Set(PRIME_THINKING_LEVELS)
+const THINKING_LEVELS: ReadonlySet<string> = new Set(['auto', ...PRIME_THINKING_LEVELS])
 
 function validateImageData(data: string, mimeType: string): void {
   if (data.length % 4 !== 0 || !/^[a-z\d+/]*={0,2}$/i.test(data)) throw new TypeError('Image data must be canonical base64')
@@ -24,7 +24,7 @@ function validateImageData(data: string, mimeType: string): void {
   if (!matches) throw new TypeError('Image data does not match its MIME type')
 }
 
-export function isThinkingLevel(value: string): value is PrimeThinkingLevel { return THINKING_LEVELS.has(value) }
+export function isThinkingLevel(value: string): value is PrimeEffortSelector { return THINKING_LEVELS.has(value) }
 
 function validateImages(value: unknown): Array<{ type: 'image'; data: string; mimeType: string }> | undefined {
   if (value === undefined) return undefined
@@ -66,6 +66,18 @@ export async function validateRpcCommand(raw: unknown, validateSessionPath: (pat
   if (type === 'set_model') {
     rejectUnknownKeys(command, ['type', 'provider', 'modelId'], 'command')
     return { type, provider: requireString(command.provider, 'provider', { min: 1, max: 128 }), modelId: requireString(command.modelId, 'modelId', { min: 1, max: 256 }) }
+  }
+  if (type === 'set_subagent_subscription') {
+    rejectUnknownKeys(command, ['type', 'level'], 'command')
+    if (!['off', 'progress', 'events'].includes(String(command.level))) throw new TypeError('Invalid subagent subscription level')
+    return { type, level: command.level }
+  }
+  if (type === 'get_subagent_messages') {
+    // Only ids are exposed: OMP resolves them against this parent's registry.
+    rejectUnknownKeys(command, ['type', 'subagentId', 'fromByte'], 'command')
+    const subagentId = requireString(command.subagentId, 'subagentId', { min: 1, max: 256 })
+    if (command.fromByte !== undefined && (!Number.isSafeInteger(command.fromByte) || Number(command.fromByte) < 0)) throw new TypeError('Invalid transcript offset')
+    return { type, subagentId, ...(command.fromByte !== undefined ? { fromByte: command.fromByte } : {}) }
   }
   if (type === 'set_thinking_level') {
     rejectUnknownKeys(command, ['type', 'level'], 'command')

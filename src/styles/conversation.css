@@ -1,0 +1,57 @@
+/* Shared conversation geometry for both the main agent and child agents. */
+.app-shell {
+  --activity-icon: 16px;
+  --activity-gap: 8px;
+  --activity-inset: calc(var(--activity-icon) + var(--activity-gap));
+  --conversation-font: 14px;
+  --conversation-leading: 1.75;
+  --conversation-turn-gap: 36px;
+  --activity-font: 13px;
+  --activity-row: 30px;
+  --activity-spacing: 10px;
+  --conversation-radius: 14px;
+}
+.app-shell[data-density="compact"] {
+  --conversation-font: 13px;
+  --conversation-leading: 1.6;
+  --conversation-turn-gap: 24px;
+  --activity-font: 12px;
+  --activity-row: 24px;
+  --activity-spacing: 6px;
+  --conversation-radius: 12px;
+}
+.conversation-pane .message, .subagents__messages .message { margin-bottom: var(--conversation-turn-gap); }
+.conversation-pane .message__content, .subagents__messages .message__content,
+.conversation-pane .user-bubble, .subagents__messages .user-bubble { font-size: var(--conversation-font); line-height: var(--conversation-leading); }
+.work-timeline { gap: var(--activity-spacing); padding: 8px 0; }
+.activity-line { font-size: var(--activity-font); }
+.activity-line__icon, .work-disclosure__button > svg, .reasoning-disclosure > summary > svg { width: var(--activity-icon); flex: 0 0 var(--activity-icon); }
+.activity-tool__summary, .work-disclosure__button, .reasoning-disclosure > summary { min-height: var(--activity-row); gap: var(--activity-gap); padding: 3px 0; font-size: var(--activity-font); }
+.activity-line--note, .activity-reasoning { padding: 0 0 0 var(--activity-inset); }
+.activity-reasoning { color: var(--text-tertiary); }
+.activity-reasoning, .activity-line--note .prose, .activity-line--reasoning .prose { font-size: var(--activity-font); line-height: var(--conversation-leading); }
+.activity-tool__details, .reasoning-disclosure > div { margin-left: var(--activity-inset); }
+.activity-line--result { gap: var(--activity-gap); padding-inline: 0; }
+.work-disclosure__count { color: var(--text-tertiary); font-size: 11px; font-weight: 400; }
+.work-disclosure.is-running .activity-line--reasoning { font-size: var(--activity-font); line-height: var(--conversation-leading); }
+.composer { border-radius: var(--conversation-radius); }
+.composer--busy { border-color: color-mix(in srgb, var(--prime) 35%, var(--border)); }
+.subagents__overview { padding-block: 12px; max-height: 40%; }
+.subagents__transcript { container-type: inline-size; }
+.subagents__overview, .subagents__messages { padding-inline: 28px; }
+.subagents__overview > *, .subagents__messages > * { max-width: calc(var(--transcript-measure) - 56px); }
+.subagents__heading > div:last-child { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.subagents__heading h2 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.subagents__details { margin-top: 8px; font-size: 12px; }
+.subagents__details > summary { width: fit-content; color: var(--text-tertiary); }
+.subagents__activity { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+.subagents__messages .message { width: 100%; }
+.subagents__instruction .message--user { padding-left: 0; margin: 8px 0; align-items: stretch; }
+.subagents__instruction .user-bubble { max-width: none; }
+.subagents__message { margin-block: 20px; }
+/* The dock is measured by ConversationDock rather than estimated per state. */
+.conversation-pane .transcript { padding-bottom: calc(var(--conversation-dock-height, 160px) + 28px); scroll-padding-bottom: calc(var(--conversation-dock-height, 160px) + 28px); }
+.transcript__jump-to-bottom { bottom: calc(var(--conversation-dock-height, 160px) + 8px); }
+@media (prefers-reduced-motion: reduce) { .reasoning-disclosure > summary > svg { transition: none; } }
+.reduce-motion .reasoning-disclosure > summary > svg { transition: none; }
+@media (max-width: 720px) { .subagents__overview, .subagents__messages { padding-inline: 15px; } }

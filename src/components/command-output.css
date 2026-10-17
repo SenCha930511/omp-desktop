@@ -1,0 +1,7 @@
+.command-output { pointer-events: auto; margin: 0 0 10px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-raised); box-shadow: var(--shadow-popover); overflow: hidden; color: var(--text); }
+.command-output header { display: flex; align-items: center; justify-content: space-between; padding: 9px 12px; border-bottom: 1px solid var(--border); color: var(--text-secondary); font-size: 12px; }
+.command-output header span { display: inline-flex; align-items: center; gap: 8px; }
+.command-output button { display: grid; place-items: center; border: 0; border-radius: 5px; padding: 4px; background: transparent; color: inherit; cursor: pointer; }
+.command-output button:hover { background: var(--surface-hover); color: var(--text); }
+.command-output button:focus-visible { outline: 2px solid var(--focus); }
+.command-output pre { margin: 0; padding: 12px 14px; max-height: min(240px, 30vh); overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-family: 'SFMono-Regular', Menlo, monospace; font-size: 12px; line-height: 1.6; }

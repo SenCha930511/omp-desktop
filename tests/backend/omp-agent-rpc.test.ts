@@ -79,6 +79,8 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     } })
   } else if (command.type === 'get_session_stats') {
     send({ id: command.id, type: 'response', command: 'get_session_stats', success: true, data: { contextUsage: { tokens: 12000, contextWindow: 200000, percent: 6 }, tokens: { input: 9000, output: 3000, cacheRead: 0, cacheWrite: 0, total: 12000 } } })
+  } else if (command.type === 'set_thinking_level') {
+    send({ id: command.id, type: 'response', command: command.type, success: true })
   } else if (command.type === 'branch' || command.type === 'get_branch_messages') {
     send({ id: command.id, type: 'response', command: command.type, success: true, data: { received: command.type, entryId: command.entryId } })
   } else if (command.type === 'fork' || command.type === 'get_fork_messages') {
@@ -260,6 +262,17 @@ describe('OMP RPC adapter argv', () => {
 })
 
 describe('OMP RPC handshake', () => {
+  it('accepts auto at startup and retains it across effective-level state refreshes', async () => {
+    const fake = fakeOmpAgent()
+    const manager = ompManager(fake.executable, { providers: ompCatalog })
+    const runtime = await manager.start({ cwd: fake.cwd, model: lunaModel.key, thinking: 'auto' })
+    expect(runtime.configuredThinkingLevel).toBe('auto')
+    await manager.command(runtime.runtimeId, { type: 'set_thinking_level', level: 'auto' })
+    await manager.command(runtime.runtimeId, { type: 'get_state' })
+    expect((await manager.list())[0]).toMatchObject({ thinkingLevel: 'medium', configuredThinkingLevel: 'auto' })
+    await manager.command(runtime.runtimeId, { type: 'set_thinking_level', level: 'high' })
+    expect((await manager.list())[0].configuredThinkingLevel).toBe('high')
+  })
   it('releases the exact runtime environment after OMP termination', async () => {
     const fake = fakeOmpAgent()
     const manager = ompManager(fake.executable)

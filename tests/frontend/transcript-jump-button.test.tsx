@@ -24,6 +24,7 @@ let root: Root
 let scroller: HTMLDivElement
 
 beforeEach(() => {
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 1 })
   vi.stubGlobal('cancelAnimationFrame', vi.fn())
   container = document.createElement('div')
@@ -51,6 +52,17 @@ function jumpButton(): HTMLButtonElement | null {
 }
 
 describe('transcript jump-to-bottom button', () => {
+  it('keeps a reader near the bottom in place when streaming continues', () => {
+    const scrollTo = vi.fn()
+    scroller.scrollTo = scrollTo
+    fakeScrollMetrics(1000, 400, 600)
+    act(() => scroller.dispatchEvent(new Event('scroll')))
+    fakeScrollMetrics(1000, 400, 580)
+    act(() => scroller.dispatchEvent(new Event('scroll')))
+    expect(jumpButton()).not.toBeNull()
+    act(() => root.render(<Transcript messages={[...messages.slice(0, 1), { ...messages[1], streaming: true }]} git={git} onOpenChanges={() => undefined} onSuggestion={() => undefined} />))
+    expect(scrollTo).not.toHaveBeenCalled()
+  })
   it('stays hidden while the transcript is at the bottom', () => {
     fakeScrollMetrics(1000, 400, 620)
 

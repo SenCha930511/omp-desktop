@@ -7,6 +7,8 @@ import { workbenchFragment } from '@/i18n/keys/workbench'
 import { transcriptFragment } from '@/i18n/keys/transcript'
 import { settingsFragment } from '@/i18n/keys/settings'
 import { panelsFragment } from '@/i18n/keys/panels'
+import { agentsFragment } from '@/i18n/keys/agents'
+import { commandsFragment } from '@/i18n/keys/commands'
 
 type MessageValues = Record<string, string | number>
 
@@ -17,6 +19,8 @@ const englishCatalog = {
   ...transcriptFragment.en,
   ...settingsFragment.en,
   ...panelsFragment.en,
+  ...agentsFragment.en,
+  ...commandsFragment.en,
 } satisfies Record<string, Message>
 
 export type MessageKey = keyof typeof englishCatalog
@@ -29,6 +33,8 @@ const simplifiedChineseCatalog: Partial<Record<MessageKey, Message>> = {
   ...transcriptFragment['zh-CN'],
   ...settingsFragment['zh-CN'],
   ...panelsFragment['zh-CN'],
+  ...agentsFragment['zh-CN'],
+  ...commandsFragment['zh-CN'],
 }
 
 const traditionalChineseCatalog: Partial<Record<MessageKey, Message>> = {
@@ -38,6 +44,8 @@ const traditionalChineseCatalog: Partial<Record<MessageKey, Message>> = {
   ...transcriptFragment['zh-TW'],
   ...settingsFragment['zh-TW'],
   ...panelsFragment['zh-TW'],
+  ...agentsFragment['zh-TW'],
+  ...commandsFragment['zh-TW'],
 }
 
 function browserLanguages(): readonly string[] {

@@ -1,10 +1,11 @@
 import { Check, ChevronDown, ChevronRight, CircleAlert, Copy, FileCode2, GitFork, Globe2, Layers3, LoaderCircle, MessageCircle, MessageCircleQuestion, TerminalSquare, Wrench } from 'lucide-react'
-import { type ReactNode, useEffect, useRef, useState } from 'react'
+import { type ReactNode, useContext, useEffect, useRef, useState } from 'react'
 import { writeClipboardText } from '@/lib/clipboard'
 import { type MessageKey, useI18n } from '@/lib/i18n'
 import { boundText } from '@/lib/render-bounds'
 import type { MessagePart, TranscriptMessage } from '@/types/api'
 import { MarkdownText } from '../MarkdownText'
+import { ReasoningDisclosure, ReasoningExpandedContext } from '../ReasoningDisclosure'
 import { SyntaxText } from './syntax'
 
 const COMPACTION_REASON_KEYS = {
@@ -72,12 +73,13 @@ function toolPreview(part: Extract<MessagePart, { type: 'toolCall' }>): string {
   return boundText(serialize(raw).replace(/\s+/g, ' ').trim(), 180, '…')
 }
 
-function ReasoningPart({ part, streaming = false }: { part: Extract<MessagePart, { type: 'thinking' }>; streaming?: boolean }) {
+function ReasoningPart({ part, streaming = false, expanded = false }: { part: Extract<MessagePart, { type: 'thinking' }>; streaming?: boolean; expanded?: boolean }) {
   const { t } = useI18n()
+  if (expanded) return <div className="activity-line activity-line--reasoning activity-reasoning" aria-label={t('agents.thinking')}><MarkdownText text={boundText(part.text, 40_000, t('transcript.reasoning.truncated'))} streaming={streaming} /></div>
   return (
-    <div className="activity-line activity-line--reasoning">
+    <ReasoningDisclosure className="activity-line activity-line--reasoning">
       <MarkdownText text={boundText(part.text, 40_000, t('transcript.reasoning.truncated'))} streaming={streaming} />
-    </div>
+    </ReasoningDisclosure>
   )
 }
 
@@ -115,7 +117,7 @@ export function LiveElapsed({ since }: { since?: string | number }) {
   )
 }
 
-function ToolPart({ part, next }: { part: Extract<MessagePart, { type: 'toolCall' }>; next?: MessagePart }) {
+function ToolPart({ part, next, streaming }: { part: Extract<MessagePart, { type: 'toolCall' }>; next?: MessagePart; streaming: boolean }) {
   const { t } = useI18n()
   const [open, setOpen] = useState(false)
   const [copied, setCopied] = useState(false)
@@ -128,7 +130,7 @@ function ToolPart({ part, next }: { part: Extract<MessagePart, { type: 'toolCall
   const output = result?.text ?? ''
   const visibleOutput = boundText(`${args}${args && output ? '\n\n' : ''}${output}`, 200_000, t('transcript.tool.outputTruncated'))
   const canExpand = Boolean(visibleOutput)
-  const state = failed ? 'error' : finished ? 'done' : kind === 'question' ? 'waiting' : 'running'
+  const state = failed ? 'error' : finished ? 'done' : !streaming ? 'unknown' : kind === 'question' ? 'waiting' : 'running'
   const preview = toolPreview(part)
   useEffect(
     () => () => {
@@ -167,6 +169,8 @@ function ToolPart({ part, next }: { part: Extract<MessagePart, { type: 'toolCall
             <>
               <Check size={12} /> {t('transcript.tool.state.done')}
             </>
+          ) : !streaming ? (
+            t('transcript.tool.state.noResult')
           ) : kind === 'question' ? (
             t('transcript.tool.state.needsInput')
           ) : (
@@ -287,7 +291,7 @@ function partKey(part: MessagePart, index: number): string {
   return part.partId ?? `${part.type}:${index}`
 }
 
-export function WorkTimeline({ parts, showReasoning, showTools, streaming = false }: { parts: MessagePart[]; showReasoning: boolean; showTools: boolean; streaming?: boolean }) {
+export function WorkTimeline({ parts, showReasoning, showTools, streaming = false, expandedReasoning = false }: { parts: MessagePart[]; showReasoning: boolean; showTools: boolean; streaming?: boolean; expandedReasoning?: boolean }) {
   const pairedResults = new Set<number>()
   return (
     <div className="work-timeline">
@@ -295,12 +299,12 @@ export function WorkTimeline({ parts, showReasoning, showTools, streaming = fals
         const key = partKey(part, index)
         if (part.type === 'toolResult' && pairedResults.has(index)) return null
         if (part.type === 'compaction') return <CompactionPart key={key} part={part} />
-        if (part.type === 'thinking') return showReasoning ? <ReasoningPart key={key} part={part} streaming={streaming} /> : null
+        if (part.type === 'thinking') return showReasoning ? <ReasoningPart key={key} part={part} streaming={streaming} expanded={expandedReasoning} /> : null
         if (part.type === 'toolCall') {
           if (!showTools) return null
           const next = parts[index + 1]
           if (next?.type === 'toolResult') pairedResults.add(index + 1)
-          return <ToolPart key={key} part={part} next={next} />
+          return <ToolPart key={key} part={part} next={next} streaming={streaming} />
         }
         if (part.type === 'toolResult') return showTools ? <StandaloneToolResult key={key} part={part} /> : null
         if (part.type === 'agentMessage') return <AgentActivityPart key={key} part={part} />
@@ -343,33 +347,25 @@ export function WorkDisclosure({
   running?: boolean
 }) {
   const { t } = useI18n()
-  const [open, setOpen] = useState(false)
-  if (running) {
-    const status = liveWorkStatus(message.parts, showReasoning, showTools)
-    return (
-      <section className="work-disclosure is-running" aria-label={t('transcript.work.aria')}>
-        <span className="work-disclosure__rail" aria-hidden="true" />
-        <div className="work-disclosure__live">
-          <div className="work-disclosure__status" role="status">
-            <span>{status === 'Thinking' ? t('transcript.workStatus.thinking') : t('transcript.workStatus.working')}</span>
-            <LiveElapsed since={message.startedAt ?? message.timestamp} />
-            <ThinkingDots />
-          </div>
-          <WorkTimeline parts={parts} showReasoning={showReasoning} showTools={showTools} streaming />
-        </div>
-      </section>
-    )
-  }
+  const expandThinking = useContext(ReasoningExpandedContext)
+  const defaultExpanded = expandThinking && showReasoning && parts.some((part) => part.type === 'thinking')
+  const [open, setOpen] = useState(defaultExpanded)
+  useEffect(() => setOpen(defaultExpanded), [defaultExpanded])
+  const status = liveWorkStatus(message.parts, showReasoning, showTools)
+  const toolCount = parts.filter((part) => part.type === 'toolCall').length
   const startedAt = timestamp(message.startedAt ?? message.timestamp) ?? 0
   const completedAt = timestamp(message.completedAt) ?? startedAt
   const duration = formatWorkedDuration(Math.max(0, completedAt - startedAt))
   return (
-    <section className="work-disclosure">
+    <section className={`work-disclosure ${running ? 'is-running' : ''}`} aria-label={t('transcript.work.aria')}>
       <button type="button" className="work-disclosure__button" onClick={() => setOpen((value) => !value)} aria-expanded={open}>
         {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-        <span>{t('transcript.work.workedFor', { duration })}</span>
+        {running ? <span role="status"><span>{status === 'Thinking' ? t('transcript.workStatus.thinking') : t('transcript.workStatus.working')}</span></span> : <span>{t('transcript.work.workedFor', { duration })}</span>}
+        {toolCount > 0 && <span className="work-disclosure__count">{t('transcript.work.tools', { count: toolCount })}</span>}
+        {running && <LiveElapsed since={message.startedAt ?? message.timestamp} />}
+        {running && !open && <LoaderCircle size={12} className="spin" />}
       </button>
-      {open ? <WorkTimeline parts={parts} showReasoning={showReasoning} showTools={showTools} /> : null}
+      {open ? <WorkTimeline parts={parts} showReasoning={showReasoning} showTools={showTools} streaming={running} expandedReasoning /> : null}
     </section>
   )
 }

@@ -271,8 +271,8 @@ describe('sidebar project context menu', () => {
   })
 })
 
-describe('sidebar archive confirmation', () => {
-  it('requires a second click and cancels when clicking elsewhere', async () => {
+describe('sidebar delete confirmation', () => {
+  it('requires confirmation and supports cancelling before deletion', async () => {
     const onArchiveSession = vi.fn(async () => undefined)
     await act(async () => {
       root.render(
@@ -294,20 +294,20 @@ describe('sidebar archive confirmation', () => {
       )
     })
 
-    const archive = container.querySelector('[aria-label="Archive Session"]')
+    const archive = container.querySelector('[aria-label="Delete Session"]')
     expect(archive).not.toBeNull()
-    expect(archive?.getAttribute('title')).toBe('Archive Session')
+    expect(archive?.getAttribute('title')).toBe('Delete Session')
     await press(archive!)
     expect(onArchiveSession).not.toHaveBeenCalled()
-    expect(container.querySelector('[aria-label="Confirm archive Session"]')).not.toBeNull()
+    expect(document.body.textContent).toContain('Permanently delete')
 
-    await act(async () => document.body.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true })))
-    expect(container.querySelector('[aria-label="Confirm archive Session"]')).toBeNull()
-    expect(container.querySelector('[aria-label="Archive Session"]')).not.toBeNull()
+    await act(async () => [...document.body.querySelectorAll('button')].find((button) => button.textContent === 'Cancel')!.click())
+    expect(document.body.textContent).not.toContain('Permanently delete')
+    expect(container.querySelector('[aria-label="Delete Session"]')).not.toBeNull()
 
-    const restarted = container.querySelector('[aria-label="Archive Session"]')
+    const restarted = container.querySelector('[aria-label="Delete Session"]')
     await press(restarted!)
-    const confirm = container.querySelector('[aria-label="Confirm archive Session"]')
+    const confirm = [...document.body.querySelectorAll('button')].find((button) => button.textContent === 'Delete permanently')
     await press(confirm!)
     expect(onArchiveSession).toHaveBeenCalledOnce()
     expect(onArchiveSession).toHaveBeenCalledWith(session)

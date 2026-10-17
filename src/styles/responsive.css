@@ -61,8 +61,10 @@
   .inspector__tabs > button:not(.icon-button) { min-width: 60px; min-height: 44px; padding-inline: 5px; }
   .transcript { padding-top: 20px; padding-bottom: 184px; }
   .transcript__inner { padding-inline: 15px; }
-  .message--assistant { grid-template-columns: 24px minmax(0, 1fr); gap: 9px; }
-  .message__content, .user-bubble { font-size: 13.5px; }
+  .message--assistant { grid-template-columns: minmax(0, 1fr); }
+  .message__content, .user-bubble { font-size: 14px; }
+  .message--user { padding-left: 7%; }
+  .user-bubble { padding: 10px 14px; border-radius: 17px; }
   .activity-tool__summary, .work-disclosure__button, .agent-message__summary, .goal-message__summary { min-height: 44px; }
   .activity-tool__state { display: none; }
   .composer-wrap { left: 9px; right: 9px; bottom: 8px; width: calc(100% - 18px); }

@@ -1,5 +1,4 @@
 import {
-  Archive,
   Bell,
   CalendarClock,
   Check,
@@ -325,24 +324,6 @@ function SidebarView({
       document.removeEventListener('keydown', dismissOnEscape, true)
     }
   }, [sessionMenu])
-  useEffect(() => {
-    if (!archiveTarget) return
-    const dismiss = (event: PointerEvent) => {
-      if (!(event.target instanceof Element) || !event.target.closest('[data-archive-confirming="true"]')) setArchiveTarget(null)
-    }
-    const dismissOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.preventDefault()
-        setArchiveTarget(null)
-      }
-    }
-    document.addEventListener('pointerdown', dismiss, true)
-    document.addEventListener('keydown', dismissOnEscape, true)
-    return () => {
-      document.removeEventListener('pointerdown', dismiss, true)
-      document.removeEventListener('keydown', dismissOnEscape, true)
-    }
-  }, [archiveTarget])
   const normalized = query.trim().toLowerCase()
   const visibleProjects = useMemo(
     () =>
@@ -580,19 +561,14 @@ function SidebarView({
                       <IconButton
                         size="small"
                         className={`session-row__archive ${archiveTarget?.id === session.id ? 'is-confirming' : ''}`}
-                        label={archiveTarget?.id === session.id ? t('sidebar.confirmArchiveSession', { name: session.title }) : t('sidebar.archiveSession', { name: session.title })}
+                        label={t('sessions.deleteNamed', { name: session.title })}
                         data-archive-confirming={archiveTarget?.id === session.id}
                         onClick={() => {
                           setSessionMenu(null)
-                          if (archiveTarget?.id !== session.id) {
-                            setArchiveTarget(session)
-                            return
-                          }
-                          setArchiveTarget(null)
-                          void onArchiveSession(session)
+                          setArchiveTarget(session)
                         }}
                       >
-                        {archiveTarget?.id === session.id ? <Check size={13} /> : <Archive size={13} />}
+                        <Trash2 size={13} />
                       </IconButton>
                       <IconButton
                         size="small"
@@ -753,6 +729,10 @@ function SidebarView({
           <p>{t('sidebar.removeProjectBody', { name: removeTarget.name, product: HARNESS_PRODUCT_NAMES[activeHarness] })}</p>
         </Modal>
       ) : null}
+      {archiveTarget ? <Modal title={t('sessions.deleteTitle')} onClose={() => setArchiveTarget(null)} footer={<>
+        <button type="button" className="button" onClick={() => setArchiveTarget(null)}>{t('sessions.deleteCancel')}</button>
+        <button type="button" className="button button--danger" onClick={() => { const target = archiveTarget; setArchiveTarget(null); void onArchiveSession(target) }}>{t('sessions.deleteConfirm')}</button>
+      </>}><p>{t('sessions.deleteBody', { name: archiveTarget.title })}</p></Modal> : null}
       {confirmUpdate ? (
         <Modal
           title={updateConfirm.title}

@@ -73,6 +73,22 @@ function pngFile(name: string, read?: () => Promise<ArrayBuffer>): File {
   return file
 }
 
+it('does not accept commands or close the command menu during IME composition', async () => {
+  const send = renderComposer()
+  const textarea = container.querySelector('textarea')!
+  const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!
+  act(() => { setter.call(textarea, '/'); textarea.dispatchEvent(new Event('input', { bubbles: true })) })
+  expect(container.querySelector('[role="listbox"]')).not.toBeNull()
+  act(() => textarea.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true })))
+  for (const key of ['ArrowDown', 'Enter', 'Escape']) act(() => textarea.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true })))
+  expect(send).not.toHaveBeenCalled()
+  expect(container.querySelector('[role="listbox"]')).not.toBeNull()
+  expect(textarea.value).toBe('/')
+  act(() => textarea.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true })))
+  act(() => textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+  expect(container.querySelector('[role="listbox"]')).toBeNull()
+})
+
 function pastedPng(read?: () => Promise<ArrayBuffer>): File {
   return pngFile('pasted.png', read)
 }
@@ -325,7 +341,7 @@ describe('Composer image ingestion', () => {
 
     act(() => (container.querySelector('button[aria-label="Add context"]') as HTMLButtonElement).click())
     expect(container.querySelector('[role="listbox"]')?.textContent).toContain('Add files')
-    expect(container.querySelector('[role="listbox"]')?.textContent).toContain('Mention a session or skill')
+    expect(container.querySelector('[role="listbox"]')?.textContent).toContain('Commands')
     act(() => (Array.from(container.querySelectorAll<HTMLButtonElement>('.composer-menu button')).find((button) => button.textContent?.includes('Add files')) as HTMLButtonElement).click())
     expect(click).toHaveBeenCalledOnce()
     expect(input?.multiple).toBe(true)

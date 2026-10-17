@@ -2,7 +2,8 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import { Transcript } from '../../src/components/Transcript'
-import { LiveElapsed } from '../../src/components/transcript/timeline'
+import { ReasoningExpandedContext } from '../../src/components/ReasoningDisclosure'
+import { LiveElapsed, WorkTimeline } from '../../src/components/transcript/timeline'
 import { replayPrimeEvents } from '../../src/lib/events/reduce'
 import type { TranscriptMessage } from '../../src/types/api'
 
@@ -16,18 +17,24 @@ const git = { isRepo: false, files: [] }
 const noop = () => undefined
 
 function render(messages: TranscriptMessage[], active = false, showTools = true): string {
-  return renderToStaticMarkup(createElement(Transcript, {
+  const expanded = messages.at(-1)?.role === 'assistant' && (active || messages.some((message) => message.streaming))
+  return renderToStaticMarkup(createElement(ReasoningExpandedContext.Provider, { value: expanded }, createElement(Transcript, {
     messages,
     git,
     active,
     showTools,
     onOpenChanges: noop,
     onSuggestion: noop,
-  }))
+  })))
 }
 
 describe('transcript rendering', () => {
-  it('streams reasoning inside a distinct process rail with animated thinking dots', () => {
+  it('does not animate a completed tool call whose result was not recorded', () => {
+    const html = renderToStaticMarkup(createElement(WorkTimeline, { parts: [{ type: 'toolCall', name: 'read', args: { path: 'file.ts' } }], showReasoning: true, showTools: true }))
+    expect(html).toContain('No result')
+    expect(html).not.toContain('spin')
+  })
+  it('shows expanded reasoning directly within a single activity disclosure', () => {
     const html = render([{
       id: 'active',
       role: 'assistant',
@@ -38,14 +45,14 @@ describe('transcript rendering', () => {
     }])
 
     expect(html).toContain('activity-line--reasoning')
-    expect(html).toContain('work-disclosure__rail')
-    expect(html).toContain('work-disclosure__status')
+    expect(html).not.toContain('work-disclosure__rail')
+    expect(html).toContain('work-disclosure__button')
     expect(html).toContain('role="status"><span>Thinking</span>')
     expect(html).toContain('Checking <strong>the workspace</strong> now.')
     expect(html).not.toContain('**the workspace**')
     expect(html).not.toContain('Worked for')
-    expect(html).toContain('thinking-dots')
-    expect(html.match(/thinking-dots[\s\S]*?<span><\/span><span><\/span><span><\/span>/)).not.toBeNull()
+    expect(html).not.toContain('reasoning-disclosure')
+    expect(html.match(/work-disclosure__button/g)).toHaveLength(1)
   })
 
   it.each([

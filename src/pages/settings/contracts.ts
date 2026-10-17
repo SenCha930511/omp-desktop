@@ -32,6 +32,8 @@ export const SETTINGS_FIELD_SECTIONS = {
   terminalShell: 'terminal',
   reduceMotion: 'appearance',
   showReasoningSummaries: 'agent',
+  reasoningExpandedByDefault: 'agent',
+  conversationDensity: 'general',
   showToolCalls: 'agent',
   messageEnterAction: 'agent',
   runtimePaths: 'agent',

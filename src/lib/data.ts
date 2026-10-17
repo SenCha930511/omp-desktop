@@ -9,6 +9,7 @@ import type {
 } from '@/types/api'
 
 export const DEFAULT_SETTINGS: AppSettings = {
+  conversationDensity: 'comfortable',
   theme: 'system',
   locale: 'system',
   interfaceFontScale: 110,
@@ -28,6 +29,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   terminalShell: '/bin/zsh',
   reduceMotion: false,
   showReasoningSummaries: true,
+  reasoningExpandedByDefault: false,
   showToolCalls: true,
   messageEnterAction: 'queue',
   runtimePaths: { omp: '' },

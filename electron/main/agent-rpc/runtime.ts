@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { performance } from 'node:perf_hooks'
 import type { PrimeContextUsage, PrimeEventEnvelope, PrimeModelDescriptor, PrimeServiceTier, RuntimeInfo } from '../../../src/types/api'
 import { emptySessionActionSnapshot, parseSessionActionSnapshot } from '../../../src/lib/session-actions'
+import { parseSlashCommands } from '../../../src/lib/slash-commands'
 import { RPC_READ_FRAME_LIMIT_BYTES } from '../jsonl-limits'
 import { killProcessTree, prepareExecutableSpawn, safeChildEnvironment, waitForProcessExit } from '../process-utils'
 import { canonicalSessionPath } from '../session-paths'
@@ -132,6 +133,7 @@ export class RpcRuntime {
   ) {
     this.watchdogTimings = { ...DEFAULT_COMPACTION_WATCHDOG_TIMINGS, ...watchdogTimings }
     this.info = { runtimeId: this.runtimeId, harness: this.adapter.id, cwd, isStreaming: false, isCompacting: false, sessionActions: emptySessionActionSnapshot() }
+    if (args.indexOf('--thinking') >= 0 && args[args.indexOf('--thinking') + 1] === 'auto') this.info.configuredThinkingLevel = 'auto'
     this.eventForwarder = new AgentEventForwarder(this.runtimeId, onEvent)
     // The harness child is spawned with the authorized cwd as its working
     // directory.
@@ -175,6 +177,8 @@ export class RpcRuntime {
     }
     const response = await this.request({ type: 'get_state' }, 60_000)
     this.updateFromState(response.data)
+    // Optional on older OMP builds; observability must not prevent startup.
+    void this.request({ type: 'set_subagent_subscription', level: 'events' }, 5_000).catch(() => undefined)
     const contextDeadline = new Promise<void>((resolve) => {
       const timer = setTimeout(resolve, 250)
       timer.unref()
@@ -233,6 +237,9 @@ export class RpcRuntime {
     }
     const timeout = command.type === 'compact' ? 10 * 60_000 : 60_000
     const response = await this.request(command, timeout)
+    if (command.type === 'set_thinking_level' && response.success === true) {
+      this.info.configuredThinkingLevel = command.level as RuntimeInfo['configuredThinkingLevel']
+    }
     if (command.type === 'get_state') this.updateFromState(response.data)
     if (response.success === true && ['set_model', 'cycle_model', 'set_thinking_level', 'cycle_thinking_level'].includes(String(command.type))) {
       const state = await this.request({ type: 'get_state' }, 60_000)
@@ -242,7 +249,10 @@ export class RpcRuntime {
       // get_state discovers the new session file promptly. Its mid-stream
       // context snapshot does not include the active assistant message, so a
       // usage refresh waits for message/tool boundaries below.
-      void this.request({ type: 'get_state' }, 60_000).then((state) => this.updateFromState(state.data)).catch(() => undefined)
+      void this.request({ type: 'get_state' }, 60_000).then((state) => {
+        this.updateFromState(state.data)
+        this.emit({ type: 'runtime_state', state: this.snapshot() })
+      }).catch(() => undefined)
     } else if (response.success === true && ['new_session', 'switch_session', 'clone', 'fork', 'branch'].includes(String(command.type))) {
       void this.request({ type: 'get_state' }, 60_000).then((state) => {
         this.updateFromState(state.data)
@@ -465,6 +475,10 @@ export class RpcRuntime {
     }
     const value = this.adapter.normalizeEvent(raw)
     if (!value) return
+    if (value.type === 'thinking_level_changed') {
+      this.info.configuredThinkingLevel = (value.configured ?? value.thinkingLevel) as RuntimeInfo['configuredThinkingLevel']
+    }
+    if (value.type === 'available_commands_update') this.info.availableCommands = parseSlashCommands(value.commands)
     const liveUsageUpdate = this.liveContextUsage.handleEvent(value)
     if (liveUsageUpdate.reset) {
       this.contextUsageActivityBaseline = 0

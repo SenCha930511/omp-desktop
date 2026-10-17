@@ -170,7 +170,7 @@ export function createBucketedMetadataParser(ingestRecord: BucketedRecordIngest)
         if (typeof value.id === 'string') state.id = value.id
         if (typeof value.cwd === 'string') state.projectPath = value.cwd
         state.createdAt = validTimestamp(value.timestamp, state.createdAt)
-      } else if (value.type === 'thinking_level_change' && typeof value.thinkingLevel === 'string') state.thinkingLevel = value.thinkingLevel
+      } else if (value.type === 'thinking_level_change' && (value.configured === 'auto' || typeof value.thinkingLevel === 'string')) state.thinkingLevel = value.configured === 'auto' ? 'auto' : value.thinkingLevel as string
       else if (value.type === 'message') ingestMessageActivity(state, value)
       else ingestRecord(state, value)
     },

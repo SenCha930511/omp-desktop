@@ -38,6 +38,7 @@ const INVOKE_CASES: Array<[domain: string, method: string, channel: string, args
   ['sessions', 'read', 'sessions:read', ['/session.jsonl']],
   ['sessions', 'rename', 'sessions:rename', ['/session.jsonl', 'Title']],
   ['sessions', 'archive', 'sessions:archive', ['/session.jsonl', true]],
+  ['sessions', 'delete', 'sessions:delete', ['/session.jsonl']],
   ['agent', 'start', 'agent:start', [{ cwd: '/repo' }]],
   ['agent', 'command', 'agent:command', ['runtime', { type: 'abort' }]],
   ['agent', 'stop', 'agent:stop', ['runtime']],

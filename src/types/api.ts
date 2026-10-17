@@ -199,6 +199,8 @@ export interface SessionUsage {
 }
 
 export interface RuntimeInfo {
+  configuredThinkingLevel?: PrimeEffortSelector
+  availableCommands?: import('../lib/slash-commands').SlashCommand[]
   runtimeId: string
   harness: HarnessId
   sessionId?: string
@@ -222,6 +224,8 @@ export interface RuntimeInfo {
 
 export const PRIME_THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
 export type PrimeThinkingLevel = (typeof PRIME_THINKING_LEVELS)[number]
+/** OMP's auto selector is distinct from a model's concrete supported levels. */
+export type PrimeEffortSelector = PrimeThinkingLevel | 'auto'
 export type PrimeServiceTier = 'auto' | 'default' | 'flex' | 'scale' | 'priority' | null
 export type ProviderAuthMethod = 'oauth' | 'api_key' | 'external'
 export type ProviderAuthSource = 'stored' | 'runtime' | 'environment' | 'prime_cli' | 'fallback' | 'models_json_key' | 'models_json_command' | 'stale'
@@ -457,6 +461,7 @@ export const PROJECT_SORT_MODES = ['recent', 'alphabetical'] as const
 export type ProjectSortMode = typeof PROJECT_SORT_MODES[number]
 
 export interface AppSettings {
+  conversationDensity: 'compact' | 'comfortable'
   theme: ThemeMode
   locale: LocalePreference
   /** Bounded interface text scale; 110 is the designed default. */
@@ -478,6 +483,7 @@ export interface AppSettings {
   terminalShell: string
   reduceMotion: boolean
   showReasoningSummaries: boolean
+  reasoningExpandedByDefault: boolean
   showToolCalls: boolean
   messageEnterAction: MessageEnterAction
   /** Optional absolute executable override; blank keeps automatic discovery. */
@@ -696,6 +702,7 @@ export interface DesktopApi {
     read(filePath: string): Promise<TranscriptMessage[]>
     rename(filePath: string, title: string): Promise<boolean>
     archive(filePath: string, archived?: boolean): Promise<boolean>
+    delete(filePath: string): Promise<boolean>
     onChanged(callback: (event: SessionChangeEvent) => void): () => void
   }
   agent: {

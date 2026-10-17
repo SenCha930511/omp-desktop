@@ -9,6 +9,8 @@ export function useTranscriptScroll(messages: TranscriptMessage[]) {
   const previousCountRef = useRef(0)
   const previousStreamingRef = useRef(false)
   const pinnedToBottomRef = useRef(true)
+  const lastScrollTopRef = useRef(0)
+  const manualScrollUntilRef = useRef(0)
   const [visibleLimit, setVisibleLimit] = useState(250)
   const [announcement, setAnnouncement] = useState('')
   const [awayFromBottom, setAwayFromBottom] = useState(false)
@@ -21,10 +23,14 @@ export function useTranscriptScroll(messages: TranscriptMessage[]) {
     const scroller = scrollRef.current
     let frame: number | undefined
     if (firstLoadedTranscript) {
-      frame = requestAnimationFrame(() => scroller && typeof scroller.scrollTo === 'function' && scroller.scrollTo({ top: scroller.scrollHeight, behavior: 'auto' }))
+      frame = requestAnimationFrame(() => {
+        if (scroller && pinnedToBottomRef.current && performance.now() >= manualScrollUntilRef.current) scroller.scrollTo?.({ top: scroller.scrollHeight, behavior: 'auto' })
+      })
       pinnedToBottomRef.current = true
     } else if (streaming && pinnedToBottomRef.current) {
-      frame = requestAnimationFrame(() => scroller && typeof scroller.scrollTo === 'function' && scroller.scrollTo({ top: scroller.scrollHeight, behavior: 'auto' }))
+      frame = requestAnimationFrame(() => {
+        if (scroller && pinnedToBottomRef.current && performance.now() >= manualScrollUntilRef.current) scroller.scrollTo?.({ top: scroller.scrollHeight, behavior: 'auto' })
+      })
     }
     if (previousStreamingRef.current && !streaming) setAnnouncement(t('transcript.announcement.complete'))
     else if (!previousStreamingRef.current && streaming) setAnnouncement(t('transcript.announcement.working'))
@@ -38,11 +44,34 @@ export function useTranscriptScroll(messages: TranscriptMessage[]) {
   const updatePinnedState = () => {
     const scroller = scrollRef.current
     if (!scroller) return
-    const pinned = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 120
+    const movedUp = scroller.scrollTop < lastScrollTopRef.current - 1
+    if (movedUp) manualScrollUntilRef.current = performance.now() + 150
+    lastScrollTopRef.current = scroller.scrollTop
+    const pinned = !movedUp && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 40
     pinnedToBottomRef.current = pinned
     // Same-value updates bail out in React, so streaming scroll events stay cheap.
     setAwayFromBottom((away) => (away === !pinned ? away : !pinned))
   }
+
+  useEffect(() => {
+    const scroller = scrollRef.current
+    const content = scroller?.querySelector('.transcript__inner')
+    if (!scroller || !content) return
+    const stopFollowing = (event: Event) => {
+      const target = event.target
+      if ((event instanceof WheelEvent && event.deltaY < 0) || (target instanceof Element && target.closest('summary,button[aria-expanded]'))) {
+        pinnedToBottomRef.current = false
+        manualScrollUntilRef.current = performance.now() + 150
+      }
+    }
+    const observer = new ResizeObserver(() => {
+      if (pinnedToBottomRef.current && performance.now() >= manualScrollUntilRef.current) scroller.scrollTo?.({ top: scroller.scrollHeight, behavior: 'auto' })
+    })
+    observer.observe(content)
+    scroller.addEventListener('wheel', stopFollowing, { passive: true })
+    scroller.addEventListener('click', stopFollowing, true)
+    return () => { observer.disconnect(); scroller.removeEventListener('wheel', stopFollowing); scroller.removeEventListener('click', stopFollowing, true) }
+  }, [])
 
   const scrollToBottom = () => {
     const scroller = scrollRef.current

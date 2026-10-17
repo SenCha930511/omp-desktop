@@ -162,6 +162,12 @@ export function AgentSettings({ settings, meta, onUpdate, onRefreshHarnesses }: 
           label={t('agent.toolCalls.label')}
           description={t('agent.toolCalls.description')}
         />
+        <SettingsToggle
+          checked={settings.reasoningExpandedByDefault}
+          onChange={(reasoningExpandedByDefault) => { void onUpdate({ reasoningExpandedByDefault }) }}
+          label={t('agent.reasoningExpanded.label')}
+          description={t('agent.reasoningExpanded.description')}
+        />
       </section>
       <section className="settings-group">
         <h2>{t('agent.shortcuts')}</h2>

@@ -20,6 +20,10 @@ export class SettingsService {
     // without a validator (or vice versa) is a type error, so a patch can
     // never be silently rejected or silently dropped.
     const validators: { [K in keyof AppSettings]: (value: unknown) => AppSettings[K] } = {
+      conversationDensity: (value) => {
+        if (value !== 'compact' && value !== 'comfortable') throw new TypeError('Invalid conversation density')
+        return value
+      },
       theme: (value) => {
         if (value !== 'system' && value !== 'light' && value !== 'dark') throw new TypeError('Invalid theme')
         return value
@@ -49,6 +53,7 @@ export class SettingsService {
       browserAskForDownloads: (value) => requireBoolean(value, 'browserAskForDownloads'),
       reduceMotion: (value) => requireBoolean(value, 'reduceMotion'),
       showReasoningSummaries: (value) => requireBoolean(value, 'showReasoningSummaries'),
+      reasoningExpandedByDefault: (value) => requireBoolean(value, 'reasoningExpandedByDefault'),
       showToolCalls: (value) => requireBoolean(value, 'showToolCalls'),
       telemetry: (value) => requireBoolean(value, 'telemetry'),
       askUserEnabled: (value) => requireBoolean(value, 'askUserEnabled'),

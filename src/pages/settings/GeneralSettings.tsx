@@ -13,6 +13,16 @@ export function GeneralSettings({ settings, onUpdate, platform }: SettingsSectio
       </header>
       <section className="settings-group">
         <h2>{t('general.window')}</h2>
+        <label className="settings-row">
+          <span><strong>{t('general.density.label')}</strong><small>{t('general.density.description')}</small></span>
+          <select aria-label={t('general.density.label')} value={settings.conversationDensity} onChange={(event) => {
+            const conversationDensity = event.target.value
+            if (conversationDensity === 'compact' || conversationDensity === 'comfortable') void onUpdate({ conversationDensity })
+          }}>
+            <option value="comfortable">{t('general.density.comfortable')}</option>
+            <option value="compact">{t('general.density.compact')}</option>
+          </select>
+        </label>
         <SettingsToggle
           checked={settings.sidebarOpen}
           onChange={(sidebarOpen) => {

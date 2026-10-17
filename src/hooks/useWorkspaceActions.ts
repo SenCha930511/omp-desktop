@@ -6,6 +6,8 @@ import { errorMessage } from '@/lib/errors'
 import { HARNESS_AGENT_NAMES } from '@/lib/harness'
 import { parseMcpAuthenticationCommand } from '@/lib/mcp-policy'
 import { parseSessionActionSnapshot, streamingBehaviorForIntent } from '@/lib/session-actions'
+import { deferredSlashCommand } from '@/lib/slash-commands'
+import { resolveLocale, translate } from '@/lib/i18n'
 import type { DEFAULT_SETTINGS } from '@/lib/data'
 import { type createSingleFlightAdmission, findProjectForSession, findRuntimeForWorkspace, newSessionProject, projectContainsPath, workspaceCwd } from '@/lib/workspace'
 import type { CapabilityMutationInput, ExtensionInstallInput, GitStatus, McpConnectionInput, McpStateInput, DesktopApi, ProjectRecord, ProjectSortMode, PromptDeliveryIntent, PromptImage, ScheduleInput, SchedulePatch, SessionRecord, TranscriptMessage, WorkspaceView } from '@/types/api'
@@ -243,6 +245,20 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
       setToast(archived ? 'Session archived.' : 'Session restored.')
     } catch (error) { reportError(error) }
   }
+  const deleteSession = async (session: SessionRecord) => {
+    const { bridge, workspace, settingsState, setSessions, setToast, resetBrowserView, closeTerminalForSession, clearSessionAttention, reportError } = getDeps()
+    if (!bridge) return
+    const locale = resolveLocale(settingsState.settings.locale ?? 'system')
+    try {
+      if (!await bridge.sessions.delete(session.filePath)) throw new Error(translate(locale, 'sessions.deleteFailed'))
+      clearSessionAttention(session)
+      closeTerminalForSession(session.filePath)
+      clearComposerDraft(`${workspace.workspaceRef.current.project?.id ?? 'no-project'}:${session.id}`)
+      setSessions((items) => items.filter((item) => item.filePath !== session.filePath))
+      if (workspace.workspaceRef.current.session?.filePath === session.filePath) { resetBrowserView(); newSession() }
+      setToast(translate(locale, 'sessions.deleted'))
+    } catch (error) { reportError(error) }
+  }
   const addProject = async () => {
     const { bridge, workspace, setProjects, setView, setToast, settingsState, reportError } = getDeps()
     if (!bridge) { setToast('Project picker is available in the desktop app.'); return }
@@ -285,9 +301,15 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
   ) => {
     const { bridge, sessions, workspace, provider, settingsState, submissionAdmissionRef, demoTimerRef, setSessions, setSubmitting, setView, setToast, reportError } = getDeps()
     const commandHarness = workspace.workspaceRef?.current?.project?.harness ?? settingsState.settings.activeHarness
-    const compactCommand = parseCompactCommand(prompt)
+    const deferred = deferredSlashCommand(prompt)
+    const locale = resolveLocale(settingsState.settings.locale ?? 'system')
+    if (deferred) {
+      throw new Error(translate(locale, 'slash.error.deferred', { command: deferred }))
+    }
+    const slashCommand = /^\/\S+/.test(prompt.trim())
+    const compactCommand = /^\/compact\s+(?:soft|remote|snapcompact)(?:\s|$)/.test(prompt.trim()) ? undefined : parseCompactCommand(prompt)
     const mcpCommand = parseMcpCommand(prompt)
-    if (mcpCommand?.type === 'open' && images.length === 0) {
+    if (mcpCommand?.type === 'open' && images.length === 0 && prompt.trim() === '/mcp') {
       setView('plugins')
       setToast('Manage MCP integrations in Capabilities.')
       return
@@ -314,11 +336,11 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
       if (queuedFlushPromptId) workspace.removeQueuedPrompt(queuedFlushPromptId)
     }
     if (ownsStreamingRuntime && currentRuntime && bridge) {
-      if (compactCommand) {
+      if (compactCommand || slashCommand) {
         // Compacting mid-turn would abort the running turn, so it waits for the
         // idle flush like any queued prompt.
         if (!queuedFlushPromptId) workspace.queuePrompt(prompt, 'queue')
-        if (intent === 'steer') setToast('Compaction will run when the current turn finishes.')
+        if (intent === 'steer') setToast(translate(locale, compactCommand ? 'slash.compactQueued' : 'slash.queued'))
         return
       }
       if (intent === 'queue' && images.length === 0) {
@@ -363,6 +385,8 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
       const sentAtIso = new Date(sentAt).toISOString()
       const userMessage: TranscriptMessage = { id: `user-${sentAt}`, role: 'user', timestamp: sentAt, parts: [{ type: 'text', text: prompt }, ...images] }
       let userMessageAppended = false
+      const pendingAssistantId = `assistant-${sentAt}`
+      let pendingAssistantAppended = false
       try {
         if (!admitted.project || !admitted.cwd) { reportError('Add a project before starting a session.'); return }
         // The harness comes from the workspace's own project, never global
@@ -384,6 +408,11 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
           workspace.setMessages((items) => [...items, userMessage])
           if (admitted.sessionFile) setSessions((items) => items.map((session) => session.filePath === admitted.sessionFile ? { ...session, lastUserMessageAt: sentAtIso } : session))
         }
+        const appendPendingAssistant = () => {
+          if (pendingAssistantAppended || workspace.workspaceRef.current.generation !== generation) return
+          pendingAssistantAppended = true
+          workspace.setMessages((items) => [...items, { id: pendingAssistantId, role: 'assistant', timestamp: sentAt, startedAt: sentAt, streaming: true, parts: [] }])
+        }
         if (!bridge) {
           appendUserMessage()
           const assistantId = `assistant-${Date.now()}`
@@ -391,6 +420,13 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
           demoTimerRef.current.push(window.setTimeout(() => workspace.setMessages((items) => items.map((item) => item.id === assistantId ? { ...item, parts: [...item.parts, { type: 'toolCall', id: 'demo-tool', name: 'Inspect project', args: { cwd: admitted.cwd } }] } : item)), 450))
           demoTimerRef.current.push(window.setTimeout(() => workspace.setMessages((items) => items.map((item) => item.id === assistantId ? { ...item, streaming: false, completedAt: Date.now(), parts: [...item.parts, { type: 'toolResult', name: 'Inspect project', text: 'Project context loaded' }, { type: 'text', text: 'I’ve reviewed the project context and prepared the workspace. Connect the desktop bridge to run this request with OMP.' }] } : item)), 1_250))
           return
+        }
+        // A fresh conversation has no history or delivery queue to reconcile.
+        // Show the admitted turn before permission checks and runtime startup;
+        // the same placeholder receives real events after the harness starts.
+        if (!admitted.sessionFile && !slashCommand && !compactCommand) {
+          appendUserMessage()
+          appendPendingAssistant()
         }
         await grantProject(admitted.project)
         if (workspace.workspaceRef.current.generation !== generation) return
@@ -470,13 +506,18 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
           startedPrompt = true
           appendUserMessage()
           workspace.setRuntime({ ...activeRuntime, isStreaming: true })
-          workspace.setMessages((items) => [...items, { id: `assistant-${Date.now()}`, role: 'assistant', timestamp: Date.now(), streaming: true, parts: [] }])
-          await bridge.agent.command(activeRuntime.runtimeId, {
+          appendPendingAssistant()
+          const response = await bridge.agent.command(activeRuntime.runtimeId, {
             type: 'prompt',
             message: prompt,
             streamingBehavior: streamingBehaviorForIntent(intent),
             ...(images.length ? { images } : {}),
           })
+          const data = response.data as { agentInvoked?: boolean } | undefined
+          if (data?.agentInvoked === false && workspace.workspaceRef.current.generation === generation) {
+            workspace.setRuntime((current) => current?.runtimeId === activeRuntime.runtimeId ? { ...current, isStreaming: false } : current)
+            workspace.setMessages((items) => items.filter((item) => item.id !== pendingAssistantId || item.parts.length > 0).map((item) => item.id === pendingAssistantId ? { ...item, streaming: false } : item))
+          }
           completeQueuedFlush()
           if (startedRuntime && startedSessionNeedsTitle) {
             void titleStartedSession({
@@ -502,6 +543,7 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
         const failure = requestFailureMessage(error)
         if (startedPrompt) workspace.setRuntime((current) => current ? { ...current, isStreaming: false } : current)
         workspace.setMessages((items) => {
+          if (pendingAssistantAppended) items = items.filter((item) => item.id !== pendingAssistantId || item.parts.length > 0)
           const finalized = startedPrompt
             ? items.flatMap((item) => item.streaming && item.role === 'assistant' && item.parts.length === 0 ? [] : [{ ...item, streaming: false }])
             : items
@@ -646,7 +688,7 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
 
   return {
     grantProject, persistPanel, toggleSidebar, toggleInspector, toggleTerminal,
-    selectProject, selectSession, newSession, navigate, renameSession, setSessionArchived,
+    selectProject, selectSession, newSession, navigate, renameSession, setSessionArchived, deleteSession,
     addProject, removeProject, togglePinProject, setProjectSortMode, sendPrompt, stopRuntime, installSkill, installExtension, connectMcp, setMcpEnabled, mutateCapability,
     createSchedule, updateSchedule, mutateSchedule, openScheduledSession,
     openBrowser, openChanges,

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { HarnessId, PrimeModelCatalog, PrimeModelDescriptor, PrimeThinkingLevel, DesktopApi, RuntimeInfo, SessionRecord } from '@/types/api'
+import type { HarnessId, PrimeModelCatalog, PrimeModelDescriptor, PrimeThinkingLevel, PrimeEffortSelector, DesktopApi, RuntimeInfo, SessionRecord } from '@/types/api'
 
 /** Stable fallback identities so consumers can memoize on prop equality. */
 const DEFAULT_REASONING_LEVELS: PrimeThinkingLevel[] = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
@@ -15,7 +15,11 @@ function findSessionModel(catalog: PrimeModelCatalog, session: Pick<SessionRecor
     ?? catalog.models.find((candidate) => candidate.id === session.model && isUsable(candidate))
 }
 
-interface PendingSelection { model: string; effort: PrimeThinkingLevel }
+interface PendingSelection { model: string; effort: PrimeEffortSelector }
+
+function supportsEffort(model: PrimeModelDescriptor | undefined, effort: string): effort is PrimeEffortSelector {
+  return Boolean(model && (effort === 'auto' ? model.reasoning : model.availableThinkingLevels.includes(effort as PrimeThinkingLevel)))
+}
 
 export function groupModelsByProvider(models: readonly PrimeModelDescriptor[] | undefined): Map<string, PrimeModelDescriptor[]> {
   const grouped = new Map<string, PrimeModelDescriptor[]>()
@@ -46,7 +50,7 @@ interface UseProviderCatalogOptions {
 
 export function useProviderCatalog({ bridge, ready = true, harness = 'omp', runtime, activeSession, lastSelectedModel = '', rememberModel, syncRuntime, reportError }: UseProviderCatalogOptions) {
   const [model, setModel] = useState('')
-  const [effort, setEffort] = useState<PrimeThinkingLevel>('medium')
+  const [effort, setEffort] = useState<PrimeEffortSelector>('medium')
   const [fast, setFast] = useState(false)
   // Per-harness cache: switching back to a harness shows its last catalog
   // immediately while the background refresh updates it.
@@ -64,7 +68,7 @@ export function useProviderCatalog({ bridge, ready = true, harness = 'omp', runt
   useLayoutEffect(() => { runtimeIdRef.current = runtime?.runtimeId })
 
   const updateModel = useCallback((value: string) => { modelRef.current = value; setModel(value) }, [])
-  const updateEffort = useCallback((value: PrimeThinkingLevel) => { effortRef.current = value; setEffort(value) }, [])
+  const updateEffort = useCallback((value: PrimeEffortSelector) => { effortRef.current = value; setEffort(value) }, [])
   const updateFast = useCallback((value: boolean) => { fastRef.current = value; setFast(value) }, [])
 
   const queueRuntimeMutation = useCallback((
@@ -123,7 +127,11 @@ export function useProviderCatalog({ bridge, ready = true, harness = 'omp', runt
   const selectedModel = useMemo<PrimeModelDescriptor | undefined>(() => {
     return catalog?.models.find((candidate) => candidate.key === model && candidate.enabled !== false && candidate.available)
   }, [catalog, model])
-  const reasoningLevels = selectedModel?.availableThinkingLevels ?? runtime?.availableThinkingLevels ?? DEFAULT_REASONING_LEVELS
+  const reasoningLevels = useMemo<PrimeEffortSelector[]>(() => {
+    const levels = selectedModel?.availableThinkingLevels ?? runtime?.availableThinkingLevels ?? DEFAULT_REASONING_LEVELS
+    const autoSupported = selectedModel ? selectedModel.reasoning : levels.some((level) => level !== 'off')
+    return autoSupported ? ['auto', ...levels] : levels
+  }, [selectedModel, runtime?.availableThinkingLevels])
   // Group once per catalog identity so the composer's <option> tree can memoize.
   const modelsByProvider = useMemo(() => groupModelsByProvider(catalog?.models), [catalog?.models])
 
@@ -185,8 +193,9 @@ export function useProviderCatalog({ bridge, ready = true, harness = 'omp', runt
         if (modelRef.current !== runtimeModel.key) updateModel(runtimeModel.key)
         rememberSelectionRef.current(runtimeModel.key)
       }
-      if (runtime.thinkingLevel && runtimeModel?.availableThinkingLevels.includes(runtime.thinkingLevel as PrimeThinkingLevel)) {
-        if (effortRef.current !== runtime.thinkingLevel) updateEffort(runtime.thinkingLevel as PrimeThinkingLevel)
+      const selector = runtime.configuredThinkingLevel ?? runtime.thinkingLevel
+      if (selector && supportsEffort(runtimeModel, selector)) {
+        if (effortRef.current !== selector) updateEffort(selector)
       }
       return
     }
@@ -196,16 +205,16 @@ export function useProviderCatalog({ bridge, ready = true, harness = 'omp', runt
     const pendingModel = pending && catalog.models.find((candidate) => candidate.key === pending.model && isUsable(candidate))
     if (pending && pendingModel) {
       if (modelRef.current !== pendingModel.key) updateModel(pendingModel.key)
-      if (pendingModel.availableThinkingLevels.includes(pending.effort) && effortRef.current !== pending.effort) updateEffort(pending.effort)
+      if (supportsEffort(pendingModel, pending.effort) && effortRef.current !== pending.effort) updateEffort(pending.effort)
       return
     }
 
     const sessionModel = findSessionModel(catalog, activeSession)
     if (sessionModel && modelRef.current !== sessionModel.key) updateModel(sessionModel.key)
-    if (activeSession?.thinkingLevel && sessionModel?.availableThinkingLevels.includes(activeSession.thinkingLevel as PrimeThinkingLevel)) {
-      if (effortRef.current !== activeSession.thinkingLevel) updateEffort(activeSession.thinkingLevel as PrimeThinkingLevel)
+    if (activeSession?.thinkingLevel && supportsEffort(sessionModel, activeSession.thinkingLevel)) {
+      if (effortRef.current !== activeSession.thinkingLevel) updateEffort(activeSession.thinkingLevel)
     }
-  }, [activeSession, catalog, runtime?.model?.id, runtime?.model?.provider, runtime?.thinkingLevel, sessionKey, updateEffort, updateModel])
+  }, [activeSession, catalog, runtime?.model?.id, runtime?.model?.provider, runtime?.thinkingLevel, runtime?.configuredThinkingLevel, sessionKey, updateEffort, updateModel])
 
   // Scoped to the runtime's reported tier so a catalog refresh cannot revert
   // an optimistic fast-mode toggle that the runtime has not confirmed yet.
@@ -217,7 +226,7 @@ export function useProviderCatalog({ bridge, ready = true, harness = 'omp', runt
   const changeModel = useCallback((nextModelKey: string) => {
     const previous = { model: modelRef.current, effort: effortRef.current, fast: fastRef.current }
     const nextModel = catalog?.models.find((candidate) => candidate.key === nextModelKey)
-    const nextEffort = nextModel && !nextModel.availableThinkingLevels.includes(effortRef.current)
+    const nextEffort = nextModel && !supportsEffort(nextModel, effortRef.current)
       ? nextModel.availableThinkingLevels.includes('medium') ? 'medium' : nextModel.availableThinkingLevels[0] ?? 'off'
       : effortRef.current
     updateModel(nextModelKey)
@@ -241,7 +250,7 @@ export function useProviderCatalog({ bridge, ready = true, harness = 'omp', runt
     )
   }, [bridge, catalog?.models, queueRuntimeMutation, rememberSelection, runtime, updateEffort, updateFast, updateModel])
 
-  const changeEffort = useCallback((nextEffort: PrimeThinkingLevel) => {
+  const changeEffort = useCallback((nextEffort: PrimeEffortSelector) => {
     const previous = effortRef.current
     updateEffort(nextEffort)
     if (!bridge || !runtime) {

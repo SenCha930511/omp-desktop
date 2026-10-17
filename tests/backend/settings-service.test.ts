@@ -17,6 +17,17 @@ function makeService(validateShell: (shell: unknown) => string = () => '/bin/zsh
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }) })
 
 describe('SettingsService.update', () => {
+  it('persists the thinking disclosure default and rejects non-boolean values', async () => {
+    const service = makeService()
+    expect(service.get().reasoningExpandedByDefault).toBe(false)
+    expect(service.get().conversationDensity).toBe('comfortable')
+    await service.update({ conversationDensity: 'compact' })
+    expect(service.get().conversationDensity).toBe('compact')
+    await expect(service.update({ conversationDensity: 'dense' } as never)).rejects.toThrow('density')
+    await service.update({ reasoningExpandedByDefault: true })
+    expect(service.get().reasoningExpandedByDefault).toBe(true)
+    await expect(service.update({ reasoningExpandedByDefault: 'yes' } as never)).rejects.toThrow('reasoningExpandedByDefault')
+  })
   it('applies every field of a full valid patch', async () => {
     const service = makeService()
     const next = await service.update({

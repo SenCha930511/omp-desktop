@@ -110,7 +110,7 @@ export class AgentRpcManager {
     if (options.thinking !== undefined) {
       thinking = requireString(options.thinking, 'thinking', { min: 1, max: 16, trim: true })
       if (!isThinkingLevel(thinking)) throw new TypeError('Invalid thinking level')
-      if (selectedModel && !selectedModel.availableThinkingLevels.includes(thinking)) throw new TypeError(`${selectedModel.name} does not support ${thinking} reasoning`)
+      if (selectedModel && (thinking === 'auto' ? !selectedModel.reasoning : !selectedModel.availableThinkingLevels.includes(thinking))) throw new TypeError(`${selectedModel.name} does not support ${thinking} reasoning`)
     }
     if (options.fast !== undefined && typeof options.fast !== 'boolean') throw new TypeError('fast must be a boolean')
     this.requireOpen()

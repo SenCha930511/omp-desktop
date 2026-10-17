@@ -3,7 +3,7 @@ import type { MouseEvent } from 'react'
 import { type MessageKey, useI18n } from '@/lib/i18n'
 import { shortcutLabel } from '@/lib/platform-shortcuts'
 import type { ApplicationMenuName, ProjectRecord, WorkspaceView } from '@/types/api'
-import { ProjectRunControl, type ProjectScriptKind } from './ProjectRunControl'
+import type { ProjectScriptKind } from './ProjectRunControl'
 import { BrowserGlobe, IconButton } from './ui'
 
 const viewTitles: Record<Exclude<WorkspaceView, 'session'>, MessageKey> = {
@@ -55,14 +55,10 @@ export function TitleToolbar({
   sidebarOpen,
   inspectorOpen,
   terminalOpen,
-  activeProjectScriptKind,
   onToggleSidebar,
   onToggleInspector,
   onToggleTerminal,
   onOpenBrowser,
-  onRunProjectScript,
-  onStopProjectScript,
-  onSaveProjectScripts,
   platform = 'darwin',
 }: TitleToolbarProps) {
   const { t } = useI18n()
@@ -98,9 +94,6 @@ export function TitleToolbar({
         ) : null}
       </div>
       <div className="title-toolbar__actions no-drag">
-        {view === 'session' && project && onRunProjectScript && onStopProjectScript && onSaveProjectScripts ? (
-          <ProjectRunControl project={project} activeKind={activeProjectScriptKind} onRun={onRunProjectScript} onStop={onStopProjectScript} onSave={onSaveProjectScripts} />
-        ) : null}
         {view === 'session' ? (
           <IconButton className={terminalOpen ? 'is-active' : ''} label={t('toolbar.toggleTerminal', { shortcut: terminalShortcut })} onClick={onToggleTerminal}>
             <Terminal size={17} />

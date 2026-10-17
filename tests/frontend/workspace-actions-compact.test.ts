@@ -87,7 +87,7 @@ function fixture({ runtime: configuredRuntime = null, sessionStatus = 'idle', ow
   const agentList = vi.fn(async () => configuredRuntime ? [configuredRuntime] : [])
   const bridge = {
     agent: { list: agentList, command, start, stop: vi.fn(async () => false) },
-    sessions: { followUp },
+    sessions: { followUp, list: vi.fn(async () => [session()]) },
   } as unknown as DesktopApi
   const workspaceSessions = currentSession ? [currentSession] : []
   const actions = createWorkspaceActions(() => ({
@@ -96,7 +96,7 @@ function fixture({ runtime: configuredRuntime = null, sessionStatus = 'idle', ow
     sessions: workspaceSessions,
     activeProject: project,
     workspace,
-    settingsState: { settings: { activeHarness: 'omp' } },
+    settingsState: { settings: { activeHarness: 'omp', locale: 'en' } },
     provider: { model: 'auto', effort: 'medium', fast: false },
     submissionAdmissionRef: { current: { active: false, run: async (task: () => Promise<void>) => { await task(); return true } } },
     initialized: true,
@@ -122,6 +122,49 @@ function fixture({ runtime: configuredRuntime = null, sessionStatus = 'idle', ow
 }
 
 describe('/compact dispatch', () => {
+  it('shows a fresh turn while runtime startup is pending and reuses its placeholder', async () => {
+    const state = fixture({ withSession: false })
+    let finishStart!: (value: RuntimeInfo) => void
+    state.start.mockImplementationOnce(() => new Promise<RuntimeInfo>((resolve) => { finishStart = resolve }))
+    const sending = state.actions.sendPrompt('Start a new conversation')
+    await vi.waitFor(() => expect(state.start).toHaveBeenCalled())
+    expect(state.messages().map((message) => message.role)).toEqual(['user', 'assistant'])
+    expect(state.messages()[1]).toMatchObject({ streaming: true, parts: [] })
+    const placeholderId = state.messages()[1].id
+    finishStart(runtime('started-runtime'))
+    await sending
+    expect(state.messages().filter((message) => message.role === 'assistant').map((message) => message.id)).toEqual([placeholderId])
+  })
+
+  it('clears the startup animation and shows an error if a new runtime fails', async () => {
+    const state = fixture({ withSession: false })
+    state.start.mockRejectedValueOnce(new Error('Runtime could not start'))
+    await expect(state.actions.sendPrompt('Start a new conversation')).rejects.toThrow('Runtime could not start')
+    expect(state.messages().some((message) => message.streaming)).toBe(false)
+    expect(state.messages().map((message) => message.role)).toEqual(['user', 'system'])
+  })
+
+  it('finishes text-only slash commands without leaving a streaming placeholder', async () => {
+    const state = fixture({ runtime: runtime() })
+    state.command.mockResolvedValue({ data: { agentInvoked: false } })
+    await state.actions.sendPrompt('/context')
+    expect(state.command).toHaveBeenCalledWith('idle-runtime', expect.objectContaining({ type: 'prompt', message: '/context' }))
+    expect(state.messages().some((message) => message.streaming)).toBe(false)
+    expect(state.messages().filter((message) => message.role === 'assistant')).toEqual([])
+  })
+
+  it('queues slash commands instead of steering them into the model', async () => {
+    const state = fixture({ runtime: runtime('busy', true), ownsStreaming: true })
+    await state.actions.sendPrompt('/effort high', [], 'steer')
+    expect(state.command).not.toHaveBeenCalled()
+    expect(state.queuePrompt).toHaveBeenCalledWith('/effort high', 'queue')
+  })
+
+  it('rejects deferred displays without forwarding them', async () => {
+    const state = fixture({ runtime: runtime() })
+    await expect(state.actions.sendPrompt('/theme')).rejects.toThrow('terminal selector')
+    expect(state.command).not.toHaveBeenCalled()
+  })
   it('sends compact to an idle runtime without a prompt command or user message', async () => {
     const fixtureState = fixture({ runtime: runtime() })
 

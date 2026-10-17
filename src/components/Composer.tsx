@@ -11,6 +11,8 @@ import { type MessageKey, useI18n } from '@/lib/i18n'
 import { messageActionForKey } from '@/lib/message-shortcuts'
 import { appendSessionRouting, findSessionMentions } from '@/lib/session-mentions'
 import { appendTerminalContextToPrompt } from '@/lib/terminal-context'
+import { INITIAL_SLASH_COMMANDS, slashSuggestions, type SlashCommand } from '@/lib/slash-commands'
+import { desktopSlashCommands } from '@/lib/slash-command-ui'
 import type {
   BrowserAnnotation,
   CheckoutAction,
@@ -20,7 +22,7 @@ import type {
   PrimeContextUsage,
   PrimeModelDescriptor,
   PrimeProviderDescriptor,
-  PrimeThinkingLevel,
+  PrimeEffortSelector,
   PromptDeliveryIntent,
   PromptImage,
   QueuedPrompt,
@@ -37,15 +39,16 @@ import { ModelPicker } from './ModelPicker'
 import { IconButton, SelectControl } from './ui'
 
 interface ComposerProps {
+  availableCommands?: SlashCommand[]
   busy: boolean
   submitting?: boolean
   loading?: boolean
   disabled?: boolean
   model: string
-  effort: PrimeThinkingLevel
+  effort: PrimeEffortSelector
   modelsByProvider: ReadonlyMap<string, PrimeModelDescriptor[]>
   providers: PrimeProviderDescriptor[]
-  reasoningLevels: PrimeThinkingLevel[]
+  reasoningLevels: PrimeEffortSelector[]
   fast: boolean
   fastSupported: boolean
   fastAvailable: boolean
@@ -79,7 +82,7 @@ interface ComposerProps {
   /** Each bump submits the current draft immediately (Ctrl/Cmd+Enter from the annotation popover). */
   sendSignal?: number
   onModelChange(value: string): void
-  onEffortChange(value: PrimeThinkingLevel): void
+  onEffortChange(value: PrimeEffortSelector): void
   onFastChange(value: boolean): void
   checkoutCatalog?: CheckoutCatalog
   /** Branch/worktree name shown before or without the linked-worktree catalog. */
@@ -96,14 +99,8 @@ interface ComposerProps {
   draftKey?: string
 }
 
-const commands = [
-  { command: '/review', detailKey: 'composer.command.review' },
-  { command: '/plan', detailKey: 'composer.command.plan' },
-  { command: '/compact', detailKey: 'composer.command.compact' },
-  { command: '/status', detailKey: 'composer.command.status' },
-] as const satisfies readonly { command: string; detailKey: MessageKey }[]
-
 const reasoningLabelKeys = {
+  auto: 'composer.reasoning.auto',
   off: 'composer.reasoning.off',
   minimal: 'composer.reasoning.minimal',
   low: 'composer.reasoning.low',
@@ -111,7 +108,7 @@ const reasoningLabelKeys = {
   high: 'composer.reasoning.high',
   xhigh: 'composer.reasoning.xhigh',
   max: 'composer.reasoning.max',
-} as const satisfies Record<PrimeThinkingLevel, MessageKey>
+} as const satisfies Record<PrimeEffortSelector, MessageKey>
 
 const MAX_IMAGE_PROMPT_BYTES = 2 * 1024 * 1024
 
@@ -119,6 +116,7 @@ const EMPTY_ANNOTATIONS: BrowserAnnotation[] = []
 const noop = () => undefined
 
 export const Composer = memo(function Composer({
+  availableCommands = INITIAL_SLASH_COMMANDS,
   busy,
   submitting = false,
   loading = false,
@@ -178,6 +176,7 @@ export const Composer = memo(function Composer({
   const menuId = useId()
   const menuRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const composingRef = useRef(false)
   const acceptedMentionRef = useRef<{ start: number; text: string } | null>(null)
   const submittingRef = useRef(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -194,7 +193,7 @@ export const Composer = memo(function Composer({
     const draft = readComposerDraft(draftKey)
     if (!draft) return
     if (draft.model && draft.model !== model) onModelChange(draft.model)
-    if (draft.effort && draft.effort !== effort) onEffortChange(draft.effort as PrimeThinkingLevel)
+    if (draft.effort && draft.effort !== effort) onEffortChange(draft.effort as PrimeEffortSelector)
     if (draft.fast !== undefined && draft.fast !== fast) onFastChange(draft.fast)
   }, [draftKey, effort, fast, model, onEffortChange, onFastChange, onModelChange])
 
@@ -210,7 +209,7 @@ export const Composer = memo(function Composer({
       mentionMatch && acceptedMention && mentionStart === acceptedMention.start && value.slice(acceptedMention.start, acceptedMention.start + acceptedMention.text.length) === acceptedMention.text,
     )
     if (acceptedMention && !suppressAcceptedMention) acceptedMentionRef.current = null
-    setMenu(value.startsWith('/') && !value.includes(' ') ? 'command' : mentionMatch && !suppressAcceptedMention ? 'mention' : null)
+    setMenu(value.startsWith('/') && !value.includes('\n') ? 'command' : mentionMatch && !suppressAcceptedMention ? 'mention' : null)
   }, [value])
   useEffect(() => {
     setSessionReferenceIds((current) => {
@@ -242,7 +241,7 @@ export const Composer = memo(function Composer({
       setMenu(null)
     }
     const onEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setMenu(null)
+      if (!composingRef.current && !event.isComposing && event.keyCode !== 229 && event.key === 'Escape') setMenu(null)
     }
     document.addEventListener('mousedown', close)
     document.addEventListener('keydown', onEscape)
@@ -302,6 +301,11 @@ export const Composer = memo(function Composer({
       setAttachmentError(t('composer.error.noImages'))
       return
     }
+    const isSlashCommand = /^\/\S+/.test(prompt)
+    if (isSlashCommand && currentImages.length) {
+      setAttachmentError(t('slash.error.images'))
+      return
+    }
     const submittedImages = currentImages.map(({ type, data, mimeType }) => ({ type, data, mimeType }))
     // Recognized @ mentions carry explicit routing semantics; annotations then
     // ride along inside the prompt as their own delimited plain-text block.
@@ -315,7 +319,7 @@ export const Composer = memo(function Composer({
       enabledSkills.filter((skill) => !sessionTitles.has(skill.name.trim().toLocaleLowerCase())),
     )
     const promptWithAnnotations = appendAnnotationsToPrompt(promptWithCapabilities, currentAnnotations)
-    const promptWithContext = appendTerminalContextToPrompt(promptWithAnnotations, currentTerminalContext)
+    const promptWithContext = isSlashCommand ? prompt : appendTerminalContextToPrompt(promptWithAnnotations, currentTerminalContext)
     const frame = `${JSON.stringify({ type: intent === 'steer' ? 'steer' : 'follow_up', message: promptWithContext, ...(submittedImages.length ? { images: submittedImages } : {}), id: '00000000-0000-0000-0000-000000000000' })}\n`
     if (new TextEncoder().encode(frame).byteLength > MAX_IMAGE_PROMPT_BYTES) {
       setAttachmentError(t('composer.error.tooLarge'))
@@ -332,7 +336,7 @@ export const Composer = memo(function Composer({
       await onSend(promptWithContext, submittedImages, intent)
       if (draftKey) clearComposerDraft(draftKey)
       // The annotations were delivered: clear the attachment and page markers.
-      if (currentAnnotations.length > 0) onClearAnnotations()
+      if (currentAnnotations.length > 0 && !isSlashCommand) onClearAnnotations()
     } catch {
       if (mountedRef.current) {
         setValue((current) => current || submittedValue)
@@ -405,15 +409,14 @@ export const Composer = memo(function Composer({
 
   const suggestions =
     menu === 'command'
-      ? commands
-          .filter((item) => item.command.startsWith(value))
+      ? slashSuggestions(desktopSlashCommands(availableCommands, t), value.startsWith('/') ? value : '/')
           .map((item) => ({
             key: item.command,
             label: item.command,
-            detail: t(item.detailKey),
+            detail: item.detail,
             icon: <Command size={14} />,
             choose: () => {
-              setValue(`${item.command} `)
+              setValue(`${item.command} ${value.startsWith('/') ? '' : value}`)
               setMenu(null)
               textareaRef.current?.focus()
             },
@@ -453,7 +456,7 @@ export const Composer = memo(function Composer({
                   fileInputRef.current?.click()
                 },
               },
-              { key: 'mention', label: t('composer.mentionLabel'), detail: t('composer.mentionDetail'), icon: <AtSign size={14} />, choose: () => insert('@') },
+              { key: 'commands', label: t('slash.menu.label'), detail: t('slash.menu.detail'), icon: <Command size={14} />, choose: () => { if (!value) setValue('/'); setMenu('command'); textareaRef.current?.focus() } },
             ]
           : []
 
@@ -576,7 +579,10 @@ export const Composer = memo(function Composer({
               if (pastedText) insertAtCaret(event.currentTarget, pastedText)
               void imageAttachments.ingest(files)
             }}
+            onCompositionStart={() => { composingRef.current = true }}
+            onCompositionEnd={() => { composingRef.current = false }}
             onKeyDown={(event) => {
+              if (composingRef.current || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return
               if (event.key === 'Backspace') acceptedMentionRef.current = null
               if (menu && suggestions.length && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
                 event.preventDefault()
@@ -786,7 +792,7 @@ export const Composer = memo(function Composer({
             />
             <ModelPicker value={model} modelsByProvider={modelsByProvider} providers={providers} onChange={onModelChange} />
             <ExecutingModelChip executingModel={executingModel} />
-            <SelectControl label={t('composer.reasoningEffort')} compact icon={<Gauge size={12} />} value={effort} onChange={(event) => onEffortChange(event.target.value as PrimeThinkingLevel)}>
+            <SelectControl label={t('composer.reasoningEffort')} compact icon={<Gauge size={12} />} value={effort} onChange={(event) => onEffortChange(event.target.value as PrimeEffortSelector)}>
               {reasoningLevels.map((level) => (
                 <option key={level} value={level}>
                   {t(reasoningLabelKeys[level])}

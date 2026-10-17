@@ -47,6 +47,14 @@ function writeOmpSession(file: string, options: {
   ].join('\n'))
 }
 
+it('restores the configured auto selector rather than the resolved concrete level', async () => {
+  const { root, project, service } = setup()
+  mkdirSync(join(root, '-bucket'))
+  const file = join(root, '-bucket', NAME_A)
+  writeOmpSession(file, { cwd: project, entries: [ompEntry('thinking_level_change', 'auto-entry', null, { thinkingLevel: 'high', configured: 'auto' })] })
+  expect((await service.list(undefined, true))[0]?.thinkingLevel).toBe('auto')
+})
+
 function rewriteTitleSlot(file: string, title: string): void {
   const slot = Buffer.from(`${titleSlot(title)}\n`, 'utf8')
   expect(slot.length).toBe(OMP_TITLE_SLOT_BYTES)

@@ -12,11 +12,22 @@ const jpegData = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0]).toString('base64')
 const gifData = Buffer.from('GIF89a....', 'ascii').toString('base64')
 const webpData = Buffer.concat([Buffer.from('RIFF', 'ascii'), Buffer.from([0, 0, 0, 0]), Buffer.from('WEBP', 'ascii')]).toString('base64')
 
+describe('subagent RPC boundary', () => {
+  it('allows subscriptions and registered-id transcript reads', async () => {
+    await expect(validate({ type: 'get_subagents' })).resolves.toEqual({ type: 'get_subagents' })
+    await expect(validate({ type: 'set_subagent_subscription', level: 'events' })).resolves.toEqual({ type: 'set_subagent_subscription', level: 'events' })
+    await expect(validate({ type: 'set_subagent_subscription', level: 'anything' })).rejects.toThrow()
+    await expect(validate({ type: 'get_subagent_messages', subagentId: 'worker', fromByte: 42 })).resolves.toEqual({ type: 'get_subagent_messages', subagentId: 'worker', fromByte: 42 })
+    for (const fromByte of [-1, 1.5, Infinity, '0']) await expect(validate({ type: 'get_subagent_messages', subagentId: 'worker', fromByte })).rejects.toThrow()
+    await expect(validate({ type: 'get_subagent_messages', subagentId: 'worker', sessionFile: '/etc/passwd' })).rejects.toThrow()
+  })
+})
+
 describe('isThinkingLevel', () => {
   it('accepts Prime thinking levels and rejects anything else', () => {
     expect(isThinkingLevel('medium')).toBe(true)
     expect(isThinkingLevel('max')).toBe(true)
-    expect(isThinkingLevel('auto')).toBe(false)
+    expect(isThinkingLevel('auto')).toBe(true)
     expect(isThinkingLevel('')).toBe(false)
   })
 })
@@ -104,7 +115,7 @@ describe('validateRpcCommand settings commands', () => {
 
   it('validates set_thinking_level', async () => {
     await expect(validate({ type: 'set_thinking_level', level: 'high' })).resolves.toEqual({ type: 'set_thinking_level', level: 'high' })
-    await expect(validate({ type: 'set_thinking_level', level: 'auto' })).rejects.toThrow('Invalid thinking level')
+    await expect(validate({ type: 'set_thinking_level', level: 'auto' })).resolves.toEqual({ type: 'set_thinking_level', level: 'auto' })
   })
 
   it('validates set_service_tier', async () => {
