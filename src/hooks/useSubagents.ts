@@ -15,6 +15,7 @@ export interface SubagentView {
 }
 
 export function mergeSubagentMessages(current: Record<string, unknown>[], incoming: unknown[]): Record<string, unknown>[] {
+  if (!incoming.length) return current
   const messages = new Map(current.map((message) => [`${message.role}:${message.timestamp}`, message]))
   for (const raw of incoming) {
     const message = record(raw)
@@ -95,9 +96,13 @@ export function useSubagents(bridge: DesktopApi | null, runtimeId?: string) {
         if (!data || !Array.isArray(data.messages) || typeof data.nextByte !== 'number') throw new Error('Invalid subagent transcript')
         cursor = data.nextByte
         const messages = data.messages
-        setState((current) => current.owner !== runtimeId ? current : ({ ...current, error: undefined, agents: current.agents.map((agent) => agent.id !== selectedId ? agent : {
-          ...agent, messages: mergeSubagentMessages(data.reset === true ? [] : agent.messages, messages),
-        }) }))
+        setState((current) => {
+          if (current.owner !== runtimeId) return current
+          if (!messages.length && data.reset !== true) return current.error ? { ...current, error: undefined } : current
+          return { ...current, error: undefined, agents: current.agents.map((agent) => agent.id !== selectedId ? agent : {
+            ...agent, messages: mergeSubagentMessages(data.reset === true ? [] : agent.messages, messages),
+          }) }
+        })
       } catch (error) {
         if (active) setState((current) => ({ ...current, error: String(error) }))
       }

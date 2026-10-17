@@ -2,6 +2,7 @@ import { defineCatalogFragment } from '../define'
 
 export const agentsFragment = defineCatalogFragment({
   en: {
+    'agents.newContent': 'New output · Jump to latest',
     'execution.unknown': 'Status unavailable',
     'agents.pin': 'Pin agent list',
     'agents.unpin': 'Unpin agent list',
@@ -77,6 +78,7 @@ export const agentsFragment = defineCatalogFragment({
     'slash.compactQueued': 'Compaction will run when the current turn finishes.',
   },
   'zh-TW': {
+    'agents.newContent': '有新輸出 · 回到最新',
     'execution.unknown': '狀態不明',
     'agents.pin': '固定代理清單',
     'agents.unpin': '取消固定代理清單',
@@ -152,6 +154,7 @@ export const agentsFragment = defineCatalogFragment({
     'slash.compactQueued': '內容壓縮將在目前回合結束後執行。',
   },
   'zh-CN': {
+    'agents.newContent': '有新输出 · 回到最新',
     'execution.unknown': '状态不明',
     'agents.pin': '固定代理列表',
     'agents.unpin': '取消固定代理列表',

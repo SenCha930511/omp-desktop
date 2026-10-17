@@ -21,6 +21,13 @@ const catalogSnapshot = (record: SessionRecord, status = record.status): Session
 }
 
 describe('session lifecycle attention', () => {
+  it('keeps non-interactive extension updates from putting a session into waiting', () => {
+    const original = session()
+    for (const method of ['notify', 'setWidget', 'setStatus', 'set_editor_text']) {
+      expect(applySessionLifecycleEvent(original, { type: 'extension_ui_request', id: 'notice', method, message: 'Updated' }, false)).toBe(original)
+    }
+    expect(applySessionLifecycleEvent(original, { type: 'extension_ui_request', method: 'select' }, false)).toBe(original)
+  })
   it('does not mark a visible completion unread', () => {
     const completed = applySessionLifecycleEvent(session(), { type: 'agent_end' }, true, Date.parse('2025-01-01T00:00:01.000Z'))
     expect(completed).toMatchObject({ status: 'complete', unread: false, eventRevision: 1, statusEventRevision: 1 })
@@ -31,8 +38,9 @@ describe('session lifecycle attention', () => {
   })
 
   it('gives repeated background waits and completions distinct attention revisions', () => {
-    const waiting = applySessionLifecycleEvent(session(), { type: 'extension_ui_request' }, false, 1)
-    const waitingAgain = applySessionLifecycleEvent(waiting, { type: 'extension_ui_request' }, false, 1)
+    const question = { type: 'extension_ui_request', id: 'ask', method: 'confirm', title: 'Continue?', message: 'Proceed?' }
+    const waiting = applySessionLifecycleEvent(session(), question, false, 1)
+    const waitingAgain = applySessionLifecycleEvent(waiting, question, false, 1)
     const completed = applySessionLifecycleEvent(waitingAgain, { type: 'agent_end' }, false, 1)
     const completedAgain = applySessionLifecycleEvent(completed, { type: 'agent_end' }, false, 1)
 
@@ -100,7 +108,7 @@ describe('session lifecycle attention', () => {
 describe('catalog merges over live session state', () => {
   it.each([
     ['running', { type: 'agent_start' }],
-    ['waiting', { type: 'extension_ui_request' }],
+    ['waiting', { type: 'extension_ui_request', id: 'ask', method: 'confirm', title: 'Continue?', message: 'Proceed?' }],
     ['complete', { type: 'agent_end' }],
     ['failed', { type: 'transport_error' }],
   ] as const)('does not downgrade renderer-owned %s state with a stale idle catalog record', (expectedStatus, event) => {
@@ -241,7 +249,7 @@ describe('catalog merges over live session state', () => {
   })
 
   it('keeps a waiting badge while its extension-UI request is still open', () => {
-    const waiting = applySessionLifecycleEvent(session(), { type: 'extension_ui_request' }, false, 1)
+    const waiting = applySessionLifecycleEvent(session(), { type: 'extension_ui_request', id: 'ask', method: 'confirm', title: 'Continue?', message: 'Proceed?' }, false, 1)
     expect(sessionAttentionSignature(waiting)).toBe('waiting:1')
 
     const diskRecord: SessionRecord = { ...session(), status: 'running', updatedAt: '2025-01-01T00:00:05.000Z' }

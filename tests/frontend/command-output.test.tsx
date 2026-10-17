@@ -14,19 +14,37 @@ it('shows localized, dismissible command results and isolates workspaces', () =>
   let output: ReturnType<typeof useCommandOutput>
   function Harness({ owner }: { owner: number }) {
     output = useCommandOutput(owner)
-    return <I18nProvider preference="zh-TW"><CommandOutputPanel text={output.text} onClose={output.dismiss} /></I18nProvider>
+    return <I18nProvider preference="zh-TW"><CommandOutputPanel text={output.text} command={output.command} status={output.status} onClose={output.dismiss} /></I18nProvider>
   }
   try {
     act(() => root.render(<Harness owner={1} />))
     act(() => { output.append('first line'); output.append('second line') })
     expect(host.querySelector('section')?.getAttribute('aria-label')).toBe('指令結果')
     expect(host.querySelector('pre')?.textContent).toBe('first line\nsecond line')
-    act(() => host.querySelector<HTMLButtonElement>('button')!.click())
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="關閉指令結果"]')!.click())
     expect(host.querySelector('section')).toBeNull()
     act(() => output.append('another result'))
     act(() => root.render(<Harness owner={2} />))
     expect(host.querySelector('section')).toBeNull()
     act(() => output.append('new workspace'))
     expect(host.textContent).not.toContain('another result')
+    act(() => output.begin('/context'))
+    expect(host.textContent).toContain('正在執行指令')
+    act(() => output.append('\u001b[32mContext\u001b[0m'))
+    act(() => output.finish())
+    expect(host.querySelector('pre')?.textContent).toBe('Context')
+    act(() => host.querySelector<HTMLButtonElement>('[aria-expanded]')!.click())
+    expect(host.querySelector('pre')).toBeNull()
+    act(() => output.begin('/modelpreset list'))
+    act(() => output.finish('Fixture failed'))
+    expect(host.querySelector('.is-failed')).not.toBeNull()
+    expect(host.querySelector('pre')?.textContent).toBe('Fixture failed')
+    act(() => output.begin('/extension-command'))
+    act(() => output.append('Extension rejected the command', true))
+    act(() => output.finish())
+    expect(host.querySelector('.command-output__status')?.textContent).toBe('失敗')
+    act(() => output.begin('/skill:review'))
+    act(() => output.finish(undefined, true))
+    expect(host.querySelector('section')).toBeNull()
   } finally { act(() => root.unmount()) }
 })

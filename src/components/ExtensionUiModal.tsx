@@ -2,6 +2,7 @@ import { type KeyboardEvent, useEffect, useRef, useState } from 'react'
 import type { ExtensionUiQuestion, ExtensionUiRequest } from '@/lib/extension-ui'
 import { useI18n } from '@/lib/i18n'
 import { shortcutLabel } from '@/lib/platform-shortcuts'
+import { commandOutputText } from '@/lib/command-output'
 import { Modal } from './ui'
 
 const OTHER_OPTION = 'Other (type your own answer)'
@@ -189,7 +190,7 @@ export function ExtensionUiModal({ request, onRespond, platform = 'darwin' }: Ex
 
   return (
     <Modal
-      title={request.title}
+      title={commandOutputText(request.title)}
       onClose={cancel}
       footer={
         <>
@@ -249,14 +250,14 @@ export function ExtensionUiModal({ request, onRespond, platform = 'darwin' }: Ex
               {activeQuestion ? (
                 <div className="extension-questionnaire__question">
                   <p className="modal-intro">{t('extensionUi.questionOf', { index: questionIndex + 1, total: request.questions.length })}</p>
-                  <h3>{activeQuestion.title}</h3>
-                  <div className="extension-question__options" role="listbox" aria-label={activeQuestion.title}>
+                  <h3>{commandOutputText(activeQuestion.title)}</h3>
+                  <div className="extension-question__options" role="listbox" aria-label={commandOutputText(activeQuestion.title)}>
                     {activeQuestion.options.map((option, index) => {
                       const isSelected = activeSelected === index
                       return (
                         <button type="button" role="option" aria-selected={isSelected} className={isSelected ? 'is-selected' : ''} key={`${option}-${index}`} onClick={() => commitQuestion(index)}>
                           <span className="extension-question__option-index">{index + 1}</span>
-                          <span>{option}</span>
+                          <span>{commandOutputText(option)}</span>
                         </button>
                       )
                     })}
@@ -299,7 +300,7 @@ export function ExtensionUiModal({ request, onRespond, platform = 'darwin' }: Ex
       {request.method === 'select' ? (
         <div className="extension-question">
           <p className="modal-intro">{t('extensionUi.choose')}</p>
-          <div className="extension-question__options" role="listbox" aria-label={request.title}>
+          <div className="extension-question__options" role="listbox" aria-label={commandOutputText(request.title)}>
             {request.options.map((option, index) => (
               <button
                 type="button"
@@ -314,13 +315,13 @@ export function ExtensionUiModal({ request, onRespond, platform = 'darwin' }: Ex
                 onFocus={() => setSelected(index)}
               >
                 <span className="extension-question__option-index">{index + 1}</span>
-                <span>{option}</span>
+                <span>{commandOutputText(option)}</span>
               </button>
             ))}
           </div>
         </div>
       ) : null}
-      {request.method === 'confirm' ? <p className="modal-intro extension-question__message">{request.message}</p> : null}
+      {request.method === 'confirm' ? <p className="modal-intro extension-question__message">{commandOutputText(request.message)}</p> : null}
       {request.method === 'input' ? (
         <label className="field extension-question__field">
           <span>{t('extensionUi.response')}</span>

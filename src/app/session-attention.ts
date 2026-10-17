@@ -1,4 +1,5 @@
 import type { SessionRecord, SessionStatus } from '@/types/api'
+import { parseExtensionUiRequest } from '@/lib/extension-ui'
 
 interface SessionLifecycleChange {
   status: SessionStatus
@@ -7,7 +8,7 @@ interface SessionLifecycleChange {
 
 export function sessionLifecycleChange(event: Record<string, unknown>): SessionLifecycleChange | undefined {
   const type = typeof event.type === 'string' ? event.type : ''
-  if (type === 'extension_ui_request') return { status: 'waiting', markUnread: true }
+  if (type === 'extension_ui_request' && parseExtensionUiRequest(event)) return { status: 'waiting', markUnread: true }
   if (type === 'agent_start' || type === 'turn_start') return { status: 'running', markUnread: false }
   if (type === 'compaction_start') return { status: 'running', markUnread: false }
   if (type === 'compaction_end' && event.willRetry !== true && (event.reason === 'manual' || event.reason === 'requested')) return { status: 'complete', markUnread: false }

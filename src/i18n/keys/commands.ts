@@ -2,6 +2,13 @@ import { defineCatalogFragment } from '../define'
 
 export const commandsFragment = defineCatalogFragment({
   'en': {
+    'slash.output.running': 'Running command…',
+    'slash.output.completed': 'Completed',
+    'slash.output.failed': 'Failed',
+    'slash.output.noOutput': 'Command completed without text output.',
+    'slash.output.copy': 'Copy command output',
+    'slash.output.copied': 'Command output copied',
+    'slash.output.copyFailed': 'Could not copy command output.',
     'slash.command.model': "Show current model",
     'slash.command.switch': "Switch session model",
     'slash.command.effort': "Set reasoning effort",
@@ -26,6 +33,13 @@ export const commandsFragment = defineCatalogFragment({
     'slash.command.security': "Manage security scans",
   },
   'zh-TW': {
+    'slash.output.running': '正在執行指令…',
+    'slash.output.completed': '已完成',
+    'slash.output.failed': '失敗',
+    'slash.output.noOutput': '指令已完成，沒有文字輸出。',
+    'slash.output.copy': '複製指令輸出',
+    'slash.output.copied': '已複製指令輸出',
+    'slash.output.copyFailed': '無法複製指令輸出。',
     'slash.command.model': "查看目前模型",
     'slash.command.switch': "切換此對話的模型",
     'slash.command.effort': "設定推理強度",
@@ -50,6 +64,13 @@ export const commandsFragment = defineCatalogFragment({
     'slash.command.security': "管理安全掃描",
   },
   'zh-CN': {
+    'slash.output.running': '正在执行指令…',
+    'slash.output.completed': '已完成',
+    'slash.output.failed': '失败',
+    'slash.output.noOutput': '指令已完成，没有文本输出。',
+    'slash.output.copy': '复制指令输出',
+    'slash.output.copied': '已复制指令输出',
+    'slash.output.copyFailed': '无法复制指令输出。',
     'slash.command.model': "查看当前模型",
     'slash.command.switch': "切换此对话的模型",
     'slash.command.effort': "设置推理强度",

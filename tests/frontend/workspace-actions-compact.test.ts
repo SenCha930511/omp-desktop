@@ -67,6 +67,8 @@ function fixture({ runtime: configuredRuntime = null, sessionStatus = 'idle', ow
   const queuePrompt = vi.fn()
   const setToast = vi.fn()
   const reportError = vi.fn()
+  const onCommandStart = vi.fn()
+  const onCommandFinish = vi.fn()
   const workspace = {
     runtime: currentRuntime,
     workspaceRef,
@@ -116,9 +118,11 @@ function fixture({ runtime: configuredRuntime = null, sessionStatus = 'idle', ow
     closeTerminalForSession: vi.fn(),
     clearSessionAttention: vi.fn(),
     reportError,
+    onCommandStart,
+    onCommandFinish,
   } as unknown as WorkspaceActionsDeps))
 
-  return { actions, command, start, followUp, queuePrompt, setToast, reportError, messages: () => messages }
+  return { actions, command, start, followUp, queuePrompt, setToast, reportError, onCommandStart, onCommandFinish, messages: () => messages }
 }
 
 describe('/compact dispatch', () => {
@@ -151,6 +155,17 @@ describe('/compact dispatch', () => {
     expect(state.command).toHaveBeenCalledWith('idle-runtime', expect.objectContaining({ type: 'prompt', message: '/context' }))
     expect(state.messages().some((message) => message.streaming)).toBe(false)
     expect(state.messages().filter((message) => message.role === 'assistant')).toEqual([])
+    expect(state.messages()).toEqual([])
+    expect(state.onCommandStart).toHaveBeenCalledWith('/context')
+    expect(state.onCommandFinish).toHaveBeenCalledWith(undefined, false)
+  })
+
+  it('reports command errors in the output panel without adding an assistant error turn', async () => {
+    const state = fixture({ runtime: runtime() })
+    state.command.mockRejectedValueOnce(new Error('Command failed'))
+    await expect(state.actions.sendPrompt('/context')).rejects.toThrow('Command failed')
+    expect(state.onCommandFinish).toHaveBeenCalledWith('Request failed: Command failed')
+    expect(state.messages().filter((message) => message.role === 'assistant' || message.role === 'system')).toEqual([])
   })
 
   it('queues slash commands instead of steering them into the model', async () => {

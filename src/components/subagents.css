@@ -26,6 +26,10 @@
 .subagents__agent.is-waiting { box-shadow: inset 2px 0 var(--warning); }
 .subagents__agent.is-failed { box-shadow: inset 2px 0 var(--danger); }
 .subagents__page { display: flex; flex: 1; min-height: 0; overflow: hidden; }
+.subagents__page[hidden] { display: none; }
+.subagents__transcript { position: relative; }
+.subagents__messages .transcript__inner { padding: 0; width: 100%; max-width: calc(var(--transcript-measure) - 56px); margin: 0 auto; }
+.subagents__jump { position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 6px; border: 1px solid var(--border); border-radius: 20px; padding: 7px 12px; background: var(--surface-raised); color: var(--text-secondary); font: inherit; cursor: pointer; box-shadow: var(--shadow-popover); }
 .subagents__transcript { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; width: 100%; color: var(--text); font-size: 14px; line-height: 1.65; }
 .subagents__overview { flex-shrink: 0; overflow-y: auto; scrollbar-gutter: stable; padding: 14px 24px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); background: var(--canvas); }
 .subagents__overview > * { max-width: 720px; margin-left: auto; margin-right: auto; }

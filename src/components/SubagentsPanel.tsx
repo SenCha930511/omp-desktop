@@ -1,5 +1,5 @@
 import { Bot, ChevronDown, MessageSquare, Users } from 'lucide-react'
-import { useMemo, useState, type ReactNode } from 'react'
+import { memo, useEffect, useMemo, useState, type ReactNode } from 'react'
 import type { SubagentView, useSubagents } from '@/hooks/useSubagents'
 import { string } from '@/lib/events/parse'
 import { subagentTranscript } from '@/lib/subagent-transcript'
@@ -9,12 +9,14 @@ import { subagentExecution } from '@/lib/subagent-activity'
 import type { ExecutionState } from '@/lib/execution-state'
 import { ExecutionStatus } from './ExecutionStatus'
 import { SubagentRoster } from './SubagentRoster'
+import { useTranscriptScroll } from './transcript/scroll'
 import './subagents.css'
 
-function AgentTranscript({ agent, showReasoning, showTools }: { agent: SubagentView; showReasoning: boolean; showTools: boolean }) {
+const AgentTranscript = memo(function AgentTranscript({ agent, showReasoning, showTools, active }: { agent: SubagentView; showReasoning: boolean; showTools: boolean; active: boolean }) {
   const { t, locale } = useI18n()
   const progress = agent.progress
   const messages = useMemo(() => subagentTranscript(agent.messages, agent.status === 'running'), [agent.messages, agent.status])
+  const { scrollRef, updatePinnedState, awayFromBottom, scrollToBottom, visibleMessages, hiddenCount, showEarlier, hasNewContent } = useTranscriptScroll(messages, active)
   const execution = useMemo(() => subagentExecution(agent), [agent])
   const metrics = [
     [t('agents.tools'), progress?.toolCount], [t('agents.requests'), progress?.requests], [t('agents.tokens'), progress?.tokens],
@@ -33,16 +35,18 @@ function AgentTranscript({ agent, showReasoning, showTools }: { agent: SubagentV
     {typeof progress?.resolvedModel === 'string' && <p className="subagents__model">{progress.resolvedModel}</p>}
     </details>
     </div>
-    <div className="subagents__messages">
+    <div className="subagents__messages" ref={scrollRef} onScroll={updatePinnedState}><div className="transcript__inner">
+    {hiddenCount > 0 && <button type="button" className="transcript__show-earlier" onClick={showEarlier}>{t('transcript.showEarlier', { count: Math.min(hiddenCount, 250) })}</button>}
     {!messages.length && agent.status === 'running' && <div className="subagents__empty"><p>{t('agents.waiting')}</p></div>}
-    {messages.map((message) => message.role === 'user'
+    {visibleMessages.map((message) => message.role === 'user'
       ? <details className="subagents__instruction" key={message.id}><summary>{t('agents.parentInstruction')}</summary><div><UserMessage message={message} /></div></details>
       : <div className="subagents__message" key={message.id}>{message.role === 'assistant'
         ? <AssistantMessage message={message} showReasoning={showReasoning} showTools={showTools} />
         : <ActivityMessage message={message} />}</div>)}
-    </div>
+    </div></div>
+    {awayFromBottom && <button type="button" className="subagents__jump" onClick={scrollToBottom}><ChevronDown size={14} />{t(hasNewContent ? 'agents.newContent' : 'transcript.jumpToBottom')}</button>}
   </article>
-}
+})
 
 export function SubagentsPanel({ state, connected, showReasoning = true, showTools = true, pinned = false, onPinnedChange, execution, children }: {
   state: ReturnType<typeof useSubagents>; connected: boolean; showReasoning?: boolean; showTools?: boolean
@@ -50,7 +54,9 @@ export function SubagentsPanel({ state, connected, showReasoning = true, showToo
 }) {
   const { t } = useI18n()
   const [open, setOpen] = useState(false)
+  const [visited, setVisited] = useState<string[]>([])
   const selected = state.agents.find((agent) => agent.id === state.selectedId)
+  useEffect(() => { if (selected) setVisited((ids) => ids.includes(selected.id) ? ids : [...ids, selected.id]) }, [selected?.id])
   const selectedExecution = useMemo(() => selected ? subagentExecution(selected) : undefined, [selected])
   const running = state.agents.filter((agent) => agent.status === 'running').length
   const back = () => { state.select(undefined); setOpen(false) }
@@ -72,9 +78,9 @@ export function SubagentsPanel({ state, connected, showReasoning = true, showToo
     {error && (open || pinned || selected) && <p className="subagents__error" role="alert">{error}</p>}
     <div className="subagents__body">
     {children}
-    {selected && <div className="subagents__page">
-      <AgentTranscript key={selected.id} agent={selected} showReasoning={showReasoning} showTools={showTools} />
-    </div>}
+    {state.agents.filter((agent) => agent.id === selected?.id || visited.includes(agent.id)).map((agent) => <div className="subagents__page" key={`${agent.id}:${agent.revision ?? 0}`} hidden={agent.id !== selected?.id}>
+      <AgentTranscript agent={agent} active={agent.id === selected?.id} showReasoning={showReasoning} showTools={showTools} />
+    </div>)}
     {pinned && roster}
     </div>
   </section>

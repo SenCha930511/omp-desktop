@@ -59,6 +59,16 @@ async function clickButton(button: HTMLButtonElement): Promise<void> {
 }
 
 describe('extension questionnaire keyboard handling', () => {
+  it('displays styled terminal options as text and returns the original option value', async () => {
+    const onRespond = vi.fn()
+    const rawOption = '\u001b[32mStable\u001b[0m'
+    await act(async () => root.render(<ExtensionUiModal request={{ method: 'select', id: 'styled', title: '\u001b[1mSelect model\u001b[0m', options: [rawOption, 'Other'] }} onRespond={onRespond} />))
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain('Select model')
+    const option = document.querySelector<HTMLButtonElement>('[role="option"]')!
+    expect(option.textContent).toBe('1Stable')
+    await clickButton(option)
+    expect(onRespond).toHaveBeenCalledWith({ value: rawOption })
+  })
   it('leaves Tab to the focus trap instead of hijacking it for question navigation', async () => {
     await act(async () => { root.render(<ExtensionUiModal request={request} onRespond={vi.fn()} />) })
     const optionButton = questionnaireElement().querySelector<HTMLButtonElement>('.extension-question__options button')!

@@ -36,10 +36,21 @@ export const DEFERRED_SLASH_COMMANDS = [
 
 export const DEFERRED_TUI_MODES = ['plan', 'plan-review', 'vibe', 'goal', 'guided-goal', 'loop', 'queue'] as const
 
+export function parseSlashInvocation(prompt: string): { name: string; args: string } | undefined {
+  const match = /^\/([^\s:]+)(?:[\s:]([\s\S]*))?$/.exec(prompt.trim())
+  return match ? { name: match[1], args: match[2]?.trim() ?? '' } : undefined
+}
+
+export function tuiOnlySubcommand(name: string, args: string): boolean {
+  const verb = args.split(/\s+/)[0].toLowerCase()
+  return (name === 'todo' && ['edit', 'expand', 'collapse'].includes(verb)) || (name === 'advisor' && verb === 'configure')
+}
+
 export function deferredSlashCommand(prompt: string): string | undefined {
-  if (/^\/(?:todo\s+edit|advisor\s+configure)(?:\s|$)/.test(prompt.trim())) return prompt.trim().slice(1)
-  const name = /^\/([^\s:]+)/.exec(prompt.trim())?.[1]
-  return [...DEFERRED_SLASH_COMMANDS, ...DEFERRED_TUI_MODES].find((command) => command === name)
+  const invocation = parseSlashInvocation(prompt)
+  if (!invocation) return
+  if (tuiOnlySubcommand(invocation.name, invocation.args)) return `${invocation.name} ${invocation.args}`
+  return [...DEFERRED_SLASH_COMMANDS, ...DEFERRED_TUI_MODES].find((command) => command === invocation.name)
 }
 
 // Useful before the first runtime starts; a live catalog replaces this list.
@@ -63,7 +74,10 @@ export const INITIAL_SLASH_COMMANDS: SlashCommand[] = [
 ].map(([name, description]) => ({ name, description, source: 'builtin' }))
 
 export function slashSuggestions(commands: SlashCommand[], value: string) {
-  const query = value.slice(1).toLowerCase()
+  const rawQuery = value.slice(1).toLowerCase()
+  const colon = rawQuery.indexOf(':')
+  const query = colon >= 0 && commands.some((item) => item.subcommands && (item.name === rawQuery.slice(0, colon) || item.aliases?.includes(rawQuery.slice(0, colon))))
+    ? `${rawQuery.slice(0, colon)} ${rawQuery.slice(colon + 1)}` : rawQuery
   const [name, ...args] = query.split(/\s+/)
   if (args.length) {
     const command = commands.find((item) => item.name === name || item.aliases?.includes(name))

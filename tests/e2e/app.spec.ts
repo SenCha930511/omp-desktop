@@ -292,6 +292,25 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   } else if (command.type === 'prompt' || command.type === 'follow_up') {
     fs.writeFileSync(marker('prompt-args.json'), JSON.stringify(command))
     const message = typeof command.message === 'string' ? command.message : ''
+    if (message === '/modelpreset list') {
+      send({ type: 'command_output', text: '\\u001b[32mModel presets\\u001b[0m\\r\\nfixture-default' })
+      send({ type: 'extension_ui_request', id: 'fixture-notice', method: 'notify', message: 'Preset list loaded', notifyType: 'info' })
+      setTimeout(() => send({ id: command.id, type: 'response', command: command.type, success: true, data: { agentInvoked: false } }), 600)
+      return
+    }
+    if (message === '/fixture-empty') {
+      send({ id: command.id, type: 'response', command: command.type, success: true, data: { agentInvoked: false } })
+      return
+    }
+    if (message === '/fixture-notify-error') {
+      send({ type: 'extension_ui_request', id: 'fixture-error-notice', method: 'notify', message: 'Extension command rejected', notifyType: 'error' })
+      send({ id: command.id, type: 'response', command: command.type, success: true, data: { agentInvoked: false } })
+      return
+    }
+    if (message === '/fixture-failure') {
+      send({ id: command.id, type: 'response', command: command.type, success: false, error: 'Fixture command failed' })
+      return
+    }
     if (message === 'subagent overview fixture') {
       send({ type: 'subagent_lifecycle', payload: { id: 'running-worker', agent: 'Explore', status: 'started', description: 'Inspect active module' } })
       send({ type: 'subagent_progress', payload: { progress: { id: 'running-worker', status: 'running', currentTool: 'bash', currentToolIntent: 'Running tests', durationMs: 12000 } } })
@@ -525,6 +544,11 @@ test.describe('OMP Desktop desktop smoke', () => {
       expect(columns.instruction.left).toBeCloseTo(columns.heading.left, 0)
     }
     await page.setViewportSize({ width: 1280, height: 900 })
+    await expect.poll(() => page.locator('.subagents__transcript').evaluate((element) => {
+      const heading = element.querySelector('.subagents__heading')!.getBoundingClientRect()
+      const message = element.querySelector('.subagents__message')!.getBoundingClientRect()
+      return Math.abs(heading.left - message.left) + Math.abs(heading.right - message.right)
+    })).toBeLessThan(1)
     await expect(page.locator('.subagents__footnote')).toHaveCount(0)
     const overviewTop = await page.locator('.subagents__overview').evaluate((element) => element.getBoundingClientRect().top)
     await page.locator('.subagents__messages').evaluate((element) => { element.scrollTop = element.scrollHeight })
@@ -576,11 +600,22 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(roster.locator('.subagents__agent').nth(1)).toHaveAttribute('aria-label', /Reviewer · Failed/)
     await expect(roster.locator('.subagents__agent').nth(2)).toContainText('Running tests')
     await roster.getByRole('button', { name: /Task · Waiting for input/ }).click()
-    await expect(page.locator('.subagents__heading h2')).toHaveText('Task')
+    const activeAgent = page.locator('.subagents__page:not([hidden])')
+    await expect(activeAgent.locator('.subagents__heading h2')).toHaveText('Task')
+    await activeAgent.locator('.subagents__details summary').click()
+    await activeAgent.locator('.work-disclosure__button').click()
+    await activeAgent.locator('.subagents__messages').evaluate((element) => { element.scrollTop = 200; element.dispatchEvent(new Event('scroll')) })
+    const previousTop = await activeAgent.locator('.subagents__messages').evaluate((element) => element.scrollTop)
+    expect(previousTop).toBeGreaterThan(0)
     await expect(roster).toBeVisible()
     await roster.getByRole('button', { name: /Reviewer · Failed/ }).click()
-    await expect(page.locator('.subagents__heading h2')).toHaveText('Reviewer')
-    await expect(page.locator('.subagents__heading')).toContainText('Fixture review failed')
+    await expect(activeAgent.locator('.subagents__heading h2')).toHaveText('Reviewer')
+    await expect(activeAgent.locator('.subagents__heading')).toContainText('Fixture review failed')
+    await roster.getByRole('button', { name: /Task · Waiting for input/ }).click()
+    await expect(activeAgent.locator('.subagents__details')).toHaveJSProperty('open', true)
+    await expect(activeAgent.locator('.work-disclosure__button')).toHaveAttribute('aria-expanded', 'true')
+    await expect.poll(() => activeAgent.locator('.subagents__messages').evaluate((element) => element.scrollTop)).toBeCloseTo(previousTop, 0)
+    await expect(activeAgent.getByRole('button', { name: /Jump to/ })).toBeVisible()
     await page.getByRole('button', { name: 'Conversation', exact: true }).click()
     await expect(page.getByRole('combobox', { name: 'Message OMP' })).toBeVisible()
     const positions = await page.locator('.subagents__body').evaluate((element) => {
@@ -600,6 +635,43 @@ test.describe('OMP Desktop desktop smoke', () => {
     await page.getByRole('button', { name: 'Close agent list', exact: true }).click()
     await expect(page.locator('.subagents__roster')).toHaveCount(0)
     await expect.poll(async () => page.evaluate(async () => (await window.desktop.settings.get()).subagentsPanelPinned)).toBe(false)
+  })
+
+  test('adapts terminal command output, notifications, empty results and failures to the desktop panel', async () => {
+    await expect(page.locator('.model-picker__trigger')).toHaveAccessibleName('Model: Claude Fixture')
+    const composer = page.getByRole('combobox', { name: 'Message OMP' })
+    const panel = page.getByRole('region', { name: 'Command result', exact: true })
+    await composer.fill('/modelpreset list')
+    await composer.press('Enter')
+    await expect(panel.getByRole('status')).toHaveText('Running command…')
+    await expect(panel.getByRole('status')).toHaveText('Completed')
+    await expect(page.locator('.subagents__toolbar > .execution-status')).not.toContainText('Waiting for input')
+    await expect(panel.locator('pre')).toHaveText('Model presets\nfixture-default\nPreset list loaded')
+    await expect(page.locator('.transcript .user-bubble').filter({ hasText: '/modelpreset list' })).toHaveCount(0)
+    await expect(page.locator('.transcript .thinking-dots')).toHaveCount(0)
+    await panel.locator('button[aria-expanded]').click()
+    await expect(panel.locator('pre')).toHaveCount(0)
+    await panel.locator('button[aria-expanded]').click()
+    await page.screenshot({ path: test.info().outputPath('native-command-panel.png') })
+    await composer.fill('/fixture-empty')
+    await composer.press('Enter')
+    await expect(panel).toContainText('Command completed without text output.')
+    await expect(panel).not.toContainText('fixture-default')
+    await composer.fill('/fixture-notify-error')
+    await composer.press('Enter')
+    await expect(panel.getByRole('status')).toHaveText('Failed')
+    await expect(panel.locator('pre')).toContainText('Extension command rejected')
+    await composer.fill('/fixture-failure')
+    await composer.press('Enter')
+    await expect(panel.getByRole('status')).toHaveText('Failed')
+    await expect(panel.locator('pre')).toContainText('Fixture command failed')
+    await expect(composer).toHaveValue('/fixture-failure')
+    await composer.fill('/todo:expand')
+    await composer.press('Enter')
+    await expect(panel.locator('pre')).toContainText('uses a terminal selector')
+    await expect(composer).toHaveValue('/todo:expand')
+    const delivered = JSON.parse(readFileSync(join(fixtureRoot, 'prompt-args.json'), 'utf8'))
+    expect(delivered.message).toBe('/fixture-failure')
   })
 
   test('localizes agent controls, command results and delete confirmation in Chinese', async () => {

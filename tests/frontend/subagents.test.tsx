@@ -1,14 +1,36 @@
 // @vitest-environment jsdom
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 import { applySubagentFrame, mergeSubagentMessages } from '../../src/hooks/useSubagents'
 import { SubagentsPanel } from '../../src/components/SubagentsPanel'
 import { I18nProvider } from '../../src/lib/i18n'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
+beforeEach(() => {
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 1 })
+  vi.stubGlobal('cancelAnimationFrame', vi.fn())
+})
+afterEach(() => vi.unstubAllGlobals())
 
 describe('subagent observability', () => {
+  it('retains disclosure state and the mounted transcript when switching agents', () => {
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    const agents = ['a', 'b'].map((id) => ({ id, agent: id, status: 'completed', messages: [{ role: 'assistant', timestamp: 1, content: [{ type: 'thinking', thinking: `Reasoning ${id}` }] }] }))
+    const render = (selectedId: string | undefined) => act(() => root.render(<SubagentsPanel connected state={{ agents, selectedId, select: vi.fn(), error: undefined }} />))
+    try {
+      render('a')
+      const transcript = host.querySelector('.subagents__messages')
+      act(() => host.querySelector<HTMLButtonElement>('.work-disclosure__button')!.click())
+      render('b')
+      render(undefined)
+      render('a')
+      expect(host.querySelector('.subagents__page:not([hidden]) .subagents__messages')).toBe(transcript)
+      expect(host.querySelector('.subagents__page:not([hidden]) .work-disclosure__button')?.getAttribute('aria-expanded')).toBe('true')
+    } finally { act(() => root.unmount()) }
+  })
   it('switches all new chrome and statuses with the UI language while preserving agent output', () => {
     const host = document.createElement('div')
     const root = createRoot(host)

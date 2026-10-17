@@ -577,6 +577,8 @@ export default function App() {
       if (value === true) submissionGenerationRef.current = workspace.workspaceRef.current.generation
       setSubmitting(value)
     },
+    onCommandStart: commandOutput.begin,
+    onCommandFinish: commandOutput.finish,
     refreshSchedules,
     resetBrowserView: () => setBrowserGeneration((value) => value + 1),
     closeTerminalForSession: (sessionPath) => {
@@ -1074,7 +1076,7 @@ export default function App() {
                       />
                     </Suspense>
                     <ConversationDock>
-                      <CommandOutputPanel text={commandOutput.text} onClose={commandOutput.dismiss} />
+                      <CommandOutputPanel text={commandOutput.text} command={commandOutput.command} status={commandOutput.status} onClose={commandOutput.dismiss} />
                       <Composer
                         availableCommands={workspace.runtime?.availableCommands}
                         key={

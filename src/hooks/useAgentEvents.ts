@@ -19,7 +19,7 @@ interface UseAgentEventsOptions {
   clearQueuedPromptFlushFailures?(): void
   clearQueuedPrompts?(): void
   queueAgentEvent(event: Record<string, unknown>): void
-  onCommandOutput?(text: string): void
+  onCommandOutput?(text: string, failed?: boolean): void
   reconcileTranscriptForEvent(runtimeId: string, event: Record<string, unknown>): void
   showExtensionUi(runtimeId: string, event: Record<string, unknown>): void
   clearExtensionUi(runtimeId?: string): void
@@ -84,6 +84,10 @@ export function useAgentEvents({
       }
       if (type === 'command_output') {
         if (typeof event.text === 'string') onCommandOutput?.(event.text)
+        return
+      }
+      if (type === 'extension_ui_request' && event.method === 'notify') {
+        if (typeof event.message === 'string') onCommandOutput?.(event.message, event.notifyType === 'error')
         return
       }
       if (type === 'available_commands_update') {

@@ -44,6 +44,8 @@ export interface WorkspaceActionsDeps {
   closeTerminalForSession(sessionPath: string): void
   clearSessionAttention(session: SessionRecord): void
   reportError(error: unknown): void
+  onCommandStart?(command: string): void
+  onCommandFinish?(failure?: string, agentInvoked?: boolean): void
 }
 
 export type McpCommand = { type: 'open' } | { type: 'authenticate'; server?: string }
@@ -304,7 +306,10 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     const deferred = deferredSlashCommand(prompt)
     const locale = resolveLocale(settingsState.settings.locale ?? 'system')
     if (deferred) {
-      throw new Error(translate(locale, 'slash.error.deferred', { command: deferred }))
+      const error = new Error(translate(locale, 'slash.error.deferred', { command: deferred }))
+      getDeps().onCommandStart?.(prompt.trim())
+      getDeps().onCommandFinish?.(error.message)
+      throw error
     }
     const slashCommand = /^\/\S+/.test(prompt.trim())
     const compactCommand = /^\/compact\s+(?:soft|remote|snapcompact)(?:\s|$)/.test(prompt.trim()) ? undefined : parseCompactCommand(prompt)
@@ -453,6 +458,7 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
         }
         let startedRuntime = false
         let startedSessionNeedsTitle = false
+        if (slashCommand && !compactCommand) getDeps().onCommandStart?.(prompt.trim())
         if (!activeRuntime) {
           workspace.attachRuntime(undefined, generation)
           if (images.length > 0 && selected.sessionFile && selectedSession?.status === 'running') {
@@ -516,10 +522,11 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
           const data = response.data as { agentInvoked?: boolean } | undefined
           if (data?.agentInvoked === false && workspace.workspaceRef.current.generation === generation) {
             workspace.setRuntime((current) => current?.runtimeId === activeRuntime.runtimeId ? { ...current, isStreaming: false } : current)
-            workspace.setMessages((items) => items.filter((item) => item.id !== pendingAssistantId || item.parts.length > 0).map((item) => item.id === pendingAssistantId ? { ...item, streaming: false } : item))
+            workspace.setMessages((items) => items.filter((item) => (item.id !== userMessage.id || !slashCommand) && (item.id !== pendingAssistantId || item.parts.length > 0)).map((item) => item.id === pendingAssistantId ? { ...item, streaming: false } : item))
           }
+          if (slashCommand && !compactCommand && workspace.workspaceRef.current.generation === generation) getDeps().onCommandFinish?.(undefined, data?.agentInvoked !== false)
           completeQueuedFlush()
-          if (startedRuntime && startedSessionNeedsTitle) {
+          if (startedRuntime && startedSessionNeedsTitle && data?.agentInvoked !== false) {
             void titleStartedSession({
               bridge,
               harness: activeHarness,
@@ -542,6 +549,11 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
         if (workspace.workspaceRef.current.generation !== generation) return
         const failure = requestFailureMessage(error)
         if (startedPrompt) workspace.setRuntime((current) => current ? { ...current, isStreaming: false } : current)
+        if (slashCommand && !compactCommand) {
+          getDeps().onCommandFinish?.(failure)
+          workspace.setMessages((items) => items.filter((item) => item.id !== pendingAssistantId || item.parts.length > 0).map((item) => item.id === pendingAssistantId ? { ...item, streaming: false } : item))
+          throw error
+        }
         workspace.setMessages((items) => {
           if (pendingAssistantAppended) items = items.filter((item) => item.id !== pendingAssistantId || item.parts.length > 0)
           const finalized = startedPrompt

@@ -5,3 +5,12 @@
 .command-output button:hover { background: var(--surface-hover); color: var(--text); }
 .command-output button:focus-visible { outline: 2px solid var(--focus); }
 .command-output pre { margin: 0; padding: 12px 14px; max-height: min(240px, 30vh); overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-family: 'SFMono-Regular', Menlo, monospace; font-size: 12px; line-height: 1.6; }
+.command-output header { gap: 8px; padding: 7px 9px; }
+.command-output .command-output__summary { display: flex; flex: 1; min-width: 0; gap: 7px; justify-content: flex-start; text-align: left; }
+.command-output__summary > span:first-of-type { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.command-output__summary > svg { flex-shrink: 0; }
+.command-output__summary .is-collapsed { transform: rotate(-90deg); }
+.command-output__actions { display: flex; gap: 4px; flex-shrink: 0; }
+.command-output__status { margin-left: auto; flex-shrink: 0; color: var(--text-tertiary); font-size: 11px; }
+.command-output.is-failed .command-output__status, .command-output p[role="alert"] { color: var(--danger); }
+.command-output p[role="alert"] { margin: 4px 12px; font-size: 12px; }
