@@ -32,11 +32,12 @@ import { HARNESS_AGENT_NAMES, HARNESS_PRODUCT_NAMES, HARNESS_SHORT_NAMES } from 
 import { I18nProvider, useI18n } from '@/lib/i18n'
 import { detectRendererPlatform } from '@/lib/platform-shortcuts'
 import { activeProjectScriptKind, ProjectScriptBusyError, setupNeedsRun } from '@/lib/project-scripts'
-import { createSingleFlightAdmission, findProjectForSession, gitStatusForWorkspace, shouldRefreshGitOnSessionTransition, workspaceCwd } from '@/lib/workspace'
+import { createSingleFlightAdmission, findProjectForSession, gitStatusForWorkspace, shouldRefreshGitOnSessionTransition, turnFileDeltas, workspaceCwd } from '@/lib/workspace'
 import {
   type AutomationScheduleRecord,
   type CheckoutAction,
   type CheckoutCatalog,
+  type GitFileChange,
   type GitStatus,
   HARNESS_IDS,
   type HarnessId,
@@ -132,6 +133,11 @@ export default function App() {
   const [submitting, setSubmitting] = useState(false)
   const { toast, setToast } = useToast()
   const [changesCardDismissed, setChangesCardDismissed] = useState(false)
+  /** Edits attributed to the last completed turn; null until a turn finishes in this window. */
+  const [turnChanges, setTurnChanges] = useState<GitFileChange[] | null>(null)
+  const turnBaselineRef = useRef<GitFileChange[] | null>(null)
+  const turnInFlightRef = useRef(false)
+  const turnResultPendingRef = useRef(false)
   const submissionAdmissionRef = useRef(createSingleFlightAdmission())
   const queuedFlushRef = useRef(false)
   const gitRequestRef = useRef(0)
@@ -265,8 +271,8 @@ export default function App() {
     setChangesCardDismissed(false)
   }, [activeCwd])
   useEffect(() => {
-    if (!git.files.length || !settingsState.settings.showFileChangesPopup) setChangesCardDismissed(false)
-  }, [git.files.length, settingsState.settings.showFileChangesPopup])
+    if (!turnChanges?.length || !settingsState.settings.showFileChangesPopup) setChangesCardDismissed(false)
+  }, [turnChanges?.length, settingsState.settings.showFileChangesPopup])
   const closeSmallestPanels = useCallback(
     (patch: { sidebarOpen?: false; inspectorOpen?: false }) => {
       void settingsState.updateSettings(patch)
@@ -346,12 +352,16 @@ export default function App() {
     }
   }, [activeCwd, bridge, reportError, workspace.workspaceRef])
   const undoChanges = useCallback(async () => {
-    if (!bridge || !activeCwd || !git.files.length) return
-    const paths = git.files.map((file) => file.path)
+    const files = turnChanges ?? []
+    if (!bridge || !activeCwd || !files.length) return
+    const paths = files.map((file) => file.path)
     const restored = await bridge.git.restore(activeCwd, paths)
     setToast(restored ? t('changes.card.undone') : t('changes.error.restore', { count: paths.length }))
-    if (restored) void refreshGit()
-  }, [bridge, activeCwd, git.files, refreshGit, t])
+    if (restored) {
+      setTurnChanges([])
+      void refreshGit()
+    }
+  }, [bridge, activeCwd, turnChanges, refreshGit, t])
 
   useAgentEvents({
     bridge,
@@ -838,6 +848,30 @@ export default function App() {
 
   const harnessQueuedMessageCount = workspace.runtime?.sessionActions?.queuedCount ?? 0
   const busy = Boolean(workspace.runtime?.isStreaming || workspace.runtime?.isCompacting || harnessQueuedMessageCount > 0 || workspace.messages.some((message) => message.streaming))
+  /* The changes card reports only what a completed turn introduced: the dirty
+     set captured when the turn began is the baseline, and per-file deltas are
+     recomputed on every status refresh until the next turn starts. A fresh
+     window that has not finished a turn shows no card even when the working
+     tree carries older edits. */
+  useEffect(() => {
+    if (busy) {
+      if (!turnInFlightRef.current) {
+        turnInFlightRef.current = true
+        turnBaselineRef.current = git.files
+      }
+      setTurnChanges(null)
+      return
+    }
+    if (turnInFlightRef.current) {
+      turnInFlightRef.current = false
+      turnResultPendingRef.current = true
+      void refreshGit()
+    }
+    if (!turnResultPendingRef.current || !turnBaselineRef.current) return
+    setTurnChanges(turnFileDeltas(git.files, turnBaselineRef.current))
+  }, [busy, git.files, refreshGit])
+
+  const turnGit = useMemo(() => ({ ...git, files: turnChanges ?? [] }), [git, turnChanges])
   const externalSessionRunning = Boolean(activeSession?.status === 'running' && workspace.runtime?.sessionFile !== activeSession.filePath)
   const queuedMessages = useMemo<QueuedPrompt[]>(() => workspace.pendingQueuedPrompts.filter((pending) => pending.intent === 'queue'), [workspace.pendingQueuedPrompts])
   useEffect(() => {
@@ -994,7 +1028,7 @@ export default function App() {
                       <Transcript
                         key={workspace.activeSessionId ?? 'new-session'}
                         messages={workspace.messages}
-                        git={git}
+                        git={turnGit}
                         harness={activeHarness}
                         loading={workspace.loadingSession}
                         active={busy || activeSession?.status === 'running'}
@@ -1005,7 +1039,7 @@ export default function App() {
                           void sendPrompt(prompt).catch(() => undefined)
                         }}
                         suggestionsDisabled={!activeProject || workspace.loadingSession || submitting}
-                        showChangesCard={Boolean(git.files.length && settingsState.settings.showFileChangesPopup && !changesCardDismissed)}
+                        showChangesCard={Boolean(turnChanges?.length && settingsState.settings.showFileChangesPopup && !changesCardDismissed)}
                         onDismissChanges={() => setChangesCardDismissed(true)}
                         onUndoChanges={() => {
                           void undoChanges()

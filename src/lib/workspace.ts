@@ -1,4 +1,4 @@
-import type { GitStatus, ProjectRecord, RuntimeInfo, SessionRecord } from '@/types/api'
+import type { GitFileChange, GitStatus, ProjectRecord, RuntimeInfo, SessionRecord } from '@/types/api'
 
 
 export interface OwnedGitStatus {
@@ -11,6 +11,23 @@ export const EMPTY_GIT_STATUS: GitStatus = Object.freeze({ isRepo: false, files:
 
 export function gitStatusForWorkspace(snapshot: OwnedGitStatus, cwd?: string): GitStatus {
   return cwd && snapshot.cwd === cwd ? snapshot.status : EMPTY_GIT_STATUS
+}
+
+/** Per-file edits a turn introduced: new dirty files count fully, files that
+    were already dirty count only the growth over the turn-start baseline, and
+    untouched dirty files drop out entirely. A null baseline means no turn has
+    run in this window, so nothing is attributable yet. */
+export function turnFileDeltas(current: readonly GitFileChange[], baseline: readonly GitFileChange[] | null): GitFileChange[] {
+  if (!baseline) return []
+  const before = new Map(baseline.map((file) => [file.path, file]))
+  const deltas: GitFileChange[] = []
+  for (const file of current) {
+    const prior = before.get(file.path)
+    const additions = file.additions - (prior?.additions ?? 0)
+    const deletions = file.deletions - (prior?.deletions ?? 0)
+    if (additions > 0 || deletions > 0) deltas.push({ ...file, additions, deletions })
+  }
+  return deltas
 }
 
 export interface WorkspaceSelection {
