@@ -227,6 +227,18 @@ describe('transcript rendering', () => {
     expect(html).toContain('View changes')
   })
 
+  it('keeps the changes card off the fresh-session welcome screen', () => {
+    const html = renderToStaticMarkup(createElement(Transcript, {
+      messages: [],
+      git: { isRepo: true, files: [{ path: 'src/App.tsx', status: 'modified', additions: 2, deletions: 1, staged: false }] },
+      onOpenChanges: noop,
+      onSuggestion: noop,
+      showChangesCard: true,
+    }))
+    expect(html).toContain('session-welcome')
+    expect(html).not.toContain('changes-card')
+  })
+
   it('renders valid user images and keeps truncated history as a safe placeholder', () => {
     const html = render([{
       id: 'user-image', role: 'user', parts: [

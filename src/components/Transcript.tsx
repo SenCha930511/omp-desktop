@@ -180,7 +180,7 @@ export function Transcript({
               </div>
             </article>
           ) : null}
-          {showChangesCard && git.files.length ? (
+          {showChangesCard && git.files.length && messages.length > 0 ? (
             <div className="transcript__changes">
               <ChangesCard git={git} onOpenChanges={onOpenChanges} onClose={onDismissChanges} onUndo={onUndoChanges} />
             </div>
