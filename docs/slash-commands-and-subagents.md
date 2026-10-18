@@ -5,9 +5,15 @@ with the running CLI's `available_commands_update` catalog, including installed
 extension, skill, custom and file commands. Aliases and declared subcommands
 are searchable; select one, supply its arguments, then send it.
 
-The desktop menu keeps conversation/model/context commands and custom
-commands. Builtin CLI setup, plugin administration, exports and session
-navigation are omitted because those belong to desktop controls or the CLI.
+The desktop menu keeps commands without an equivalent desktop action and custom
+commands. Model selection (`/model`, `/switch`), reasoning effort (`/effort`),
+speed (`/fast`, `/slow`) and failed-turn retry (`/retry`) use the existing desktop
+controls and are omitted from suggestions. Model preset management, detailed
+context inspection and compaction remain available. Builtin CLI setup, plugin
+administration, exports and session navigation are also omitted. Known builtins
+without source metadata follow the same policy; explicit extension/custom
+commands retain their entries. Hiding a suggestion does not disable manual
+invocation of a supported native command.
 Builtin command descriptions and all new interface labels follow the selected
 English, Traditional Chinese or Simplified Chinese locale. Custom descriptions,
 model output and CLI-provided argument hints remain in their original language.

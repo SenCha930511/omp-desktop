@@ -1,9 +1,27 @@
 import { describe, expect, it } from 'vitest'
-import { deferredSlashCommand, parseSlashCommands, parseSlashInvocation, slashSuggestions } from '../../src/lib/slash-commands'
+import { deferredSlashCommand, INITIAL_SLASH_COMMANDS, parseSlashCommands, parseSlashInvocation, slashSuggestions } from '../../src/lib/slash-commands'
 import { desktopSlashCommands } from '../../src/lib/slash-command-ui'
 import { translate } from '../../src/lib/i18n'
 
 describe('slash command catalog', () => {
+  it('omits builtins with desktop controls from both startup and live catalogs, including aliases and subcommands', () => {
+    const hidden = ['model', 'switch', 'effort', 'fast', 'slow', 'retry', 'rename', 'session', 'mcp', 'plugins', 'settings', 'agents']
+    const t = (key: Parameters<typeof translate>[1]) => translate('en', key)
+    expect(desktopSlashCommands(INITIAL_SLASH_COMMANDS, t).some((command) => hidden.includes(command.name))).toBe(false)
+    for (const source of ['builtin', undefined]) {
+      const commands = desktopSlashCommands([
+        ...hidden.map((name) => ({ name, source, aliases: [`${name}-alias`], subcommands: [{ name: 'status' }] })),
+        { name: 'modelpreset', source }, { name: 'compact', source },
+      ], t)
+      expect(commands.map((command) => command.name)).toEqual(['modelpreset', 'compact'])
+      expect(slashSuggestions(commands, '/effort h')).toEqual([])
+      expect(slashSuggestions(commands, '/model-alias')).toEqual([])
+    }
+  })
+  it('preserves explicit extension overrides and unknown commands without source metadata', () => {
+    const commands = [{ name: 'model', source: 'extension', description: 'Custom model command' }, { name: 'my-workflow', description: 'Local workflow' }]
+    expect(desktopSlashCommands(commands, (key) => translate('en', key))).toEqual(commands)
+  })
   it('keeps conversation commands localized and preserves custom commands', () => {
     const commands = desktopSlashCommands([
       { name: 'context', source: 'builtin', description: 'Show context usage' },

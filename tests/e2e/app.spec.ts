@@ -278,7 +278,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     send({ id: command.id, type: 'response', command: command.type, success: true, data: { contextUsage: { tokens: 12000, contextWindow: 100000, percent: 12 }, cost: 0.42, tokens: { input: 10000, output: 2000, cacheRead: 0, cacheWrite: 0, total: 12000 } } })
   } else if (command.type === 'set_subagent_subscription') {
     send({ id: command.id, type: 'response', command: command.type, success: true, data: { level: command.level } })
-    send({ type: 'available_commands_update', commands: [{ name: 'context', description: 'Show runtime context' }, { name: 'effort', subcommands: [{ name: 'high', description: 'Deep reasoning' }] }] })
+    send({ type: 'available_commands_update', commands: [{ name: 'context', description: 'Show runtime context' }, { name: 'effort', subcommands: [{ name: 'high', description: 'Deep reasoning' }] }, { name: 'modelpreset', source: 'builtin', subcommands: [{ name: 'list', description: 'List presets' }] }] })
   } else if (command.type === 'get_subagents') {
     send({ id: command.id, type: 'response', command: command.type, success: true, data: { subagents: [] } })
   } else if (command.type === 'get_subagent_messages') {
@@ -522,6 +522,11 @@ test.describe('OMP Desktop desktop smoke', () => {
     await page.getByRole('button', { name: 'Add context', exact: true }).click()
     await page.getByRole('option', { name: 'Commands Choose a command for this conversation' }).click()
     await expect(page.getByRole('option').filter({ hasText: '/context' })).toBeVisible()
+    await composer.fill('/effort')
+    await expect(page.getByRole('option').filter({ hasText: '/effort' })).toHaveCount(0)
+    await composer.fill('/model')
+    await expect(page.getByRole('option').filter({ hasText: /^\/model(?:\s|$)/ })).toHaveCount(0)
+    await expect(page.getByRole('option').filter({ hasText: '/modelpreset' })).toBeVisible()
     await composer.fill('/context')
     await page.getByRole('button', { name: 'Send message', exact: true }).click()
     await expect(page.getByText('Runtime context: 12 percent')).toBeVisible()
@@ -530,7 +535,9 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(page.getByText('Runtime context: 12 percent')).toHaveCount(0)
     await expect(page.getByRole('button', { name: 'Stop OMP', exact: true })).toHaveCount(0)
     await composer.fill('/effort h')
-    await expect(page.getByRole('option').filter({ hasText: '/effort high' })).toBeVisible()
+    await expect(page.getByRole('option').filter({ hasText: '/effort high' })).toHaveCount(0)
+    await composer.fill('/modelpreset l')
+    await expect(page.getByRole('option').filter({ hasText: '/modelpreset list' })).toBeVisible()
     await composer.fill('subagent fixture')
     await page.getByRole('button', { name: 'Send message', exact: true }).click()
     await page.getByRole('button', { name: /Subagents ·/ }).click()
