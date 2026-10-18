@@ -280,6 +280,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     send({ id: command.id, type: 'response', command: command.type, success: true, data: { level: command.level } })
     send({ type: 'available_commands_update', commands: [{ name: 'context', description: 'Show runtime context' }, { name: 'effort', subcommands: [{ name: 'high', description: 'Deep reasoning' }] }, { name: 'modelpreset', source: 'builtin', subcommands: [{ name: 'list', description: 'List presets' }] }] })
   } else if (command.type === 'get_subagents') {
+    fs.writeFileSync(marker('subagent-subscription-ready'), 'ready')
     send({ id: command.id, type: 'response', command: command.type, success: true, data: { subagents: [] } })
   } else if (command.type === 'get_subagent_messages') {
     send({ id: command.id, type: 'response', command: command.type, success: true, data: { messages: [{ role: 'user', timestamp: 0, content: 'A long assignment from the parent. '.repeat(80) }, { role: 'assistant', timestamp: 1, content: [{ type: 'thinking', thinking: 'Inspecting fixture code' }, { type: 'text', text: 'Subagent fixture result' }, { type: 'text', text: '\\n\\n' + 'A detailed progress line.\\n\\n'.repeat(80) }] }], nextByte: 100, reset: false } })
@@ -605,6 +606,12 @@ test.describe('OMP Desktop desktop smoke', () => {
     await page.setViewportSize({ width: 1800, height: 950 })
     if (await page.locator('.inspector').count()) await page.locator('.inspector').getByRole('button', { name: 'Close inspector' }).click()
     await expect(page.locator('.model-picker__trigger')).toHaveAccessibleName('Model: Claude Fixture')
+    // This fixture emits a one-shot roster, so attach the observer before asking
+    // it to spawn agents. A real harness can also recover its registry snapshot.
+    await page.getByRole('combobox', { name: 'Message OMP' }).fill('/context')
+    await page.getByRole('button', { name: 'Send message', exact: true }).click()
+    await expect.poll(() => existsSync(join(fixtureRoot, 'subagent-subscription-ready'))).toBe(true)
+    await expect(page.locator('.command-output__status')).toHaveText('Completed')
     await page.getByRole('combobox', { name: 'Message OMP' }).fill('subagent overview fixture')
     await page.getByRole('button', { name: 'Send message', exact: true }).click()
     await page.getByRole('button', { name: /Subagents ·/ }).click()
