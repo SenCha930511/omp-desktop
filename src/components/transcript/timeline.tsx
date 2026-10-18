@@ -7,6 +7,7 @@ import type { MessagePart, TranscriptMessage } from '@/types/api'
 import { MarkdownText } from '../MarkdownText'
 import { ReasoningDisclosure, ReasoningExpandedContext } from '../ReasoningDisclosure'
 import { SyntaxText } from './syntax'
+import { SearchRevealContext } from '../TranscriptSearch'
 
 const COMPACTION_REASON_KEYS = {
   threshold: 'transcript.compaction.reason.threshold',
@@ -119,7 +120,9 @@ export function LiveElapsed({ since }: { since?: string | number }) {
 
 function ToolPart({ part, next, streaming }: { part: Extract<MessagePart, { type: 'toolCall' }>; next?: MessagePart; streaming: boolean }) {
   const { t } = useI18n()
-  const [open, setOpen] = useState(false)
+  const [manualOpen, setOpen] = useState(false)
+  const reveal = useContext(SearchRevealContext)
+  const open = manualOpen || reveal
   const [copied, setCopied] = useState(false)
   const resetCopiedTimerRef = useRef<number | null>(null)
   const result = next?.type === 'toolResult' ? next : undefined
@@ -208,7 +211,9 @@ function StandaloneToolResult({ part }: { part: Extract<MessagePart, { type: 'to
 
 function AgentActivityPart({ part }: { part: Extract<MessagePart, { type: 'agentMessage' }> }) {
   const { t } = useI18n()
-  const [open, setOpen] = useState(false)
+  const [manualOpen, setOpen] = useState(false)
+  const reveal = useContext(SearchRevealContext)
+  const open = manualOpen || reveal
   const canExpand = Boolean(part.text)
   return (
     <div className="activity-line activity-line--agent">
@@ -231,7 +236,9 @@ function AgentActivityPart({ part }: { part: Extract<MessagePart, { type: 'agent
 
 function CompactionPart({ part }: { part: Extract<MessagePart, { type: 'compaction' }> }) {
   const { t } = useI18n()
-  const [open, setOpen] = useState(false)
+  const [manualOpen, setOpen] = useState(false)
+  const reveal = useContext(SearchRevealContext)
+  const open = manualOpen || reveal
   const canExpand = Boolean(part.summary || part.error)
   const label =
     part.status === 'running'
@@ -349,7 +356,9 @@ export function WorkDisclosure({
   const { t } = useI18n()
   const expandThinking = useContext(ReasoningExpandedContext)
   const defaultExpanded = expandThinking && showReasoning && parts.some((part) => part.type === 'thinking')
-  const [open, setOpen] = useState(defaultExpanded)
+  const [manualOpen, setOpen] = useState(defaultExpanded)
+  const reveal = useContext(SearchRevealContext)
+  const open = manualOpen || reveal
   useEffect(() => setOpen(defaultExpanded), [defaultExpanded])
   const status = liveWorkStatus(message.parts, showReasoning, showTools)
   const toolCount = parts.filter((part) => part.type === 'toolCall').length

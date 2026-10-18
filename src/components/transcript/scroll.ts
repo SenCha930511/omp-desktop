@@ -1,6 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useI18n } from '@/lib/i18n'
-import { newestWindow } from '@/lib/render-bounds'
 import type { TranscriptMessage } from '@/types/api'
 
 export function useTranscriptScroll(messages: TranscriptMessage[], active = true) {
@@ -13,16 +12,19 @@ export function useTranscriptScroll(messages: TranscriptMessage[], active = true
   const lastScrollTopRef = useRef(0)
   const manualScrollUntilRef = useRef(0)
   const [visibleLimit, setVisibleLimit] = useState(250)
+  const [windowEnd, setWindowEnd] = useState<number>()
   const [announcement, setAnnouncement] = useState('')
   const [awayFromBottom, setAwayFromBottom] = useState(false)
   const [hasNewContent, setHasNewContent] = useState(false)
   const streaming = messages.some((message) => message.streaming)
-  const visibleMessages = useMemo(() => newestWindow(messages, visibleLimit), [messages, visibleLimit])
-  const hiddenCount = messages.length - visibleMessages.length
+  const end = Math.min(messages.length, windowEnd ?? messages.length)
+  const visibleMessages = useMemo(() => messages.slice(Math.max(0, end - visibleLimit), end), [messages, visibleLimit, end])
+  const hiddenCount = end - visibleMessages.length
+  const hiddenAfter = messages.length - end
 
   useLayoutEffect(() => {
     if (active && scrollRef.current) scrollRef.current.scrollTop = pinnedToBottomRef.current ? scrollRef.current.scrollHeight : lastScrollTopRef.current
-  }, [active])
+  }, [active, windowEnd])
 
   useEffect(() => {
     const firstLoadedTranscript = previousCountRef.current === 0 && messages.length > 0
@@ -56,7 +58,7 @@ export function useTranscriptScroll(messages: TranscriptMessage[], active = true
     const movedUp = scroller.scrollTop < lastScrollTopRef.current - 1
     if (movedUp) manualScrollUntilRef.current = performance.now() + 150
     lastScrollTopRef.current = scroller.scrollTop
-    const pinned = !movedUp && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 40
+    const pinned = !hiddenAfter && !movedUp && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 40
     pinnedToBottomRef.current = pinned
     if (pinned) setHasNewContent(false)
     // Same-value updates bail out in React, so streaming scroll events stay cheap.
@@ -84,6 +86,7 @@ export function useTranscriptScroll(messages: TranscriptMessage[], active = true
   }, [active])
 
   const scrollToBottom = () => {
+    if (windowEnd !== undefined) { setWindowEnd(undefined); setVisibleLimit(250) }
     const scroller = scrollRef.current
     if (scroller && typeof scroller.scrollTo === 'function') scroller.scrollTo({ top: scroller.scrollHeight, behavior: 'smooth' })
     pinnedToBottomRef.current = true
@@ -92,6 +95,19 @@ export function useTranscriptScroll(messages: TranscriptMessage[], active = true
   }
 
   const showEarlier = () => setVisibleLimit((limit) => Math.min(messages.length, limit + 250))
+  const showNewer = () => { setWindowEnd(Math.min(messages.length, end + 250)); setVisibleLimit(250) }
+  const revealIndex = (index: number) => {
+    if (index < 0) return
+    pinnedToBottomRef.current = false
+    manualScrollUntilRef.current = performance.now() + 150
+    setAwayFromBottom(true)
+    // Searching a distant match moves a bounded window instead of mounting every
+    // message between the match and the latest reply.
+    if (index < end - visibleMessages.length || index >= end) {
+      setWindowEnd(Math.min(messages.length, Math.max(250, index + 125)))
+      setVisibleLimit(250)
+    }
+  }
 
-  return { announcement, awayFromBottom, hasNewContent, hiddenCount, scrollRef, scrollToBottom, showEarlier, updatePinnedState, visibleMessages }
+  return { announcement, awayFromBottom, hasNewContent, hiddenCount, hiddenAfter, scrollRef, scrollToBottom, showEarlier, showNewer, revealIndex, updatePinnedState, visibleMessages }
 }

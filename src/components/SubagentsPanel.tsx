@@ -10,19 +10,23 @@ import type { ExecutionState } from '@/lib/execution-state'
 import { ExecutionStatus } from './ExecutionStatus'
 import { SubagentRoster } from './SubagentRoster'
 import { useTranscriptScroll } from './transcript/scroll'
+import { SearchMessage, TranscriptSearchBar, useTranscriptSearch } from './TranscriptSearch'
+import { useSubagentAttention } from '@/hooks/useSubagentAttention'
 import './subagents.css'
 
 const AgentTranscript = memo(function AgentTranscript({ agent, showReasoning, showTools, active }: { agent: SubagentView; showReasoning: boolean; showTools: boolean; active: boolean }) {
   const { t, locale } = useI18n()
   const progress = agent.progress
   const messages = useMemo(() => subagentTranscript(agent.messages, agent.status === 'running'), [agent.messages, agent.status])
-  const { scrollRef, updatePinnedState, awayFromBottom, scrollToBottom, visibleMessages, hiddenCount, showEarlier, hasNewContent } = useTranscriptScroll(messages, active)
+  const { scrollRef, updatePinnedState, awayFromBottom, scrollToBottom, visibleMessages, hiddenCount, hiddenAfter, showEarlier, showNewer, revealIndex, hasNewContent } = useTranscriptScroll(messages, active)
+  const search = useTranscriptSearch(messages, scrollRef, revealIndex, active)
   const execution = useMemo(() => subagentExecution(agent), [agent])
   const metrics = [
     [t('agents.tools'), progress?.toolCount], [t('agents.requests'), progress?.requests], [t('agents.tokens'), progress?.tokens],
     [t('agents.elapsed'), typeof progress?.durationMs === 'number' ? t('agents.seconds', { count: Math.round(progress.durationMs / 1_000) }) : undefined],
   ].filter(([, value]) => typeof value === 'string' || typeof value === 'number')
   return <article className="subagents__transcript" aria-label={t('agents.transcript', { name: agent.agent })}>
+    <TranscriptSearchBar state={search} />
     <div className="subagents__overview">
     <header className="subagents__heading">
       <div className="subagents__avatar"><Bot size={20} /></div>
@@ -35,14 +39,15 @@ const AgentTranscript = memo(function AgentTranscript({ agent, showReasoning, sh
     {typeof progress?.resolvedModel === 'string' && <p className="subagents__model">{progress.resolvedModel}</p>}
     </details>
     </div>
-    <div className="subagents__messages" ref={scrollRef} onScroll={updatePinnedState}><div className="transcript__inner">
+    <div className="subagents__messages" ref={scrollRef} tabIndex={-1} onScroll={updatePinnedState}><div className="transcript__inner">
     {hiddenCount > 0 && <button type="button" className="transcript__show-earlier" onClick={showEarlier}>{t('transcript.showEarlier', { count: Math.min(hiddenCount, 250) })}</button>}
     {!messages.length && agent.status === 'running' && <div className="subagents__empty"><p>{t('agents.waiting')}</p></div>}
-    {visibleMessages.map((message) => message.role === 'user'
+    {visibleMessages.map((message) => <SearchMessage key={message.id} id={message.id} reveal={search.matchId === message.id}>{message.role === 'user'
       ? <details className="subagents__instruction" key={message.id}><summary>{t('agents.parentInstruction')}</summary><div><UserMessage message={message} /></div></details>
       : <div className="subagents__message" key={message.id}>{message.role === 'assistant'
-        ? <AssistantMessage message={message} showReasoning={showReasoning} showTools={showTools} />
-        : <ActivityMessage message={message} />}</div>)}
+        ? <AssistantMessage message={message} showReasoning={showReasoning || search.matchId === message.id} showTools={showTools || search.matchId === message.id} />
+        : <ActivityMessage message={message} />}</div>}</SearchMessage>)}
+    {hiddenAfter > 0 && <button type="button" className="transcript__show-earlier" onClick={showNewer}>{t('conversation.search.newer', { count: Math.min(250, hiddenAfter) })}</button>}
     </div></div>
     {awayFromBottom && <button type="button" className="subagents__jump" onClick={scrollToBottom}><ChevronDown size={14} />{t(hasNewContent ? 'agents.newContent' : 'transcript.jumpToBottom')}</button>}
   </article>
@@ -56,12 +61,13 @@ export function SubagentsPanel({ state, connected, showReasoning = true, showToo
   const [open, setOpen] = useState(false)
   const [visited, setVisited] = useState<string[]>([])
   const selected = state.agents.find((agent) => agent.id === state.selectedId)
+  const unread = useSubagentAttention(state.agents, selected?.id)
   useEffect(() => { if (selected) setVisited((ids) => ids.includes(selected.id) ? ids : [...ids, selected.id]) }, [selected?.id])
   const selectedExecution = useMemo(() => selected ? subagentExecution(selected) : undefined, [selected])
   const running = state.agents.filter((agent) => agent.status === 'running').length
   const back = () => { state.select(undefined); setOpen(false) }
   const closeRoster = () => { setOpen(false); onPinnedChange?.(false) }
-  const roster = <SubagentRoster agents={state.agents} selectedId={selected?.id} connected={connected} pinned={pinned}
+  const roster = <SubagentRoster agents={state.agents} selectedId={selected?.id} connected={connected} pinned={pinned} unread={unread}
     onPin={() => { onPinnedChange?.(!pinned); setOpen(pinned) }} onClose={closeRoster}
     onSelect={(id) => { state.select(id); if (!pinned) setOpen(false) }} />
   const error = state.error?.includes('invalid subagent roster') ? t('agents.error.roster') : state.error?.includes('Invalid subagent transcript') ? t('agents.error.transcript') : state.error

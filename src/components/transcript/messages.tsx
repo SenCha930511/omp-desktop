@@ -1,5 +1,5 @@
 import { Check, ChevronDown, ChevronRight, Copy, Target } from 'lucide-react'
-import { Fragment, memo, type ReactNode, useEffect, useId, useRef, useState } from 'react'
+import { Fragment, memo, type ReactNode, useContext, useEffect, useId, useRef, useState } from 'react'
 import { splitAnnotationBlock } from '@/lib/browser-annotations'
 import { splitCapabilityRouting } from '@/lib/capability-mentions'
 import { writeClipboardText } from '@/lib/clipboard'
@@ -10,6 +10,7 @@ import { type RoutedSessionReference, routedSessionReferences, splitSessionRouti
 import { splitTerminalContextBlock } from '@/lib/terminal-context'
 import type { HarnessId, MessagePart, TranscriptMessage } from '@/types/api'
 import { MarkdownText } from '../MarkdownText'
+import { SearchRevealContext } from '../TranscriptSearch'
 import { InlineText } from './syntax'
 import { TranscriptImage } from './TranscriptImage'
 import { ThinkingDots, WorkDisclosure, WorkTimeline } from './timeline'
@@ -332,7 +333,9 @@ export const ActivityMessage = memo(function ActivityMessage({ message, harness 
 
 export const AgentMessage = memo(function AgentMessage({ message }: { message: TranscriptMessage }) {
   const { t } = useI18n()
-  const [open, setOpen] = useState(false)
+  const [manualOpen, setOpen] = useState(false)
+  const reveal = useContext(SearchRevealContext)
+  const open = manualOpen || reveal
   const contentId = useId()
   const text = messageText(message)
   const label = message.agentName ? t('transcript.agent.summaryNamed', { name: message.agentName }) : t('transcript.agent.summary')
@@ -355,7 +358,9 @@ export const AgentMessage = memo(function AgentMessage({ message }: { message: T
 
 export const GoalMessage = memo(function GoalMessage({ message }: { message: TranscriptMessage }) {
   const { t } = useI18n()
-  const [open, setOpen] = useState(false)
+  const [manualOpen, setOpen] = useState(false)
+  const reveal = useContext(SearchRevealContext)
+  const open = manualOpen || reveal
   const contentId = useId()
   const text = messageText(message)
   return (

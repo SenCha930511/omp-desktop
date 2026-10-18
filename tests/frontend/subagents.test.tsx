@@ -5,6 +5,8 @@ import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 import { applySubagentFrame, mergeSubagentMessages } from '../../src/hooks/useSubagents'
 import { SubagentsPanel } from '../../src/components/SubagentsPanel'
 import { I18nProvider } from '../../src/lib/i18n'
+import { useSubagentAttention } from '../../src/hooks/useSubagentAttention'
+import type { SubagentView } from '../../src/hooks/useSubagents'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 beforeEach(() => {
@@ -15,6 +17,23 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals())
 
 describe('subagent observability', () => {
+  it('acknowledges viewed updates, ignores elapsed ticks and marks later completion unread', () => {
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    const agent: SubagentView = { id: 'a', agent: 'Task', status: 'running', messages: [], progress: { durationMs: 1000 } }
+    let unread: Set<string>
+    function Harness({ agents, selectedId }: { agents: SubagentView[]; selectedId?: string }) { unread = useSubagentAttention(agents, selectedId); return null }
+    try {
+      act(() => root.render(<Harness agents={[agent]} />))
+      expect([...unread!]).toEqual(['a'])
+      act(() => root.render(<Harness agents={[agent]} selectedId="a" />))
+      expect(unread!.size).toBe(0)
+      act(() => root.render(<Harness agents={[{ ...agent, progress: { durationMs: 2000 } }]} />))
+      expect(unread!.size).toBe(0)
+      act(() => root.render(<Harness agents={[{ ...agent, status: 'completed' }]} />))
+      expect([...unread!]).toEqual(['a'])
+    } finally { act(() => root.unmount()) }
+  })
   it('retains disclosure state and the mounted transcript when switching agents', () => {
     const host = document.createElement('div')
     const root = createRoot(host)

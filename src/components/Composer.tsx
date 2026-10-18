@@ -81,6 +81,8 @@ interface ComposerProps {
   onEditQueuedMessage?(message: QueuedPrompt): void
   /** Each bump submits the current draft immediately (Ctrl/Cmd+Enter from the annotation popover). */
   sendSignal?: number
+  restoreRequest?: { id: number; text: string }
+  onRestoreHandled?(): void
   onModelChange(value: string): void
   onEffortChange(value: PrimeEffortSelector): void
   onFastChange(value: boolean): void
@@ -149,6 +151,8 @@ export const Composer = memo(function Composer({
   onDeleteQueuedMessage,
   onEditQueuedMessage,
   sendSignal = 0,
+  restoreRequest,
+  onRestoreHandled,
   onModelChange,
   onEffortChange,
   onFastChange,
@@ -165,6 +169,12 @@ export const Composer = memo(function Composer({
 }: ComposerProps) {
   const { t } = useI18n()
   const [value, setValue] = useState(() => (draftKey ? readComposerDraft(draftKey)?.text : undefined) ?? takeComposerDraft())
+  useEffect(() => {
+    if (!restoreRequest) return
+    setValue((current) => current.trim() === restoreRequest.text.trim() ? current : current.trim() ? `${current}\n\n${restoreRequest.text}` : restoreRequest.text)
+    requestAnimationFrame(() => textareaRef.current?.focus())
+    onRestoreHandled?.()
+  }, [restoreRequest?.id])
   const [menu, setMenu] = useState<'add' | 'mention' | 'command' | null>(null)
   const [sessionReferenceIds, setSessionReferenceIds] = useState<ReadonlyMap<string, string>>(() => new Map())
   const [activeSuggestion, setActiveSuggestion] = useState(0)

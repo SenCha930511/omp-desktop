@@ -8,6 +8,34 @@ import { I18nProvider } from '../../src/lib/i18n'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
+it('retains five results and routes new output to the active command while browsing history', () => {
+  const host = document.createElement('div')
+  const root = createRoot(host)
+  let output: ReturnType<typeof useCommandOutput>
+  function Harness() {
+    output = useCommandOutput(1)
+    return <CommandOutputPanel text={output.text} command={output.command} status={output.status} history={output.history} selectedId={output.selectedId} onSelect={output.select} onClose={output.dismiss} />
+  }
+  try {
+    act(() => root.render(<Harness />))
+    for (let index = 0; index < 6; index++) {
+      act(() => output.begin(`/command-${index}`))
+      act(() => { output.append(`Result ${index}`); output.finish() })
+    }
+    expect(output!.history.map((entry) => entry.command)).toEqual(['/command-5', '/command-4', '/command-3', '/command-2', '/command-1'])
+    act(() => output.select(output.history[1].id))
+    act(() => output.append('Late output'))
+    expect(host.querySelector('pre')?.textContent).toBe('Result 4')
+    expect(output!.history[0].text).toBe('Result 5\nLate output')
+    act(() => output.dismiss())
+    act(() => output.append('Output received while closed'))
+    expect(host.querySelector('section')).toBeNull()
+    act(() => host.querySelector<HTMLButtonElement>('.command-history-trigger')!.click())
+    expect(host.querySelector('pre')?.textContent).toContain('Late output')
+    expect(host.querySelector('pre')?.textContent).toContain('Output received while closed')
+  } finally { act(() => root.unmount()) }
+})
+
 it('shows localized, dismissible command results and isolates workspaces', () => {
   const host = document.createElement('div')
   const root = createRoot(host)

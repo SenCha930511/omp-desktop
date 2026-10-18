@@ -292,6 +292,15 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   } else if (command.type === 'prompt' || command.type === 'follow_up') {
     fs.writeFileSync(marker('prompt-args.json'), JSON.stringify(command))
     const message = typeof command.message === 'string' ? command.message : ''
+    if (message === 'conversation failure fixture') {
+      send({ id: command.id, type: 'response', command: command.type, success: false, error: 'Fixture turn failed' })
+      return
+    }
+    if (message === '/retry') {
+      send({ type: 'command_output', text: 'Retry accepted' })
+      send({ id: command.id, type: 'response', command: command.type, success: true, data: { agentInvoked: false } })
+      return
+    }
     if (message === '/modelpreset list') {
       send({ type: 'command_output', text: '\\u001b[32mModel presets\\u001b[0m\\r\\nfixture-default' })
       send({ type: 'extension_ui_request', id: 'fixture-notice', method: 'notify', message: 'Preset list loaded', notifyType: 'info' })
@@ -672,6 +681,165 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(composer).toHaveValue('/todo:expand')
     const delivered = JSON.parse(readFileSync(join(fixtureRoot, 'prompt-args.json'), 'utf8'))
     expect(delivered.message).toBe('/fixture-failure')
+  })
+
+  test('searches collapsed content and old history and records conversation performance', async () => {
+    const search = page.getByRole('textbox', { name: 'Find in conversation', exact: true })
+    await page.keyboard.press('Meta+f')
+    await search.fill('readable agent response')
+    await expect(page.locator('.agent-message__summary')).toHaveAttribute('aria-expanded', 'true')
+    await expect(page.locator('.agent-message__content')).toContainText('Fixture review complete')
+    await search.press('Escape')
+    await expect(page.locator('.agent-message__summary')).toHaveAttribute('aria-expanded', 'false')
+
+    const cdp = await page.context().newCDPSession(page)
+    const heap = async () => (await cdp.send('Runtime.getHeapUsage')).usedSize
+    const before = await heap()
+    const timestamp = new Date().toISOString()
+    const started = Date.now()
+    appendFileSync(fixtureSessionFile, `${Array.from({ length: 1000 }, (_, index) => JSON.stringify({
+      type: 'message', id: `search-history-${index}`, parentId: index ? `search-history-${index - 1}` : 'fixture-goal-summary', timestamp,
+      message: { role: index % 2 ? 'assistant' : 'user', timestamp, content: index === 601 ? [
+        { type: 'thinking', thinking: 'Historical reasoning needle' },
+        { type: 'toolCall', id: 'history-tool', name: 'bash', arguments: { command: 'historical-tool-needle' } },
+        { type: 'text', text: 'Historical answer needle' },
+      ] : [{ type: 'text', text: `History entry ${index}` }] },
+    })).join('\n')}\n`)
+    await expect(page.locator('.transcript').getByText('History entry 999', { exact: true })).toHaveCount(1)
+    const loadedMs = Date.now() - started
+    const recentNodes = await page.locator('.transcript [data-message-id]').count()
+    expect(recentNodes).toBe(250)
+    const afterLoad = await heap()
+    await page.keyboard.press('Meta+f')
+    const searchStarted = Date.now()
+    await search.fill('Historical reasoning needle')
+    await page.getByRole('combobox', { name: 'Search content', exact: true }).selectOption('thinking')
+    await expect(page.locator('.is-search-match .work-disclosure__button')).toHaveAttribute('aria-expanded', 'true')
+    await expect(page.locator('.is-search-match').getByText('Historical reasoning needle', { exact: true })).toBeVisible()
+    const searchMs = Date.now() - searchStarted
+    await expect.poll(() => page.evaluate(() => CSS.highlights.get('conversation-search')?.size ?? 0)).toBeGreaterThan(0)
+    const searchedNodes = await page.locator('.transcript [data-message-id]').count()
+    expect(searchedNodes).toBeLessThanOrEqual(250)
+    const afterSearch = await heap()
+    await search.fill('historical-tool-needle')
+    await page.getByRole('combobox', { name: 'Search content', exact: true }).selectOption('tools')
+    await expect(page.locator('.is-search-match .activity-tool__details')).toContainText('historical-tool-needle')
+    await search.press('Escape')
+    await expect(page.locator('.transcript .work-disclosure__button')).toHaveAttribute('aria-expanded', 'false')
+    await page.getByRole('button', { name: 'Scroll to the latest message', exact: true }).click()
+    await expect(page.locator('.transcript').getByText('History entry 999', { exact: true })).toBeInViewport()
+    await test.info().attach('conversation-performance', { body: JSON.stringify({ persistedMessages: 1003, loadedMs, searchMs, recentNodes, searchedNodes, heapBefore: before, heapAfterLoad: afterLoad, heapAfterSearch: afterSearch }), contentType: 'application/json' })
+    await page.locator('.conversation-column').evaluate((element) => { element.style.flex = '0 0 360px' })
+    await page.keyboard.press('Meta+f')
+    await search.fill('A query without any matching results')
+    const compact = await page.locator('.conversation-search').evaluate((element) => ({ width: element.clientWidth, overflow: element.scrollWidth }))
+    expect(compact.overflow).toBeLessThanOrEqual(compact.width + 1)
+    await cdp.detach()
+  })
+
+  test('recovers a failed turn without replacing a draft and uses the native retry command', async () => {
+    const composer = page.getByRole('combobox', { name: 'Message OMP' })
+    await expect(page.locator('.model-picker__trigger')).toHaveAccessibleName('Model: Claude Fixture')
+    await composer.fill('conversation failure fixture')
+    await composer.press('Enter')
+    const recovery = page.getByRole('region', { name: 'This turn needs attention', exact: true })
+    await expect(recovery).toBeVisible()
+    await recovery.getByRole('button', { name: 'Restore prompt to composer', exact: true }).click()
+    await expect(composer).toHaveValue('conversation failure fixture')
+    await composer.fill('Existing draft')
+    await recovery.getByRole('button', { name: 'Restore prompt to composer', exact: true }).click()
+    await expect(composer).toHaveValue('Existing draft\n\nconversation failure fixture')
+    await recovery.getByRole('button', { name: 'Copy error', exact: true }).click()
+    await expect(recovery.getByRole('status')).toHaveText('Error copied')
+    await recovery.getByRole('button', { name: 'Retry failed turn', exact: true }).click()
+    await expect.poll(() => JSON.parse(readFileSync(join(fixtureRoot, 'prompt-args.json'), 'utf8')).message).toBe('/retry')
+    await expect(page.locator('.command-output pre')).toHaveText('Retry accepted')
+    await expect(composer).toHaveValue('Existing draft\n\nconversation failure fixture')
+  })
+
+  test('browses recent command results and reopens them after closing', async () => {
+    const composer = page.getByRole('combobox', { name: 'Message OMP' })
+    await expect(page.locator('.model-picker__trigger')).toHaveAccessibleName('Model: Claude Fixture')
+    for (const command of ['/context', '/modelpreset list']) {
+      await composer.fill(command)
+      await page.getByRole('button', { name: 'Send message', exact: true }).click()
+      await expect(page.locator('.command-output__status')).toHaveText('Completed')
+    }
+    const history = page.getByRole('combobox', { name: 'Recent command results', exact: true })
+    await history.selectOption({ label: '/context' })
+    await expect(page.locator('.command-output pre')).toHaveText('Runtime context: 12 percent')
+    await page.getByRole('button', { name: 'Close command result', exact: true }).click()
+    await page.getByRole('button', { name: 'Recent command results · 2', exact: true }).click()
+    await expect(page.locator('.command-output pre')).toContainText('fixture-default')
+  })
+
+  test('filters unread agent updates and measures retained view switching', async () => {
+    await page.setViewportSize({ width: 1600, height: 950 })
+    if (await page.locator('.inspector').count()) await page.locator('.inspector').getByRole('button', { name: 'Close inspector' }).click()
+    await expect(page.locator('.model-picker__trigger')).toHaveAccessibleName('Model: Claude Fixture')
+    const composer = page.getByRole('combobox', { name: 'Message OMP' })
+    await composer.fill('/context')
+    await page.getByRole('button', { name: 'Send message', exact: true }).click()
+    await expect(page.locator('.command-output__status')).toHaveText('Completed')
+    await composer.fill('subagent overview fixture')
+    await composer.press('Enter')
+    await page.getByRole('button', { name: /Subagents ·/ }).click()
+    await page.getByRole('button', { name: 'Pin agent list', exact: true }).click()
+    const roster = page.locator('.subagents__roster.is-pinned')
+    await expect(roster.locator('.subagents__unread')).toHaveCount(3)
+    const times: number[] = []
+    for (const name of ['Task', 'Reviewer', 'Explore', 'Task']) {
+      const started = Date.now()
+      await roster.getByRole('button', { name: new RegExp(`^${name} ·`) }).click()
+      await expect(page.locator('.subagents__page:not([hidden]) h2')).toHaveText(name)
+      times.push(Date.now() - started)
+    }
+    await expect(roster.locator('.subagents__unread')).toHaveCount(0)
+    const filter = roster.getByRole('combobox', { name: 'Filter agents', exact: true })
+    await filter.selectOption('running')
+    await expect(roster.locator('.subagents__agent')).toHaveCount(1)
+    await expect(roster.locator('.subagents__agent')).toContainText('Explore')
+    await filter.selectOption('attention')
+    await expect(roster.locator('.subagents__agent')).toHaveCount(2)
+    await filter.selectOption('completed')
+    await expect(roster.locator('.subagents__agent')).toHaveCount(0)
+    await test.info().attach('agent-switch-performance', { body: JSON.stringify({ agents: 3, switchMs: times, retainedViews: await page.locator('.subagents__page').count() }), contentType: 'application/json' })
+  })
+
+  test('captures the current localized conversation and agent workspace', async () => {
+    await page.evaluate(() => window.desktop.settings.update({ locale: 'zh-TW', theme: 'dark', reasoningExpandedByDefault: false }))
+    await page.reload()
+    await expect(page.locator('.app-shell')).toHaveAttribute('data-ready', 'true')
+    await page.setViewportSize({ width: 1540, height: 980 })
+    if (await page.locator('.inspector').count()) await page.locator('.inspector').getByRole('button', { name: '關閉檢查器' }).click()
+    const timestamp = new Date().toISOString()
+    appendFileSync(fixtureSessionFile, `${JSON.stringify({ type: 'message', id: 'preview-user', parentId: 'fixture-goal-summary', timestamp,
+      message: { role: 'user', timestamp, content: [{ type: 'text', text: '請整理這次介面更新，並確認測試結果。' }] },
+    })}\n${JSON.stringify({ type: 'message', id: 'preview-answer', parentId: 'preview-user', timestamp,
+      message: { role: 'assistant', timestamp, content: [
+        { type: 'thinking', thinking: '先確認對話的閱讀順序，再檢查搜尋、指令結果與子代理狀態。' },
+        { type: 'toolCall', id: 'preview-tool', name: 'read', arguments: { path: 'src/components/Transcript.tsx' } },
+        { type: 'text', text: '## 對話工作區\n\n現在可以直接在目前對話中搜尋，快速找到訊息、工具輸出或模型提供的思考內容。\n\n- **對話搜尋**：按 ⌘F，依內容類型篩選並跳到符合的訊息。\n- **子代理進度**：固定右側清單，查看未讀更新與需要處理的工作。\n- **指令結果**：在輸入框上方檢視最近五筆輸出，關閉後也能重新開啟。\n\n搜尋結果會暫時展開相關內容，關閉搜尋後恢復原本的收折狀態。' },
+      ] },
+    })}\n`)
+    await expect(page.locator('.transcript').getByText('對話工作區', { exact: true })).toBeVisible()
+    const composer = page.locator('.composer-input textarea')
+    for (const command of ['/context', '/modelpreset list', 'subagent overview fixture']) {
+      await composer.fill(command)
+      await page.getByRole('button', { name: '傳送訊息', exact: true }).click()
+      if (command.startsWith('/')) await expect(page.locator('.command-output__status')).toHaveText('已完成')
+      else await expect(page.locator('.subagents__count')).toHaveText('3')
+    }
+    await page.locator('.subagents__roster-toggle').click()
+    await page.getByRole('button', { name: '固定代理清單', exact: true }).click()
+    await page.keyboard.press('Meta+f')
+    await page.getByRole('textbox', { name: '在對話中尋找', exact: true }).fill('子代理進度')
+    await expect(page.locator('.is-search-match')).toBeVisible()
+    await page.screenshot({ path: test.info().outputPath('conversation-search.png') })
+    await page.getByRole('button', { name: '關閉對話搜尋', exact: true }).click()
+    await page.locator('[data-message-id="preview-user"]').evaluate((element) => element.scrollIntoView({ block: 'start' }))
+    await page.screenshot({ path: join(tmpdir(), 'omp-desktop-current-workspace.png') })
+    await page.screenshot({ path: test.info().outputPath('current-workspace.png') })
   })
 
   test('localizes agent controls, command results and delete confirmation in Chinese', async () => {

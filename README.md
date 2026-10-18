@@ -13,6 +13,10 @@ OMP Desktop is a derivative of [GooeyPi](https://github.com/am-will/gooey-pi) by
 ### Work with agents
 
 - Stream conversations with Markdown, reasoning summaries, tool activity, retries, and context compaction.
+- Search loaded conversation history with ⌘F / Ctrl+F, including reasoning and tool arguments. Search temporarily reveals matching collapsed content; closing it restores the disclosures. Saved sessions load up to the latest 400 messages, with separate content budgets.
+- Retry a failed turn through OMP's native `/retry`, restore its prompt beside an existing draft, or copy the error.
+- Pin the subagent roster, filter by activity, and see unread updates without losing each agent's reading position.
+- Revisit the latest five command results in the current workspace, including after closing the output panel.
 - Choose a model, reasoning level, and Fast mode when the selected model supports it.
 - Queue a follow-up or steer an agent while it is working.
 - Paste or drop PNG, JPEG, GIF, and WebP images into a prompt when the model supports vision.

@@ -138,6 +138,7 @@ export default function App() {
   const [browserNavigationRequest, setBrowserNavigationRequest] = useState<{ id: number; url: string }>()
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [submitting, setSubmitting] = useState(false)
+  const [restorePrompt, setRestorePrompt] = useState<{ owner: number; id: number; text: string }>()
   const submissionGenerationRef = useRef<number | undefined>(undefined)
   const { toast, setToast } = useToast()
   const [changesCardDismissed, setChangesCardDismissed] = useState(false)
@@ -1055,6 +1056,9 @@ export default function App() {
                         harness={activeHarness}
                         loading={workspace.loadingSession}
                         active={busy || activeSession?.status === 'running'}
+                        visible={!subagents.selectedId}
+                        onRetry={async () => { await sendPrompt('/retry') }}
+                        onRestorePrompt={(text) => setRestorePrompt({ owner: workspace.workspaceGeneration, id: Date.now(), text })}
                         showReasoning={settingsState.settings.showReasoningSummaries}
                         showTools={settingsState.settings.showToolCalls}
                         onOpenChanges={openChanges}
@@ -1076,7 +1080,7 @@ export default function App() {
                       />
                     </Suspense>
                     <ConversationDock>
-                      <CommandOutputPanel text={commandOutput.text} command={commandOutput.command} status={commandOutput.status} onClose={commandOutput.dismiss} />
+                      <CommandOutputPanel text={commandOutput.text} command={commandOutput.command} status={commandOutput.status} onClose={commandOutput.dismiss} history={commandOutput.history} selectedId={commandOutput.selectedId} onSelect={commandOutput.select} />
                       <Composer
                         availableCommands={workspace.runtime?.availableCommands}
                         key={
@@ -1118,6 +1122,8 @@ export default function App() {
                         onDeleteQueuedMessage={removeQueuedMessage}
                         onEditQueuedMessage={removeQueuedMessage}
                         sendSignal={browserAnnotations.sendSignal}
+                        restoreRequest={restorePrompt?.owner === workspace.workspaceGeneration ? restorePrompt : undefined}
+                        onRestoreHandled={() => setRestorePrompt(undefined)}
                         onModelChange={provider.changeModel}
                         onEffortChange={provider.changeEffort}
                         onFastChange={provider.changeFast}

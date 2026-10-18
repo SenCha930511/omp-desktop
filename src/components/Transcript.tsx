@@ -10,6 +10,8 @@ import { ActivityMessage, AgentMessage, AssistantMessage, GoalMessage, SteerRead
 import { useTranscriptScroll } from './transcript/scroll'
 import { OmpMark } from './ui'
 import { LiveElapsed, ThinkingDots, WorkDisclosure } from './transcript/timeline'
+import { SearchMessage, TranscriptSearchBar, useTranscriptSearch } from './TranscriptSearch'
+import { failedTurn, TurnRecovery } from './TurnRecovery'
 
 export { tokenizeSyntax } from './transcript/syntax'
 export { classifyTool, formatWorkedDuration } from './transcript/timeline'
@@ -42,6 +44,7 @@ interface TranscriptProps {
   harness?: HarnessId
   loading?: boolean
   active?: boolean
+  visible?: boolean
   showReasoning?: boolean
   showTools?: boolean
   onOpenChanges(): void
@@ -54,6 +57,8 @@ interface TranscriptProps {
   onUndoChanges?(): void
   queuedMessageCount?: number
   onOpenSessionReference?(sessionId: string, harness: HarnessId): void
+  onRetry?(): Promise<void>
+  onRestorePrompt?(prompt: string): void
 }
 
 function ActiveAssistantMessage({ message, harness, showReasoning, showTools }: { message: TranscriptMessage; harness: HarnessId; showReasoning: boolean; showTools: boolean }) {
@@ -85,6 +90,7 @@ export function Transcript({
   harness = 'omp',
   loading,
   active = false,
+  visible = true,
   showReasoning = true,
   showTools = true,
   onOpenChanges,
@@ -95,22 +101,28 @@ export function Transcript({
   onUndoChanges,
   queuedMessageCount = 0,
   onOpenSessionReference,
+  onRetry,
+  onRestorePrompt,
 }: TranscriptProps) {
   const { t } = useI18n()
   const groupedMessages = useMemo(() => coalesceAssistantTurns(messages), [messages])
-  const { announcement, awayFromBottom, hiddenCount, scrollRef, scrollToBottom, showEarlier, updatePinnedState, visibleMessages } = useTranscriptScroll(groupedMessages)
+  const { announcement, awayFromBottom, hiddenCount, hiddenAfter, scrollRef, scrollToBottom, showEarlier, showNewer, revealIndex, updatePinnedState, visibleMessages } = useTranscriptScroll(groupedMessages, visible)
+  const search = useTranscriptSearch(groupedMessages, scrollRef, revealIndex, visible)
+  const recovery = useMemo(() => failedTurn(messages), [messages])
   const activeAssistantId = useMemo(() => (active && groupedMessages.at(-1)?.role === 'assistant' ? groupedMessages.at(-1)?.id : undefined), [active, groupedMessages])
   const transcriptClasses = [
     'transcript',
     'scroll-area',
     queuedMessageCount > 0 ? 'has-queued-messages' : '',
+    search.open ? 'is-searching' : '',
   ]
     .filter(Boolean)
     .join(' ')
 
   return (
     <>
-      <div ref={scrollRef} className={transcriptClasses} aria-busy={loading} onScroll={updatePinnedState}>
+      <TranscriptSearchBar state={search} />
+      <div ref={scrollRef} tabIndex={-1} className={transcriptClasses} aria-busy={loading} onScroll={updatePinnedState}>
         <div className="sr-only" role="status" aria-live="polite">
           {announcement}
         </div>
@@ -144,6 +156,7 @@ export function Transcript({
             </button>
           ) : null}
           {visibleMessages.map((message) => (
+            <SearchMessage key={message.id} id={message.id} reveal={search.matchId === message.id}>
             <ErrorBoundary
               key={message.id}
               fallback={
@@ -158,9 +171,9 @@ export function Transcript({
                 <UserMessage message={message} onOpenSessionReference={onOpenSessionReference} />
               ) : message.role === 'assistant' ? (
                 message.streaming || message.id === activeAssistantId ? (
-                  <ActiveAssistantMessage message={message} harness={harness} showReasoning={showReasoning} showTools={showTools} />
+                  <ActiveAssistantMessage message={message} harness={harness} showReasoning={showReasoning || search.matchId === message.id} showTools={showTools || search.matchId === message.id} />
                 ) : (
-                  <AssistantMessage message={message} harness={harness} showReasoning={showReasoning} showTools={showTools} />
+                  <AssistantMessage message={message} harness={harness} showReasoning={showReasoning || search.matchId === message.id} showTools={showTools || search.matchId === message.id} />
                 )
               ) : message.role === 'agent' ? (
                 <AgentMessage message={message} />
@@ -172,7 +185,10 @@ export function Transcript({
                 <div className={`message message--${message.role}`}>{message.parts.map((part, partIndex) => (part.type === 'text' ? <span key={partIndex}>{part.text}</span> : null))}</div>
               )}
             </ErrorBoundary>
+            </SearchMessage>
           ))}
+          {hiddenAfter > 0 && <button type="button" className="transcript__show-earlier" onClick={showNewer}>{t('conversation.search.newer', { count: Math.min(250, hiddenAfter) })}</button>}
+          {recovery && onRetry && onRestorePrompt && <TurnRecovery turn={recovery} busy={active} onRetry={onRetry} onRestore={onRestorePrompt} />}
           {active && !activeAssistantId ? (
             <article className="message message--assistant transcript-active-placeholder" aria-live="polite">
               <div className="streaming-state">
