@@ -35,8 +35,6 @@
    CDS body scale. Dark mode adds retinal-irradiation compensation: a lighter
    body weight counteracts light-on-dark bloom so prose stays crisp. */
 .message__content { min-width: 0; font-size: var(--conversation-font, 14px); line-height: 1.62; }
-:root[data-theme="dark"] .message__content, :root[data-theme="dark"] .activity-line--note { font-weight: 360; }
-:root[data-theme="dark"] .message__content strong, :root[data-theme="dark"] .message__content b, :root[data-theme="dark"] .message__content th, :root[data-theme="dark"] .message__content h1, :root[data-theme="dark"] .message__content h2, :root[data-theme="dark"] .message__content h3, :root[data-theme="dark"] .message__content h4 { font-weight: 560; }
 .prose { margin: 0 0 13px; white-space: normal; overflow-wrap: anywhere; }
 .prose:last-child { margin-bottom: 0; }
 .prose > :first-child { margin-top: 0; }

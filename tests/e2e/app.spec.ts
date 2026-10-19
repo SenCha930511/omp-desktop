@@ -2182,10 +2182,12 @@ test.describe('OMP Desktop desktop smoke', () => {
           const note = element.querySelector<HTMLElement>('.activity-line--note .prose')
           const thinking = element.querySelector<HTMLElement>('.activity-reasoning .prose')
           if (!note || !thinking) return null
-          return { note: getComputedStyle(note).color, thinking: getComputedStyle(thinking).color, body: getComputedStyle(document.body).color }
+          return { note: getComputedStyle(note).color, thinking: getComputedStyle(thinking).color, body: getComputedStyle(document.body).color, weight: getComputedStyle(note).fontWeight }
         })
         expect(emphasis).not.toBeNull()
         expect(emphasis!.note).toBe(emphasis!.body)
+        // Non-standard intermediate weights thin CJK strokes; keep body text at 400.
+        expect(emphasis!.weight).toBe('400')
         expect(emphasis!.thinking).not.toBe(emphasis!.body)
         await page.locator('.transcript .work-disclosure').last().scrollIntoViewIfNeeded()
         await page.screenshot({ path: test.info().outputPath(`activity-${theme}-${width}.png`) })
