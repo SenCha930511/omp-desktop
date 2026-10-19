@@ -57,7 +57,7 @@ describe('application window lifecycle', () => {
     })
     expect(mainWindowChromeOptions('win32', 'dark')).toEqual({
       titleBarStyle: 'hidden',
-      titleBarOverlay: { color: '#171716', symbolColor: '#f1f1ee', height: 32 },
+      titleBarOverlay: { color: '#171716', symbolColor: '#f5f5f2', height: 32 },
       autoHideMenuBar: true,
     })
     expect(mainWindowChromeOptions('darwin')).toMatchObject({

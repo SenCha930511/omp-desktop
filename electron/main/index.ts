@@ -296,7 +296,7 @@ type ResolvedTheme = Exclude<ThemeMode, 'system'>
 
 function windowsTitleBarOverlay(theme: ResolvedTheme): { color: string; symbolColor: string; height: number } {
   return theme === 'dark'
-    ? { color: '#171716', symbolColor: '#f1f1ee', height: 32 }
+    ? { color: '#171716', symbolColor: '#f5f5f2', height: 32 }
     : { color: '#ffffff', symbolColor: '#20201e', height: 32 }
 }
 

@@ -1997,9 +1997,9 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
     expect(await nativeSelectTheme()).toMatchObject({
       scheme: 'dark',
-      optionColor: 'rgb(241, 241, 238)',
+      optionColor: 'rgb(245, 245, 242)',
       optionBackground: 'rgb(34, 34, 32)',
-      themeColor: '#f1f1ee',
+      themeColor: '#f5f5f2',
       themeBackground: '#222220',
     })
     await page.getByRole('button', { name: /System/ }).click()
