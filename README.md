@@ -2,6 +2,8 @@
 
 OMP Desktop is a desktop workspace for [OMP](https://github.com/can1357/oh-my-pi) ([omp.sh](https://omp.sh)). It gives the coding agent a friendly native interface on macOS, Linux, and Windows while leaving the harness in charge of its own models, logins, and saved sessions.
 
+> **Origin:** this project is a fork of [GooeyPi](https://github.com/am-will/gooey-pi) by [am-will](https://github.com/am-will), forked at v1.1.17 and reworked into an OMP-only desktop workspace. See [Attribution](#attribution) and [LICENSE](LICENSE) for the upstream notice.
+
 <img width="2618" height="1672" alt="OMP Desktop workspace" src="docs/screenshot.png" />
 
 ## Attribution
