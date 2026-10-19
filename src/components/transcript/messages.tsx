@@ -277,18 +277,14 @@ function UserText({ text, onOpenSessionReference }: { text: string; onOpenSessio
 
 export const UserMessage = memo(function UserMessage({ message, onOpenSessionReference }: { message: TranscriptMessage; onOpenSessionReference?(sessionId: string, harness: HarnessId): void }) {
   const { t } = useI18n()
-  const [manualExpanded, setExpanded] = useState(false)
-  const reveal = useContext(SearchRevealContext)
-  const expanded = manualExpanded || reveal
   const copyableText = message.parts
     .filter((part) => part.type === 'text')
     .map((part) => visibleUserText(part.text))
     .filter(Boolean)
     .join('\n')
-  const collapsible = copyableText.length > 600 || copyableText.split('\n').length > 12
   return (
     <article className="message message--user">
-      <div className={`user-bubble${collapsible ? ` user-bubble--collapsible${expanded ? ' is-expanded' : ' is-collapsed'}` : ''}`}>
+      <div className="user-bubble">
         {message.parts.map((part, index) =>
           part.type === 'text' ? (
             <UserText key={index} text={part.text} onOpenSessionReference={onOpenSessionReference} />
@@ -297,11 +293,6 @@ export const UserMessage = memo(function UserMessage({ message, onOpenSessionRef
           ) : null,
         )}
       </div>
-      {collapsible ? (
-        <button type="button" className="user-bubble__toggle" aria-expanded={expanded} onClick={() => setExpanded((current) => !current)}>
-          {expanded ? t('transcript.user.showLess') : t('transcript.user.showMore')}
-        </button>
-      ) : null}
       {message.steerState ? (
         <div className={`message__steer-state is-${message.steerState}`} role="status">
           {message.steerState === 'accepted' ? t('transcript.steer.accepted') : t('transcript.steer.read')}

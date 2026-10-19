@@ -106,7 +106,7 @@ export function Transcript({
 }: TranscriptProps) {
   const { t } = useI18n()
   const groupedMessages = useMemo(() => coalesceAssistantTurns(messages), [messages])
-  const { announcement, awayFromBottom, scrolledFromTop, hiddenCount, hiddenAfter, scrollRef, scrollToBottom, showEarlier, showNewer, revealIndex, updatePinnedState, visibleMessages } = useTranscriptScroll(groupedMessages, visible)
+  const { announcement, awayFromBottom, hiddenCount, hiddenAfter, scrollRef, scrollToBottom, showEarlier, showNewer, revealIndex, updatePinnedState, visibleMessages } = useTranscriptScroll(groupedMessages, visible)
   const search = useTranscriptSearch(groupedMessages, scrollRef, revealIndex, visible)
   const recovery = useMemo(() => failedTurn(messages), [messages])
   const activeAssistantId = useMemo(() => (active && groupedMessages.at(-1)?.role === 'assistant' ? groupedMessages.at(-1)?.id : undefined), [active, groupedMessages])
@@ -115,8 +115,6 @@ export function Transcript({
     'scroll-area',
     queuedMessageCount > 0 ? 'has-queued-messages' : '',
     search.open ? 'is-searching' : '',
-    scrolledFromTop ? 'has-top-fade' : '',
-    awayFromBottom ? 'has-bottom-fade' : '',
   ]
     .filter(Boolean)
     .join(' ')

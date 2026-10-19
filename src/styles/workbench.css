@@ -65,7 +65,6 @@
 .terminal-drawer > .resize-handle:hover > span, .terminal-drawer > .resize-handle:focus-visible > span, .terminal-drawer > .resize-handle[data-resizing="true"] > span { background: var(--prime); }
 body.is-resizing-vertical, body.is-resizing-vertical * { cursor: col-resize !important; user-select: none !important; }
 body.is-resizing-horizontal, body.is-resizing-horizontal * { cursor: row-resize !important; user-select: none !important; }
-body.is-resizing-vertical :is(iframe, object, embed, .browser-viewport), body.is-resizing-horizontal :is(iframe, object, embed, .browser-viewport) { pointer-events: none !important; }
 
 .icon-button { position: relative; display: inline-grid; place-items: center; flex: 0 0 auto; width: 28px; height: 28px; padding: 0; border-radius: 6px; color: var(--text-secondary); background: transparent; transition: color 130ms ease-out, background 130ms ease-out; }
 .icon-button:hover { color: var(--text); background: var(--surface-hover); }

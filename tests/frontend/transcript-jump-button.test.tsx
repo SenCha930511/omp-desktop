@@ -92,47 +92,4 @@ describe('transcript jump-to-bottom button', () => {
     expect(scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: 'smooth' })
     expect(jumpButton()).toBeNull()
   })
-
-  it('toggles top and bottom scroll edge fade classes based on scroll position', () => {
-    fakeScrollMetrics(1000, 400, 0)
-    act(() => scroller.dispatchEvent(new Event('scroll')))
-    expect(scroller.classList.contains('has-top-fade')).toBe(false)
-    expect(scroller.classList.contains('has-bottom-fade')).toBe(true)
-
-    fakeScrollMetrics(1000, 400, 200)
-    act(() => scroller.dispatchEvent(new Event('scroll')))
-    expect(scroller.classList.contains('has-top-fade')).toBe(true)
-    expect(scroller.classList.contains('has-bottom-fade')).toBe(true)
-
-    fakeScrollMetrics(1000, 400, 600)
-    act(() => scroller.dispatchEvent(new Event('scroll')))
-    expect(scroller.classList.contains('has-top-fade')).toBe(true)
-    expect(scroller.classList.contains('has-bottom-fade')).toBe(false)
-  })
-
-  it('collapses long user messages with a Show more / Show less toggle', () => {
-    const longText = Array.from({ length: 16 }, (_, index) => `Line ${index + 1}: user prompt context`).join('\n')
-    act(() =>
-      root.render(
-        <Transcript
-          messages={[{ id: 'user-long', role: 'user', timestamp: 1, parts: [{ type: 'text', text: longText }] }]}
-          git={git}
-          onOpenChanges={() => undefined}
-          onSuggestion={() => undefined}
-        />,
-      ),
-    )
-    const bubble = container.querySelector('.user-bubble')
-    const toggle = container.querySelector<HTMLButtonElement>('.user-bubble__toggle')
-    expect(bubble?.classList.contains('user-bubble--collapsible')).toBe(true)
-    expect(bubble?.classList.contains('is-collapsed')).toBe(true)
-    expect(toggle?.textContent).toBe('Show more')
-    expect(toggle?.getAttribute('aria-expanded')).toBe('false')
-
-    act(() => toggle?.click())
-    expect(bubble?.classList.contains('is-expanded')).toBe(true)
-    expect(bubble?.classList.contains('is-collapsed')).toBe(false)
-    expect(toggle?.textContent).toBe('Show less')
-    expect(toggle?.getAttribute('aria-expanded')).toBe('true')
-  })
 })

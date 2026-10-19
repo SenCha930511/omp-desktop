@@ -67,10 +67,6 @@
   --terminal-bright-cyan: #177f83;
   --terminal-bright-white: #20201e;
   --shadow-popover: 0 10px 30px rgba(0, 0, 0, .12);
-  --code-bg: #f7f7f5;
-  --focus-ring: inset 0 0 0 1px var(--surface-raised), 0 0 0 1.5px var(--focus), 0 0 8px 1px color-mix(in srgb, var(--focus) 24%, transparent);
-  --ease-spring: cubic-bezier(.19, 1, .22, 1);
-  --ease-snappy: cubic-bezier(.3, .7, .4, 1);
   /* Shared transcript column measure: grows with the pane from the reading
      minimum, capped so prose stays readable on very wide monitors. Sized in
      cqi against .conversation-pane so the scrolled column and the absolutely
@@ -85,16 +81,16 @@
 :root[data-theme="dark"] {
   color-scheme: dark;
   --canvas: #171716;
-  --sidebar: #131312;
-  --surface-subtle: #20201f;
-  --surface-hover: #282826;
-  --surface-selected: #31312e;
+  --sidebar: #20201f;
+  --surface-subtle: #242423;
+  --surface-hover: #2b2b29;
+  --surface-selected: #333330;
   --surface-raised: #222220;
   --text: #f1f1ee;
   --text-secondary: #b3b3ad;
   --text-tertiary: #969690;
-  --border: #2e2e2b;
-  --border-strong: #43433f;
+  --border: #343431;
+  --border-strong: #474743;
   --focus: #82b5ff;
   --prime: #a595ff;
   --prime-soft: #312b51;
@@ -135,9 +131,7 @@
   --terminal-bright-magenta: #b8adff;
   --terminal-bright-cyan: #8ad9da;
   --terminal-bright-white: #f1f1ee;
-  --shadow-popover: 0 12px 34px rgba(0, 0, 0, .42);
-  --code-bg: #111110;
-  --focus-ring: inset 0 0 0 1px var(--surface-raised), 0 0 0 1.5px var(--focus), 0 0 8px 1px color-mix(in srgb, var(--focus) 28%, transparent);
+  --shadow-popover: 0 12px 34px rgba(0, 0, 0, .38);
 }
 
 * { box-sizing: border-box; }
