@@ -10,13 +10,13 @@ on:
         description: Existing semantic version tag to publish (for example, v0.2.0)
         required: true
         type: string
-      include_windows:
-        description: Build signed Windows packages (requires Authenticode secrets)
+      include_mac_unsigned:
+        description: Build ad-hoc signed macOS packages for free beta distribution (skips Developer ID signing and notarization)
         required: false
         default: false
         type: boolean
-      include_windows_unsigned:
-        description: Build unsigned Windows packages for free beta distribution
+      include_windows:
+        description: Build signed Windows packages (requires Authenticode secrets)
         required: false
         default: false
         type: boolean
@@ -30,7 +30,7 @@ concurrency:
 
 env:
   RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-  RELEASE_REF: ${{ inputs.tag || github.ref }}
+  RELEASE_MAC_UNSIGNED_ENABLED: ${{ (github.event_name == 'workflow_dispatch' && inputs.include_mac_unsigned) || (github.event_name == 'push' && vars.RELEASE_MAC_UNSIGNED_ENABLED == 'true') }}
   RELEASE_WINDOWS_SIGNED_ENABLED: ${{ (github.event_name == 'workflow_dispatch' && inputs.include_windows) || (github.event_name == 'push' && vars.RELEASE_WINDOWS_ENABLED == 'true') }}
   RELEASE_WINDOWS_UNSIGNED_ENABLED: ${{ (github.event_name == 'workflow_dispatch' && inputs.include_windows_unsigned) || (github.event_name == 'push' && vars.RELEASE_WINDOWS_UNSIGNED_ENABLED == 'true') }}
   RELEASE_WINDOWS_ENABLED: ${{ ((github.event_name == 'workflow_dispatch' && (inputs.include_windows || inputs.include_windows_unsigned)) || (github.event_name == 'push' && (vars.RELEASE_WINDOWS_ENABLED == 'true' || vars.RELEASE_WINDOWS_UNSIGNED_ENABLED == 'true'))) }}
@@ -156,7 +156,11 @@ jobs:
           key: electron-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('package-lock.json') }}
       - run: npm ci
       - run: npm run release:preflight:toolchain
+      # Signed Developer ID builds stay the fail-closed default; the ad-hoc
+      # unsigned beta path must be explicitly selected via the dispatch input
+      # or the RELEASE_MAC_UNSIGNED_ENABLED repository variable.
       - name: Fail closed unless every release credential is configured
+        if: env.RELEASE_MAC_UNSIGNED_ENABLED != 'true'
         run: npm run release:preflight
         env:
           RELEASE_SIGNING_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -168,6 +172,7 @@ jobs:
       # CI runs the full typecheck/lint/test suite for this commit; the release
       # job only builds the bundle, packages, and runs post-package verification.
       - name: Build, sign, notarize, and verify release packages
+        if: env.RELEASE_MAC_UNSIGNED_ENABLED != 'true'
         run: npm run package:mac -- --skip-verify --arch ${{ matrix.arch }}
         env:
           RELEASE_SIGNING_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -176,6 +181,9 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      - name: Build ad-hoc signed macOS packages for beta distribution
+        if: env.RELEASE_MAC_UNSIGNED_ENABLED == 'true'
+        run: node scripts/release/package.mjs --qa --platform mac --skip-verify --arch ${{ matrix.arch }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: omp-desktop-public-macos-${{ matrix.arch }}
