@@ -73,7 +73,12 @@ export function brandDevElectron(run = runCommand, platform = process.platform, 
 
   for (const { key, value } of plistUpdates) run('plutil', ['-replace', key, '-string', value, plistPath])
   if (iconStale) copyFileSync(paths.iconSource, iconTarget)
-  run('codesign', ['--force', '--sign', '-', paths.appBundle])
+  // --deep is required because some official Electron darwin-x64 archives
+  // (43.4.0 included) ship nested helper apps with no signature at all, and
+  // sealing the outer bundle then fails with "code object is not signed at
+  // all". Deep signing walks the nested helpers first, which is safe here
+  // because the dev bundle is only ever ad-hoc signed.
+  run('codesign', ['--force', '--deep', '--sign', '-', paths.appBundle])
   // LaunchServices caches the stock registration; without a forced refresh the
   // Dock keeps labelling the tile "Electron" even though the plist is patched.
   run(DEV_LSREGISTER_PATH, ['-f', paths.appBundle])

@@ -29,15 +29,16 @@ export function findUnpackedDirectory(outputDirectory, target) {
   return matches[0]
 }
 
-const { build: buildConfiguration } = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8'))
+const { build: buildConfiguration, name: packageName } = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8'))
 
 /**
  * The packaged binary inside an unpacked application directory. electron-builder
  * names the Windows executable after `build.productName` and the Linux one
- * after its lowercased form, so package.json stays the only inventory of it.
+ * after the package's `name` field (sanitized and lowercased), so package.json
+ * stays the only inventory of both.
  */
 export function packagedExecutablePath(unpackedDirectory, target) {
-  const name = target === 'win' ? `${buildConfiguration.productName}.exe` : buildConfiguration.productName.toLowerCase()
+  const name = target === 'win' ? `${buildConfiguration.productName}.exe` : packageName
   const path = join(unpackedDirectory, name)
   if (!existsSync(path) || !lstatSync(path).isFile()) throw new Error(`Packaged ${target} application is missing its executable: ${path}`)
   return path

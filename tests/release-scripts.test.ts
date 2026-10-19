@@ -1537,7 +1537,7 @@ describe('dev Electron branding', () => {
         { command: 'plutil', args: ['-replace', 'CFBundleName', '-string', 'OMP Desktop', plistPath] },
         { command: 'plutil', args: ['-replace', 'CFBundleDisplayName', '-string', 'OMP Desktop', plistPath] },
         { command: 'plutil', args: ['-replace', 'CFBundleIdentifier', '-string', 'app.ompdesktop.dev', plistPath] },
-        { command: 'codesign', args: ['--force', '--sign', '-', appBundle] },
+        { command: 'codesign', args: ['--force', '--deep', '--sign', '-', appBundle] },
         { command: DEV_LSREGISTER_PATH, args: ['-f', appBundle] },
       ])
       expect(readFileSync(join(appBundle, 'Contents/Resources/electron.icns'))).toEqual(Buffer.from('new-icon'))
