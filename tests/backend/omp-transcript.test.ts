@@ -128,9 +128,10 @@ describe('OMP transcript system entries', () => {
     ])
 
     const transcript = await readOmpTranscript(file, false)
-    expect(transcript).toHaveLength(2)
-    expect(transcript[1]).toMatchObject({ role: 'assistant', outcome: 'failed' })
-    expect(transcript[1]?.parts.at(-1)).toEqual({ type: 'text', text: '401 LiteLLM Virtual Key expected.' })
+    expect(transcript).toHaveLength(3)
+    expect(transcript[1]).toMatchObject({ role: 'assistant', outcome: 'failed', parts: [{ type: 'text', text: '' }] })
+    expect(transcript[2]).toMatchObject({ id: 'error-aa000002', role: 'system' })
+    expect(transcript[2]?.parts).toEqual([{ type: 'text', text: '401 LiteLLM Virtual Key expected.' }])
   })
 
   it('marks an errored turn failed even when the model streamed text before the failure', async () => {
@@ -141,7 +142,9 @@ describe('OMP transcript system entries', () => {
 
     const transcript = await readOmpTranscript(file, false)
     expect(transcript[1]).toMatchObject({ role: 'assistant', outcome: 'failed' })
-    expect(transcript[1]?.parts.map((part) => part.type === 'text' ? part.text : part.type)).toEqual(['partial answer', 'The turn failed.'])
+    expect(transcript[1]?.parts.map((part) => part.type === 'text' ? part.text : part.type)).toEqual(['partial answer'])
+    expect(transcript[2]).toMatchObject({ role: 'system' })
+    expect(transcript[2]?.parts).toEqual([{ type: 'text', text: 'The turn failed.' }])
   })
 
   it('renders compaction entries and displayed custom messages, skipping undisplayed ones', async () => {

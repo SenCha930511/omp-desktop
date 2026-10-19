@@ -15,7 +15,7 @@
 .search-message.is-search-match { outline: 1px solid color-mix(in srgb, var(--prime) 30%, transparent); outline-offset: 5px; border-radius: var(--conversation-control-radius); }
 ::highlight(conversation-search) { background-color: color-mix(in srgb, #eab308 40%, transparent); color: inherit; }
 .turn-recovery { display: flex; align-items: center; flex-wrap: wrap; gap: var(--conversation-control-gap); padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--danger) 25%, var(--border)); border-radius: var(--conversation-panel-radius); background: var(--surface-subtle); font-size: var(--conversation-control-font); }
-.turn-recovery__title { width: 100%; color: var(--danger); font-weight: 500; }
+.turn-recovery__title { color: var(--danger); font-weight: 500; white-space: nowrap; flex-shrink: 0; }
 .turn-recovery button { min-height: var(--conversation-control-height); padding: 4px 9px; border: 1px solid var(--border); border-radius: var(--conversation-control-radius); background: var(--surface-raised); color: var(--text-secondary); font: inherit; cursor: pointer; }
 .turn-recovery button:hover { color: var(--text); border-color: var(--border-strong); }
 .turn-recovery button:disabled { opacity: .5; cursor: default; }

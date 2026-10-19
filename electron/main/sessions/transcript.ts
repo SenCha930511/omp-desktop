@@ -420,14 +420,12 @@ async function readTranscriptWithDialect(dialect: TranscriptDialect, filePath: s
     }
     if (role === 'assistant') {
       // A provider failure persists as an assistant record with no content and
-      // stopReason "error". Surface it as a failed turn carrying the harness
-      // error text, so the transcript shows the recovery row (retry / restore
-      // / copy) instead of an empty bubble that looks like a normal completion.
-      if (message.stopReason === 'error') {
-        const failure = typeof message.errorMessage === 'string' && message.errorMessage.trim() ? boundedString(message.errorMessage, MAX_PART_TEXT_CHARS) : 'The turn failed.'
-        parts.push({ type: 'text', text: failure })
-      }
-      const outcome = message.stopReason === 'error' ? 'failed' as const : undefined
+      // stopReason "error". Surface it as a failed turn plus its own error row
+      // after it: the recovery bar keys off that row being the transcript
+      // tail, so a successful retry (which appends after the row) dismisses
+      // the bar instead of leaving it stuck on the reopened failed turn.
+      const failed = message.stopReason === 'error'
+      const outcome = failed ? 'failed' as const : undefined
       if (activeAssistant) {
         appendAssistantParts(parts)
         activeAssistant.completedAt = completedAt ?? activeAssistant.completedAt
@@ -437,6 +435,11 @@ async function readTranscriptWithDialect(dialect: TranscriptDialect, filePath: s
         registerToolCalls(0, parts)
         activeAssistant = { id: safeId, role, timestamp, startedAt: timestamp, completedAt, parts, outcome }
         transcript.push(activeAssistant)
+      }
+      if (failed) {
+        const failure = typeof message.errorMessage === 'string' && message.errorMessage.trim() ? boundedString(message.errorMessage, MAX_PART_TEXT_CHARS) : 'The turn failed.'
+        transcript.push({ id: `error-${safeId}`, role: 'system', timestamp: completedAt ?? timestamp, parts: [{ type: 'text', text: failure }] })
+        activeAssistant = undefined
       }
       continue
     }
