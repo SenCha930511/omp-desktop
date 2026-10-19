@@ -544,21 +544,41 @@ describe('Composer context usage and stop control', () => {
   it('shows the exact context usage in a filled dial before the send button', () => {
     renderComposer(vi.fn(), true, false, 'queue', { tokens: 50_000, contextWindow: 100_000, percent: 50 })
 
-    const dial = container.querySelector<HTMLElement>('[role="meter"]')
+    const dial = container.querySelector<HTMLButtonElement>('.context-usage-dial')
     const actions = container.querySelector('.composer__actions')
     expect(dial?.textContent).toBe('50')
     expect(dial?.title).toBe('50,000 / 100,000 tokens')
-    expect(dial?.getAttribute('aria-valuenow')).toBe('50')
+    expect(dial?.getAttribute('aria-haspopup')).toBe('dialog')
     expect(dial?.style.getPropertyValue('--context-percent')).toBe('50%')
-    expect(actions?.firstElementChild).toBe(dial)
-    expect(dial?.nextElementSibling?.getAttribute('aria-label')).toBe('Start dictation')
-    expect(dial?.nextElementSibling?.nextElementSibling?.getAttribute('aria-label')).toBe('Send message')
+    expect(actions?.firstElementChild?.firstElementChild).toBe(dial)
+    expect(dial?.parentElement?.nextElementSibling?.getAttribute('aria-label')).toBe('Start dictation')
+    expect(dial?.parentElement?.nextElementSibling?.nextElementSibling?.getAttribute('aria-label')).toBe('Send message')
+  })
+
+  it('opens a usage popover from the dial and compacts from it', () => {
+    const onSend = vi.fn()
+    renderComposer(onSend, true, false, 'queue', { tokens: 50_000, contextWindow: 100_000, percent: 50 })
+    const dial = container.querySelector<HTMLButtonElement>('.context-usage-dial')
+    act(() => {
+      dial?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    const popover = container.querySelector('.context-popover')
+    expect(popover?.textContent).toContain('50,000 / 100,000')
+    expect(popover?.textContent).toContain('Compact context')
+
+    const compact = container.querySelector<HTMLButtonElement>('.context-popover__compact')
+    act(() => {
+      compact?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(onSend).toHaveBeenCalledWith('/compact', [], 'queue')
+    expect(container.querySelector('.context-popover')).toBeNull()
   })
 
   it('shows unavailable usage honestly and uses a square stop icon', () => {
     renderComposer(vi.fn(), true, true, 'queue', { tokens: null, contextWindow: 100_000, percent: null })
 
-    const dial = container.querySelector<HTMLElement>('[role="meter"]')
+    const dial = container.querySelector<HTMLElement>('.context-usage-dial')
     expect(dial?.textContent).toBe('—')
     expect(dial?.hasAttribute('aria-valuenow')).toBe(false)
     expect(dial?.title).toContain('unavailable')

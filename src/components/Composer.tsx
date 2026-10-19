@@ -6,7 +6,7 @@ import { useDictation } from '@/hooks/useDictation'
 import { appendAnnotationsToPrompt } from '@/lib/browser-annotations'
 import { appendCapabilityRouting } from '@/lib/capability-mentions'
 import { clearComposerDraft, readComposerDraft, saveComposerDraft, takeComposerDraft } from '@/lib/composer-draft'
-import { contextDialLabel } from '@/lib/format-cost'
+import { contextDialLabel, formatSessionCost, PRICING_UNAVAILABLE } from '@/lib/format-cost'
 import { type MessageKey, useI18n } from '@/lib/i18n'
 import { messageActionForKey } from '@/lib/message-shortcuts'
 import { appendSessionRouting, findSessionMentions } from '@/lib/session-mentions'
@@ -478,6 +478,26 @@ export const Composer = memo(function Composer({
   const contextLabel = contextDialLabel(contextUsage, sessionUsage)
   const contextDisplayPercent = contextPercent === null ? null : Math.min(99, Math.round(contextPercent))
   const contextStyle = { '--context-percent': `${contextPercent ?? 0}%` } as CSSProperties
+  const sessionCost = formatSessionCost(sessionUsage)
+  /** Click target for the context dial's popover; closes on outside click/Escape. */
+  const [contextMenuOpen, setContextMenuOpen] = useState(false)
+  const contextMenuRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!contextMenuOpen) return
+    const close = (event: MouseEvent) => {
+      if (event.target instanceof Node && contextMenuRef.current?.contains(event.target)) return
+      setContextMenuOpen(false)
+    }
+    const onEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setContextMenuOpen(false)
+    }
+    document.addEventListener('mousedown', close)
+    document.addEventListener('keydown', onEscape)
+    return () => {
+      document.removeEventListener('mousedown', close)
+      document.removeEventListener('keydown', onEscape)
+    }
+  }, [contextMenuOpen])
   const sendQueuedMessageImmediately = async (queued: QueuedPrompt) => {
     onDeleteQueuedMessage?.(queued)
     try {
@@ -835,21 +855,52 @@ export const Composer = memo(function Composer({
                 <X size={14} />
               </button>
             ) : (
-              <span
-                className={`context-usage-dial ${contextPercent === null ? 'is-unavailable' : contextPercent >= 95 ? 'is-critical' : contextPercent >= 80 ? 'is-warning' : ''}`}
-                role="meter"
-                tabIndex={0}
-                aria-label={t('composer.contextUsage')}
-                aria-valuemin={0}
-                aria-valuemax={100}
-                aria-valuenow={contextPercent === null ? undefined : Math.round(contextPercent)}
-                aria-valuetext={contextLabel}
-                title={contextLabel}
-                data-tooltip={contextLabel}
-                style={contextStyle}
-              >
-                <span>{contextDisplayPercent ?? '—'}</span>
-              </span>
+              <div className="composer-context" ref={contextMenuRef}>
+                <button
+                  type="button"
+                  className={`context-usage-dial ${contextPercent === null ? 'is-unavailable' : contextPercent >= 95 ? 'is-critical' : contextPercent >= 80 ? 'is-warning' : ''}`}
+                  aria-label={t('composer.contextUsage')}
+                  aria-haspopup="dialog"
+                  aria-expanded={contextMenuOpen}
+                  title={contextLabel}
+                  data-tooltip={contextLabel}
+                  style={contextStyle}
+                  onClick={() => setContextMenuOpen((open) => !open)}
+                >
+                  <span>{contextDisplayPercent ?? '—'}</span>
+                </button>
+                {contextMenuOpen ? (
+                  <div className="context-popover" role="dialog" aria-label={t('composer.contextUsage')}>
+                    {contextUsage && contextUsage.tokens !== null ? (
+                      <dl>
+                        <div>
+                          <dt>{t('composer.context.tokens')}</dt>
+                          <dd>{contextUsage.tokens.toLocaleString('en-US')} / {contextUsage.contextWindow.toLocaleString('en-US')}</dd>
+                        </div>
+                        {sessionCost && sessionCost !== PRICING_UNAVAILABLE ? (
+                          <div>
+                            <dt>{t('composer.context.cost')}</dt>
+                            <dd>{sessionCost}</dd>
+                          </div>
+                        ) : null}
+                      </dl>
+                    ) : (
+                      <p className="context-popover__empty">{t('composer.context.unavailable')}</p>
+                    )}
+                    <button
+                      type="button"
+                      className="context-popover__compact"
+                      disabled={busy || submitting || disabled}
+                      onClick={() => {
+                        setContextMenuOpen(false)
+                        void onSend('/compact', [], 'queue')
+                      }}
+                    >
+                      {t('composer.context.compact')}
+                    </button>
+                  </div>
+                ) : null}
+              </div>
             )}
             <button
               type="button"

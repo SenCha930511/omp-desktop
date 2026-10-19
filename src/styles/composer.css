@@ -1,11 +1,22 @@
 /* Composer */
-.composer { position: relative; min-height: 112px; display: flex; flex-direction: column; padding: 10px; border: 1px solid var(--border); border-radius: 18px; background: var(--surface-raised); box-shadow: 0 2px 14px color-mix(in srgb, #000 4%, transparent); transition: border-color 150ms ease, box-shadow 150ms ease; }
+.composer { position: relative; min-height: 92px; display: flex; flex-direction: column; padding: 10px; border: 1px solid var(--border); border-radius: 18px; background: var(--surface-raised); box-shadow: 0 2px 14px color-mix(in srgb, #000 4%, transparent); transition: border-color 150ms ease, box-shadow 150ms ease; }
 .composer-queue { display: grid; gap: 5px; margin: 0 0 8px; padding: 7px 8px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-raised); box-shadow: 0 3px 12px color-mix(in srgb, #000 8%, transparent); }
 .composer-queue__header { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--text-tertiary); font-size: 10.5px; font-weight: 620; letter-spacing: .01em; }
 .composer-queue__header > span { display: inline-flex; align-items: center; gap: 5px; }
 .composer-queue__header svg { color: var(--text-tertiary); }
 .composer-queue__header strong { min-width: 18px; padding: 1px 5px; border-radius: 999px; color: var(--text-secondary); background: var(--surface-hover); font-size: 10px; font-variant-numeric: tabular-nums; text-align: center; }
 .composer-queue__list { display: grid; gap: 3px; max-height: 132px; overflow-y: auto; }
+/* Context usage dial popover: compact details + compact action. */
+.composer-context { position: relative; }
+.context-popover {position: absolute; right: 0; bottom: calc(100% + 10px); z-index: 30; min-width: 216px; padding: 10px 12px 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-raised); box-shadow: 0 8px 30px color-mix(in srgb, #000 14%, transparent); font-size: 12px; }
+.context-popover dl { margin: 0 0 10px; display: flex; flex-direction: column; gap: 6px; }
+.context-popover dl > div { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
+.context-popover dt { color: var(--text-tertiary); }
+.context-popover dd { margin: 0; color: var(--text); font-variant-numeric: tabular-nums; }
+.context-popover__empty { margin: 0 0 10px; color: var(--text-secondary); }
+.context-popover__compact { width: 100%; min-height: 30px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-hover); color: var(--text); font: inherit; cursor: pointer; }
+.context-popover__compact:hover:not(:disabled) { background: var(--surface-selected); }
+.context-popover__compact:disabled { opacity: .5; cursor: default; }
 .composer-queue__item { min-width: 0; min-height: 29px; display: flex; align-items: center; gap: 6px; padding: 3px 5px; border-top: 1px solid var(--border-subtle); color: var(--text-secondary); font-size: 11px; }
 .composer-queue__item:first-child { border-top: 0; }
 .composer-queue__item:hover { background: var(--surface-hover); }
@@ -18,10 +29,10 @@
 .composer:focus-within { border-color: color-mix(in srgb, var(--border-strong) 65%, var(--focus)); box-shadow: 0 0 0 1px color-mix(in srgb, var(--focus) 30%, transparent); }
 .composer--image-dragging { border-color: var(--focus); box-shadow: 0 0 0 2px color-mix(in srgb, var(--focus) 28%, transparent); }
 .composer-drop-feedback { position: absolute; z-index: 80; inset: 5px; display: flex; align-items: center; justify-content: center; gap: 7px; border: 1px dashed color-mix(in srgb, var(--focus) 72%, var(--border)); border-radius: 10px; color: var(--text); background: color-mix(in srgb, var(--surface-raised) 91%, transparent); backdrop-filter: blur(4px); font-size: 12px; font-weight: 620; pointer-events: none; }
-.composer-input { position: relative; width: 100%; min-height: 55px; max-height: 150px; flex: 1; }
+.composer-input { position: relative; width: 100%; min-height: 34px; max-height: 150px; flex: 1; }
 /* The native control is the sole text renderer so its glyphs, wrapping, selection,
    caret, and platform scrollbar always share one authoritative content box. */
-.composer-input > textarea { width: 100%; height: 100%; min-height: 55px; max-height: 150px; display: block; padding: 8px 10px; border: 0; resize: none; outline: 0; color: var(--text); background: transparent; caret-color: var(--text); font: inherit; font-size: 14px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: break-word; }
+.composer-input > textarea { width: 100%; height: 100%; min-height: 34px; max-height: 150px; display: block; padding: 8px 10px; border: 0; resize: none; outline: 0; color: var(--text); background: transparent; caret-color: var(--text); font: inherit; font-size: 14px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: break-word; }
 .composer-input > textarea::placeholder { color: var(--text-tertiary); }
 .composer-attachments { display: flex; align-items: center; gap: 6px; padding: 1px 6px 7px; overflow-x: auto; }
 .composer-attachment { max-width: 190px; height: 34px; display: flex; align-items: center; gap: 5px; flex: 0 0 auto; padding: 3px 4px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-subtle); }
