@@ -668,6 +668,50 @@ export class ProjectService {
     return this.grantProjectFolder(path, identity)
   }
 
+  /** Moves a persisted project to a new folder chosen through a native dialog; null when canceled. */
+  async relocate(idValue: unknown): Promise<ProjectRecord | null> {
+    const id = requireId(idValue, 'project id')
+    const options = { title: 'Choose a new project folder', properties: ['openDirectory', 'createDirectory'] as Array<'openDirectory' | 'createDirectory'> }
+    const parent = this.windowProvider()
+    const result = parent ? await dialog.showOpenDialog(parent, options) : await dialog.showOpenDialog(options)
+    if (result.canceled || result.filePaths.length !== 1) return null
+    const { path, identity } = await this.captureFolderIdentity(result.filePaths[0])
+    if (await this.isBroadRoot(path)) throw new TypeError('Broad filesystem roots cannot be added as projects')
+    let previousPrimary = ''
+    const project = await this.store.update((state): PersistedProject => {
+      const own = this.ownProjects(state.projects)
+      const target = own.find((item) => item.id === id)
+      if (!target) throw new TypeError('Unknown project id')
+      if (own.some((item) => item.id !== id && (item.path === path || resolve(item.path) === path || item.folders.some((folder) => folder === path || resolve(folder) === path)))) {
+        throw new TypeError('Another project already uses that folder')
+      }
+      const old = resolve(target.primaryFolder)
+      const folders = target.folders.filter((folder) => resolve(folder) !== old && folder !== target.primaryFolder)
+      if (!folders.includes(path)) folders.unshift(path)
+      const folderIdentities = { ...target.folderIdentities }
+      delete folderIdentities[old]
+      delete folderIdentities[target.primaryFolder]
+      folderIdentities[path] = identity
+      target.folderIdentities = folderIdentities
+      target.folders = folders
+      target.primaryFolder = path
+      target.path = path
+      if (!target.name || target.name === basename(old)) target.name = basename(path) || path
+      target.lastOpenedAt = new Date().toISOString()
+      previousPrimary = old
+      return target
+    })
+    this.authorizationRevision += 1
+    if (previousPrimary !== path) {
+      this.authorizedRoots.delete(previousPrimary)
+      this.readOnlyRoots.delete(previousPrimary)
+    }
+    this.removalRoots.delete(path)
+    this.authorizedRoots.set(path, identity)
+    const sessions = await this.sessionProvider()
+    return { ...project, sessionCount: sessions.filter((session) => resolve(session.projectPath) === path).length, gitBranch: await this.branchProvider(path) }
+  }
+
   async grantInferred(pathValue: unknown): Promise<ProjectRecord> {
     const { path, identity } = await this.captureFolderIdentity(String(pathValue))
     if (await this.isBroadRoot(path)) throw new TypeError('Broad filesystem roots cannot be inferred as projects')

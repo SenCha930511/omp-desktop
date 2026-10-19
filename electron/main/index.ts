@@ -16,7 +16,7 @@ import { GitService } from './git'
 import { CheckoutService } from './checkouts'
 import { isTrustedRendererUrl, registerIpc, type IpcRegistration } from './ipc'
 import { HarnessDiscoveryService, reconcileActiveHarness } from './harness-discovery'
-import { beginProcessShutdown, runProcess, stopChildProcesses } from './process-utils'
+import { beginProcessShutdown, captureLoginShellEnvironment, runProcess, setLoginShellEnvironmentSnapshot, stopChildProcesses } from './process-utils'
 import { PluginService, beginPluginDiscoveryShutdown } from './plugins'
 import { OmpModelCatalogService } from './providers-omp'
 import { PACKAGED_RENDERER_URL, PACKAGED_SMOKE_READY_EVENT, packagedSmokeMarker, packagedSmokeMarkerPath, serializePackagedSmokeMarker } from './packaged-smoke'
@@ -874,6 +874,10 @@ else void app.whenReady().then(async () => {
     packagedSmokeMarkerFile = requestedSmokeMarker
   }
   registerRendererProtocol()
+  // Sessions are GUI-launched and never source the user's shell rc files, so
+  // API keys exported there would be invisible to the harness. Capture the
+  // login-shell environment once (best effort) and merge it into every child.
+  void captureLoginShellEnvironment().then(setLoginShellEnvironmentSnapshot)
   let wasOpenedAtLogin = false
   if (process.platform === 'darwin' && app.isPackaged) {
     try { wasOpenedAtLogin = app.getLoginItemSettings().wasOpenedAtLogin } catch { /* The explicit flag remains available if the OS lookup fails. */ }

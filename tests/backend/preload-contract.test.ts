@@ -28,6 +28,7 @@ const INVOKE_CASES: Array<[domain: string, method: string, channel: string, args
   ['projects', 'executeCheckout', 'projects:execute-checkout', ['project-id', { strategy: 'branch', operation: 'switch', branch: 'feature' }, 'omp']],
   ['projects', 'add', 'projects:add', ['omp']],
   ['projects', 'grantInferred', 'projects:grant-inferred', ['/repo', 'omp']],
+  ['projects', 'relocate', 'projects:relocate', ['project-id', 'omp']],
   ['projects', 'remove', 'projects:remove', ['project-id', 'omp']],
   ['projects', 'touch', 'projects:touch', ['project-id', 'omp']],
   ['projects', 'setPinned', 'projects:pin', ['project-id', true, 'omp']],

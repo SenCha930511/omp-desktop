@@ -1,4 +1,4 @@
-import { ArrowUpRight, Folder, FolderGit2, FolderPlus, GitBranch, Pin, Search, Trash2 } from 'lucide-react'
+import { ArrowUpRight, Folder, FolderGit2, FolderInput, FolderPlus, GitBranch, Pin, Search, Trash2 } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { EmptyState, IconButton, Modal } from '@/components/ui'
 import { formatRelative } from '@/lib/data'
@@ -11,6 +11,7 @@ export function ProjectsPage({
   sortMode,
   onAdd,
   onOpen,
+  onRelocate,
   onRemove,
   onTogglePin,
 }: {
@@ -18,6 +19,7 @@ export function ProjectsPage({
   sortMode: ProjectSortMode
   onAdd(): void
   onOpen(project: ProjectRecord): void
+  onRelocate(project: ProjectRecord): void
   onRemove(project: ProjectRecord): void
   onTogglePin(project: ProjectRecord): void
 }) {
@@ -79,6 +81,11 @@ export function ProjectsPage({
                   <IconButton label={t('projects.openProject', { name: project.name })} onClick={() => onOpen(project)}>
                     <ArrowUpRight size={14} />
                   </IconButton>
+                  {!project.inferred ? (
+                    <IconButton label={t('projects.relocateProject', { name: project.name })} onClick={() => onRelocate(project)}>
+                      <FolderInput size={14} />
+                    </IconButton>
+                  ) : null}
                   {!project.inferred ? (
                     <IconButton label={t(project.pinned ? 'projects.unpinProject' : 'projects.pinProject', { name: project.name })} onClick={() => onTogglePin(project)}>
                       <Pin size={14} fill={project.pinned ? 'currentColor' : 'none'} />

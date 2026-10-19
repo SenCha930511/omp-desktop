@@ -7,7 +7,7 @@ import { PassThrough } from 'node:stream'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { probeHarnessExecutable } from '../../electron/main/harness-discovery'
 import { HARNESSES } from '../../electron/main/harness'
-import { PROCESS_CONCURRENCY_LIMIT, executableChildEnvironment, harnessExecutableCandidates, isAbsolutePathForPlatform, killProcessTree, prepareExecutableSpawn, processFailureReason, processOutcome, runProcess, stopChildProcesses, waitForProcessExit, nvmHarnessExecutableCandidates, type ProcessResult } from '../../electron/main/process-utils'
+import { PROCESS_CONCURRENCY_LIMIT, captureLoginShellEnvironment, executableChildEnvironment, harnessExecutableCandidates, isAbsolutePathForPlatform, killProcessTree, parseLoginShellEnvironment, prepareExecutableSpawn, processFailureReason, processOutcome, runProcess, safeChildEnvironment, setLoginShellEnvironmentSnapshot, stopChildProcesses, waitForProcessExit, nvmHarnessExecutableCandidates, type ProcessResult } from '../../electron/main/process-utils'
 import { waitUntil } from '../helpers/wait'
 
 const spawnOverride = vi.hoisted(() => ({ current: null as null | ((...args: unknown[]) => unknown) }))
@@ -22,6 +22,55 @@ vi.mock('node:child_process', async (importOriginal) => {
 const dirs: string[] = []
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }) })
 const temp = () => { const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-process-')); dirs.push(dir); return dir }
+
+describe('login shell environment capture', () => {
+  afterEach(() => setLoginShellEnvironmentSnapshot({}))
+
+  it('parses NUL-separated entries and drops malformed ones', () => {
+    const output = 'OMP_API_KEY=secret-key\0PATH=/usr/local/bin:/usr/bin\0INVALID\0=sideload\0\0'
+    expect(parseLoginShellEnvironment(output)).toEqual({ OMP_API_KEY: 'secret-key', PATH: '/usr/local/bin:/usr/bin' })
+  })
+
+  it('resolves to an empty snapshot on Windows', async () => {
+    expect(await captureLoginShellEnvironment({ platform: 'win32', runCapture: () => { throw new Error('must not run') } })).toEqual({})
+  })
+
+  it('captures through the login shell and installs the snapshot for child environments', async () => {
+    const captured = await captureLoginShellEnvironment({
+      platform: 'darwin',
+      runCapture: async (shell) => {
+        expect(shell).toBe('/bin/zsh')
+        return 'NCHC_API_KEY=env-value\0CUSTOM_PATH=/opt/tool\0'
+      },
+    })
+    expect(captured).toEqual({ NCHC_API_KEY: 'env-value', CUSTOM_PATH: '/opt/tool' })
+    setLoginShellEnvironmentSnapshot(captured)
+    const env = safeChildEnvironment()
+    expect(env.NCHC_API_KEY).toBe('env-value')
+    expect(env.CUSTOM_PATH).toBe('/opt/tool')
+  })
+
+  it('resolves empty when the login shell fails, leaving the base environment intact', async () => {
+    const captured = await captureLoginShellEnvironment({ platform: 'darwin', runCapture: async () => { throw new Error('shell exploded') } })
+    expect(captured).toEqual({})
+    setLoginShellEnvironmentSnapshot(captured)
+    expect(safeChildEnvironment().NCHC_API_KEY).toBeUndefined()
+  })
+
+  it('still strips sanitized keys that arrive from the login shell', async () => {
+    setLoginShellEnvironmentSnapshot({ NODE_OPTIONS: '--inspect', DYLD_INSERT_LIBRARIES: '/evil.dylib' })
+    const env = safeChildEnvironment()
+    expect(env.NODE_OPTIONS).toBeUndefined()
+    expect(env.DYLD_INSERT_LIBRARIES).toBeUndefined()
+    expect(env.NO_COLOR).toBe('1')
+  })
+
+  it('lets explicit extras win over the login shell snapshot', () => {
+    setLoginShellEnvironmentSnapshot({ NCHC_API_KEY: 'from-shell' })
+    expect(safeChildEnvironment({ NCHC_API_KEY: 'explicit' }).NCHC_API_KEY).toBe('explicit')
+  })
+})
+
 describe('runProcess resource bounds', () => {
   it('runs a pnpm CLI under a Finder-style minimal PATH', async () => {
     const home = temp()

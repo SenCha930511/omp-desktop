@@ -176,6 +176,7 @@ export function registerIpc(services: Services, expectedRendererUrl: string): Ip
   handle('projects:execute-checkout', (_event, projectId, action) => services.checkouts.execute(projectId, action))
   handle('projects:add', () => services.projects.add())
   handle('projects:grant-inferred', (_event, path) => services.projects.grantInferred(path))
+  handle('projects:relocate', (_event, id) => services.projects.relocate(id))
   handle('projects:remove', (_event, id) => services.projects.remove(id))
   handle('projects:touch', (_event, id) => services.projects.touch(id))
   handle('projects:pin', (_event, id, pinned) => services.projects.setPinned(id, pinned))

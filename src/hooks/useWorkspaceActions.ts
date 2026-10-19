@@ -269,6 +269,17 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
       if (project) { setProjects((items) => [project, ...items.filter((item) => item.id !== project.id)]); workspace.activateWorkspace(project); setView('session') }
     } catch (error) { reportError(error) }
   }
+  const relocateProject = async (project: ProjectRecord) => {
+    const { bridge, workspace, setProjects, setView, setToast, settingsState, reportError } = getDeps()
+    if (!bridge) { setToast('Project relocation is available in the desktop app.'); return }
+    try {
+      const updated = await bridge.projects.relocate(project.id, project.harness)
+      if (!updated) return
+      setProjects((items) => items.map((item) => item.id === updated.id ? updated : item))
+      if (workspace.workspaceRef.current.project?.id === project.id) { workspace.activateWorkspace(updated); setView('session') }
+      setToast('Project folder updated.')
+    } catch (error) { reportError(error) }
+  }
   const removeProject = async (project: ProjectRecord) => {
     const { bridge, projects, sessions, workspace, setProjects, setToast, reportError } = getDeps()
     try {
@@ -704,7 +715,7 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
   return {
     grantProject, persistPanel, toggleSidebar, toggleInspector, toggleTerminal,
     selectProject, selectSession, newSession, navigate, renameSession, setSessionArchived, deleteSession,
-    addProject, removeProject, togglePinProject, setProjectSortMode, sendPrompt, stopRuntime, installSkill, installExtension, connectMcp, setMcpEnabled, mutateCapability,
+    addProject, relocateProject, removeProject, togglePinProject, setProjectSortMode, sendPrompt, stopRuntime, installSkill, installExtension, connectMcp, setMcpEnabled, mutateCapability,
     createSchedule, updateSchedule, mutateSchedule, openScheduledSession,
     openBrowser, openChanges,
   }

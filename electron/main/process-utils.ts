@@ -189,8 +189,76 @@ export async function stopChildProcesses(): Promise<void> {
   await waitForChildren(survivors, 1_500)
 }
 
+/** Login-shell environment captured once at startup; empty until the capture resolves. */
+let loginShellEnvironmentSnapshot: NodeJS.ProcessEnv = {}
+
+/** Installs the login-shell snapshot that safeChildEnvironment merges into every child. */
+export function setLoginShellEnvironmentSnapshot(environment: NodeJS.ProcessEnv): void {
+  loginShellEnvironmentSnapshot = environment
+}
+
+/**
+ * Parses NUL-separated `printenv -0` output into an environment record. Entries
+ * without an `=` separator are ignored, and a trailing empty entry from the
+ * final NUL is dropped.
+ */
+export function parseLoginShellEnvironment(output: string): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {}
+  for (const entry of output.split('\0')) {
+    if (!entry) continue
+    const separator = entry.indexOf('=')
+    if (separator <= 0) continue
+    const key = entry.slice(0, separator)
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue
+    env[key] = entry.slice(separator + 1)
+  }
+  return env
+}
+
+/**
+ * Captures the user's login-shell environment so sessions launched from the
+ * GUI (which does not source shell rc files) see the same API keys and PATH
+ * customizations as terminal-run harnesses. Windows has no login-shell rc
+ * convention, so it resolves to an empty snapshot. Failures resolve empty:
+ * the base environment still works and must never block app startup.
+ */
+export async function captureLoginShellEnvironment(options: {
+  platform?: NodeJS.Platform
+  shell?: string
+  timeoutMs?: number
+  runCapture?: (shell: string) => Promise<string>
+} = {}): Promise<NodeJS.ProcessEnv> {
+  const platform = options.platform ?? process.platform
+  if (platform === 'win32') return {}
+  const shell = options.shell ?? process.env.SHELL ?? (platform === 'darwin' ? '/bin/zsh' : '/bin/bash')
+  const timeoutMs = options.timeoutMs ?? 5_000
+  const runCapture = options.runCapture ?? (() => new Promise<string>((resolve, reject) => {
+    const child = spawn(shell, ['-l', '-c', 'printenv -0'], { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true })
+    const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('login shell environment capture timed out')) }, timeoutMs)
+    let output = ''
+    let settled = false
+    child.stdout.on('data', (chunk: Buffer) => {
+      output += chunk.toString('utf8')
+      if (output.length > 512 * 1024) { child.kill('SIGKILL'); reject(new Error('login shell environment capture exceeded the size budget')); settled = true; clearTimeout(timer) }
+    })
+    child.on('error', (error) => { if (!settled) { settled = true; clearTimeout(timer); reject(error) } })
+    child.on('close', (code) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      if (code === 0) resolve(output)
+      else reject(new Error(`login shell exited with code ${code ?? 'null'}`))
+    })
+  }))
+  try {
+    return parseLoginShellEnvironment(await runCapture(shell))
+  } catch {
+    return {}
+  }
+}
+
 export function safeChildEnvironment(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env, ...extra }
+  const env: NodeJS.ProcessEnv = { ...process.env, ...loginShellEnvironmentSnapshot, ...extra }
   for (const key of [
     'NODE_OPTIONS', 'ELECTRON_RUN_AS_NODE', 'ELECTRON_ENABLE_LOGGING', 'ELECTRON_ENABLE_STACK_DUMPING',
     'DYLD_INSERT_LIBRARIES', 'DYLD_LIBRARY_PATH', 'LD_PRELOAD', 'FORCE_COLOR',

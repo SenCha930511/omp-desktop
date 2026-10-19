@@ -538,6 +538,7 @@ export default function App() {
     renameSession,
     deleteSession,
     addProject,
+    relocateProject,
     removeProject,
     togglePinProject,
     setProjectSortMode,
@@ -920,6 +921,7 @@ export default function App() {
         sortMode={settingsState.settings.projectSortMode}
         onAdd={() => void addProject()}
         onOpen={selectProject}
+        onRelocate={(project) => void relocateProject(project)}
         onRemove={(project) => void removeProject(project)}
         onTogglePin={(project) => void togglePinProject(project)}
       />

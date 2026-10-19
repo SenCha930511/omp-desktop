@@ -380,6 +380,68 @@ describe('broad project root authorization', () => {
     expect(isBroadProjectRoot(path, options)).toBe(false)
   })
 
+  it('relocates a persisted project to a new folder and re-points authorization', async () => {
+    const { root, service, store } = setup()
+    const before = join(root, 'old-location'); mkdirSync(before)
+    const after = join(root, 'new-location'); mkdirSync(after)
+    const now = new Date().toISOString()
+    await store.update((state) => { state.projects.push({
+      id: 'relocate-me', harness: 'omp', name: 'old-location', path: realpathSync(before), folders: [realpathSync(before)], primaryFolder: realpathSync(before),
+      pinned: false, createdAt: now, lastOpenedAt: now, folderIdentities: identities(before),
+    }) })
+    electronMocks.dialog.showOpenDialog.mockResolvedValue({ canceled: false, filePaths: [after] })
+
+    const updated = await service.relocate('relocate-me')
+
+    expect(updated).toMatchObject({ id: 'relocate-me', name: 'new-location', path: realpathSync(after), primaryFolder: realpathSync(after), sessionCount: 0 })
+    const persisted = store.snapshot().projects.find((project) => project.id === 'relocate-me')
+    expect(persisted?.folders).toEqual([realpathSync(after)])
+    expect(persisted?.folderIdentities).toEqual(identities(after))
+  })
+
+  it('keeps a custom project name through relocation', async () => {
+    const { root, service, store } = setup()
+    const before = join(root, 'old-location'); mkdirSync(before)
+    const after = join(root, 'new-location'); mkdirSync(after)
+    const now = new Date().toISOString()
+    await store.update((state) => { state.projects.push({
+      id: 'keep-name', harness: 'omp', name: 'My workspace', path: realpathSync(before), folders: [realpathSync(before)], primaryFolder: realpathSync(before),
+      pinned: false, createdAt: now, lastOpenedAt: now, folderIdentities: identities(before),
+    }) })
+    electronMocks.dialog.showOpenDialog.mockResolvedValue({ canceled: false, filePaths: [after] })
+
+    expect(await service.relocate('keep-name')).toMatchObject({ name: 'My workspace' })
+  })
+
+  it('returns null when the relocation dialog is canceled', async () => {
+    const { root, service, store } = setup()
+    const before = join(root, 'old-location'); mkdirSync(before)
+    const now = new Date().toISOString()
+    await store.update((state) => { state.projects.push({
+      id: 'stay', harness: 'omp', name: 'old-location', path: realpathSync(before), folders: [realpathSync(before)], primaryFolder: realpathSync(before),
+      pinned: false, createdAt: now, lastOpenedAt: now, folderIdentities: identities(before),
+    }) })
+    electronMocks.dialog.showOpenDialog.mockResolvedValue({ canceled: true, filePaths: [] })
+
+    expect(await service.relocate('stay')).toBeNull()
+    expect(store.snapshot().projects[0]?.path).toBe(realpathSync(before))
+  })
+
+  it('rejects relocating onto a folder another project already uses', async () => {
+    const { root, service, store } = setup()
+    const first = join(root, 'first'); mkdirSync(first)
+    const second = join(root, 'second'); mkdirSync(second)
+    const now = new Date().toISOString()
+    await store.update((state) => {
+      state.projects.push({ id: 'p1', harness: 'omp', name: 'first', path: realpathSync(first), folders: [realpathSync(first)], primaryFolder: realpathSync(first), pinned: false, createdAt: now, lastOpenedAt: now, folderIdentities: identities(first) })
+      state.projects.push({ id: 'p2', harness: 'omp', name: 'second', path: realpathSync(second), folders: [realpathSync(second)], primaryFolder: realpathSync(second), pinned: false, createdAt: now, lastOpenedAt: now, folderIdentities: identities(second) })
+    })
+    electronMocks.dialog.showOpenDialog.mockResolvedValue({ canceled: false, filePaths: [first] })
+
+    await expect(service.relocate('p2')).rejects.toThrow(/Another project already uses that folder/)
+    expect(store.snapshot().projects.find((project) => project.id === 'p2')?.path).toBe(realpathSync(second))
+  })
+
   it.each([
     ['filesystem root', realpathSync(resolve('/'))],
     ['home directory', realpathSync(homedir())],

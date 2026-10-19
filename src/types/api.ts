@@ -693,6 +693,7 @@ export interface DesktopApi {
     executeCheckout(projectId: string, action: CheckoutAction, harness?: HarnessId): Promise<CheckoutChangeResult>
     add(harness?: HarnessId): Promise<ProjectRecord | null>
     grantInferred(path: string, harness?: HarnessId): Promise<ProjectRecord>
+    relocate(id: string, harness?: HarnessId): Promise<ProjectRecord | null>
     remove(id: string, harness?: HarnessId): Promise<boolean>
     touch(id: string, harness?: HarnessId): Promise<boolean>
     setPinned(id: string, pinned: boolean, harness?: HarnessId): Promise<boolean>

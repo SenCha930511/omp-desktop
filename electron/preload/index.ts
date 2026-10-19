@@ -54,6 +54,7 @@ const api: DesktopApi = {
     executeCheckout: (projectId, action, harness) => invoke('projects:execute-checkout', projectId, action, harness),
     add: (harness) => invoke('projects:add', harness),
     grantInferred: (path, harness) => invoke('projects:grant-inferred', path, harness),
+    relocate: (id, harness) => invoke('projects:relocate', id, harness),
     remove: (id, harness) => invoke('projects:remove', id, harness),
     touch: (id, harness) => invoke('projects:touch', id, harness),
     setPinned: (id, pinned, harness) => invoke('projects:pin', id, pinned, harness),
