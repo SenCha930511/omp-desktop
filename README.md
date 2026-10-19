@@ -2,7 +2,7 @@
 
 OMP Desktop is a desktop workspace for [OMP](https://github.com/can1357/oh-my-pi) ([omp.sh](https://omp.sh)). It gives the coding agent a friendly native interface on macOS, Linux, and Windows while leaving the harness in charge of its own models, logins, and saved sessions.
 
-<img width="2234" height="1332" alt="OMP Desktop workspace" src="https://github.com/user-attachments/assets/864ff0e1-71cc-49da-955f-f226710ef890" />
+<img width="2618" height="1672" alt="OMP Desktop workspace" src="docs/screenshot.png" />
 
 ## Attribution
 
@@ -12,7 +12,7 @@ OMP Desktop is a derivative of [GooeyPi](https://github.com/am-will/gooey-pi) by
 
 ### Work with agents
 
-- Stream conversations with Markdown, reasoning summaries, tool activity, retries, and context compaction.
+- Stream conversations with Markdown, reasoning summaries, tool activity, retries, and context compaction. Thinking sections can start expanded for every session (**Settings → Harness**), and each one still folds on demand.
 - Search loaded conversation history with ⌘F / Ctrl+F, including reasoning and tool arguments. Search temporarily reveals matching collapsed content; closing it restores the disclosures. Saved sessions load up to the latest 400 messages, with separate content budgets.
 - Retry a failed turn through OMP's native `/retry`, restore its prompt beside an existing draft, or copy the error.
 - Pin the subagent roster, filter by activity, and see unread updates without losing each agent's reading position.
@@ -33,7 +33,7 @@ OMP Desktop is a derivative of [GooeyPi](https://github.com/am-will/gooey-pi) by
 
 ### Use the built-in coding workspace
 
-- Review Git status and diffs, stage or unstage files, restore changes with confirmation, and commit without leaving the app.
+- Review Git status and diffs, stage or unstage files, restore changes with confirmation, and commit without leaving the app. After each reply, the changes card lists only the files that turn edited — never older dirty state — with a one-click undo for that batch.
 - Browse project files and reveal them in your system file manager.
 - Open multiple terminal tabs for a session. Highlight terminal output to attach it to the next prompt.
 - Open the right-hand Summary, Changes, Browser, or Files panel whenever you need it.
@@ -66,11 +66,11 @@ Ask User and computer control are off by default. You can enable, disable, or re
 ### Talk instead of type
 
 - Dictate prompts with OpenAI, Groq, Deepgram, or a local `whisper.cpp` installation.
-- Open the realtime voice companion to search, discuss work, and start a task.
 
 ### Make it comfortable
 
 - Choose a light, dark, or system theme and adjust the interface text size.
+- Use the app in English, 繁體中文, or 简体中文 — pick a language or follow the system (**Settings → Appearance**).
 - Reduce motion, resize the workspace panels, or let them become overlays in a narrow window.
 - Use keyboard navigation and the command palette for common actions.
 
@@ -83,7 +83,13 @@ Ask User and computer control are off by default. You can enable, disable, or re
 
 OMP Desktop checks common install locations automatically. If the harness is missing, open **Settings → Harness** to refresh detection or choose its executable.
 
-GitHub Releases provides a DMG and ZIP for macOS, common Linux package formats plus AppImage, and a Windows installer and ZIP.
+GitHub Releases provides a DMG and ZIP for macOS (Apple Silicon and Intel), common Linux package formats plus AppImage, and a Windows installer and ZIP. Each release page also lists `SHA256SUMS.txt` covering every asset.
+
+Release builds are not code-signed or notarized, so the first launch needs one extra step:
+
+- **macOS**: right-click the app in `/Applications` and choose **Open** (or clear it once in **System Settings → Privacy & Security**) to pass Gatekeeper.
+- **Windows**: SmartScreen shows "Windows protected your PC" — choose **More info → Run anyway**.
+- **Linux**: package installs work as usual; no signature prompts.
 
 Harness provider credentials stay with the harness. Optional voice keys are encrypted with the operating system's secure storage, and local `whisper.cpp` dictation needs no API key.
 
