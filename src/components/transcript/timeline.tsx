@@ -68,6 +68,15 @@ function toolPreview(part: Extract<MessagePart, { type: 'toolCall' }>): string {
   const raw = part.args
   if (raw && typeof raw === 'object') {
     const args = raw as Record<string, unknown>
+    // A grouped ask_user payload names every question; collapsing them keeps
+    // the summary scannable without spilling the option list.
+    if (Array.isArray(args.questions)) {
+      const labels = args.questions
+        .map((entry) => (entry && typeof entry === 'object' ? (entry as Record<string, unknown>).question : undefined))
+        .map((label) => (typeof label === 'string' ? label.trim() : ''))
+        .filter((label) => label !== '')
+      if (labels.length > 0) return boundText(labels.join(' · '), 150, '…')
+    }
     const preferred = args.question ?? args.command ?? args.query ?? args.url ?? args.path ?? args.cwd ?? args.code ?? args.input
     if (typeof preferred === 'string') return boundText(preferred.replace(/\s+/g, ' ').trim(), 120, '…')
   }
