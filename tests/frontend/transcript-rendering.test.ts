@@ -34,6 +34,31 @@ describe('transcript rendering', () => {
     expect(html).toContain('No result')
     expect(html).not.toContain('spin')
   })
+  it('keeps interim messages and tool calls first-class while streaming, then folds on completion', () => {
+    const base = {
+      id: 'live',
+      role: 'assistant',
+      timestamp: 1_000,
+      startedAt: 1_000,
+      parts: [
+        { type: 'thinking', text: 'Try the order thing.' },
+        { type: 'text', text: 'Got it — checking the order.' },
+        { type: 'toolCall', id: 'tool-1', name: 'read_file', args: { path: 'src/App.tsx' } },
+      ] as TranscriptMessage['parts'],
+    }
+    const live = render([{ ...base, streaming: true } as TranscriptMessage])
+    expect(live).toContain('Got it — checking the order.')
+    expect(live).toContain('src/App.tsx')
+    expect(live).toContain('work-disclosure__ticker')
+    expect(live).toContain('Try the order thing.')
+
+    const done = render([{ ...base, streaming: false, completedAt: 5_000 } as TranscriptMessage])
+    expect(done).toContain('work-disclosure__button')
+    expect(done).toContain('aria-expanded="false"')
+    expect(done).toContain('Worked for')
+    expect(done).not.toContain('work-disclosure__ticker')
+  })
+
   it('shows expanded reasoning directly within a single activity disclosure', () => {
     const html = render([{
       id: 'active',

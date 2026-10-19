@@ -356,10 +356,20 @@ export function WorkDisclosure({
   const { t } = useI18n()
   const expandThinking = useContext(ReasoningExpandedContext)
   const defaultExpanded = expandThinking && showReasoning && parts.some((part) => part.type === 'thinking')
-  const [manualOpen, setOpen] = useState(defaultExpanded)
+  // While the turn streams, notes and tool calls stay first-class content —
+  // visible without opening the dropdown — and the row folds back into the
+  // compact "worked" summary the moment the turn completes.
+  const [manualOpen, setOpen] = useState(running || defaultExpanded)
   const reveal = useContext(SearchRevealContext)
   const open = manualOpen || reveal
-  useEffect(() => setOpen(defaultExpanded), [defaultExpanded])
+  useEffect(() => setOpen(running || defaultExpanded), [running, defaultExpanded])
+  let ticker = ''
+  if (running) {
+    for (let index = parts.length - 1; index >= 0; index -= 1) {
+      const part = parts[index]
+      if (part.type === 'thinking' && part.text) { ticker = part.text.replace(/(\*\*|__|~~|`+)|(?<=\s)[#>*_]+/g, '').replace(/\s+/g, ' ').trim(); break }
+    }
+  }
   const status = liveWorkStatus(message.parts, showReasoning, showTools)
   const toolCount = parts.filter((part) => part.type === 'toolCall').length
   const startedAt = timestamp(message.startedAt ?? message.timestamp) ?? 0
@@ -372,6 +382,7 @@ export function WorkDisclosure({
         {running ? <span role="status"><span>{status === 'Thinking' ? t('transcript.workStatus.thinking') : t('transcript.workStatus.working')}</span></span> : <span>{t('transcript.work.workedFor', { duration })}</span>}
         {toolCount > 0 && <span className="work-disclosure__count">{t('transcript.work.tools', { count: toolCount })}</span>}
         {running && <LiveElapsed since={message.startedAt ?? message.timestamp} />}
+        {ticker ? <span className="work-disclosure__ticker" title={ticker}>{boundText(ticker, 240, '…')}</span> : null}
         {running && !open && <LoaderCircle size={12} className="spin" />}
       </button>
       {open ? <WorkTimeline parts={parts} showReasoning={showReasoning} showTools={showTools} streaming={running} expandedReasoning /> : null}
