@@ -68,7 +68,7 @@
   .activity-tool__summary, .work-disclosure__button, .agent-message__summary, .goal-message__summary { min-height: 44px; }
   .activity-tool__state { display: none; }
   .composer-wrap { left: 9px; right: 9px; bottom: 8px; width: calc(100% - 18px); }
-  .composer { min-height: 118px; }
+  .composer { min-height: 96px; }
   .composer__footer { align-items: flex-end; }
   .composer__controls { flex-wrap: wrap; }
   .select-control { min-height: 28px; }

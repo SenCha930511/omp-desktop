@@ -31,28 +31,33 @@
 .user-annotations[open] > summary { margin-bottom: 5px; }
 .user-annotations > pre { max-height: 220px; margin: 0; padding: 8px 10px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text-secondary); font-size: 10.5px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
 .message--assistant { display: grid; grid-template-columns: minmax(0, 1fr); }
-.message__content { min-width: 0; font-size: 13px; line-height: 1.58; }
+/* Assistant body follows the conversation density tokens, aligned with the
+   CDS body scale. Dark mode adds retinal-irradiation compensation: a lighter
+   body weight counteracts light-on-dark bloom so prose stays crisp. */
+.message__content { min-width: 0; font-size: var(--conversation-font, 14px); line-height: 1.62; }
+:root[data-theme="dark"] .message__content { font-weight: 360; }
+:root[data-theme="dark"] .message__content strong, :root[data-theme="dark"] .message__content b, :root[data-theme="dark"] .message__content th, :root[data-theme="dark"] .message__content h1, :root[data-theme="dark"] .message__content h2, :root[data-theme="dark"] .message__content h3, :root[data-theme="dark"] .message__content h4 { font-weight: 560; }
 .prose { margin: 0 0 13px; white-space: normal; overflow-wrap: anywhere; }
 .prose:last-child { margin-bottom: 0; }
 .prose > :first-child { margin-top: 0; }
 .prose > :last-child { margin-bottom: 0; }
-.prose p, .prose ul, .prose ol, .prose blockquote, .prose pre, .prose table { margin: 0 0 13px; }
-.prose h1, .prose h2, .prose h3, .prose h4 { margin: 22px 0 8px; line-height: 1.4; font-weight: 600; letter-spacing: -.015em; }
-.prose h1 { font-size: 1.3em; }
-.prose h2 { font-size: 1.18em; }
+.prose p, .prose ul, .prose ol, .prose blockquote, .prose pre, .prose table { margin: 0 0 14px; }
+.prose h1, .prose h2, .prose h3, .prose h4 { margin: 24px 0 10px; line-height: 1.35; font-weight: 600; letter-spacing: -.01em; }
+.prose h1 { font-size: 1.32em; }
+.prose h2 { font-size: 1.2em; }
 .prose h3, .prose h4 { font-size: 1.05em; }
 .prose ul, .prose ol { padding-inline-start: 22px; }
-.prose li + li { margin-top: 4px; }
+.prose li + li { margin-top: 6px; }
 .prose blockquote { padding-inline-start: 12px; border-inline-start: 3px solid var(--border-strong); color: var(--text-secondary); }
 .prose a { color: var(--annotation); text-decoration: underline; text-underline-offset: 2px; }
 .prose code { padding: 1px 5px; border: 1px solid var(--border); border-radius: 5px; direction: ltr; unicode-bidi: isolate; background: var(--surface-subtle); font-size: .88em; }
-.prose pre { max-width: 100%; padding: 16px 18px; overflow: auto; border: 1px solid var(--border); border-radius: 14px; direction: ltr; unicode-bidi: isolate; background: var(--surface-subtle); font-size: 12.5px; line-height: 1.65; text-align: left; }
+.prose pre { max-width: 100%; padding: 14px 18px; overflow: auto; border: 1px solid var(--border); border-radius: 14px; direction: ltr; unicode-bidi: isolate; background: var(--surface-subtle); font-size: 12.5px; line-height: 1.6; text-align: left; }
 .prose pre code { padding: 0; border: 0; background: transparent; font-size: inherit; white-space: pre; overflow-wrap: normal; }
 .prose a > bdi { unicode-bidi: isolate; }
 /* Tables: horizontal hairlines + zebra rows instead of a full grid. */
 .prose table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; }
-.prose th, .prose td { padding: 10px 14px; border: 0; border-bottom: 1px solid var(--border); text-align: start; }
-.prose th { color: var(--text-secondary); background: transparent; font-size: .92em; font-weight: 600; }
+.prose th, .prose td { padding: 9px 16px; border: 0; border-bottom: 1px solid var(--border); text-align: start; }
+.prose th { color: var(--text-tertiary); background: transparent; border-bottom-color: var(--border-strong); font-size: .9em; font-weight: 500; }
 .prose tbody tr:nth-child(even) td { background: color-mix(in srgb, var(--surface-subtle) 55%, transparent); }
 .prose tr:last-child td { border-bottom: 0; }
 .prose hr { margin: 17px 0; border: 0; border-top: 1px solid var(--border); }
