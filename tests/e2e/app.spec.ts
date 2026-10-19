@@ -2181,10 +2181,13 @@ test.describe('OMP Desktop desktop smoke', () => {
         const emphasis = await page.locator('.transcript .work-timeline').last().evaluate((element) => {
           const note = element.querySelector<HTMLElement>('.activity-line--note .prose')
           const thinking = element.querySelector<HTMLElement>('.activity-reasoning .prose')
-          if (!note || !thinking) return null
-          return { note: getComputedStyle(note).color, thinking: getComputedStyle(thinking).color, body: getComputedStyle(document.body).color, weight: getComputedStyle(note).fontWeight }
+          const finalBody = document.querySelector<HTMLElement>('.message--assistant .message__content')
+          if (!note || !thinking || !finalBody) return null
+          return { note: getComputedStyle(note).color, thinking: getComputedStyle(thinking).color, body: getComputedStyle(document.body).color, final: getComputedStyle(finalBody).color, weight: getComputedStyle(note).fontWeight }
         })
         expect(emphasis).not.toBeNull()
+        // The subagents shell must not dim the main conversation.
+        expect(emphasis!.final).toBe(emphasis!.body)
         expect(emphasis!.note).toBe(emphasis!.body)
         // Non-standard intermediate weights thin CJK strokes; keep body text at 400.
         expect(emphasis!.weight).toBe('400')

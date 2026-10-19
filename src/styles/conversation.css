@@ -20,6 +20,9 @@
   --activity-spacing: 6px;
   --conversation-radius: 12px;
 }
+/* The subagents shell paints its own secondary color; the main conversation
+   must keep the body color so model prose and notes do not render dim. */
+.conversation-pane { color: var(--text); }
 .conversation-pane .message, .subagents__messages .message { margin-bottom: var(--conversation-turn-gap); }
 .conversation-pane .message__content, .subagents__messages .message__content,
 .conversation-pane .user-bubble, .subagents__messages .user-bubble { font-size: var(--conversation-font); line-height: var(--conversation-leading); }
