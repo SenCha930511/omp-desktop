@@ -31,6 +31,15 @@ describe('login shell environment capture', () => {
     expect(parseLoginShellEnvironment(output)).toEqual({ OMP_API_KEY: 'secret-key', PATH: '/usr/local/bin:/usr/bin' })
   })
 
+  it('discards interactive rc output that precedes the sentinel', async () => {
+    const captured = await captureLoginShellEnvironment({
+      platform: 'darwin',
+      shell: '/bin/zsh',
+      runCapture: async () => 'Welcome to my shell!\nPROMPT set\n__OMP_DESKTOP_ENV_START__\nNCHC_API_KEY=env-value\0',
+    })
+    expect(captured).toEqual({ NCHC_API_KEY: 'env-value' })
+  })
+
   it('resolves to an empty snapshot on Windows', async () => {
     expect(await captureLoginShellEnvironment({ platform: 'win32', runCapture: () => { throw new Error('must not run') } })).toEqual({})
   })

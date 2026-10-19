@@ -215,12 +215,18 @@ export function parseLoginShellEnvironment(output: string): NodeJS.ProcessEnv {
   return env
 }
 
+/** Sentinel framing the start of the captured environment, so interactive rc
+    files that echo to stdout cannot corrupt the parsed entries. */
+export const LOGIN_ENV_SENTINEL = '__OMP_DESKTOP_ENV_START__'
+
 /**
  * Captures the user's login-shell environment so sessions launched from the
  * GUI (which does not source shell rc files) see the same API keys and PATH
- * customizations as terminal-run harnesses. Windows has no login-shell rc
- * convention, so it resolves to an empty snapshot. Failures resolve empty:
- * the base environment still works and must never block app startup.
+ * customizations as terminal-run harnesses. The shell runs as an interactive
+ * login: plain login shells skip ~/.zshrc, which is where most users export
+ * their keys. Windows has no login-shell rc convention, so it resolves to an
+ * empty snapshot. Failures resolve empty: the base environment still works
+ * and must never block app startup.
  */
 export async function captureLoginShellEnvironment(options: {
   platform?: NodeJS.Platform
@@ -233,7 +239,9 @@ export async function captureLoginShellEnvironment(options: {
   const shell = options.shell ?? process.env.SHELL ?? (platform === 'darwin' ? '/bin/zsh' : '/bin/bash')
   const timeoutMs = options.timeoutMs ?? 5_000
   const runCapture = options.runCapture ?? (() => new Promise<string>((resolve, reject) => {
-    const child = spawn(shell, ['-l', '-c', 'printenv -0'], { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true })
+    // `env -0` (NUL-separated) is portable across BSD and coreutils; macOS
+    // `printenv` rejects -0, which would silently fail the whole capture.
+    const child = spawn(shell, ['-i', '-l', '-c', `echo ${LOGIN_ENV_SENTINEL}; env -0`], { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true })
     const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('login shell environment capture timed out')) }, timeoutMs)
     let output = ''
     let settled = false
@@ -251,7 +259,10 @@ export async function captureLoginShellEnvironment(options: {
     })
   }))
   try {
-    return parseLoginShellEnvironment(await runCapture(shell))
+    const raw = await runCapture(shell)
+    const cut = raw.lastIndexOf(LOGIN_ENV_SENTINEL)
+    const output = cut === -1 ? raw : raw.slice(cut + LOGIN_ENV_SENTINEL.length).replace(/^\n/, '')
+    return parseLoginShellEnvironment(output)
   } catch {
     return {}
   }
