@@ -78,7 +78,7 @@
 .composer-annotation > button:hover { color: var(--text); background: var(--surface-hover); }
 .composer__footer { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; min-width: 0; }
 .composer__controls, .composer__actions { display: flex; align-items: center; min-width: 0; }
-.composer__controls { gap: 3px; }
+.composer__controls { gap: 3px; row-gap: 5px; flex-wrap: wrap; }
 .composer__actions { gap: 5px; }
 .context-usage-dial { --context-color: var(--prime); position: relative; width: 26.4px; height: 26.4px; display: grid; place-items: center; flex: 0 0 26.4px; border-radius: 50%; background: conic-gradient(var(--context-color) var(--context-percent), var(--surface-selected) 0); color: var(--text-secondary); cursor: help; font-variant-numeric: tabular-nums; }
 .context-usage-dial::before { content: ''; position: absolute; inset: 2.65px; border-radius: inherit; background: var(--surface-raised); }
