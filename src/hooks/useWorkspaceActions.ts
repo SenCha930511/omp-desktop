@@ -14,7 +14,7 @@ import type { CapabilityMutationInput, ExtensionInstallInput, GitStatus, McpConn
 import type { useAppSettings } from '@/hooks/useAppSettings'
 import type { usePanelLayout } from '@/hooks/usePanelLayout'
 import type { usePluginSkills } from '@/hooks/usePluginSkills'
-import type { useProviderCatalog } from '@/hooks/useProviderCatalog'
+import type { ProviderCatalog } from '@/hooks/useProviderCatalog'
 import type { useWorkspaceRuntime } from '@/hooks/useWorkspaceRuntime'
 import { mergeSessionCatalog } from '@/hooks/useBootstrap'
 
@@ -27,7 +27,7 @@ export interface WorkspaceActionsDeps {
   workspace: ReturnType<typeof useWorkspaceRuntime>
   settingsState: ReturnType<typeof useAppSettings>
   layout: ReturnType<typeof usePanelLayout>
-  provider: ReturnType<typeof useProviderCatalog>
+  provider: ProviderCatalog
   pluginSkills: ReturnType<typeof usePluginSkills>
   submissionAdmissionRef: MutableRefObject<ReturnType<typeof createSingleFlightAdmission>>
   gitRequestRef: MutableRefObject<number>

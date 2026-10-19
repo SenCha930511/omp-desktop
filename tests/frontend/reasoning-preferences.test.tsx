@@ -3,7 +3,7 @@ import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { expect, it, vi } from 'vitest'
 import { ReasoningDisclosure, ReasoningExpandedContext } from '../../src/components/ReasoningDisclosure'
-import { useProviderCatalog } from '../../src/hooks/useProviderCatalog'
+import { type ProviderCatalog, useProviderCatalog } from '../../src/hooks/useProviderCatalog'
 import type { DesktopApi, RuntimeInfo } from '../../src/types/api'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
@@ -30,7 +30,7 @@ it('keeps auto selected while OMP reports a concrete effective level', async () 
   const command = vi.fn(async () => ({}))
   const model = { key: 'test/reasoner', id: 'reasoner', name: 'Reasoner', provider: 'test', reasoning: true, available: true, enabled: true, input: ['text'], availableThinkingLevels: ['off', 'high'], fastModeSupported: false, contextWindow: 1000, maxTokens: 100 }
   const bridge = { agent: { command }, providers: { catalog: async () => ({ models: [model], providers: [] }) } } as unknown as DesktopApi
-  let value: ReturnType<typeof useProviderCatalog>
+  let value: ProviderCatalog
   const syncRuntime = vi.fn(async () => undefined)
   const reportError = vi.fn()
   const runtime: RuntimeInfo = { runtimeId: 'r', harness: 'omp', cwd: '/test', isStreaming: false, model: { provider: 'test', id: 'reasoner' }, thinkingLevel: 'high', configuredThinkingLevel: 'auto' }
@@ -46,5 +46,31 @@ it('keeps auto selected while OMP reports a concrete effective level', async () 
     expect(value!.effort).toBe('auto')
     await act(async () => { value!.changeEffort('auto') })
     expect(command).toHaveBeenCalledWith('r', { type: 'set_thinking_level', level: 'auto' })
+  } finally { await act(async () => root.unmount()) }
+})
+
+it('opens sessions without a saved level at the configured default effort', async () => {
+  const host = document.createElement('div')
+  const root = createRoot(host)
+  const model = { key: 'test/reasoner', id: 'reasoner', name: 'Reasoner', provider: 'test', reasoning: true, available: true, enabled: true, input: ['text'], availableThinkingLevels: ['off', 'low', 'high'], fastModeSupported: false, contextWindow: 1000, maxTokens: 100 }
+  const bridge = { providers: { catalog: async () => ({ models: [model], providers: [] }) } } as unknown as DesktopApi
+  const syncRuntime = vi.fn(async () => undefined)
+  const reportError = vi.fn()
+  const sessions: Record<string, { id: string }> = {}
+  let value: ProviderCatalog
+  function Harness({ sessionId }: { sessionId: string }) {
+    sessions[sessionId] ??= { id: sessionId }
+    value = useProviderCatalog({ bridge, runtime: null, defaultEffort: 'high', activeSession: sessions[sessionId] as never, syncRuntime, reportError })
+    return <span>{value.effort}</span>
+  }
+  try {
+    await act(async () => root.render(<Harness sessionId="first" />))
+    expect(value!.effort).toBe('high')
+    // Switching tabs again without a saved level re-applies the default even
+    // after the user overrode it mid-stream on the previous tab.
+    await act(async () => { value!.changeEffort('off') })
+    expect(value!.effort).toBe('off')
+    await act(async () => root.render(<Harness sessionId="second" />))
+    expect(value!.effort).toBe('high')
   } finally { await act(async () => root.unmount()) }
 })

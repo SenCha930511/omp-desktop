@@ -1,7 +1,8 @@
 import { Check, Laptop, Moon, Sun } from 'lucide-react'
 import type { KeyboardEvent } from 'react'
 import { type MessageKey, useI18n } from '@/lib/i18n'
-import type { InterfaceFontScale, LocalePreference, ThemeMode } from '@/types/api'
+import type { AccentColor, InterfaceFontScale, LocalePreference, ThemeMode } from '@/types/api'
+import { ACCENT_COLORS } from '@/types/api'
 import type { SettingsSectionProps } from './contracts'
 import { SettingsToggle } from './SettingsToggle'
 
@@ -10,6 +11,17 @@ const themes: Array<{ id: ThemeMode; label: MessageKey; icon: typeof Sun }> = [
   { id: 'light', label: 'appearance.theme.light', icon: Sun },
   { id: 'dark', label: 'appearance.theme.dark', icon: Moon },
 ]
+
+/** Swatch previews use each accent's light-theme token so the circle matches
+ * the hue it applies; the labels localize. */
+const ACCENT_SWATCHES: Record<AccentColor, { hex: string; label: MessageKey }> = {
+  prime: { hex: '#5f4bd3', label: 'appearance.accent.prime' },
+  blue: { hex: '#2563eb', label: 'appearance.accent.blue' },
+  teal: { hex: '#0d9488', label: 'appearance.accent.teal' },
+  green: { hex: '#1e8e3e', label: 'appearance.accent.green' },
+  orange: { hex: '#ea580c', label: 'appearance.accent.orange' },
+  pink: { hex: '#db2777', label: 'appearance.accent.pink' },
+}
 
 const fontScales: Array<{ value: InterfaceFontScale; label: MessageKey }> = [
   { value: 105, label: 'appearance.text.smaller' },
@@ -75,6 +87,33 @@ export function AppearanceSettings({ settings, onUpdate }: SettingsSectionProps)
               </button>
             )
           })}
+        </div>
+      </section>
+      <section className="settings-group">
+        <h2>{t('appearance.accent.title')}</h2>
+        <div className="settings-row">
+          <span>
+            <strong>{t('appearance.accent.title')}</strong>
+            <small>{t('appearance.accent.description')}</small>
+          </span>
+          <div className="accent-options" role="radiogroup" aria-label={t('appearance.accent.aria')}>
+            {ACCENT_COLORS.map((color) => (
+              <button
+                type="button"
+                key={color}
+                role="radio"
+                aria-checked={settings.accentColor === color}
+                aria-label={t(ACCENT_SWATCHES[color].label)}
+                title={t(ACCENT_SWATCHES[color].label)}
+                className={settings.accentColor === color ? 'is-active' : ''}
+                onClick={() => {
+                  void onUpdate({ accentColor: color })
+                }}
+              >
+                <span className="accent-swatch" style={{ backgroundColor: ACCENT_SWATCHES[color].hex }} />
+              </button>
+            ))}
+          </div>
         </div>
       </section>
       <section className="settings-group">

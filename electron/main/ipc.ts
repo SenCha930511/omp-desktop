@@ -4,6 +4,7 @@ import type { AgentRpcManager } from './agent-rpc'
 import type { GitService } from './git'
 import type { CuaDriverService } from './cua-driver'
 import type { ModelCatalogProvider } from './model-catalog'
+import { OPT_IN_PROVIDERS } from './model-visibility'
 import type { PluginService } from './plugins'
 import type { ProjectService } from './projects'
 import type { CheckoutService } from './checkouts'
@@ -233,12 +234,19 @@ export function registerIpc(services: Services, expectedRendererUrl: string): Ip
     const settings = services.settings.get()
     const disabledProviders = new Set(settings.ompDisabledProviders)
     const disabledModels = new Set(settings.ompDisabledModels)
-    if (enabled) {
+    const enabledProviders = new Set(settings.ompEnabledProviders)
+    if (OPT_IN_PROVIDERS.has(id)) {
+      // Opt-in providers (e.g. apple) toggle only the affirmative list so a
+      // bulk disable elsewhere can never re-show an unconfigured provider.
+      if (enabled) enabledProviders.add(id)
+      else enabledProviders.delete(id)
+    } else if (enabled) {
       disabledProviders.delete(id)
       for (const model of catalog.models) if (model.provider === id) disabledModels.delete(model.key)
     } else disabledProviders.add(id)
     await services.settings.update({
       ompDisabledProviders: [...disabledProviders].sort(),
+      ompEnabledProviders: [...enabledProviders].sort(),
       ompDisabledModels: [...disabledModels].sort(),
     })
     return providerCatalog()
@@ -251,7 +259,11 @@ export function registerIpc(services: Services, expectedRendererUrl: string): Ip
     const known = new Set(catalog.providers.map((provider) => provider.id))
     if (ids.some((id) => !known.has(id))) throw new Error('Provider was not found')
     const disabledModels = ids.length ? services.settings.get().ompDisabledModels : []
-    await services.settings.update({ ompDisabledProviders: ids, ompDisabledModels: disabledModels })
+    // Opt-in providers in the bulk-list mean "hide again" (drop from the
+    // affirmative set); absent ones keep their explicit state untouched.
+    const optInIds = ids.filter((id) => OPT_IN_PROVIDERS.has(id))
+    const nextEnabledProviders = optInIds.length ? services.settings.get().ompEnabledProviders.filter((id) => !optInIds.includes(id)) : services.settings.get().ompEnabledProviders
+    await services.settings.update({ ompDisabledProviders: ids.filter((id) => !OPT_IN_PROVIDERS.has(id)), ompEnabledProviders: nextEnabledProviders, ompDisabledModels: disabledModels })
     return providerCatalog()
   })
   handle('providers:set-model-enabled', async (_event, modelKey, enabled, harness) => {

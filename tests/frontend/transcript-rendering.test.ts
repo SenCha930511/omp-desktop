@@ -49,7 +49,10 @@ describe('transcript rendering', () => {
     const live = render([{ ...base, streaming: true } as TranscriptMessage])
     expect(live).toContain('Got it — checking the order.')
     expect(live).toContain('src/App.tsx')
-    expect(live).toContain('work-disclosure__ticker')
+    // The thinking text lives in its own labelled row, dsh-style; the work
+    // header only carries status, count, and elapsed time — no ticker.
+    expect(live).toContain('reasoning-disclosure')
+    expect(live).not.toContain('work-disclosure__ticker')
     expect(live).toContain('Try the order thing.')
 
     const done = render([{ ...base, streaming: false, completedAt: 5_000 } as TranscriptMessage])
@@ -87,7 +90,9 @@ describe('transcript rendering', () => {
     expect(html).toContain('Checking <strong>the workspace</strong> now.')
     expect(html).not.toContain('**the workspace**')
     expect(html).not.toContain('Worked for')
-    expect(html).not.toContain('reasoning-disclosure')
+    // The thinking row keeps its labelled header even while the section is
+    // open, so readers can fold it back — dsh's row shape.
+    expect(html).toContain('reasoning-disclosure__label')
     expect(html.match(/work-disclosure__button/g)).toHaveLength(1)
   })
 

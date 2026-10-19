@@ -43,14 +43,35 @@ interface UseProviderCatalogOptions {
   activeSession?: SessionRecord
   /** Persisted per-harness model preference. */
   lastSelectedModel?: string
+  /** Initial effort for sessions that carry no explicit choice. */
+  defaultEffort?: PrimeEffortSelector
   rememberModel?(modelKey: string): void
   syncRuntime(runtimeId: string): Promise<void>
   reportError(error: unknown): void
 }
 
-export function useProviderCatalog({ bridge, ready = true, harness = 'omp', runtime, activeSession, lastSelectedModel = '', rememberModel, syncRuntime, reportError }: UseProviderCatalogOptions) {
+/** The composer's provider-catalog view and runtime mutation surface. */
+export interface ProviderCatalog {
+  model: string
+  effort: PrimeEffortSelector
+  fast: boolean
+  catalog: PrimeModelCatalog | null
+  selectedModel: PrimeModelDescriptor | undefined
+  reasoningLevels: PrimeEffortSelector[]
+  modelsByProvider: ReadonlyMap<string, PrimeModelDescriptor[]>
+  refresh(force?: boolean): Promise<void>
+  changeModel(modelKey: string): void
+  changeEffort(value: PrimeEffortSelector): void
+  changeFast(enabled: boolean): void
+  setEnabled(providerId: string, enabled: boolean): Promise<void>
+  setAllEnabled(): Promise<void>
+  setAllDisabled(): Promise<void>
+  setModelEnabled(modelKey: string, enabled: boolean): Promise<void>
+}
+
+export function useProviderCatalog({ bridge, ready = true, harness = 'omp', runtime, activeSession, lastSelectedModel = '', defaultEffort = 'medium', rememberModel, syncRuntime, reportError }: UseProviderCatalogOptions): ProviderCatalog {
   const [model, setModel] = useState('')
-  const [effort, setEffort] = useState<PrimeEffortSelector>('medium')
+  const [effort, setEffort] = useState<PrimeEffortSelector>(defaultEffort)
   const [fast, setFast] = useState(false)
   // Per-harness cache: switching back to a harness shows its last catalog
   // immediately while the background refresh updates it.
@@ -137,8 +158,8 @@ export function useProviderCatalog({ bridge, ready = true, harness = 'omp', runt
 
   useEffect(() => {
     if (reasoningLevels.includes(effort)) return
-    updateEffort(reasoningLevels.includes('medium') ? 'medium' : reasoningLevels[0] ?? 'off')
-  }, [effort, reasoningLevels, updateEffort])
+    updateEffort(reasoningLevels.includes(defaultEffort) ? defaultEffort : reasoningLevels.includes('medium') ? 'medium' : reasoningLevels[0] ?? 'off')
+  }, [effort, reasoningLevels, defaultEffort, updateEffort])
 
   useEffect(() => {
     if (!bridge || !ready) return
@@ -213,8 +234,12 @@ export function useProviderCatalog({ bridge, ready = true, harness = 'omp', runt
     if (sessionModel && modelRef.current !== sessionModel.key) updateModel(sessionModel.key)
     if (activeSession?.thinkingLevel && supportsEffort(sessionModel, activeSession.thinkingLevel)) {
       if (effortRef.current !== activeSession.thinkingLevel) updateEffort(activeSession.thinkingLevel)
+      return
     }
-  }, [activeSession, catalog, runtime?.model?.id, runtime?.model?.provider, runtime?.thinkingLevel, runtime?.configuredThinkingLevel, sessionKey, updateEffort, updateModel])
+    // A session without a saved level opens at the configured default.
+    const effectiveModel = sessionModel ?? catalog.models.find((candidate) => candidate.key === modelRef.current)
+    if (supportsEffort(effectiveModel, defaultEffort) && effortRef.current !== defaultEffort) updateEffort(defaultEffort)
+  }, [activeSession, catalog, defaultEffort, runtime?.model?.id, runtime?.model?.provider, runtime?.thinkingLevel, runtime?.configuredThinkingLevel, sessionKey, updateEffort, updateModel])
 
   // Scoped to the runtime's reported tier so a catalog refresh cannot revert
   // an optimistic fast-mode toggle that the runtime has not confirmed yet.
@@ -227,7 +252,7 @@ export function useProviderCatalog({ bridge, ready = true, harness = 'omp', runt
     const previous = { model: modelRef.current, effort: effortRef.current, fast: fastRef.current }
     const nextModel = catalog?.models.find((candidate) => candidate.key === nextModelKey)
     const nextEffort = nextModel && !supportsEffort(nextModel, effortRef.current)
-      ? nextModel.availableThinkingLevels.includes('medium') ? 'medium' : nextModel.availableThinkingLevels[0] ?? 'off'
+      ? supportsEffort(nextModel, defaultEffort) ? defaultEffort : nextModel.availableThinkingLevels.includes('medium') ? 'medium' : nextModel.availableThinkingLevels[0] ?? 'off'
       : effortRef.current
     updateModel(nextModelKey)
     updateEffort(nextEffort)

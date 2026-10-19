@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, renameSync, statSync } from 'node:fs'
 import { open, rename, unlink } from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join } from 'node:path'
-import { INTERFACE_FONT_SCALES, PRIME_THINKING_LEVELS, PROJECT_SORT_MODES, type AppSettings, type HarnessId, type ProjectRecord, type ProjectScripts, type ScheduleExecution, type AutomationScheduleRecord, type ScheduleRunRecord, type ScheduleTarget, type ScheduleTiming } from '../../src/types/api'
+import { ACCENT_COLORS, INTERFACE_FONT_SCALES, PRIME_THINKING_LEVELS, PROJECT_SORT_MODES, type AccentColor, type AppSettings, type HarnessId, type PrimeEffortSelector, type ProjectRecord, type ProjectScripts, type ScheduleExecution, type AutomationScheduleRecord, type ScheduleRunRecord, type ScheduleTarget, type ScheduleTiming } from '../../src/types/api'
 import { normalizeScheduleRunHistory } from './schedules/retention'
 import { isRecord } from './validation'
 
@@ -102,6 +102,7 @@ export function defaultSettings(): AppSettings {
   return {
     theme: 'system',
     locale: 'system',
+    accentColor: 'prime',
     interfaceFontScale: 110,
     projectSortMode: 'recent',
     sidebarOpen: true,
@@ -118,6 +119,7 @@ export function defaultSettings(): AppSettings {
     reduceMotion: false,
     showReasoningSummaries: true,
     reasoningExpandedByDefault: false,
+    defaultEffort: 'medium',
     conversationDensity: 'comfortable',
     subagentsPanelPinned: false,
     showToolCalls: true,
@@ -128,6 +130,7 @@ export function defaultSettings(): AppSettings {
     browserEnabled: true,
     computerUseEnabled: false,
     ompDisabledProviders: [],
+    ompEnabledProviders: [],
     ompDisabledModels: [],
     lastSelectedModels: { omp: '' },
     activeHarness: 'omp',
@@ -230,6 +233,7 @@ function parseSettings(value: unknown): AppSettings {
   return {
     theme: value.theme === 'light' || value.theme === 'dark' || value.theme === 'system' ? value.theme : defaults.theme,
     locale: value.locale === 'en' || value.locale === 'zh-CN' || value.locale === 'zh-TW' || value.locale === 'system' ? value.locale : defaults.locale,
+    accentColor: (ACCENT_COLORS as readonly string[]).includes(value.accentColor as string) ? value.accentColor as AccentColor : defaults.accentColor,
     interfaceFontScale: INTERFACE_FONT_SCALES.includes(value.interfaceFontScale as AppSettings['interfaceFontScale'])
       ? value.interfaceFontScale as AppSettings['interfaceFontScale']
       : defaults.interfaceFontScale,
@@ -250,6 +254,7 @@ function parseSettings(value: unknown): AppSettings {
     reduceMotion: typeof value.reduceMotion === 'boolean' ? value.reduceMotion : defaults.reduceMotion,
     showReasoningSummaries: typeof value.showReasoningSummaries === 'boolean' ? value.showReasoningSummaries : defaults.showReasoningSummaries,
     reasoningExpandedByDefault: typeof value.reasoningExpandedByDefault === 'boolean' ? value.reasoningExpandedByDefault : defaults.reasoningExpandedByDefault,
+    defaultEffort: typeof value.defaultEffort === 'string' && THINKING_LEVELS.has(value.defaultEffort) ? value.defaultEffort as PrimeEffortSelector : defaults.defaultEffort,
     conversationDensity: value.conversationDensity === 'compact' || value.conversationDensity === 'comfortable' ? value.conversationDensity : defaults.conversationDensity,
     subagentsPanelPinned: typeof value.subagentsPanelPinned === 'boolean' ? value.subagentsPanelPinned : defaults.subagentsPanelPinned,
     showToolCalls: typeof value.showToolCalls === 'boolean' ? value.showToolCalls : defaults.showToolCalls,
@@ -262,6 +267,9 @@ function parseSettings(value: unknown): AppSettings {
     ompDisabledProviders: Array.isArray(value.ompDisabledProviders)
       ? [...new Set(value.ompDisabledProviders.filter((item): item is string => typeof item === 'string' && /^[a-z0-9][a-z0-9._-]{0,127}$/i.test(item)))].slice(0, 256)
       : defaults.ompDisabledProviders,
+    ompEnabledProviders: Array.isArray(value.ompEnabledProviders)
+      ? [...new Set(value.ompEnabledProviders.filter((item): item is string => typeof item === 'string' && /^[a-z0-9][a-z0-9._-]{0,127}$/i.test(item)))].slice(0, 256)
+      : defaults.ompEnabledProviders,
     ompDisabledModels: parseDisabledModels(value.ompDisabledModels, defaults.ompDisabledModels),
     lastSelectedModels,
     activeHarness: 'omp',

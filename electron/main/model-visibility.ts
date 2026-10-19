@@ -1,10 +1,20 @@
 import type { PrimeModelCatalog } from '../../src/types/api'
 
+/**
+ * Providers the harness advertises without any explicit user configuration.
+ * macOS always lists Apple's on-device Foundation Model, yet its 8K context
+ * cannot hold the agent scaffold (every call trips context_size_exceeded), so
+ * offering it by default reads as broken. These providers stay hidden until
+ * the user enables them in Providers settings.
+ */
+export const OPT_IN_PROVIDERS: ReadonlySet<string> = new Set(['apple'])
+
 /** Applies OMP Desktop's synchronized provider/model visibility policy to a raw harness catalog. */
 export function withModelVisibility(
   catalog: PrimeModelCatalog,
   disabledProviders: ReadonlySet<string>,
   disabledModels: ReadonlySet<string>,
+  enabledProviders: ReadonlySet<string> = new Set(),
 ): PrimeModelCatalog {
   const modelKeysByProvider = new Map<string, string[]>()
   for (const model of catalog.models) {
@@ -16,7 +26,8 @@ export function withModelVisibility(
   const providerEnabled = new Map(catalog.providers.map((provider) => {
     const modelKeys = modelKeysByProvider.get(provider.id)
     const hasEnabledModel = !modelKeys || modelKeys.some((key) => !disabledModels.has(key))
-    return [provider.id, !disabledProviders.has(provider.id) && hasEnabledModel] as const
+    const baseVisible = OPT_IN_PROVIDERS.has(provider.id) ? enabledProviders.has(provider.id) : !disabledProviders.has(provider.id)
+    return [provider.id, baseVisible && hasEnabledModel] as const
   }))
 
   return {

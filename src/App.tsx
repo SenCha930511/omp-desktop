@@ -253,6 +253,7 @@ export default function App() {
     runtime: workspace.runtime,
     activeSession,
     lastSelectedModel: settingsState.settings.lastSelectedModels[activeHarness],
+    defaultEffort: settingsState.settings.defaultEffort,
     rememberModel: rememberSelectedModel,
     syncRuntime: syncProviderRuntime,
     reportError,

@@ -167,6 +167,19 @@ kbd { color: var(--text-tertiary); font: 10.5px/1.2 "SFMono-Regular", "SF Mono",
 .no-drag, .drag-region button, .drag-region input { -webkit-app-region: no-drag; }
 .prime-color { color: var(--prime); }
 
+/* Accent overrides: each hue re-tints --prime (highlight/actions) and
+   --prime-soft (tinted surfaces) for both themes; 'prime' itself stays stock. */
+:root[data-accent='blue'] { --prime: #2563eb; --prime-soft: #e7efff; }
+:root[data-theme='dark'][data-accent='blue'] { --prime: #7da2ff; --prime-soft: #203157; }
+:root[data-accent='teal'] { --prime: #0d9488; --prime-soft: #dff5f1; }
+:root[data-theme='dark'][data-accent='teal'] { --prime: #5eead4; --prime-soft: #173a35; }
+:root[data-accent='green'] { --prime: #1e8e3e; --prime-soft: #e4f5e8; }
+:root[data-theme='dark'][data-accent='green'] { --prime: #7ee2a0; --prime-soft: #1d3a26; }
+:root[data-accent='orange'] { --prime: #ea580c; --prime-soft: #fdeede; }
+:root[data-theme='dark'][data-accent='orange'] { --prime: #ffb77d; --prime-soft: #402611; }
+:root[data-accent='pink'] { --prime: #db2777; --prime-soft: #fbe4ef; }
+:root[data-theme='dark'][data-accent='pink'] { --prime: #ff8fd0; --prime-soft: #3d1d2d; }
+
 .scroll-area { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
 .scroll-area::-webkit-scrollbar { width: 7px; height: 7px; }
 .scroll-area::-webkit-scrollbar-track { background: transparent; }

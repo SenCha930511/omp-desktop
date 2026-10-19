@@ -65,7 +65,9 @@
 .work-disclosure.is-running { margin-top: 0; padding: 0 0 4px; }
 .work-disclosure__button { width: fit-content; max-width: 100%; min-height: 26px; display: flex; align-items: center; gap: 8px; padding: 3px 0; color: var(--text-tertiary); background: transparent; text-align: left; font-size: 12px; font-weight: 500; }
 .work-disclosure__button > svg { width: 16px; flex: 0 0 16px; }
-.work-disclosure__ticker { flex: 1 1 auto; min-width: 0; overflow: hidden; color: var(--text-tertiary); font-weight: 400; white-space: nowrap; text-overflow: ellipsis; }
+/* Header labels stay whole: CJK text has one-character min-content, so any
+   shrinking collapses "工作中" into a vertical stack. */
+.work-disclosure__button > span { flex: 0 0 auto; white-space: nowrap; }
 .work-disclosure__button > span + span::before { content: '·'; margin-right: 8px; color: var(--text-tertiary); }
 .work-disclosure__button:hover { color: var(--text); }
 .work-disclosure__live { min-width: 0; }

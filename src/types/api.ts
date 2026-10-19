@@ -227,7 +227,10 @@ export interface RuntimeInfo {
 export const PRIME_THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
 export type PrimeThinkingLevel = (typeof PRIME_THINKING_LEVELS)[number]
 /** OMP's auto selector is distinct from a model's concrete supported levels. */
+export const PRIME_EFFORT_SELECTORS = ['auto', ...PRIME_THINKING_LEVELS] as const
 export type PrimeEffortSelector = PrimeThinkingLevel | 'auto'
+export const ACCENT_COLORS = ['prime', 'blue', 'teal', 'green', 'orange', 'pink'] as const
+export type AccentColor = (typeof ACCENT_COLORS)[number]
 export type PrimeServiceTier = 'auto' | 'default' | 'flex' | 'scale' | 'priority' | null
 export type ProviderAuthMethod = 'oauth' | 'api_key' | 'external'
 export type ProviderAuthSource = 'stored' | 'runtime' | 'environment' | 'prime_cli' | 'fallback' | 'models_json_key' | 'models_json_command' | 'stale'
@@ -467,6 +470,8 @@ export interface AppSettings {
   subagentsPanelPinned: boolean
   theme: ThemeMode
   locale: LocalePreference
+  /** Workspace accent hue; 'prime' keeps the stock purple. */
+  accentColor: AccentColor
   /** Bounded interface text scale; 110 is the designed default. */
   interfaceFontScale: InterfaceFontScale
   /** Order the renderer derives for project lists; 'recent' keeps launch behaviour unchanged. */
@@ -487,6 +492,8 @@ export interface AppSettings {
   reduceMotion: boolean
   showReasoningSummaries: boolean
   reasoningExpandedByDefault: boolean
+  /** Initial reasoning effort for sessions that carry no explicit choice. */
+  defaultEffort: PrimeEffortSelector
   showToolCalls: boolean
   messageEnterAction: MessageEnterAction
   /** Optional absolute executable override; blank keeps automatic discovery. */
@@ -504,6 +511,8 @@ export interface AppSettings {
   computerUseEnabled: boolean
   /** Providers hidden from the OMP model picker; OMP's own config is untouched. */
   ompDisabledProviders: string[]
+  /** Opt-in providers (advertised without user configuration) explicitly re-enabled, e.g. apple. */
+  ompEnabledProviders: string[]
   /** Models hidden from the OMP model picker, stored as provider/model keys. */
   ompDisabledModels: string[]
   /** Last usable model selected; blank falls back to the first usable catalog model. */

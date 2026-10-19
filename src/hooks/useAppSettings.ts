@@ -124,12 +124,13 @@ export function useAppSettings({ bridge, reportError }: UseAppSettingsOptions) {
     }
     applyTheme(settings.theme === 'system' ? media.matches ? 'dark' : 'light' : settings.theme)
     document.documentElement.classList.toggle('reduce-motion', settings.reduceMotion)
+    document.documentElement.dataset.accent = settings.accentColor
     const sync = () => {
       if (settings.theme === 'system') applyTheme(media.matches ? 'dark' : 'light')
     }
     media.addEventListener('change', sync)
     return () => media.removeEventListener('change', sync)
-  }, [bridge, settings.reduceMotion, settings.theme])
+  }, [bridge, settings.accentColor, settings.reduceMotion, settings.theme])
 
   const selectInspectorTab = useCallback((tab: InspectorTab) => {
     inspectorTabTouchedRef.current = true

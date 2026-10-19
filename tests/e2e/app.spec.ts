@@ -597,7 +597,12 @@ test.describe('OMP Desktop desktop smoke', () => {
     await page.getByRole('button', { name: /Subagents ·/ }).click()
     await page.getByRole('button', { name: /Explore.*Completed/ }).click()
     await expect(page.locator('.subagents__messages .work-disclosure__button')).toHaveAttribute('aria-expanded', 'true')
-    await expect(page.locator('.subagents__messages .reasoning-disclosure')).toHaveCount(0)
+    // Thinking rows keep their labelled header (dsh shape); the expand-by-default
+    // setting means the section itself opens with its content visible.
+    const reasoning = page.locator('.subagents__messages .reasoning-disclosure').first()
+    await expect(reasoning).toBeVisible()
+    await expect(reasoning).toHaveAttribute('open', '')
+    await expect(reasoning.locator('.prose').first()).toBeVisible()
     await page.locator('.subagents__messages .work-disclosure__button').click()
     await expect(page.locator('.subagents__messages .work-disclosure__button')).toHaveAttribute('aria-expanded', 'false')
   })
@@ -732,7 +737,9 @@ test.describe('OMP Desktop desktop smoke', () => {
     await search.fill('Historical reasoning needle')
     await page.getByRole('combobox', { name: 'Search content', exact: true }).selectOption('thinking')
     await expect(page.locator('.is-search-match .work-disclosure__button')).toHaveAttribute('aria-expanded', 'true')
-    await expect(page.locator('.is-search-match').getByText('Historical reasoning needle', { exact: true })).toBeVisible()
+    // The needle must be visible in the expanded reasoning body (the collapsed
+    // row's preview line repeats the same leading text but is display-hidden).
+    await expect(page.locator('.is-search-match .reasoning-disclosure .prose').getByText('Historical reasoning needle', { exact: true })).toBeVisible()
     const searchMs = Date.now() - searchStarted
     await expect.poll(() => page.evaluate(() => CSS.highlights.get('conversation-search')?.size ?? 0)).toBeGreaterThan(0)
     const searchedNodes = await page.locator('.transcript [data-message-id]').count()
@@ -1550,7 +1557,7 @@ test.describe('OMP Desktop desktop smoke', () => {
     const disclosure = page.locator('.work-disclosure__button')
     await expect(disclosure).toHaveCount(1)
     await disclosure.click()
-    await expect(page.locator('.transcript').getByText(reasoning, { exact: true })).toHaveCount(1)
+    await expect(page.locator('.transcript .reasoning-disclosure .prose').getByText(reasoning, { exact: true })).toHaveCount(1)
     await expect(page.locator('.activity-line--tool')).toContainText('fixture_external_tool')
     await expect(selectedSession).toHaveCount(1)
   })

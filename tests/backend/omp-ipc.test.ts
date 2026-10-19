@@ -70,7 +70,7 @@ interface Harness {
 }
 
 function buildServices() {
-  const settingsState = { ompDisabledProviders: ['anthropic'], ompDisabledModels: [] }
+  const settingsState = { ompDisabledProviders: ['anthropic'], ompDisabledModels: [], ompEnabledProviders: [] }
   const catalog = (from: string, disabled: ReadonlySet<string> = new Set(), disabledModels: ReadonlySet<string> = new Set()) => {
     const models: PrimeModelDescriptor[] = [
       { key: 'anthropic/claude', provider: 'anthropic', id: 'claude', name: 'Claude', reasoning: true, input: ['text'], contextWindow: 128_000, maxTokens: 16_000, availableThinkingLevels: ['low', 'high', 'max'], fastModeSupported: true, available: true },
@@ -276,13 +276,13 @@ describe('harness-aware IPC routing', () => {
       from: 'omp',
       providers: [{ id: 'anthropic', enabled: false }, { id: 'openai', enabled: false }],
     })
-    expect(harness.services.settings.update).toHaveBeenCalledWith({ ompDisabledProviders: ['anthropic', 'openai'], ompDisabledModels: [] })
+    expect(harness.services.settings.update).toHaveBeenCalledWith({ ompDisabledProviders: ['anthropic', 'openai'], ompEnabledProviders: [], ompDisabledModels: [] })
 
     await expect(harness.invoke('providers:set-disabled', ['openai'], 'omp')).resolves.toMatchObject({
       from: 'omp',
       providers: [{ id: 'anthropic', enabled: true }, { id: 'openai', enabled: false }],
     })
-    expect(harness.services.settings.update).toHaveBeenLastCalledWith({ ompDisabledProviders: ['openai'], ompDisabledModels: [] })
+    expect(harness.services.settings.update).toHaveBeenLastCalledWith({ ompDisabledProviders: ['openai'], ompEnabledProviders: [], ompDisabledModels: [] })
   })
 
   it('keeps OMP provider and model visibility synchronized in both directions', async () => {
@@ -323,7 +323,7 @@ describe('harness-aware IPC routing', () => {
         { key: 'openai/gpt-mini', enabled: true },
       ],
     })
-    expect(harness.services.settings.update).toHaveBeenLastCalledWith({ ompDisabledProviders: ['anthropic'], ompDisabledModels: [] })
+    expect(harness.services.settings.update).toHaveBeenLastCalledWith({ ompDisabledProviders: ['anthropic'], ompEnabledProviders: [], ompDisabledModels: [] })
   })
 
   it('applies provider and model toggles only to models retained by a real overflow catalog', async () => {

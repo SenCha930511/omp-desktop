@@ -144,6 +144,7 @@ describe('settings field ownership', () => {
   it('assigns every AppSettings field to a focused section', () => {
     expect(SETTINGS_FIELD_SECTIONS).toEqual({
       theme: 'appearance',
+      accentColor: 'appearance',
       locale: 'appearance',
       interfaceFontScale: 'appearance',
       projectSortMode: 'general',
@@ -161,6 +162,7 @@ describe('settings field ownership', () => {
       reduceMotion: 'appearance',
       showReasoningSummaries: 'agent',
       reasoningExpandedByDefault: 'agent',
+      defaultEffort: 'agent',
       conversationDensity: 'general',
       subagentsPanelPinned: 'agent',
       showToolCalls: 'agent',
@@ -171,6 +173,7 @@ describe('settings field ownership', () => {
       browserEnabled: 'agent',
       computerUseEnabled: 'agent',
       ompDisabledProviders: 'providers',
+      ompEnabledProviders: 'providers',
       ompDisabledModels: 'providers',
       lastSelectedModels: 'providers',
       activeHarness: 'agent',

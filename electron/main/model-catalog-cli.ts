@@ -90,11 +90,14 @@ export interface CliModelCatalogOptions {
   timeoutMs?: number
   /** Combined stdout/stderr byte cap for one catalog fetch. */
   maxOutputBytes?: number
+  /** Live set of opt-in providers the user explicitly enabled. */
+  enabledProviders?: () => ReadonlySet<string>
 }
 
 export abstract class CliModelCatalogService implements ModelCatalogProvider {
   protected readonly timeoutMs: number
   protected readonly maxOutputBytes: number
+  protected readonly enabledProviders: () => ReadonlySet<string>
   private cachedCatalog: PrimeModelCatalog | null = null
   private cachedAt = 0
   private cachedExecutable: string | null = null
@@ -104,6 +107,7 @@ export abstract class CliModelCatalogService implements ModelCatalogProvider {
   constructor(private readonly executable: ExecutableSource, options: CliModelCatalogOptions = {}) {
     this.timeoutMs = options.timeoutMs ?? DEFAULT_CATALOG_TIMEOUT_MS
     this.maxOutputBytes = options.maxOutputBytes ?? DEFAULT_CATALOG_MAX_OUTPUT_BYTES
+    this.enabledProviders = options.enabledProviders ?? (() => new Set<string>())
   }
 
   /** Harness name as it appears in user-facing warnings and errors ('OMP', 'Pi'). */
@@ -128,7 +132,7 @@ export abstract class CliModelCatalogService implements ModelCatalogProvider {
       return { primeVersion: 'unknown', refreshedAt: new Date().toISOString(), models: [], providers: [], warning: this.notInstalledWarning }
     }
     if (!force && this.cachedCatalog && Date.now() - this.cachedAt < CATALOG_TTL_MS) {
-      return withModelVisibility(this.cachedCatalog, disabledProviders, disabledModels)
+      return withModelVisibility(this.cachedCatalog, disabledProviders, disabledModels, this.enabledProviders())
     }
     // Single-flight: concurrent callers share one CLI run instead of spawning
     // duplicate subprocesses; the in-flight promise is cleared in finally.
@@ -139,7 +143,7 @@ export abstract class CliModelCatalogService implements ModelCatalogProvider {
       this.catalogRefresh = { executable, promise }
     }
     try {
-      return withModelVisibility(await this.catalogRefresh.promise, disabledProviders, disabledModels)
+      return withModelVisibility(await this.catalogRefresh.promise, disabledProviders, disabledModels, this.enabledProviders())
     } catch (error) {
       // A failed refresh degrades to the last good catalog instead of an
       // error; first-ever loads still surface the failure.
@@ -149,7 +153,7 @@ export abstract class CliModelCatalogService implements ModelCatalogProvider {
       return withModelVisibility({
         ...this.cachedCatalog,
         warning: this.cachedCatalog.warning ? `${this.cachedCatalog.warning} ${staleWarning}` : staleWarning,
-      }, disabledProviders, disabledModels)
+      }, disabledProviders, disabledModels, this.enabledProviders())
     }
   }
 

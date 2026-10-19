@@ -89,38 +89,27 @@ function firstLine(text: string): string {
   return newline === -1 ? text : text.slice(0, newline)
 }
 
-/**
- * Latest completed paragraph's first line — dsh's streaming ticker. The
- * preview advances only when a paragraph boundary completes, so the collapsed
- * row shows a stable sentence instead of a flickering tail.
- */
-function latestCompletedParagraphFirstLine(text: string): string {
-  let summary = ''
-  let paragraphStart = 0
-  const separator = /\r?\n(?:[\t ]*\r?\n)+/g
-  for (let paragraph = separator.exec(text); ; paragraph = separator.exec(text)) {
-    const paragraphEnd = paragraph === null ? text.length : paragraph.index + paragraph[0].indexOf('\n')
-    const newline = text.indexOf('\n', paragraphStart)
-    if (newline !== -1 && newline <= paragraphEnd) {
-      const candidate = text.slice(paragraphStart, newline).trim()
-      if (candidate !== '') summary = candidate
-    }
-    if (paragraph === null) return summary
-    paragraphStart = paragraph.index + paragraph[0].length
-  }
+/** Tail of the live stream — the collapsed row acts like a ticker, tracking
+ * the in-progress line until the reader expands the section. */
+function tailLine(text: string): string {
+  const trimmed = text.replace(/\s+$/, '')
+  const newline = trimmed.lastIndexOf('\n')
+  return newline === -1 ? trimmed : trimmed.slice(newline + 1)
 }
 
-/** Collapse a thinking blob into one plain-text preview line, dsh-style. */
+/** Collapse a thinking blob into one plain-text preview line: settled rows
+ * lead with the first line, streaming rows tick along with the live tail. */
 function plainPreview(text: string, running: boolean): string {
-  const line = running ? latestCompletedParagraphFirstLine(text) : firstLine(text)
+  const line = running ? tailLine(text) : firstLine(text)
   return line.replace(/(\*\*|__|~~|`+)|(?<=\s)[#>*_]+/g, '').replace(/\s+/g, ' ').trim()
 }
 
-function ReasoningPart({ part, streaming = false, expanded = false }: { part: Extract<MessagePart, { type: 'thinking' }>; streaming?: boolean; expanded?: boolean }) {
+function ReasoningPart({ part, streaming = false }: { part: Extract<MessagePart, { type: 'thinking' }>; streaming?: boolean }) {
   const { t } = useI18n()
-  if (expanded) return <div className="activity-line activity-line--reasoning activity-reasoning" aria-label={t('agents.thinking')}><MarkdownText text={boundText(part.text, 40_000, t('transcript.reasoning.truncated'))} streaming={streaming} /></div>
+  // dsh keeps the reasoning header ("思考 · first line") attached even while a
+  // section renders expanded content; the body indents under that title.
   return (
-    <ReasoningDisclosure className="activity-line activity-line--reasoning" preview={boundText(plainPreview(part.text, streaming), 180, '…')} streaming={streaming}>
+    <ReasoningDisclosure className="activity-line activity-line--reasoning activity-reasoning" preview={boundText(plainPreview(part.text, streaming), 180, '…')} streaming={streaming}>
       <MarkdownText text={boundText(part.text, 40_000, t('transcript.reasoning.truncated'))} streaming={streaming} />
     </ReasoningDisclosure>
   )
@@ -207,13 +196,9 @@ function ToolPart({ part, next, streaming }: { part: Extract<MessagePart, { type
         ) : null}
         <span className="activity-tool__state">
           {failed ? (
-            <>
-              <CircleAlert size={12} /> {t('transcript.tool.state.failed')}
-            </>
+            <CircleAlert size={12} aria-label={t('transcript.tool.state.failed')} role="img" />
           ) : finished ? (
-            <>
-              <Check size={12} /> {t('transcript.tool.state.done')}
-            </>
+            <Check size={12} aria-label={t('transcript.tool.state.done')} role="img" />
           ) : !streaming ? (
             t('transcript.tool.state.noResult')
           ) : kind === 'question' ? (
@@ -340,7 +325,7 @@ function partKey(part: MessagePart, index: number): string {
   return part.partId ?? `${part.type}:${index}`
 }
 
-export function WorkTimeline({ parts, showReasoning, showTools, streaming = false, expandedReasoning = false }: { parts: MessagePart[]; showReasoning: boolean; showTools: boolean; streaming?: boolean; expandedReasoning?: boolean }) {
+export function WorkTimeline({ parts, showReasoning, showTools, streaming = false }: { parts: MessagePart[]; showReasoning: boolean; showTools: boolean; streaming?: boolean }) {
   const pairedResults = new Set<number>()
   return (
     <div className="work-timeline">
@@ -348,7 +333,7 @@ export function WorkTimeline({ parts, showReasoning, showTools, streaming = fals
         const key = partKey(part, index)
         if (part.type === 'toolResult' && pairedResults.has(index)) return null
         if (part.type === 'compaction') return <CompactionPart key={key} part={part} />
-        if (part.type === 'thinking') return showReasoning ? <ReasoningPart key={key} part={part} streaming={streaming} expanded={expandedReasoning} /> : null
+        if (part.type === 'thinking') return showReasoning ? <ReasoningPart key={key} part={part} streaming={streaming} /> : null
         if (part.type === 'toolCall') {
           if (!showTools) return null
           const next = parts[index + 1]
@@ -405,16 +390,6 @@ export function WorkDisclosure({
   const reveal = useContext(SearchRevealContext)
   const open = manualOpen || reveal
   useEffect(() => setOpen(running || defaultExpanded), [running, defaultExpanded])
-  let ticker = ''
-  if (running) {
-    for (let index = parts.length - 1; index >= 0; index -= 1) {
-      const part = parts[index]
-      // The live ticker flattens the whole thinking tail so it catches the
-      // in-progress sentence immediately; the dsh first-line rule is only for
-      // settled rows, whose preview should not flicker.
-      if (part.type === 'thinking' && part.text) { ticker = plainPreview(part.text, false); break }
-    }
-  }
   const status = liveWorkStatus(message.parts, showReasoning, showTools)
   const toolCount = parts.filter((part) => part.type === 'toolCall').length
   const startedAt = timestamp(message.startedAt ?? message.timestamp) ?? 0
@@ -427,10 +402,9 @@ export function WorkDisclosure({
         {running ? <span role="status"><span>{status === 'Thinking' ? t('transcript.workStatus.thinking') : t('transcript.workStatus.working')}</span></span> : <span>{t('transcript.work.workedFor', { duration })}</span>}
         {toolCount > 0 && <span className="work-disclosure__count">{t('transcript.work.tools', { count: toolCount })}</span>}
         {running && <LiveElapsed since={message.startedAt ?? message.timestamp} />}
-        {ticker ? <span className="work-disclosure__ticker" title={ticker}>{boundText(ticker, 240, '…')}</span> : null}
         {running && !open && <LoaderCircle size={12} className="spin" />}
       </button>
-      {open ? <WorkTimeline parts={parts} showReasoning={showReasoning} showTools={showTools} streaming={running} expandedReasoning /> : null}
+      {open ? <WorkTimeline parts={parts} showReasoning={showReasoning} showTools={showTools} streaming={running} /> : null}
     </section>
   )
 }

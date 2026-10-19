@@ -30,7 +30,7 @@
 .activity-line { font-size: var(--activity-font); }
 .activity-line__icon, .work-disclosure__button > svg, .reasoning-disclosure > summary > svg { width: var(--activity-icon); flex: 0 0 var(--activity-icon); }
 .activity-tool__summary, .work-disclosure__button, .reasoning-disclosure > summary { min-height: var(--activity-row); gap: var(--activity-gap); padding: 3px 0; font-size: var(--activity-font); }
-.activity-line--note, .activity-reasoning { padding: 0 0 0 var(--activity-inset); }
+.activity-line--note { padding: 0 0 0 var(--activity-inset); }
 .activity-reasoning { color: var(--text-tertiary); }
 .activity-reasoning, .activity-line--note .prose, .activity-line--reasoning .prose { font-size: var(--activity-font); line-height: var(--conversation-leading); }
 .activity-tool__details, .reasoning-disclosure > div { margin-left: var(--activity-inset); }

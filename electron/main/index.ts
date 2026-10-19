@@ -592,7 +592,7 @@ async function bootstrap(): Promise<void> {
 
   const ompDisabledProviders = () => new Set(stateStore.getSettings().ompDisabledProviders)
   const ompDisabledModels = () => new Set(stateStore.getSettings().ompDisabledModels)
-  const catalog = new OmpModelCatalogService(ompExecutable)
+  const catalog = new OmpModelCatalogService(ompExecutable, { enabledProviders: () => new Set(stateStore.getSettings().ompEnabledProviders) })
   // The OMP manager exists whether or not the omp CLI is installed; starting a
   // runtime without it fails with the adapter's not-found error. OMP provider
   // visibility is desktop-owned and independent from OMP's own CLI

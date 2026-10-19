@@ -95,6 +95,10 @@
 .theme-options button strong { font-size: 10.5px; font-weight: 520; }
 .theme-options button.is-active { color: var(--text); border-color: var(--prime); }
 .theme-options button.is-active > svg { color: var(--prime); }
+.accent-options { display: flex; gap: 9px; }
+.accent-options button { display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 2px solid transparent; border-radius: 50%; background: transparent; }
+.accent-options button.is-active { border-color: var(--prime); }
+.accent-options .accent-swatch { width: 20px; height: 20px; border-radius: 50%; border: 1px solid color-mix(in srgb, black 12%, transparent); }
 .text-size-options { display: flex; flex: 0 0 auto; gap: 2px; padding: 3px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-subtle); }
 .text-size-options button { min-width: 56px; height: 28px; padding: 0 7px; border-radius: 5px; color: var(--text-secondary); background: transparent; font-size: 10.5px; }
 .text-size-options button:hover { color: var(--text); background: var(--surface-hover); }

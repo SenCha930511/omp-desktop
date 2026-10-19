@@ -4,6 +4,11 @@
 .reasoning-disclosure > summary > svg { width: 16px; flex: 0 0 16px; transition: transform 120ms ease; }
 .reasoning-disclosure[open] > summary > svg { transform: rotate(90deg); }
 .reasoning-disclosure > summary:hover { color: var(--text); }
+/* The status label is a fixed token; CJK min-content squishes it into a
+   vertical strip otherwise. Only the preview is allowed to shrink. */
+.reasoning-disclosure__label { flex: 0 0 auto; white-space: nowrap; }
+/* dsh hides the one-line summary once the body itself is visible. */
+.reasoning-disclosure[open] > summary .reasoning-disclosure__preview { display: none; }
 .reasoning-disclosure > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 3px; }
 .reasoning-disclosure > div { margin: 6px 0 3px 24px; font-size: 13px; line-height: 1.6; }
 .reasoning-disclosure__preview { flex: 0 1 auto; max-width: 72ch; min-width: 0; overflow: hidden; color: var(--text-tertiary); font-weight: 400; white-space: nowrap; text-overflow: ellipsis; }

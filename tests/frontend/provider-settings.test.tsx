@@ -2,7 +2,7 @@
 import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { useProviderCatalog } from '../../src/hooks/useProviderCatalog'
+import { type ProviderCatalog, useProviderCatalog } from '../../src/hooks/useProviderCatalog'
 import { ProviderSettings } from '../../src/pages/settings/ProviderSettings'
 import type { HarnessId, PrimeModelCatalog, DesktopApi, RuntimeInfo } from '../../src/types/api'
 
@@ -151,7 +151,7 @@ describe('provider runtime mutations', () => {
     harness?: HarnessId
     reportError?: (error: unknown) => void
   }) {
-    let value: ReturnType<typeof useProviderCatalog> | undefined
+    let value: ProviderCatalog | undefined
     const catalogMock = vi.fn().mockResolvedValue(catalog)
     const bridge = {
       agent: { command: options.command },

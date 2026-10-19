@@ -69,4 +69,49 @@ describe('agent settings reasoning expansion', () => {
 
     expect(onUpdate).toHaveBeenCalledWith({ reasoningExpandedByDefault: true } satisfies Partial<AppSettings>)
   })
+
+  it('renders the default reasoning effort select with the current level', () => {
+    act(() => {
+      root.render(
+        <AgentSettings
+          settings={{ ...DEFAULT_SETTINGS, defaultEffort: 'high' }}
+          meta={null}
+          onUpdate={() => undefined}
+          onRefreshHarnesses={async () => undefined}
+        />,
+      )
+    })
+
+    expect(container.textContent).toContain('Default reasoning effort')
+    const row = Array.from(container.querySelectorAll<HTMLElement>('.settings-row'))
+      .find((element) => element.textContent?.includes('Default reasoning effort'))
+    expect(row).toBeDefined()
+    const select = row?.querySelector('select') as HTMLSelectElement
+    expect(select.value).toBe('high')
+    expect(Array.from(select.options).map((option) => option.value)).toEqual(['auto', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
+  })
+
+  it('commits the chosen default reasoning effort', () => {
+    const onUpdate = vi.fn()
+    act(() => {
+      root.render(
+        <AgentSettings
+          settings={{ ...DEFAULT_SETTINGS, defaultEffort: 'medium' }}
+          meta={null}
+          onUpdate={onUpdate}
+          onRefreshHarnesses={async () => undefined}
+        />,
+      )
+    })
+
+    const row = Array.from(container.querySelectorAll<HTMLElement>('.settings-row'))
+      .find((element) => element.textContent?.includes('Default reasoning effort'))
+    const select = row?.querySelector('select') as HTMLSelectElement
+    act(() => {
+      select.value = 'high'
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+
+    expect(onUpdate).toHaveBeenCalledWith({ defaultEffort: 'high' } satisfies Partial<AppSettings>)
+  })
 })

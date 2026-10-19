@@ -4,7 +4,7 @@ import { errorMessage } from '@/lib/errors'
 import { HARNESS_AGENT_NAMES, HARNESS_PRODUCT_NAMES } from '@/lib/harness'
 import { type MessageKey, useI18n } from '@/lib/i18n'
 import { detectRendererPlatform, shortcutLabel } from '@/lib/platform-shortcuts'
-import { HARNESS_IDS, type HarnessId, OMP_APPROVAL_MODES, type OmpApprovalMode } from '@/types/api'
+import { HARNESS_IDS, type HarnessId, OMP_APPROVAL_MODES, type OmpApprovalMode, PRIME_EFFORT_SELECTORS, type PrimeEffortSelector } from '@/types/api'
 import type { SettingsMetaSectionProps } from './contracts'
 import { DraftSettingField } from './DraftSettingField'
 import { SettingsToggle } from './SettingsToggle'
@@ -14,6 +14,17 @@ const APPROVAL_MODE_LABELS: Record<OmpApprovalMode, MessageKey> = {
   'always-ask': 'agent.approval.alwaysAsk',
   write: 'agent.approval.write',
   yolo: 'agent.approval.yolo',
+}
+
+const EFFORT_LABELS: Record<PrimeEffortSelector, MessageKey> = {
+  auto: 'composer.reasoning.auto',
+  off: 'composer.reasoning.off',
+  minimal: 'composer.reasoning.minimal',
+  low: 'composer.reasoning.low',
+  medium: 'composer.reasoning.medium',
+  high: 'composer.reasoning.high',
+  xhigh: 'composer.reasoning.xhigh',
+  max: 'composer.reasoning.max',
 }
 
 export function AgentSettings({ settings, meta, onUpdate, onRefreshHarnesses }: SettingsMetaSectionProps) {
@@ -84,6 +95,24 @@ export function AgentSettings({ settings, meta, onUpdate, onRefreshHarnesses }: 
             {OMP_APPROVAL_MODES.map((mode) => (
               <option key={mode} value={mode}>
                 {t(APPROVAL_MODE_LABELS[mode])}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="settings-row">
+          <span>
+            <strong>{t('agent.defaultEffort.label')}</strong>
+            <small>{t('agent.defaultEffort.description')}</small>
+          </span>
+          <select
+            value={settings.defaultEffort}
+            onChange={(event) => {
+              void onUpdate({ defaultEffort: event.target.value as PrimeEffortSelector })
+            }}
+          >
+            {PRIME_EFFORT_SELECTORS.map((level) => (
+              <option key={level} value={level}>
+                {t(EFFORT_LABELS[level])}
               </option>
             ))}
           </select>

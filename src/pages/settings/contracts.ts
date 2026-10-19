@@ -16,6 +16,7 @@ export interface SettingsMetaSectionProps extends SettingsSectionProps {
 
 export const SETTINGS_FIELD_SECTIONS = {
   theme: 'appearance',
+  accentColor: 'appearance',
   locale: 'appearance',
   interfaceFontScale: 'appearance',
   projectSortMode: 'general',
@@ -33,6 +34,7 @@ export const SETTINGS_FIELD_SECTIONS = {
   reduceMotion: 'appearance',
   showReasoningSummaries: 'agent',
   reasoningExpandedByDefault: 'agent',
+  defaultEffort: 'agent',
   conversationDensity: 'general',
   subagentsPanelPinned: 'agent',
   showToolCalls: 'agent',
@@ -43,6 +45,7 @@ export const SETTINGS_FIELD_SECTIONS = {
   browserEnabled: 'agent',
   computerUseEnabled: 'agent',
   ompDisabledProviders: 'providers',
+  ompEnabledProviders: 'providers',
   ompDisabledModels: 'providers',
   lastSelectedModels: 'providers',
   activeHarness: 'agent',

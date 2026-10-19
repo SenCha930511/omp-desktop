@@ -27,7 +27,7 @@ describe('AppearanceSettings', () => {
     const update = vi.fn()
     act(() => root.render(<AppearanceSettings settings={DEFAULT_SETTINGS} onUpdate={update} />))
 
-    const options = [...container.querySelectorAll<HTMLButtonElement>('[role="radio"]')]
+    const options = [...container.querySelectorAll<HTMLButtonElement>('[aria-label="Interface text size"] [role="radio"]')]
     expect(options.map((option) => option.textContent)).toEqual(['Smaller', 'Default', 'Larger'])
     expect(options.map((option) => option.getAttribute('aria-checked'))).toEqual(['false', 'true', 'false'])
 
@@ -44,7 +44,7 @@ describe('AppearanceSettings', () => {
     ))
 
     expect(container.querySelector('h1')?.textContent).toBe('外观')
-    expect(container.querySelector('[role="radiogroup"]')?.getAttribute('aria-label')).toBe('界面文本大小')
+    expect(container.querySelector('[role="radiogroup"][aria-label="界面文本大小"]')).not.toBeNull()
     expect(container.textContent).toContain('支持 3 种语言')
     const locale = container.querySelector<HTMLSelectElement>('select')!
     expect([...locale.options].map((option) => option.textContent)).toEqual(['跟随系统', '英语', '简体中文', '繁体中文'])
@@ -64,7 +64,7 @@ describe('AppearanceSettings', () => {
     ))
 
     expect(container.querySelector('h1')?.textContent).toBe('外觀')
-    expect(container.querySelector('[role="radiogroup"]')?.getAttribute('aria-label')).toBe('介面文字大小')
+    expect(container.querySelector('[role="radiogroup"][aria-label="介面文字大小"]')).not.toBeNull()
     const locale = container.querySelector<HTMLSelectElement>('select')!
     expect([...locale.options].map((option) => option.textContent)).toEqual(['跟隨系統', '英文', '簡體中文', '繁體中文'])
     act(() => {
@@ -78,8 +78,8 @@ describe('AppearanceSettings', () => {
     const update = vi.fn()
     act(() => root.render(<AppearanceSettings settings={DEFAULT_SETTINGS} onUpdate={update} />))
 
-    const group = container.querySelector<HTMLDivElement>('[role="radiogroup"]')!
-    const options = [...container.querySelectorAll<HTMLButtonElement>('[role="radio"]')]
+    const group = container.querySelector<HTMLDivElement>('[aria-label="Interface text size"]')!
+    const options = [...group.querySelectorAll<HTMLButtonElement>('[role="radio"]')]
     expect(options.map((option) => option.tabIndex)).toEqual([-1, 0, -1])
 
     const press = (key: string) => {
@@ -100,5 +100,18 @@ describe('AppearanceSettings', () => {
     press('End')
     expect(update).toHaveBeenLastCalledWith({ interfaceFontScale: 115 })
     expect(update).toHaveBeenCalledTimes(4)
+  })
+
+  it('offers the accent palette and persists the chosen hue', () => {
+    const update = vi.fn()
+    act(() => root.render(<AppearanceSettings settings={{ ...DEFAULT_SETTINGS, accentColor: 'prime' }} onUpdate={update} />))
+
+    const group = container.querySelector<HTMLDivElement>('[aria-label="Choose accent color"]')!
+    const options = [...group.querySelectorAll<HTMLButtonElement>('[role="radio"]')]
+    expect(options.map((option) => option.getAttribute('aria-label'))).toEqual(['Purple', 'Blue', 'Teal', 'Green', 'Orange', 'Pink'])
+    expect(options.map((option) => option.getAttribute('aria-checked'))).toEqual(['true', 'false', 'false', 'false', 'false', 'false'])
+
+    act(() => options[4].click())
+    expect(update).toHaveBeenCalledWith({ accentColor: 'orange' })
   })
 })

@@ -1,6 +1,6 @@
 import { session } from 'electron'
 import { isAbsolute } from 'node:path'
-import { BROWSER_PARTITION, HARNESS_IDS, INTERFACE_FONT_SCALES, PROJECT_SORT_MODES, type AppSettings, type ProjectSortMode } from '../../src/types/api'
+import { ACCENT_COLORS, BROWSER_PARTITION, HARNESS_IDS, INTERFACE_FONT_SCALES, PRIME_EFFORT_SELECTORS, PROJECT_SORT_MODES, type AppSettings, type ProjectSortMode } from '../../src/types/api'
 import type { JsonStateStore } from './store'
 import { isRecord, rejectUnknownKeys, requireBoolean, requireSelfHostedVoiceUrl, requireString, requireWebUrl } from './validation'
 
@@ -32,6 +32,10 @@ export class SettingsService {
         if (value !== 'system' && value !== 'en' && value !== 'zh-CN' && value !== 'zh-TW') throw new TypeError('Invalid locale')
         return value
       },
+      accentColor: (value) => {
+        if (!(ACCENT_COLORS as readonly string[]).includes(value as string)) throw new TypeError('Invalid accent color')
+        return value as AppSettings['accentColor']
+      },
       interfaceFontScale: (value) => {
         if (!INTERFACE_FONT_SCALES.includes(value as AppSettings['interfaceFontScale'])) throw new TypeError('Invalid interface font scale')
         return value as AppSettings['interfaceFontScale']
@@ -54,6 +58,10 @@ export class SettingsService {
       reduceMotion: (value) => requireBoolean(value, 'reduceMotion'),
       showReasoningSummaries: (value) => requireBoolean(value, 'showReasoningSummaries'),
       reasoningExpandedByDefault: (value) => requireBoolean(value, 'reasoningExpandedByDefault'),
+      defaultEffort: (value) => {
+        if (!(PRIME_EFFORT_SELECTORS as readonly string[]).includes(value as string)) throw new TypeError('Invalid default reasoning effort')
+        return value as AppSettings['defaultEffort']
+      },
       subagentsPanelPinned: (value) => requireBoolean(value, 'subagentsPanelPinned'),
       showToolCalls: (value) => requireBoolean(value, 'showToolCalls'),
       telemetry: (value) => requireBoolean(value, 'telemetry'),
@@ -108,14 +116,8 @@ export class SettingsService {
       },
       voiceLocalWhisperExecutable: (value) => requireString(value, 'voiceLocalWhisperExecutable', { max: 4_096, trim: true }),
       voiceLocalWhisperModel: (value) => requireString(value, 'voiceLocalWhisperModel', { max: 4_096, trim: true }),
-      ompDisabledProviders: (value) => {
-        if (!Array.isArray(value) || value.length > 256) throw new TypeError('ompDisabledProviders must be a bounded array')
-        return [...new Set(value.map((entry, index) => {
-          const id = requireString(entry, `ompDisabledProviders[${index}]`, { min: 1, max: 128, trim: true })
-          if (!/^[a-z0-9][a-z0-9._-]{0,127}$/i.test(id)) throw new TypeError(`ompDisabledProviders[${index}] is not a valid provider ID`)
-          return id
-        }))]
-      },
+      ompDisabledProviders: (value) => this.providerIdList(value, 'ompDisabledProviders'),
+      ompEnabledProviders: (value) => this.providerIdList(value, 'ompEnabledProviders'),
       ompDisabledModels: (value) => this.disabledModels(value, 'ompDisabledModels'),
       lastSelectedModels: (value) => {
         if (!isRecord(value)) throw new TypeError('lastSelectedModels must be an object')
@@ -151,6 +153,15 @@ export class SettingsService {
     const model = requireString(value, label, { min: 1, max: 128, trim: true })
     if (!/^[a-z0-9][a-z0-9._:-]{0,127}$/i.test(model)) throw new TypeError(`${label} is not valid`)
     return model
+  }
+
+  private providerIdList(value: unknown, label: string): string[] {
+    if (!Array.isArray(value) || value.length > 256) throw new TypeError(`${label} must be a bounded array`)
+    return [...new Set(value.map((entry, index) => {
+      const id = requireString(entry, `${label}[${index}]`, { min: 1, max: 128, trim: true })
+      if (!/^[a-z0-9][a-z0-9._-]{0,127}$/i.test(id)) throw new TypeError(`${label}[${index}] is not a valid provider ID`)
+      return id
+    }))]
   }
 
   private disabledModels(value: unknown, label: string): string[] {
