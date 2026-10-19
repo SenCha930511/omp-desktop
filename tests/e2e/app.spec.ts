@@ -626,7 +626,10 @@ test.describe('OMP Desktop desktop smoke', () => {
     const activeAgent = page.locator('.subagents__page:not([hidden])')
     await expect(activeAgent.locator('.subagents__heading h2')).toHaveText('Task')
     await activeAgent.locator('.subagents__details summary').click()
-    await activeAgent.locator('.work-disclosure__button').click()
+    // The subagent turn is still running, so the work disclosure streams open;
+    // only click when the default decided to stay closed (e.g. it completed).
+    const agentDisclosure = activeAgent.locator('.work-disclosure__button')
+    if (await agentDisclosure.getAttribute('aria-expanded') !== 'true') await agentDisclosure.click()
     await activeAgent.locator('.subagents__messages').evaluate((element) => { element.scrollTop = 200; element.dispatchEvent(new Event('scroll')) })
     const previousTop = await activeAgent.locator('.subagents__messages').evaluate((element) => element.scrollTop)
     expect(previousTop).toBeGreaterThan(0)
@@ -1887,8 +1890,10 @@ test.describe('OMP Desktop desktop smoke', () => {
     const workStatus = page.locator('.work-disclosure__button [role="status"]')
     await expect(workStatus).toHaveAttribute('role', 'status')
     await expect(workStatus).toContainText('Working')
-    await expect(page.locator('.work-disclosure__button')).toHaveAttribute('aria-expanded', 'false')
-    await expect(page.locator('.activity-line--reasoning')).toHaveCount(0)
+    // While the turn streams, the work disclosure stays open at top level.
+    await expect(page.locator('.work-disclosure__button')).toHaveAttribute('aria-expanded', 'true')
+    // The thinking row is visible but its content stays in the collapsed dropdown.
+    await expect(page.locator('.activity-line--reasoning')).toHaveCount(1)
     await expect(page.locator('.work-disclosure__button')).toHaveCount(1)
     await expect(dialog).toContainText('Question 1 of 2')
     await expect(dialog).toContainText('Which OMP release channel?')
