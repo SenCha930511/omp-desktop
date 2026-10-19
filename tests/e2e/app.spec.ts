@@ -2177,6 +2177,16 @@ test.describe('OMP Desktop desktop smoke', () => {
         expect(alignment.body).toBeCloseTo(alignment.thinking, 0)
         expect(alignment.note).toBeCloseTo(alignment.thinking, 0)
         expect(alignment.tool).toBeCloseTo(alignment.thinking, 0)
+        // Model text keeps the bright body color; thinking is the dim layer.
+        const emphasis = await page.locator('.transcript .work-timeline').last().evaluate((element) => {
+          const note = element.querySelector<HTMLElement>('.activity-line--note .prose')
+          const thinking = element.querySelector<HTMLElement>('.activity-reasoning .prose')
+          if (!note || !thinking) return null
+          return { note: getComputedStyle(note).color, thinking: getComputedStyle(thinking).color, body: getComputedStyle(document.body).color }
+        })
+        expect(emphasis).not.toBeNull()
+        expect(emphasis!.note).toBe(emphasis!.body)
+        expect(emphasis!.thinking).not.toBe(emphasis!.body)
         await page.locator('.transcript .work-disclosure').last().scrollIntoViewIfNeeded()
         await page.screenshot({ path: test.info().outputPath(`activity-${theme}-${width}.png`) })
         await page.locator('.transcript').evaluate((element) => { element.scrollTop = element.scrollHeight })
