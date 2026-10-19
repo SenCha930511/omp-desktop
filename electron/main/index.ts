@@ -35,10 +35,17 @@ import { ompSessionServiceOptions } from './sessions/omp'
 import { type JsonStateStore, openDesktopStateStore, StateCompatibilityError, StateMigrationError } from './store'
 import { TerminalService } from './terminal'
 import { RepositoryUseGate } from './repository-use-gate'
-import { migrateLegacyUserData } from './user-data-migration'
+import { LEGACY_USER_DATA_DIR_NAME, migrateLegacyUserData } from './user-data-migration'
 import { VoiceService, voiceSecretStorageStatus } from './voice'
 import { isAllowedRendererAudioPermission } from './voice-permissions'
 import { createManualUpdateCheck, getAutoUpdater, UpdateService } from './updates'
+
+// Development builds run the rebranded Electron bundle, whose product name
+// matches the packaged app, so both resolve to the same userData directory
+// and single-instance lock. Point dev sessions at their own profile name
+// before anything resolves userData; first-run state migrates from the
+// packaged profile (and, before that, any legacy GooeyPi one).
+if (!app.isPackaged) app.setName('OMP Desktop Dev')
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'omp-desktop', privileges: { standard: true, secure: true, supportFetchAPI: true } }])
 
@@ -553,7 +560,7 @@ export function routeAllWindowsClosed(
 
 async function bootstrap(): Promise<void> {
   const userDataPath = app.getPath('userData')
-  await migrateLegacyUserData(app.getPath('appData'), userDataPath)
+  await migrateLegacyUserData(app.getPath('appData'), userDataPath, app.isPackaged ? undefined : [LEGACY_USER_DATA_DIR_NAME, 'OMP Desktop'])
   configureGooeyPiAgentMessageSigning(loadOrCreateGooeyPiAgentMessageKey(join(userDataPath, 'agent-message-signing.key')))
   const stateStore = await openDesktopStateStore(userDataPath)
   store = stateStore

@@ -25,6 +25,8 @@ const MIGRATED_FILES = [
   'agent-message-signing.key',
   'voice-secrets.json',
   'crash.log',
+  CURRENT_DESKTOP_STATE_FILENAME,
+  LEGACY_DESKTOP_STATE_FILENAME,
   'prime-work-state-v4.json',
   'prime-work-state.json',
 ]
@@ -57,11 +59,18 @@ async function pathExists(path: string): Promise<boolean> {
  * per file and in total, never overwrites an existing file, and leaves the
  * legacy directory untouched so nothing is lost if it fails partway.
  */
-export async function migrateLegacyUserData(appDataPath: string, userDataPath: string): Promise<UserDataMigrationReport> {
-  const legacyDir = join(appDataPath, LEGACY_USER_DATA_DIR_NAME)
+export async function migrateLegacyUserData(appDataPath: string, userDataPath: string, legacyDirNames = [LEGACY_USER_DATA_DIR_NAME]): Promise<UserDataMigrationReport> {
   if (await pathExists(join(userDataPath, CURRENT_DESKTOP_STATE_FILENAME))) {
     return { migrated: false, reason: 'new-state-exists', copiedFiles: [] }
   }
+  for (const legacyDirName of legacyDirNames) {
+    const report = await migrateFromDirectory(join(appDataPath, legacyDirName), userDataPath)
+    if (report.migrated || report.reason === 'empty') return report
+  }
+  return { migrated: false, reason: 'legacy-dir-missing', copiedFiles: [] }
+}
+
+async function migrateFromDirectory(legacyDir: string, userDataPath: string): Promise<UserDataMigrationReport> {
   if (!(await pathExists(legacyDir))) {
     return { migrated: false, reason: 'legacy-dir-missing', copiedFiles: [] }
   }

@@ -4,6 +4,7 @@ const electron = vi.hoisted(() => ({
   app: {
     getAppPath: vi.fn(() => '/tmp/omp-desktop'),
     isPackaged: false,
+    setName: vi.fn(),
     on: vi.fn(),
     quit: vi.fn(),
     requestSingleInstanceLock: vi.fn(() => false),

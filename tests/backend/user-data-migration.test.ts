@@ -102,4 +102,23 @@ describe('migrateLegacyUserData', () => {
     // The second file exceeds the total budget after the first one is counted.
     expect(report.copiedFiles).toEqual([join(userDataPath, 'agent-message-signing.key')])
   })
+
+  it('seeds the dev profile from the packaged OMP Desktop profile when asked', async () => {
+    const appData = mkdtempSync(join(tmpdir(), 'omp-desktop-appdata-'))
+    const packagedDir = join(appData, 'OMP Desktop')
+    const devDir = join(appData, 'OMP Desktop Dev')
+    mkdirSync(packagedDir, { recursive: true })
+    const state = JSON.stringify({ version: 4, workspace: {} })
+    writeFileSync(join(packagedDir, CURRENT_DESKTOP_STATE_FILENAME), state, 'utf8')
+    writeFileSync(join(packagedDir, 'voice-secrets.json'), '{}', 'utf8')
+
+    const report = await migrateLegacyUserData(appData, devDir, [LEGACY_USER_DATA_DIR_NAME, 'OMP Desktop'])
+
+    expect(report.migrated).toBe(true)
+    expect(readFileSync(join(devDir, CURRENT_DESKTOP_STATE_FILENAME), 'utf8')).toBe(state)
+    expect(readFileSync(join(devDir, 'voice-secrets.json'), 'utf8')).toBe('{}')
+    // the packaged profile source remains untouched
+    expect(readFileSync(join(packagedDir, CURRENT_DESKTOP_STATE_FILENAME), 'utf8')).toBe(state)
+    rmSync(appData, { recursive: true, force: true })
+  })
 })
