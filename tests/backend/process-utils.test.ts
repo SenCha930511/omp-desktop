@@ -38,6 +38,7 @@ describe('login shell environment capture', () => {
   it('captures through the login shell and installs the snapshot for child environments', async () => {
     const captured = await captureLoginShellEnvironment({
       platform: 'darwin',
+      shell: '/bin/zsh',
       runCapture: async (shell) => {
         expect(shell).toBe('/bin/zsh')
         return 'NCHC_API_KEY=env-value\0CUSTOM_PATH=/opt/tool\0'
