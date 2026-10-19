@@ -121,6 +121,29 @@ describe('OMP transcript system entries', () => {
     })
   })
 
+  it('marks a provider-failed assistant turn as failed and carries the harness error text', async () => {
+    const file = ompSessionFile([
+      userEntry('aa000001', null, '幫我檢查一下'),
+      JSON.stringify({ type: 'message', id: 'aa000002', parentId: 'aa000001', timestamp: '2026-08-08T02:14:00.000Z', message: { role: 'assistant', content: [], stopReason: 'error', errorStatus: 401, errorMessage: '401 LiteLLM Virtual Key expected.' } }),
+    ])
+
+    const transcript = await readOmpTranscript(file, false)
+    expect(transcript).toHaveLength(2)
+    expect(transcript[1]).toMatchObject({ role: 'assistant', outcome: 'failed' })
+    expect(transcript[1]?.parts.at(-1)).toEqual({ type: 'text', text: '401 LiteLLM Virtual Key expected.' })
+  })
+
+  it('marks an errored turn failed even when the model streamed text before the failure', async () => {
+    const file = ompSessionFile([
+      userEntry('aa000001', null, 'continue'),
+      JSON.stringify({ type: 'message', id: 'aa000002', parentId: 'aa000001', timestamp: '2026-08-08T02:14:00.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'partial answer' }], stopReason: 'error' } }),
+    ])
+
+    const transcript = await readOmpTranscript(file, false)
+    expect(transcript[1]).toMatchObject({ role: 'assistant', outcome: 'failed' })
+    expect(transcript[1]?.parts.map((part) => part.type === 'text' ? part.text : part.type)).toEqual(['partial answer', 'The turn failed.'])
+  })
+
   it('renders compaction entries and displayed custom messages, skipping undisplayed ones', async () => {
     const file = ompSessionFile([
       userEntry('aa000001', null, 'long conversation'),

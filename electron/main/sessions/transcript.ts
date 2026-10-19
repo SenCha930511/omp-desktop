@@ -419,13 +419,23 @@ async function readTranscriptWithDialect(dialect: TranscriptDialect, filePath: s
       continue
     }
     if (role === 'assistant') {
+      // A provider failure persists as an assistant record with no content and
+      // stopReason "error". Surface it as a failed turn carrying the harness
+      // error text, so the transcript shows the recovery row (retry / restore
+      // / copy) instead of an empty bubble that looks like a normal completion.
+      if (message.stopReason === 'error') {
+        const failure = typeof message.errorMessage === 'string' && message.errorMessage.trim() ? boundedString(message.errorMessage, MAX_PART_TEXT_CHARS) : 'The turn failed.'
+        parts.push({ type: 'text', text: failure })
+      }
+      const outcome = message.stopReason === 'error' ? 'failed' as const : undefined
       if (activeAssistant) {
         appendAssistantParts(parts)
         activeAssistant.completedAt = completedAt ?? activeAssistant.completedAt
+        if (outcome) activeAssistant.outcome = outcome
       } else {
         beginAssistantTurn()
         registerToolCalls(0, parts)
-        activeAssistant = { id: safeId, role, timestamp, startedAt: timestamp, completedAt, parts }
+        activeAssistant = { id: safeId, role, timestamp, startedAt: timestamp, completedAt, parts, outcome }
         transcript.push(activeAssistant)
       }
       continue
