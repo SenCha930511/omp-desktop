@@ -59,6 +59,15 @@ export function AppearanceSettings({ settings, onUpdate }: SettingsSectionProps)
     target?.focus()
     void onUpdate({ interfaceFontScale: fontScales[next].value })
   }
+  const selectedAccent = Math.max(0, ACCENT_COLORS.findIndex((color) => color === settings.accentColor))
+  const onAccentKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    const next = nextScaleIndex(event.key, selectedAccent, ACCENT_COLORS.length)
+    if (next === null) return
+    event.preventDefault()
+    const target = event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="radio"]')[next]
+    target?.focus()
+    void onUpdate({ accentColor: ACCENT_COLORS[next] })
+  }
   return (
     <>
       <header>
@@ -96,8 +105,8 @@ export function AppearanceSettings({ settings, onUpdate }: SettingsSectionProps)
             <strong>{t('appearance.accent.title')}</strong>
             <small>{t('appearance.accent.description')}</small>
           </span>
-          <div className="accent-options" role="radiogroup" aria-label={t('appearance.accent.aria')}>
-            {ACCENT_COLORS.map((color) => (
+          <div className="accent-options" role="radiogroup" aria-label={t('appearance.accent.aria')} onKeyDown={onAccentKeyDown}>
+            {ACCENT_COLORS.map((color, index) => (
               <button
                 type="button"
                 key={color}
@@ -105,6 +114,7 @@ export function AppearanceSettings({ settings, onUpdate }: SettingsSectionProps)
                 aria-checked={settings.accentColor === color}
                 aria-label={t(ACCENT_SWATCHES[color].label)}
                 title={t(ACCENT_SWATCHES[color].label)}
+                tabIndex={index === selectedAccent ? 0 : -1}
                 className={settings.accentColor === color ? 'is-active' : ''}
                 onClick={() => {
                   void onUpdate({ accentColor: color })

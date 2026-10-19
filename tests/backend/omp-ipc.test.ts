@@ -69,21 +69,28 @@ interface Harness {
   registration: IpcRegistration
 }
 
-function buildServices() {
-  const settingsState = { ompDisabledProviders: ['anthropic'], ompDisabledModels: [], ompEnabledProviders: [] }
+function buildServices(options: { includeApple?: boolean } = {}) {
+  const settingsState = { ompDisabledProviders: ['anthropic'], ompDisabledModels: [] as string[], ompEnabledProviders: [] as string[] }
   const catalog = (from: string, disabled: ReadonlySet<string> = new Set(), disabledModels: ReadonlySet<string> = new Set()) => {
     const models: PrimeModelDescriptor[] = [
       { key: 'anthropic/claude', provider: 'anthropic', id: 'claude', name: 'Claude', reasoning: true, input: ['text'], contextWindow: 128_000, maxTokens: 16_000, availableThinkingLevels: ['low', 'high', 'max'], fastModeSupported: true, available: true },
       { key: 'openai/gpt', provider: 'openai', id: 'gpt', name: 'GPT', reasoning: true, input: ['text'], contextWindow: 128_000, maxTokens: 16_000, availableThinkingLevels: ['low', 'high', 'max'], fastModeSupported: true, available: true },
       { key: 'openai/gpt-mini', provider: 'openai', id: 'gpt-mini', name: 'GPT Mini', reasoning: false, input: ['text'], contextWindow: 128_000, maxTokens: 16_000, availableThinkingLevels: ['off'], fastModeSupported: false, available: true },
     ]
-    const providerEnabled = (id: string) => !disabled.has(id) && models.some((model) => model.provider === id && !disabledModels.has(model.key))
+    if (options.includeApple) {
+      // Mirrors withModelVisibility: apple is an opt-in provider — the
+      // affirmative list, never the disabled list, decides visibility.
+      const appleEnabled = settingsState.ompEnabledProviders.includes('apple') && !disabledModels.has('apple/on-device')
+      models.push({ key: 'apple/on-device', provider: 'apple', id: 'on-device', name: 'On device', reasoning: false, input: ['text'], contextWindow: 8_192, maxTokens: 8_192, availableThinkingLevels: ['off'], fastModeSupported: false, available: true, enabled: appleEnabled })
+    }
+    const providerEnabled = (id: string) => id === 'apple' ? (models.find((model) => model.provider === 'apple')?.enabled ?? false) : !disabled.has(id) && models.some((model) => model.provider === id && !disabledModels.has(model.key))
     return {
       from,
-      models: models.map((model) => ({ ...model, enabled: providerEnabled(model.provider) && !disabledModels.has(model.key) })),
+      models: models.map((model) => model.provider === 'apple' ? model : { ...model, enabled: providerEnabled(model.provider) && !disabledModels.has(model.key) }),
       providers: [
         { id: 'anthropic', name: 'Anthropic', authMethod: 'api_key' as const, configured: true, modelCount: 1, availableModelCount: 1, enabled: providerEnabled('anthropic') },
         { id: 'openai', name: 'OpenAI', authMethod: 'api_key' as const, configured: true, modelCount: 2, availableModelCount: 2, enabled: providerEnabled('openai') },
+        ...(options.includeApple ? [{ id: 'apple', name: 'Apple', authMethod: 'external' as const, configured: true, modelCount: 1, availableModelCount: 1, enabled: providerEnabled('apple') }] : []),
       ],
       primeVersion: 'test', refreshedAt: '2026-01-01T00:00:00.000Z',
     }
@@ -277,7 +284,41 @@ describe('harness-aware IPC routing', () => {
       providers: [{ id: 'anthropic', enabled: false }, { id: 'openai', enabled: false }],
     })
     expect(harness.services.settings.update).toHaveBeenCalledWith({ ompDisabledProviders: ['anthropic', 'openai'], ompEnabledProviders: [], ompDisabledModels: [] })
+  })
 
+  it('re-enables an opt-in provider even after its model was hidden individually', async () => {
+    const services = buildServices({ includeApple: true })
+    const state = services.settings.get() as { ompEnabledProviders: string[]; ompDisabledModels: string[]; ompDisabledProviders: string[] }
+    // Apple is an opt-in provider: explicitly enabled → model hidden → toggle again.
+    state.ompEnabledProviders = ['apple']
+    state.ompDisabledModels = ['apple/on-device']
+    state.ompDisabledProviders = []
+    const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>()
+    const registration = registerIpc(services as never, EXPECTED_URL)
+    const mainFrame = { url: EXPECTED_URL }
+    const sender = { id: 2, isDestroyed: () => false, getURL: () => EXPECTED_URL, mainFrame }
+    registration.authorize(sender as never)
+    electronMocks.ipcMain.handle.mock.calls.forEach(([channel, listener]) => {
+      if (typeof channel === 'string' && typeof listener === 'function') handlers.set(channel, listener as never)
+    })
+    const event = { sender, senderFrame: mainFrame }
+    const invoke = (channel: string, ...args: unknown[]) => handlers.get(channel)!(event, ...args)
+
+    try {
+      const result = await invoke('providers:set-enabled', 'apple', true, 'omp') as { providers: Array<{ id: string; enabled: boolean }>; models: Array<{ key: string; enabled: boolean }> }
+      expect(result.providers.find((provider) => provider.id === 'apple')?.enabled).toBe(true)
+      expect(result.models.find((model) => model.key === 'apple/on-device')?.enabled).toBe(true)
+      expect(services.settings.update).toHaveBeenLastCalledWith({
+        ompDisabledProviders: [],
+        ompEnabledProviders: ['apple'],
+        ompDisabledModels: [],
+      })
+    } finally {
+      registration.dispose()
+    }
+  })
+
+  it('applies a bulk provider disable to the desktop visibility lists', async () => {
     await expect(harness.invoke('providers:set-disabled', ['openai'], 'omp')).resolves.toMatchObject({
       from: 'omp',
       providers: [{ id: 'anthropic', enabled: true }, { id: 'openai', enabled: false }],

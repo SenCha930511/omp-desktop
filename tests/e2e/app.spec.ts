@@ -544,7 +544,7 @@ test.describe('OMP Desktop desktop smoke', () => {
     await page.getByRole('button', { name: /Subagents ·/ }).click()
     await page.getByRole('button', { name: /Explore.*Completed/ }).click()
     await page.locator('.subagents__messages .work-disclosure__button').click()
-    await expect(page.getByText('Inspecting fixture code')).toBeVisible()
+    await expect(page.locator('.reasoning-disclosure .prose').getByText('Inspecting fixture code', { exact: true })).toBeVisible()
     await expect(page.getByText('Subagent fixture result')).toBeVisible()
     await expect(page.locator('.subagents__instruction')).toHaveJSProperty('open', false)
     for (const width of [1280, 1600, 680]) {

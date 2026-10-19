@@ -96,6 +96,16 @@ describe('transcript rendering', () => {
     expect(html.match(/work-disclosure__button/g)).toHaveLength(1)
   })
 
+  it('ticks a streaming thinking row with the live tail and settles on the first line', () => {
+    const parts = [{ type: 'thinking', text: 'Opening analysis\nSecond insight\nLive tail in progress' }] as TranscriptMessage['parts']
+    const streaming = renderToStaticMarkup(createElement(WorkTimeline, { parts, showReasoning: true, showTools: true, streaming: true }))
+    expect(streaming).toContain('Live tail in progress')
+    expect(streaming).not.toContain('<span class="reasoning-disclosure__preview" title="Opening analysis"')
+
+    const settled = renderToStaticMarkup(createElement(WorkTimeline, { parts, showReasoning: true, showTools: true, streaming: false }))
+    expect(settled).toContain('title="Opening analysis"')
+  })
+
   it.each([
     ['a running tool', true, 'read_file', { path: 'package.json' }],
     ['a hidden running tool', false, 'read_file', { path: 'package.json' }],

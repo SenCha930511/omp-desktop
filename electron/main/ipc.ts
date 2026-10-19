@@ -238,8 +238,12 @@ export function registerIpc(services: Services, expectedRendererUrl: string): Ip
     if (OPT_IN_PROVIDERS.has(id)) {
       // Opt-in providers (e.g. apple) toggle only the affirmative list so a
       // bulk disable elsewhere can never re-show an unconfigured provider.
-      if (enabled) enabledProviders.add(id)
-      else enabledProviders.delete(id)
+      if (enabled) {
+        enabledProviders.add(id)
+        // Mirrors the regular branch: an individual model hidden earlier must
+        // not dead-end the provider toggle.
+        for (const model of catalog.models) if (model.provider === id) disabledModels.delete(model.key)
+      } else enabledProviders.delete(id)
     } else if (enabled) {
       disabledProviders.delete(id)
       for (const model of catalog.models) if (model.provider === id) disabledModels.delete(model.key)
