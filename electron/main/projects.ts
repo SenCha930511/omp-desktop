@@ -3,7 +3,7 @@ import { basename, dirname, join, posix, relative, resolve, win32 } from 'node:p
 import { lstat, readdir, readFile, realpath } from 'node:fs/promises'
 import type { BigIntStats, Dirent } from 'node:fs'
 import { dialog, type BrowserWindow } from 'electron'
-import { homedir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { sortProjects } from '../../src/lib/project-order'
 import type { GitWorktree, HarnessId, ProjectFileEntry, ProjectFileListing, ProjectRecord, ProjectScripts, SessionRecord } from '../../src/types/api'
 import { listGitWorktrees } from './git'
@@ -36,6 +36,16 @@ export function isBroadProjectRoot(
   // identify its server/share boundary explicitly as well.
   const extendedUncShareRoot = platform === 'win32' && /^\\\\\?\\unc\\[^\\]+\\[^\\]+\\?$/i.test(path)
   return path === root || path === home || extendedUncShareRoot
+}
+
+/** Folder used when the user picks their home directory: /tmp (the OS temp dir), matching the CLI. */
+export function resolveHomeSelection(pathValue: string, options: { platform?: NodeJS.Platform; homePath?: string } = {}): string {
+  const platform = options.platform ?? process.platform
+  const pathApi = platform === 'win32' ? win32 : posix
+  const resolved = pathApi.resolve(pathValue)
+  const home = pathApi.resolve(options.homePath ?? homedir())
+  const matches = platform === 'win32' ? resolved.toLowerCase() === home.toLowerCase() : resolved === home
+  return matches ? (platform === 'win32' ? tmpdir() : '/tmp') : resolved
 }
 
 interface VerifiedFolderIdentity {
@@ -664,7 +674,11 @@ export class ProjectService {
       ? await dialog.showOpenDialog(parent, { title: 'Add project folder', properties: ['openDirectory', 'createDirectory'] })
       : await dialog.showOpenDialog({ title: 'Add project folder', properties: ['openDirectory', 'createDirectory'] })
     if (result.canceled || result.filePaths.length !== 1) return null
-    const { path, identity } = await this.captureFolderIdentity(result.filePaths[0])
+    const picked = resolveHomeSelection(result.filePaths[0])
+    // The tmp redirect inherits the platform temp path's symlink ("/tmp" →
+    // "/private/tmp"); resolve it before the stable-directory identity check.
+    const pickedReal = picked === resolve(result.filePaths[0]) ? picked : await this.identityFilesystem.realpath(picked).catch(() => picked)
+    const { path, identity } = await this.captureFolderIdentity(pickedReal)
     return this.grantProjectFolder(path, identity)
   }
 
@@ -675,7 +689,9 @@ export class ProjectService {
     const parent = this.windowProvider()
     const result = parent ? await dialog.showOpenDialog(parent, options) : await dialog.showOpenDialog(options)
     if (result.canceled || result.filePaths.length !== 1) return null
-    const { path, identity } = await this.captureFolderIdentity(result.filePaths[0])
+    const picked = resolveHomeSelection(result.filePaths[0])
+    const pickedReal = picked === resolve(result.filePaths[0]) ? picked : await this.identityFilesystem.realpath(picked).catch(() => picked)
+    const { path, identity } = await this.captureFolderIdentity(pickedReal)
     if (await this.isBroadRoot(path)) throw new TypeError('Broad filesystem roots cannot be added as projects')
     let previousPrimary = ''
     const project = await this.store.update((state): PersistedProject => {

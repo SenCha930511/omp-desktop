@@ -4,7 +4,7 @@ import { homedir, tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { isBroadProjectRoot, ProjectService } from '../../electron/main/projects'
+import { isBroadProjectRoot, ProjectService, resolveHomeSelection } from '../../electron/main/projects'
 import { CheckoutService } from '../../electron/main/checkouts'
 import { RepositoryUseGate } from '../../electron/main/repository-use-gate'
 import { JsonStateStore } from '../../electron/main/store'
@@ -442,15 +442,31 @@ describe('broad project root authorization', () => {
     expect(store.snapshot().projects.find((project) => project.id === 'p2')?.path).toBe(realpathSync(second))
   })
 
-  it.each([
-    ['filesystem root', realpathSync(resolve('/'))],
-    ['home directory', realpathSync(homedir())],
-  ])('rejects a direct grant for the %s before persisting it', async (_label, path) => {
+  it('rejects a direct grant for the filesystem root before persisting it', async () => {
     const { service, store } = setup()
-    electronMocks.dialog.showOpenDialog.mockResolvedValue({ canceled: false, filePaths: [path] })
+    electronMocks.dialog.showOpenDialog.mockResolvedValue({ canceled: false, filePaths: [realpathSync(resolve('/'))] })
 
     await expect(service.add()).rejects.toThrow(/Broad filesystem roots cannot be added as projects/)
     expect(store.snapshot().projects).toEqual([])
+  })
+
+  it.each([
+    ['POSIX home', '/Users/alice', { platform: 'darwin', homePath: '/Users/alice' }, '/tmp'],
+    ['POSIX project', '/Users/alice/work/app', { platform: 'darwin', homePath: '/Users/alice' }, '/Users/alice/work/app'],
+    ['POSIX sibling', '/Users/alice-other', { platform: 'darwin', homePath: '/Users/alice' }, '/Users/alice-other'],
+    ['Windows home case-insensitively', 'c:\\users\\alice', { platform: 'win32', homePath: 'C:\\Users\\Alice' }, undefined],
+  ] as const)('resolveHomeSelection(%s) → %s', (_label, path, options, expected) => {
+    expect(resolveHomeSelection(path, options)).toBe(expected ?? tmpdir())
+  })
+
+  it('redirects a home-directory picker result to /tmp like the CLI', async () => {
+    const { service, store } = setup()
+    electronMocks.dialog.showOpenDialog.mockResolvedValue({ canceled: false, filePaths: [homedir()] })
+
+    const project = await service.add()
+    expect(project?.path).toBe(realpathSync('/tmp'))
+    expect(store.snapshot().projects).toHaveLength(1)
+    expect(store.snapshot().projects[0]?.primaryFolder).toBe(realpathSync('/tmp'))
   })
 
   it.each([
