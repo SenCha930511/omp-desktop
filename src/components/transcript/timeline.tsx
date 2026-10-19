@@ -68,17 +68,50 @@ function toolPreview(part: Extract<MessagePart, { type: 'toolCall' }>): string {
   const raw = part.args
   if (raw && typeof raw === 'object') {
     const args = raw as Record<string, unknown>
-    const preferred = args.question ?? args.command ?? args.query ?? args.url ?? args.path ?? args.cwd
-    if (typeof preferred === 'string') return boundText(preferred.replace(/\s+/g, ' ').trim(), 180, '…')
+    const preferred = args.question ?? args.command ?? args.query ?? args.url ?? args.path ?? args.cwd ?? args.code ?? args.input
+    if (typeof preferred === 'string') return boundText(preferred.replace(/\s+/g, ' ').trim(), 120, '…')
   }
-  return boundText(serialize(raw).replace(/\s+/g, ' ').trim(), 180, '…')
+  return boundText(serialize(raw).replace(/\s+/g, ' ').trim(), 120, '…')
+}
+
+/** First line of the settled thinking text — dsh's collapsed-row summary. */
+function firstLine(text: string): string {
+  const newline = text.indexOf('\n')
+  return newline === -1 ? text : text.slice(0, newline)
+}
+
+/**
+ * Latest completed paragraph's first line — dsh's streaming ticker. The
+ * preview advances only when a paragraph boundary completes, so the collapsed
+ * row shows a stable sentence instead of a flickering tail.
+ */
+function latestCompletedParagraphFirstLine(text: string): string {
+  let summary = ''
+  let paragraphStart = 0
+  const separator = /\r?\n(?:[\t ]*\r?\n)+/g
+  for (let paragraph = separator.exec(text); ; paragraph = separator.exec(text)) {
+    const paragraphEnd = paragraph === null ? text.length : paragraph.index + paragraph[0].indexOf('\n')
+    const newline = text.indexOf('\n', paragraphStart)
+    if (newline !== -1 && newline <= paragraphEnd) {
+      const candidate = text.slice(paragraphStart, newline).trim()
+      if (candidate !== '') summary = candidate
+    }
+    if (paragraph === null) return summary
+    paragraphStart = paragraph.index + paragraph[0].length
+  }
+}
+
+/** Collapse a thinking blob into one plain-text preview line, dsh-style. */
+function plainPreview(text: string, running: boolean): string {
+  const line = running ? latestCompletedParagraphFirstLine(text) : firstLine(text)
+  return line.replace(/(\*\*|__|~~|`+)|(?<=\s)[#>*_]+/g, '').replace(/\s+/g, ' ').trim()
 }
 
 function ReasoningPart({ part, streaming = false, expanded = false }: { part: Extract<MessagePart, { type: 'thinking' }>; streaming?: boolean; expanded?: boolean }) {
   const { t } = useI18n()
   if (expanded) return <div className="activity-line activity-line--reasoning activity-reasoning" aria-label={t('agents.thinking')}><MarkdownText text={boundText(part.text, 40_000, t('transcript.reasoning.truncated'))} streaming={streaming} /></div>
   return (
-    <ReasoningDisclosure className="activity-line activity-line--reasoning">
+    <ReasoningDisclosure className="activity-line activity-line--reasoning" preview={boundText(plainPreview(part.text, streaming), 180, '…')} streaming={streaming}>
       <MarkdownText text={boundText(part.text, 40_000, t('transcript.reasoning.truncated'))} streaming={streaming} />
     </ReasoningDisclosure>
   )
@@ -367,7 +400,10 @@ export function WorkDisclosure({
   if (running) {
     for (let index = parts.length - 1; index >= 0; index -= 1) {
       const part = parts[index]
-      if (part.type === 'thinking' && part.text) { ticker = part.text.replace(/(\*\*|__|~~|`+)|(?<=\s)[#>*_]+/g, '').replace(/\s+/g, ' ').trim(); break }
+      // The live ticker flattens the whole thinking tail so it catches the
+      // in-progress sentence immediately; the dsh first-line rule is only for
+      // settled rows, whose preview should not flicker.
+      if (part.type === 'thinking' && part.text) { ticker = plainPreview(part.text, false); break }
     }
   }
   const status = liveWorkStatus(message.parts, showReasoning, showTools)

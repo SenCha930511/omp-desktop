@@ -6,7 +6,7 @@ import { SearchRevealContext } from './TranscriptSearch'
 
 export const ReasoningExpandedContext = createContext(false)
 
-export function ReasoningDisclosure({ children, className = '' }: { children: ReactNode; className?: string }) {
+export function ReasoningDisclosure({ children, className = '', preview, streaming = false }: { children: ReactNode; className?: string; preview?: string; streaming?: boolean }) {
   const { t } = useI18n()
   const defaultExpanded = useContext(ReasoningExpandedContext)
   const [manualOpen, setOpen] = useState(defaultExpanded)
@@ -14,7 +14,7 @@ export function ReasoningDisclosure({ children, className = '' }: { children: Re
   const open = manualOpen || reveal
   useEffect(() => setOpen(defaultExpanded), [defaultExpanded])
   return <details className={`reasoning-disclosure ${className}`.trim()} open={open}>
-    <summary onClick={(event) => { event.preventDefault(); setOpen((value) => !value) }} aria-expanded={open}><ChevronRight size={14} aria-hidden="true" /><span>{t('agents.thinking')}</span></summary>
+    <summary onClick={(event) => { event.preventDefault(); setOpen((value) => !value) }} aria-expanded={open}><ChevronRight size={14} aria-hidden="true" /><span>{t('agents.thinking')}</span>{preview ? <span className="reasoning-disclosure__preview" title={preview} data-streaming={streaming || undefined}>{preview}</span> : null}</summary>
     <div>{children}</div>
   </details>
 }

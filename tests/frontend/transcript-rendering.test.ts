@@ -59,6 +59,17 @@ describe('transcript rendering', () => {
     expect(done).not.toContain('work-disclosure__ticker')
   })
 
+  it('shows a dsh-style preview line on collapsed reasoning rows', () => {
+    const html = renderToStaticMarkup(createElement(WorkTimeline, {
+      parts: [{ type: 'thinking', text: '**Bold** plan with links and more.' }],
+      showReasoning: true,
+      showTools: true,
+    }))
+    expect(html).toContain('reasoning-disclosure__preview')
+    expect(html).toContain('Bold plan with links and more.')
+    expect(html).not.toContain('**Bold**')
+  })
+
   it('shows expanded reasoning directly within a single activity disclosure', () => {
     const html = render([{
       id: 'active',

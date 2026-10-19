@@ -2199,6 +2199,9 @@ test.describe('OMP Desktop desktop smoke', () => {
         // Non-standard intermediate weights thin CJK strokes; keep body text at 400.
         expect(emphasis!.weight).toBe('400')
         expect(emphasis!.thinking).not.toBe(emphasis!.body)
+        // Tool rows separate the tool name from its preview with a dsh-style dot.
+        const toolDot = await page.locator('.transcript .activity-line--tool .activity-tool__preview').first().evaluate((el) => getComputedStyle(el, '::before').content)
+        expect(toolDot).toBe('"·"')
         await page.locator('.transcript .work-disclosure').last().scrollIntoViewIfNeeded()
         await page.screenshot({ path: test.info().outputPath(`activity-${theme}-${width}.png`) })
         await page.locator('.transcript').evaluate((element) => { element.scrollTop = element.scrollHeight })
