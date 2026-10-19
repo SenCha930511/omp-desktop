@@ -169,7 +169,6 @@ export const Composer = memo(function Composer({
   checkoutsLoading = false,
   projects,
   activeProjectId,
-  onSelectProject,
   onAddProjectFolder,
   onExecuteCheckout,
   onSend,
@@ -853,8 +852,8 @@ export const Composer = memo(function Composer({
                 <Zap size={12} fill={fast ? 'currentColor' : 'none'} /> <span className="fast-mode-toggle__label">{t('composer.fast')}</span>
               </button>
             ) : null}
-            {projects && onSelectProject && onAddProjectFolder ? (
-              <ProjectPicker projects={projects} activeProjectId={activeProjectId} onSelect={onSelectProject} onAddFolder={onAddProjectFolder} />
+            {projects && onAddProjectFolder ? (
+              <ProjectPicker projects={projects} activeProjectId={activeProjectId} onAddFolder={onAddProjectFolder} />
             ) : null}
             {checkoutCatalog && onExecuteCheckout && (checkoutCatalog.checkouts.length > 0 || (checkoutCatalog.strategy ?? 'worktree') === 'branch') ? (
               <CheckoutPicker catalog={checkoutCatalog} fallbackLabel={checkoutLabel} loading={checkoutsLoading} onExecute={onExecuteCheckout} />

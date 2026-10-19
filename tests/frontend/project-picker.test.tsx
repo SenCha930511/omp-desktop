@@ -51,52 +51,29 @@ describe('project picker', () => {
     container.remove()
   })
 
-  it('shows the active project name on the trigger', () => {
-    act(() => root.render(<ProjectPicker projects={projects} activeProjectId="p-tmp" onSelect={vi.fn()} onAddFolder={vi.fn()} />))
+  it('shows the active project name and opens the native picker directly on click', async () => {
+    const onAddFolder = vi.fn()
+    act(() => root.render(<ProjectPicker projects={projects} activeProjectId="p-tmp" onAddFolder={onAddFolder} />))
 
     const trigger = container.querySelector<HTMLButtonElement>('[aria-label="Project: tmp"]')
     expect(trigger?.textContent).toContain('tmp')
     expect(container.querySelector('[role="menu"]')).toBeNull()
-  })
 
-  it('lists projects with their folders and switches on select', async () => {
-    const onSelect = vi.fn()
-    act(() => root.render(<ProjectPicker projects={projects} activeProjectId="p-tmp" onSelect={onSelect} onAddFolder={vi.fn()} />))
-
-    act(() => container.querySelector<HTMLButtonElement>('[aria-label="Project: tmp"]')?.click())
-    const options = container.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')
-    expect(options).toHaveLength(2)
-    expect(options[0].getAttribute('aria-checked')).toBe('true')
-    expect(options[1].textContent).toContain('repo')
-    expect(options[1].textContent).toContain('/Users/demo/code/repo')
-
-    await act(async () => options[1].click())
-    expect(onSelect).toHaveBeenCalledWith(projects[1])
-    expect(container.querySelector('[role="menu"]')).toBeNull()
-  })
-
-  it('keeps the current project on reselect and opens the native folder picker on demand', async () => {
-    const onSelect = vi.fn()
-    const onAddFolder = vi.fn()
-    act(() => root.render(<ProjectPicker projects={projects} activeProjectId="p-tmp" onSelect={onSelect} onAddFolder={onAddFolder} />))
-
-    act(() => container.querySelector<HTMLButtonElement>('[aria-label="Project: tmp"]')?.click())
-    const options = container.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')
-    await act(async () => options[0].click())
-    expect(onSelect).not.toHaveBeenCalled()
-
-    act(() => container.querySelector<HTMLButtonElement>('[aria-label="Project: tmp"]')?.click())
-    await act(async () => container.querySelector<HTMLButtonElement>('[role="menuitem"]')?.click())
+    act(() => trigger?.click())
     expect(onAddFolder).toHaveBeenCalledOnce()
     expect(container.querySelector('[role="menu"]')).toBeNull()
+    expect(container.querySelector('[role="menuitemradio"]')).toBeNull()
   })
 
-  it('shows an empty state when no projects exist yet', () => {
-    act(() => root.render(<ProjectPicker projects={[]} activeProjectId={undefined} onSelect={vi.fn()} onAddFolder={vi.fn()} />))
+  it('falls back to "No project" and still opens the native picker when nothing exists', () => {
+    const onAddFolder = vi.fn()
+    act(() => root.render(<ProjectPicker projects={[]} activeProjectId={undefined} onAddFolder={onAddFolder} />))
 
-    act(() => container.querySelector<HTMLButtonElement>('button[type="button"]')?.click())
-    expect(container.textContent).toContain('No projects yet')
-    expect(container.querySelector('[role="menuitem"]')).not.toBeNull()
+    const trigger = container.querySelector<HTMLButtonElement>('button[type="button"]')
+    expect(trigger?.textContent).toContain('No project')
+
+    act(() => trigger?.click())
+    expect(onAddFolder).toHaveBeenCalledOnce()
   })
 })
 
@@ -137,8 +114,8 @@ describe('composer project picker integration', () => {
     }
   }
 
-  it('renders the folder picker without a git catalog instead of a dead checkout pill', async () => {
-    const onSelectProject = vi.fn()
+  it('renders the folder chip without a git catalog and opens the native picker on click', () => {
+    const onAddProjectFolder = vi.fn()
     act(() =>
       root.render(
         <Composer
@@ -146,8 +123,7 @@ describe('composer project picker integration', () => {
             checkoutCatalog: undefined,
             projects,
             activeProjectId: 'p-tmp',
-            onSelectProject,
-            onAddProjectFolder: vi.fn(),
+            onAddProjectFolder,
           })}
         />,
       ),
@@ -158,7 +134,7 @@ describe('composer project picker integration', () => {
     expect(trigger?.textContent).toContain('tmp')
 
     act(() => trigger?.click())
-    await act(async () => container.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')[1].click())
-    expect(onSelectProject).toHaveBeenCalledWith(projects[1])
+    expect(onAddProjectFolder).toHaveBeenCalledOnce()
+    expect(container.querySelector('[role="menu"]')).toBeNull()
   })
 })
