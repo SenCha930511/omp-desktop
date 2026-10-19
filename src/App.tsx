@@ -1108,6 +1108,16 @@ export default function App() {
                         checkoutLabel={git.branch ?? activeProject?.gitBranch ?? activeProject?.name}
                         checkoutsLoading={checkoutsLoading}
                         onExecuteCheckout={bridge && activeProject && !activeProject.inferred && checkoutCatalog ? executeCheckout : undefined}
+                        projects={projects}
+                        activeProjectId={activeProject?.id}
+                        onSelectProject={(project) => {
+                          if (project.id === activeProject?.id) return
+                          // An empty workspace keeps its fresh-session state in the
+                          // picked folder; an active session navigates like the sidebar.
+                          if (workspace.activeSessionId) void selectProject(project)
+                          else newSession(project)
+                        }}
+                        onAddProjectFolder={() => { void addProject() }}
                         agentName={HARNESS_AGENT_NAMES[activeHarness]}
                         shortName={HARNESS_SHORT_NAMES[activeHarness]}
                         imageInputSupported={Boolean(provider.selectedModel?.input.includes('image') || provider.catalog?.visionDelegation)}

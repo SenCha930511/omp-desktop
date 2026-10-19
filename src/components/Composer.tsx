@@ -31,13 +31,14 @@ import type {
   SkillRecord,
   TerminalPromptContext,
   TerminalSelectionContext,
+  ProjectRecord,
   VoiceTranscriptionProvider,
 } from '@/types/api'
 import { CheckoutPicker } from './CheckoutPicker'
 import { ExecutingModelChip, type ExecutingModelChipProps } from './ExecutingModelChip'
 import { ModelPicker } from './ModelPicker'
+import { ProjectPicker } from './ProjectPicker'
 import { IconButton, SelectControl } from './ui'
-
 interface ComposerProps {
   availableCommands?: SlashCommand[]
   busy: boolean
@@ -91,6 +92,13 @@ interface ComposerProps {
   checkoutLabel?: string
   checkoutsLoading?: boolean
   onExecuteCheckout?(action: CheckoutAction): Promise<void> | void
+  /** Every addable project for the composer folder picker. */
+  projects?: readonly ProjectRecord[]
+  activeProjectId?: string
+  /** Switches the working folder; App decides between continuing and starting fresh. */
+  onSelectProject?(project: ProjectRecord): void
+  /** Opens the native folder picker and activates the granted folder. */
+  onAddProjectFolder?(): void
   onSend(prompt: string, images: PromptImage[], intent: PromptDeliveryIntent): Promise<void> | void
   onStop(): Promise<void> | void
   onRemoveAnnotation?(id: string): void
@@ -159,6 +167,10 @@ export const Composer = memo(function Composer({
   checkoutCatalog,
   checkoutLabel,
   checkoutsLoading = false,
+  projects,
+  activeProjectId,
+  onSelectProject,
+  onAddProjectFolder,
   onExecuteCheckout,
   onSend,
   onStop,
@@ -841,7 +853,12 @@ export const Composer = memo(function Composer({
                 <Zap size={12} fill={fast ? 'currentColor' : 'none'} /> <span className="fast-mode-toggle__label">{t('composer.fast')}</span>
               </button>
             ) : null}
-            <CheckoutPicker catalog={checkoutCatalog} fallbackLabel={checkoutLabel} loading={checkoutsLoading} onExecute={onExecuteCheckout} />
+            {projects && onSelectProject && onAddProjectFolder ? (
+              <ProjectPicker projects={projects} activeProjectId={activeProjectId} onSelect={onSelectProject} onAddFolder={onAddProjectFolder} />
+            ) : null}
+            {checkoutCatalog && onExecuteCheckout && (checkoutCatalog.checkouts.length > 0 || (checkoutCatalog.strategy ?? 'worktree') === 'branch') ? (
+              <CheckoutPicker catalog={checkoutCatalog} fallbackLabel={checkoutLabel} loading={checkoutsLoading} onExecute={onExecuteCheckout} />
+            ) : null}
           </div>
           <div className="composer__actions">
             {dictation.state === 'connecting' || dictation.state === 'recording' ? (

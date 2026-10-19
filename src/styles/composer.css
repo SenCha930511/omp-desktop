@@ -121,6 +121,7 @@
 .worktree-picker__option-copy strong, .model-picker__identity strong { overflow: hidden; color: var(--text); font-size: 11.5px; font-weight: 580; text-overflow: ellipsis; white-space: nowrap; }
 .worktree-picker__option-copy > span, .model-picker__identity small { overflow: hidden; color: var(--text-tertiary); font-family: "SFMono-Regular", Menlo, monospace; font-size: 9.5px; text-overflow: ellipsis; white-space: nowrap; }
 .worktree-picker__empty, .model-picker__empty { display: block; padding: 8px; color: var(--text-tertiary); font-size: 10.5px; }
+.project-picker__add { margin: 5px -6px 0; padding: 6px 0 0; border-top: 1px solid var(--border); }
 /* Model-picker specifics: everything above is shared with the checkout picker
    so both composer popovers keep one control vocabulary. */
 .model-picker__popover { right: auto; left: 0; width: min(420px, calc(100vw - 48px)); }

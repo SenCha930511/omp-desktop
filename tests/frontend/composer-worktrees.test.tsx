@@ -62,12 +62,10 @@ describe('composer worktree picker', () => {
     expect(trigger?.disabled).toBe(true)
   })
 
-  it('shows the checkout name instead of a generic Workspace label before the catalog loads', () => {
+  it('omits the checkout control before the catalog loads', () => {
     act(() => root.render(<Composer {...props({ checkoutCatalog: undefined, checkoutLabel: 'feature/current' })} />))
 
-    const trigger = container.querySelector<HTMLButtonElement>('[aria-label="Checkout: feature/current"]')
-    expect(trigger?.textContent).toContain('feature/current')
-    expect(trigger?.textContent).not.toBe('Workspace')
+    expect(container.querySelector('[aria-label="Checkout: feature/current"]')).toBeNull()
   })
 
   it('shows the active branch and switches to another worktree', async () => {
