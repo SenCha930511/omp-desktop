@@ -2188,11 +2188,12 @@ test.describe('OMP Desktop desktop smoke', () => {
         await page.setViewportSize({ width, height: 950 })
         const alignment = await page.locator('.transcript .work-timeline').last().evaluate((element) => {
           const left = (selector: string) => element.querySelector(selector)!.getBoundingClientRect().left
-          return { thinking: left('.activity-reasoning .prose'), body: left('.activity-reasoning .prose'), note: left('.activity-line--note .prose'), tool: left('.activity-line--tool .activity-line__kind') }
+          return { thinking: left('.activity-reasoning .prose'), note: left('.activity-line--note .prose'), icon: left('.activity-line--tool .activity-line__icon') }
         })
-        expect(alignment.body).toBeCloseTo(alignment.thinking, 0)
-        expect(alignment.note).toBeCloseTo(alignment.thinking, 0)
-        expect(alignment.tool).toBeCloseTo(alignment.thinking, 0)
+        // Speech rides the icon column's leading edge; thinking bodies keep
+        // their inset under the labelled header.
+        expect(alignment.note).toBeCloseTo(alignment.icon, 0)
+        expect(alignment.thinking).toBeGreaterThan(alignment.note)
         // Model text keeps the bright body color; thinking is the dim layer.
         const emphasis = await page.locator('.transcript .work-timeline').last().evaluate((element) => {
           const note = element.querySelector<HTMLElement>('.activity-line--note .prose')
