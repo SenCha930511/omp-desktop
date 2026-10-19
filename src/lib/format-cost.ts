@@ -37,3 +37,12 @@ export function formatSessionTokens(usage: SessionUsage | undefined): string | n
   const count = (value: number) => value.toLocaleString('en-US')
   return `${count(tokens.input)} in / ${count(tokens.output)} out / ${count(tokens.cacheRead + tokens.cacheWrite)} cached`
 }
+
+/** Multi-line breakdown for the visual context-dial tooltip, combining window fill, token split, and cost. */
+export function contextDialTooltip(contextUsage: PrimeContextUsage | undefined, sessionUsage: SessionUsage | undefined): string {
+  const summary = contextDialLabel(contextUsage, sessionUsage)
+  const tokenSplit = formatSessionTokens(sessionUsage)
+  if (!tokenSplit || !contextUsage || contextUsage.tokens === null) return summary
+  return `${summary}\n${tokenSplit}`
+}
+

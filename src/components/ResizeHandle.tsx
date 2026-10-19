@@ -13,6 +13,7 @@ interface ResizeHandleProps {
   onChange(value: number): void
 }
 
+const DRAG_DEADZONE_PX = 3
 const clamp = (value: number, min: number, max: number) => Math.round(Math.min(Math.max(min, max), Math.max(min, value)))
 
 export function ResizeHandle({ orientation, label, value, min, max, defaultValue, onChange }: ResizeHandleProps) {
@@ -47,6 +48,7 @@ export function ResizeHandle({ orientation, label, value, min, max, defaultValue
     const workspace = target.closest<HTMLElement>('.session-workspace')
     const cssVariable = orientation === 'vertical' ? '--inspector-width' : '--terminal-height'
     let latestValue = startValue
+    let hasExceededDeadzone = false
     target.dataset.resizing = 'true'
     document.body.classList.add(`is-resizing-${orientation}`)
     target.setPointerCapture(pointerId)
@@ -54,7 +56,10 @@ export function ResizeHandle({ orientation, label, value, min, max, defaultValue
     const move = (moveEvent: PointerEvent) => {
       if (moveEvent.pointerId !== pointerId) return
       moveEvent.preventDefault()
-      latestValue = clamp(startValue - (readCoordinate(moveEvent) - startCoordinate), min, safeMax)
+      const delta = readCoordinate(moveEvent) - startCoordinate
+      if (!hasExceededDeadzone && Math.abs(delta) < DRAG_DEADZONE_PX) return
+      hasExceededDeadzone = true
+      latestValue = clamp(startValue - delta, min, safeMax)
       workspace?.style.setProperty(cssVariable, `${latestValue}px`)
     }
     const finish = (finishEvent?: PointerEvent, commit = true) => {
@@ -65,15 +70,23 @@ export function ResizeHandle({ orientation, label, value, min, max, defaultValue
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', finish)
       window.removeEventListener('pointercancel', cancel)
+      window.removeEventListener('keydown', handleEscape, true)
       cleanupRef.current = null
-      if (commit && latestValue !== startValue) onChange(latestValue)
-      else if (!commit) workspace?.style.setProperty(cssVariable, `${startValue}px`)
+      if (commit && hasExceededDeadzone && latestValue !== startValue) onChange(latestValue)
+      else if (!commit && hasExceededDeadzone) workspace?.style.setProperty(cssVariable, `${startValue}px`)
     }
     const cancel = (cancelEvent: PointerEvent) => finish(cancelEvent, false)
+    const handleEscape = (keyEvent: globalThis.KeyboardEvent) => {
+      if (keyEvent.key !== 'Escape') return
+      keyEvent.preventDefault()
+      keyEvent.stopPropagation()
+      finish(undefined, false)
+    }
     cleanupRef.current = () => finish(undefined, false)
     window.addEventListener('pointermove', move, { passive: false })
     window.addEventListener('pointerup', finish)
     window.addEventListener('pointercancel', cancel)
+    window.addEventListener('keydown', handleEscape, true)
   }
 
   return (

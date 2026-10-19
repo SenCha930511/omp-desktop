@@ -76,6 +76,8 @@ export const transcriptFragment = defineCatalogFragment({
     'transcript.markdown.projectRelativeLink': 'Project-relative link: {href}',
     'transcript.markdown.image': '[Image: {label}]',
     'transcript.markdown.imageFallback': 'attachment',
+    'transcript.user.showMore': 'Show more',
+    'transcript.user.showLess': 'Show less',
   },
   'zh-TW': {
     'transcript.loading': '正在載入工作階段…',
@@ -151,6 +153,8 @@ export const transcriptFragment = defineCatalogFragment({
     'transcript.markdown.projectRelativeLink': '專案相對連結：{href}',
     'transcript.markdown.image': '[圖片：{label}]',
     'transcript.markdown.imageFallback': '附件',
+    'transcript.user.showMore': '顯示更多',
+    'transcript.user.showLess': '顯示較少',
   },
   'zh-CN': {
     'transcript.loading': '正在加载会话…',
@@ -226,5 +230,7 @@ export const transcriptFragment = defineCatalogFragment({
     'transcript.markdown.projectRelativeLink': '项目相对链接：{href}',
     'transcript.markdown.image': '[图片：{label}]',
     'transcript.markdown.imageFallback': '附件',
+    'transcript.user.showMore': '显示更多',
+    'transcript.user.showLess': '显示较少',
   },
 })

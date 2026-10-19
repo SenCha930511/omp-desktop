@@ -6,7 +6,7 @@ import { useDictation } from '@/hooks/useDictation'
 import { appendAnnotationsToPrompt } from '@/lib/browser-annotations'
 import { appendCapabilityRouting } from '@/lib/capability-mentions'
 import { clearComposerDraft, readComposerDraft, saveComposerDraft, takeComposerDraft } from '@/lib/composer-draft'
-import { contextDialLabel } from '@/lib/format-cost'
+import { contextDialLabel, contextDialTooltip } from '@/lib/format-cost'
 import { type MessageKey, useI18n } from '@/lib/i18n'
 import { messageActionForKey } from '@/lib/message-shortcuts'
 import { appendSessionRouting, findSessionMentions } from '@/lib/session-mentions'
@@ -476,6 +476,7 @@ export const Composer = memo(function Composer({
   const chooseSuggestion = (index: number) => suggestions[index]?.choose()
   const contextPercent = contextUsage?.percent === null || contextUsage?.percent === undefined ? null : Math.min(100, Math.max(0, contextUsage.percent))
   const contextLabel = contextDialLabel(contextUsage, sessionUsage)
+  const contextTooltip = contextDialTooltip(contextUsage, sessionUsage)
   const contextDisplayPercent = contextPercent === null ? null : Math.min(99, Math.round(contextPercent))
   const contextStyle = { '--context-percent': `${contextPercent ?? 0}%` } as CSSProperties
   const sendQueuedMessageImmediately = async (queued: QueuedPrompt) => {
@@ -802,7 +803,14 @@ export const Composer = memo(function Composer({
             />
             <ModelPicker value={model} modelsByProvider={modelsByProvider} providers={providers} onChange={onModelChange} />
             <ExecutingModelChip executingModel={executingModel} />
-            <SelectControl label={t('composer.reasoningEffort')} compact icon={<Gauge size={12} />} value={effort} onChange={(event) => onEffortChange(event.target.value as PrimeEffortSelector)}>
+            <SelectControl
+              label={t('composer.reasoningEffort')}
+              compact
+              className={effort === 'max' || effort === 'xhigh' ? 'is-max-effort' : effort === 'high' ? 'is-high-effort' : ''}
+              icon={<Gauge size={12} />}
+              value={effort}
+              onChange={(event) => onEffortChange(event.target.value as PrimeEffortSelector)}
+            >
               {reasoningLevels.map((level) => (
                 <option key={level} value={level}>
                   {t(reasoningLabelKeys[level])}
@@ -845,7 +853,7 @@ export const Composer = memo(function Composer({
                 aria-valuenow={contextPercent === null ? undefined : Math.round(contextPercent)}
                 aria-valuetext={contextLabel}
                 title={contextLabel}
-                data-tooltip={contextLabel}
+                data-tooltip={contextTooltip}
                 style={contextStyle}
               >
                 <span>{contextDisplayPercent ?? '—'}</span>

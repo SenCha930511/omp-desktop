@@ -1,8 +1,8 @@
 .reasoning-disclosure { margin: 4px 0 8px; color: var(--text-secondary); font-size: 12px; }
-.reasoning-disclosure > summary { display: flex; align-items: center; gap: 8px; width: fit-content; min-height: 22px; cursor: pointer; padding: 2px 0; list-style: none; user-select: none; color: var(--text-tertiary); font-size: 12px; }
+.reasoning-disclosure > summary { display: flex; align-items: center; gap: 8px; width: fit-content; min-height: 22px; cursor: pointer; padding: 2px 0; list-style: none; user-select: none; color: var(--text-tertiary); font-size: 12px; transition: color 130ms var(--ease-snappy, ease-out); }
 .reasoning-disclosure > summary::-webkit-details-marker { display: none; }
-.reasoning-disclosure > summary > svg { width: 16px; flex: 0 0 16px; transition: transform 120ms ease; }
+.reasoning-disclosure > summary > svg { width: 16px; flex: 0 0 16px; transition: transform 150ms var(--ease-spring, ease); }
 .reasoning-disclosure[open] > summary > svg { transform: rotate(90deg); }
 .reasoning-disclosure > summary:hover { color: var(--text); }
 .reasoning-disclosure > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 3px; }
-.reasoning-disclosure > div { margin: 6px 0 3px 24px; font-size: 13px; line-height: 1.6; }
+.reasoning-disclosure > div { margin: 6px 0 3px 24px; font-size: 13px; line-height: 1.6; animation: timeline-expand 160ms var(--ease-spring, ease-out); }

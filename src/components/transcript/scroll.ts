@@ -15,6 +15,7 @@ export function useTranscriptScroll(messages: TranscriptMessage[], active = true
   const [windowEnd, setWindowEnd] = useState<number>()
   const [announcement, setAnnouncement] = useState('')
   const [awayFromBottom, setAwayFromBottom] = useState(false)
+  const [scrolledFromTop, setScrolledFromTop] = useState(false)
   const [hasNewContent, setHasNewContent] = useState(false)
   const streaming = messages.some((message) => message.streaming)
   const end = Math.min(messages.length, windowEnd ?? messages.length)
@@ -63,6 +64,8 @@ export function useTranscriptScroll(messages: TranscriptMessage[], active = true
     if (pinned) setHasNewContent(false)
     // Same-value updates bail out in React, so streaming scroll events stay cheap.
     setAwayFromBottom((away) => (away === !pinned ? away : !pinned))
+    const fromTop = scroller.scrollTop > 8
+    setScrolledFromTop((current) => (current === fromTop ? current : fromTop))
   }
 
   useEffect(() => {
@@ -109,5 +112,5 @@ export function useTranscriptScroll(messages: TranscriptMessage[], active = true
     }
   }
 
-  return { announcement, awayFromBottom, hasNewContent, hiddenCount, hiddenAfter, scrollRef, scrollToBottom, showEarlier, showNewer, revealIndex, updatePinnedState, visibleMessages }
+  return { announcement, awayFromBottom, scrolledFromTop, hasNewContent, hiddenCount, hiddenAfter, scrollRef, scrollToBottom, showEarlier, showNewer, revealIndex, updatePinnedState, visibleMessages }
 }
