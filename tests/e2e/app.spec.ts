@@ -1006,7 +1006,7 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(page.locator('.composer-attachment').filter({ hasText: 'picker.png' })).toHaveCount(0)
   })
 
-  test('collapses composer selectors and keeps the checkout menu inside a narrow conversation pane', async () => {
+  test('collapses composer selectors and keeps the checkout menu usable in a narrow conversation pane', async () => {
     await page.locator('.session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
     await page.locator('.conversation-column').evaluate((node) => {
       node.style.flex = '0 0 560px'
@@ -1039,11 +1039,13 @@ test.describe('OMP Desktop desktop smoke', () => {
     await page.getByRole('button', { name: /^Checkout:/ }).click()
     const menuBounds = await page.getByRole('menu', { name: 'Git worktrees' }).evaluate((menu) => {
       const menuRect = menu.getBoundingClientRect()
-      const footerRect = menu.closest('.composer__footer')!.getBoundingClientRect()
-      return { menuLeft: menuRect.left, menuRight: menuRect.right, footerLeft: footerRect.left, footerRight: footerRect.right }
+      return { menuLeft: menuRect.left, menuRight: menuRect.right, menuWidth: menuRect.width, viewport: window.innerWidth }
     })
-    expect(menuBounds.menuLeft).toBeGreaterThanOrEqual(menuBounds.footerLeft - 0.5)
-    expect(menuBounds.menuRight).toBeLessThanOrEqual(menuBounds.footerRight + 0.5)
+    // The menu opens rightward from the chip at usable width even in a narrow
+    // composer, and always stays inside the window — never footer's width.
+    expect(menuBounds.menuWidth).toBeGreaterThanOrEqual(300)
+    expect(menuBounds.menuLeft).toBeGreaterThanOrEqual(-0.5)
+    expect(menuBounds.menuRight).toBeLessThanOrEqual(menuBounds.viewport + 0.5)
   })
 
   test('loads the sandboxed preload bridge and hermetic service data', async () => {
