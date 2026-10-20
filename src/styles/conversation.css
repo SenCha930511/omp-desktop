@@ -30,6 +30,9 @@
 .activity-line { font-size: var(--activity-font); }
 .activity-line__icon, .work-disclosure__button > svg, .reasoning-disclosure > summary > svg { width: var(--activity-icon); flex: 0 0 var(--activity-icon); }
 .activity-tool__summary, .work-disclosure__button, .reasoning-disclosure > summary { min-height: var(--activity-row); gap: var(--activity-gap); padding: 3px 0; font-size: var(--activity-font); }
+/* Buttons are inline-block by default — a full-width row keeps the header
+   divider stretched across the whole timeline column. */
+.work-disclosure__button { width: 100%; }
 /* Speech rides the workflow's leading edge — the same anchor the tool icons
    sit on — instead of the inset column thinking bodies use. */
 .activity-line--note { padding: 0; }
@@ -38,6 +41,9 @@
 .activity-tool__details, .reasoning-disclosure > div { margin-left: var(--activity-inset); }
 .activity-line--result { gap: var(--activity-gap); padding-inline: 0; }
 .work-disclosure__count { color: var(--text-tertiary); font-size: 11px; font-weight: 400; }
+/* A hairline separates the worked-for header from the rows it owns when the
+   timeline is open — the reference app's header/content divider. */
+.work-disclosure__button[aria-expanded='true'] { margin-bottom: 4px; padding-bottom: 7px; border-bottom: 1px solid var(--border); }
 .work-disclosure.is-running .activity-line--reasoning { font-size: var(--activity-font); line-height: var(--conversation-leading); }
 .composer { border-radius: var(--conversation-radius); }
 .composer--busy { border-color: color-mix(in srgb, var(--prime) 35%, var(--border)); }

@@ -2212,6 +2212,13 @@ test.describe('OMP Desktop desktop smoke', () => {
         // Tool rows separate the tool name from its preview with a dsh-style dot.
         const toolDot = await page.locator('.transcript .activity-line--tool .activity-tool__preview').first().evaluate((el) => getComputedStyle(el, '::before').content)
         expect(toolDot).toBe('"·"')
+        // An open work header draws a hairline between itself and its rows.
+        const divider = await page.locator('.transcript .work-disclosure').last().evaluate((element) => {
+          const style = getComputedStyle(element.querySelector('.work-disclosure__button')!)
+          return { style: style.borderBottomStyle, width: Number.parseFloat(style.borderBottomWidth) }
+        })
+        expect(divider.style).toBe('solid')
+        expect(divider.width).toBeGreaterThan(0)
         await page.locator('.transcript .work-disclosure').last().scrollIntoViewIfNeeded()
         await page.screenshot({ path: test.info().outputPath(`activity-${theme}-${width}.png`) })
         await page.locator('.transcript').evaluate((element) => { element.scrollTop = element.scrollHeight })
