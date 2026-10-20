@@ -122,5 +122,23 @@ export async function validateRpcCommand(raw: unknown, validateSessionPath: (pat
     rejectUnknownKeys(command, ['type', 'id', 'value'], 'command')
     return { type, id, value: requireString(command.value, 'value', { max: 1024 * 1024 }) }
   }
+  // Side questions (harness /btw): one-off questions beside the live session's
+  // main turn. App vocabulary; the adapter translates to the harness names.
+  if (type === 'side_question') {
+    rejectUnknownKeys(command, ['type', 'question', 'topicId'], 'command')
+    const result: RpcObject = { type, question: requireString(command.question, 'question', { min: 1, max: 64 * 1024, trim: true }) }
+    if (command.topicId !== undefined) result.topicId = requireId(command.topicId, 'topicId')
+    return result
+  }
+  if (type === 'side_question_cancel') {
+    rejectUnknownKeys(command, ['type', 'topicId'], 'command')
+    const result: RpcObject = { type }
+    if (command.topicId !== undefined) result.topicId = requireId(command.topicId, 'topicId')
+    return result
+  }
+  if (type === 'side_question_history') {
+    rejectUnknownKeys(command, ['type'], 'command')
+    return { type }
+  }
   throw new TypeError(`RPC command ${type} is not exposed to the renderer`)
 }

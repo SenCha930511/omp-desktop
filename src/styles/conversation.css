@@ -23,6 +23,10 @@
 /* The subagents shell paints its own secondary color; the main conversation
    must keep the body color so model prose and notes do not render dim. */
 .conversation-pane { color: var(--text); }
+/* Transient guidance injected into the conversation (e.g. /btw typed before
+   the runtime exists). Covered by the first real message, like any queued note
+   the incoming turn pushes away. */
+.conversation-hint { position: absolute; left: 50%; bottom: calc(var(--conversation-dock-height, 160px) + 16px); z-index: 9; max-width: min(420px, 80%); padding: 7px 12px; border: var(--border-hairline, 1px) solid var(--border); border-radius: 12px; color: var(--text-secondary); background: var(--surface-raised); box-shadow: var(--shadow-popover); font-size: 12.5px; line-height: 1.55; text-align: center; transform: translateX(-50%); animation: fade-in 130ms ease-out; pointer-events: none; }
 .conversation-pane .message, .subagents__messages .message { margin-bottom: var(--conversation-turn-gap); }
 .conversation-pane .message__content, .subagents__messages .message__content,
 .conversation-pane .user-bubble, .subagents__messages .user-bubble { font-size: var(--conversation-font); line-height: var(--conversation-leading); }

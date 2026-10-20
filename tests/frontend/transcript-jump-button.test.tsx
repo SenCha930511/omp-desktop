@@ -164,6 +164,24 @@ describe('transcript jump-to-bottom button', () => {
     expect(scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: 'auto' })
   })
 
+  it('hides the jump button when a shrinking placeholder clamps scrollTop at the bottom', () => {
+    const scrollTo = vi.fn()
+    scroller.scrollTo = scrollTo as unknown as typeof scroller.scrollTo
+    fakeScrollMetrics(1000, 400, 600)
+    act(() => scroller.dispatchEvent(new Event('scroll')))
+    expect(jumpButton()).toBeNull()
+
+    // The streaming placeholder unmounts: scrollHeight drops to 900, the
+    // browser clamps scrollTop from 600 to 500 and fires a scroll event.
+    // That clamp is engine reflow, not user intent — following must hold.
+    fakeScrollMetrics(900, 400, 500)
+    act(() => scroller.dispatchEvent(new Event('scroll')))
+    expect(jumpButton()).toBeNull()
+
+    act(() => root.render(<Transcript messages={[...messages, { id: 'assistant-2', role: 'assistant', timestamp: 3, streaming: true, parts: [{ type: 'text', text: 'Still working…' }] }]} git={git} onOpenChanges={() => undefined} onSuggestion={() => undefined} />))
+    expect(scrollTo).toHaveBeenCalledWith({ top: 900, behavior: 'auto' })
+  })
+
   it('does not let content growth alone unfollow — parked scrollTop keeps tracking', () => {
     const scrollTo = vi.fn()
     scroller.scrollTo = scrollTo as unknown as typeof scroller.scrollTo

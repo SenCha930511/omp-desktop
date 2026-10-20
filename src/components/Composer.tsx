@@ -439,9 +439,10 @@ export const Composer = memo(function Composer({
 
   const mentionQuery = /(?:^|\s)@([^@\n]*)$/.exec(value)?.[1]?.toLocaleLowerCase().trim() ?? ''
 
+  const commandCatalog = useMemo(() => desktopSlashCommands(availableCommands, t), [availableCommands, t])
   const suggestions =
     menu === 'command'
-      ? slashSuggestions(desktopSlashCommands(availableCommands, t), value.startsWith('/') ? value : '/')
+      ? slashSuggestions(commandCatalog, value.startsWith('/') ? value : '/')
           .map((item) => ({
             key: item.command,
             label: item.command,
@@ -642,9 +643,19 @@ export const Composer = memo(function Composer({
                 return
               }
               if (event.key === 'Enter' && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && !event.nativeEvent.isComposing && menu && suggestions.length) {
-                event.preventDefault()
-                chooseSuggestion(activeSuggestion)
-                return
+                // Fully typed commands without arguments submit on the first
+                // Enter instead of only re-selecting their own suggestion;
+                // anything with a subcommand continuation still completes.
+                const activeItem = suggestions[activeSuggestion]
+                const topName = menu === 'command' && activeItem ? activeItem.key.replace(/^\//, '').split(/\s+/)[0] : undefined
+                const commandMeta = topName ? commandCatalog.find((command) => command.name === topName || command.aliases?.includes(topName)) : undefined
+                const exactNoArgs = menu === 'command' && activeItem !== undefined && value.trim() === activeItem.key && !commandMeta?.subcommands?.length
+                if (!exactNoArgs) {
+                  event.preventDefault()
+                  chooseSuggestion(activeSuggestion)
+                  return
+                }
+                setMenu(null)
               }
               const intent = messageActionForKey(
                 {

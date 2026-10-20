@@ -1,0 +1,45 @@
+/* Side-question dock (harness /btw): a quiet second conversation running
+   beside the main turn. Lives in the right dock slot in place of the
+   inspector while open; the container mirrors .inspector's sizing contract
+   so it shares the resizable width instead of claiming the workspace. */
+
+.side-chat { position: relative; z-index: 10; display: flex; flex-direction: column; height: 100%; min-height: 0; width: var(--side-chat-width, var(--inspector-width, clamp(420px, 46vw, 660px))); min-width: 340px; flex: 0 0 var(--side-chat-width, var(--inspector-width, clamp(420px, 46vw, 660px))); background: var(--canvas); animation: panel-in 150ms ease-out; }
+
+/* Chromeless like the main chat: no framed header, controls float as text. */
+.side-chat__header { display: flex; align-items: center; gap: 4px; padding: 7px 8px 7px 14px; flex: 0 0 auto; }
+.side-chat__topic-picker { display: flex; align-items: center; flex: 1 1 auto; min-width: 0; }
+.side-chat__topic-select { position: relative; display: flex; align-items: center; flex: 1 1 auto; min-width: 0; color: var(--text-secondary); }
+.side-chat__topic-select select { appearance: none; -webkit-appearance: none; width: 100%; min-width: 0; padding: 4px 18px 4px 2px; border: 0; border-radius: 6px; background: transparent; color: inherit; font: inherit; font-size: 12.5px; font-weight: 540; text-overflow: ellipsis; white-space: nowrap; overflow: hidden; cursor: pointer; }
+.side-chat__topic-select:hover select { color: var(--text); }
+.side-chat__topic-select:focus-within select { outline: 1.5px solid var(--focus); outline-offset: 1px; color: var(--text); }
+.side-chat__topic-select > svg { position: absolute; right: 4px; pointer-events: none; opacity: 0.6; }
+.side-chat__header-actions { display: flex; gap: 2px; flex: 0 0 auto; color: var(--text-tertiary); }
+
+.side-chat__thread { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 28px 14px 8px; display: flex; flex-direction: column; gap: 28px; }
+.side-chat__topic { display: contents; }
+.side-chat__turn { display: flex; flex-direction: column; gap: 10px; }
+
+.side-chat__empty { margin: auto; max-width: 260px; display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; color: var(--text-tertiary); }
+.side-chat__empty > svg { opacity: 0.65; }
+.side-chat__empty strong { color: var(--text-secondary); font-weight: 600; font-size: 14px; }
+.side-chat__empty p { margin: 0; font-size: 12.5px; line-height: 1.58; }
+
+.side-chat__question { display: flex; justify-content: flex-end; }
+
+.side-chat__answer { position: relative; font-size: 14px; line-height: 1.65; color: var(--text); overflow-wrap: break-word; }
+.side-chat__answer > :first-child { margin-block-start: 0; }
+.side-chat__answer > :last-child { margin-block-end: 0; }
+.side-chat__thinking { display: inline-block; color: var(--text-tertiary); font-size: 12.5px; padding: 2px 0; }
+.side-chat__status { display: inline-flex; align-items: center; margin-bottom: 4px; padding: 2px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.02em; background: var(--surface-hover); color: var(--text-tertiary); }
+.side-chat__status--error { background: var(--danger-soft); color: var(--danger); }
+.side-chat__status--cancelled, .side-chat__status--interrupted { color: var(--text-tertiary); }
+
+/* The mini composer mirrors the main composer capsule — same density-aware
+   radius token, border, and shadow treatment. */
+.side-chat__composer { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; margin: 10px 12px 12px; padding: 7px 7px 7px 13px; border: var(--border-hairline, 1px) solid var(--border); border-radius: var(--conversation-radius); background: var(--surface-raised); box-shadow: var(--shadow-composer); transition: border-color 180ms var(--ease-out), box-shadow 180ms var(--ease-out); }
+.side-chat__composer:hover:not(:focus-within) { border-color: var(--border-strong); box-shadow: var(--shadow-composer-hover); }
+.side-chat__composer:focus-within { border-color: var(--focus); box-shadow: var(--shadow-composer-focus); }
+.side-chat__input { flex: 1 1 auto; min-width: 0; align-self: center; border: 0; margin: 0; padding: 3px 0; background: transparent; color: var(--text); font: inherit; font-size: 14px; line-height: 1.65; resize: none; max-height: 110px; overflow-y: auto; }
+.side-chat__input:focus { outline: none; }
+.side-chat__input::placeholder { color: var(--text-tertiary); }
+.side-chat__input:disabled { opacity: 0.5; }

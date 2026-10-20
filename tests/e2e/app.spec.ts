@@ -271,6 +271,7 @@ let negotiated = false
 let streaming = false
 let pendingPrompt
 let answers = {}
+const btwTopics = {}
 send({ type: 'ready', protocolVersion: 1, supportedProtocolVersions: [1, 2] })
 readline.createInterface({ input: process.stdin }).on('line', (line) => {
   const command = JSON.parse(line)
@@ -454,6 +455,42 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     ].join('\\n') + '\\n')
     send({ type: 'agent_end' })
     setTimeout(() => rewriteTitleSlot('Post-completion catalog refresh'), 250)
+  } else if (command.type === 'btw') {
+    fs.writeFileSync(marker('btw-command.json'), JSON.stringify(command))
+    const topicId = typeof command.recordId === 'string' ? command.recordId : 'fixture-topic-' + String(Object.keys(btwTopics).length + 1)
+    const question = String(command.question ?? '')
+    const existing = btwTopics[topicId]
+    const turn = { question, answer: '', status: 'running', createdAt: Date.now(), updatedAt: Date.now() }
+    const record = existing
+      ? { ...existing, followUps: [...(existing.followUps ?? []), turn] }
+      : { ...turn, id: topicId, leafId: 'fixture-leaf', followUps: [] }
+    btwTopics[topicId] = record
+    send({ type: 'btw_record', record })
+    send({ id: command.id, type: 'response', command: command.type, success: true, data: { record } })
+    setTimeout(() => {
+      send({ type: 'btw_delta', recordId: topicId, delta: 'Fixture side ' })
+      send({ type: 'btw_delta', recordId: topicId, delta: 'answer.' })
+      const latestIdx = record.followUps.length - 1
+      const completed = latestIdx >= 0
+        ? { ...btwTopics[topicId], followUps: btwTopics[topicId].followUps.map((entry, index) => index === latestIdx ? { ...entry, answer: 'Fixture side answer.', status: 'complete', updatedAt: Date.now() } : entry) }
+        : { ...btwTopics[topicId], answer: 'Fixture side answer.', status: 'complete', updatedAt: Date.now() }
+      btwTopics[topicId] = completed
+      send({ type: 'btw_record', record: completed })
+    }, 120)
+  } else if (command.type === 'btw_cancel') {
+    fs.writeFileSync(marker('btw-cancel.json'), JSON.stringify(command))
+    const targetId = typeof command.recordId === 'string' ? command.recordId : undefined
+    const target = targetId ? btwTopics[targetId] : Object.values(btwTopics).find((entry) => (entry.followUps[entry.followUps.length - 1] ?? entry).status === 'running')
+    if (target) {
+      const latestIdx = target.followUps.length - 1
+      btwTopics[target.id] = latestIdx >= 0
+        ? { ...target, followUps: target.followUps.map((entry, index) => index === latestIdx ? { ...entry, status: 'cancelled', updatedAt: Date.now() } : entry) }
+        : { ...target, status: 'cancelled', updatedAt: Date.now() }
+      send({ type: 'btw_record', record: btwTopics[target.id] })
+    }
+    send({ id: command.id, type: 'response', command: command.type, success: true, data: { cancelled: Boolean(target) } })
+  } else if (command.type === 'get_btw_history') {
+    send({ id: command.id, type: 'response', command: command.type, success: true, data: { records: Object.values(btwTopics) } })
   } else if (command.id) {
     send({ id: command.id, type: 'response', command: command.type, success: true, data: {} })
   }
@@ -1649,6 +1686,183 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(projectRow).toHaveClass(/is-selected/)
     await expect(page.locator('.session-row-wrap.is-selected')).toHaveCount(0)
     await expect(page.getByRole('combobox', { name: 'Message OMP' })).toHaveValue('')
+  })
+
+  test('switches to a fresh session when the displayed session is deleted', async () => {
+    const sessionRowWrap = page.locator('.session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' })
+    await sessionRowWrap.locator('.session-row').click()
+    await expect(page.locator('.session-row-wrap.is-selected')).toHaveCount(1)
+
+    await sessionRowWrap.getByRole('button', { name: /^Delete / }).click()
+    await page.getByRole('dialog').getByRole('button', { name: 'Delete permanently', exact: true }).click()
+
+    // Deleting the session on screen lands the user on a blank composer instead
+    // of leaving them staring at a corpse.
+    await expect(page.locator('.session-row-wrap.is-selected')).toHaveCount(0)
+    const composer = page.getByRole('combobox', { name: 'Message OMP' })
+    await expect(composer).toHaveValue('')
+    await expect(page.locator('.toast', { hasText: 'Conversation deleted.' })).toBeVisible()
+    // The dead session's transcript no longer haunts the composer.
+    await expect(page.locator('.transcript .user-bubble').first()).toHaveCount(0)
+  })
+
+  test('switches to a fresh session when a live session is deleted mid-turn', async () => {
+    const sessionRowWrap = page.locator('.session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' })
+    await sessionRowWrap.locator('.session-row').click()
+    await expect(page.locator('.model-picker__trigger')).toHaveAccessibleName('Model: Claude Fixture')
+    const composer = page.getByRole('combobox', { name: 'Message OMP' })
+    await composer.fill('/modelpreset list')
+    await composer.press('Enter')
+    await expect.poll(() => existsSync(join(fixtureRoot, 'prompt-args.json'))).toBe(true)
+
+    await sessionRowWrap.getByRole('button', { name: /^Delete / }).click()
+    await page.getByRole('dialog').getByRole('button', { name: 'Delete permanently', exact: true }).click()
+
+    await expect(page.locator('.session-row-wrap.is-selected')).toHaveCount(0)
+    await expect(composer).toHaveValue('')
+    await expect(page.locator('.transcript .user-bubble').first()).toHaveCount(0)
+  })
+
+  test('consumes /btw in a fresh session instead of leaking it as a prompt', async () => {
+    // A brand-new session has no runtime to ride yet, so the command is
+    // absorbed with a hint rather than shipped to the harness as a prompt.
+    const projectRow = page.locator('.project-row').first()
+    const projectSession = projectRow.getByRole('button', { name: /^New session in / })
+    await projectRow.hover()
+    await projectSession.click()
+    await expect(page.locator('.session-row-wrap.is-selected')).toHaveCount(0)
+
+    const composer = page.getByRole('combobox', { name: 'Message OMP' })
+    await composer.fill('/btw')
+    await composer.press('Enter')
+
+    await expect(page.locator('.conversation-hint')).toContainText('Send a first message to start the session')
+    await expect(page.locator('.transcript .user-bubble')).toHaveCount(0)
+    expect(existsSync(join(fixtureRoot, 'prompt-args.json'))).toBe(false)
+
+    // A real prompt then covers the hint like any queued note.
+    await composer.fill('/modelpreset list')
+    await composer.press('Enter')
+    await expect(page.locator('.conversation-hint')).toHaveCount(0)
+    await expect(page.locator('.transcript .user-bubble')).toHaveCount(0)
+  })
+
+  test('asks side questions from the dock next to the live session', async () => {
+    // A live runtime only exists once the first prompt ships; side questions ride it.
+    await expect(page.locator('.model-picker__trigger')).toHaveAccessibleName('Model: Claude Fixture')
+    const composer = page.getByRole('combobox', { name: 'Message OMP' })
+    const panel = page.getByRole('region', { name: 'Command result', exact: true })
+    await composer.fill('/modelpreset list')
+    await composer.press('Enter')
+    await expect(panel.getByRole('status')).toHaveText('Running command…')
+    await expect.poll(() => existsSync(join(fixtureRoot, 'prompt-args.json'))).toBe(true)
+    // Wait out the in-flight window — Enter while submitting is dropped.
+    await expect(page.locator('.command-output__status')).toHaveText('Completed')
+
+    // The dock opens only from the /btw command — there is no toolbar toggle.
+    await expect(page.getByRole('button', { name: 'Side questions', exact: true })).toHaveCount(0)
+    await composer.fill('/btw')
+    await composer.press('Enter')
+
+    const sideChatPanel = page.locator('.side-chat')
+    await expect(sideChatPanel).toBeVisible()
+    await expect(sideChatPanel).toContainText('Ask a side question')
+
+    // The dock has its own resize handle, independent of the inspector width.
+    const resizeHandle = page.getByRole('separator', { name: 'Resize side questions' })
+    await expect(resizeHandle).toBeVisible()
+
+    // Dragging the handle narrows the dock and persists a dedicated width —
+    // right-anchored panels shrink as the handle moves right.
+    const beforeDrag = await sideChatPanel.evaluate((node) => node.getBoundingClientRect().width)
+    const handleBox = await resizeHandle.boundingBox()
+    expect(handleBox).not.toBeNull()
+    const gripX = handleBox!.x + handleBox!.width / 2
+    const gripY = handleBox!.y + handleBox!.height / 2
+    await page.mouse.move(gripX, gripY)
+    await page.mouse.down()
+    await page.mouse.move(gripX + 120, gripY, { steps: 8 })
+    await page.mouse.up()
+    const afterDrag = await sideChatPanel.evaluate((node) => node.getBoundingClientRect().width)
+    expect(afterDrag).toBeLessThan(beforeDrag - 40)
+    await expect.poll(async () => page.evaluate(() => Number(localStorage.getItem('omp-desktop.side-chat-width')))).toBeCloseTo(afterDrag, 0)
+    await expect.poll(async () => page.evaluate(() => localStorage.getItem('omp-desktop.inspector-width'))).not.toBeNull()
+
+    // The mini composer reuses the main composer's capsule treatment.
+    const radii = await page.evaluate(() => ({
+      side: getComputedStyle(document.querySelector('.side-chat__composer')!).borderRadius,
+      main: getComputedStyle(document.querySelector('.composer')!).borderRadius
+    }))
+    expect(radii.side).toBe(radii.main)
+
+    // The dock column honors the inspector width contract instead of claiming the workspace.
+    const dockBounds = await page.evaluate(() => {
+      const panel = document.querySelector<HTMLElement>('.side-chat')
+      const transcript = document.querySelector<HTMLElement>('.transcript')
+      if (!panel || !transcript) return null
+      return { panel: panel.getBoundingClientRect().width, transcript: transcript.getBoundingClientRect().width }
+    })
+    expect(dockBounds).not.toBeNull()
+    expect(dockBounds!.panel).toBeLessThan(700)
+    expect(dockBounds!.transcript).toBeGreaterThan(240)
+
+    const input = sideChatPanel.locator('.side-chat__input')
+    await input.fill('What does this file do?')
+    await expect(sideChatPanel.getByRole('button', { name: 'Send question', exact: true })).toBeEnabled()
+    await input.press('Enter')
+
+    // While running the composer swaps to a scoped cancel; a topic appears in the picker.
+    await expect(sideChatPanel.getByRole('button', { name: 'Cancel question', exact: true })).toBeVisible()
+    await expect(sideChatPanel.locator('.side-chat__bubble')).toHaveText('What does this file do?')
+    await expect(sideChatPanel.locator('.side-chat__answer')).toContainText('Fixture side answer.')
+    await expect(sideChatPanel.getByRole('button', { name: 'Send question', exact: true })).toBeVisible()
+    await expect(sideChatPanel.locator('.side-chat__topic-select select')).toHaveCount(1)
+
+    await expect.poll(() => JSON.parse(readFileSync(join(fixtureRoot, 'btw-command.json'), 'utf8')).type).toBe('btw')
+    await expect.poll(() => JSON.parse(readFileSync(join(fixtureRoot, 'btw-command.json'), 'utf8')).question).toBe('What does this file do?')
+
+    // A follow-up reuses the active topic through recordId.
+    await input.fill('And the sibling?')
+    await input.press('Enter')
+    await expect(sideChatPanel.locator('.side-chat__answer').last()).toContainText('Fixture side answer.')
+    await expect.poll(() => JSON.parse(readFileSync(join(fixtureRoot, 'btw-command.json'), 'utf8')).recordId).toBe('fixture-topic-1')
+    await expect(sideChatPanel.locator('.side-chat__bubble')).toHaveCount(2)
+
+    // Closing returns the dock state to hidden while the inspector stays untouched.
+    await sideChatPanel.getByRole('button', { name: 'Close side questions', exact: true }).click()
+    await expect(sideChatPanel).toHaveCount(0)
+
+    // The dock-owned /btw command joins the composer catalog.
+    await composer.fill('/b')
+    await expect(page.getByRole('option', { name: /\/btw/ })).toBeVisible()
+    await composer.fill('')
+
+    // Typing /btw in the main composer opens the dock instead of going to the
+    // harness: bare opens it, `/btw <question>` opens and asks as a new topic.
+    await composer.fill('/btw')
+    await composer.press('Enter')
+    await expect(sideChatPanel).toBeVisible()
+    await expect(page.locator('.transcript .user-bubble').filter({ hasText: '/btw' })).toHaveCount(0)
+    await expect(composer).toHaveValue('')
+
+    await sideChatPanel.getByRole('button', { name: 'Close side questions', exact: true }).click()
+    await expect(sideChatPanel).toHaveCount(0)
+    await composer.fill('/btw What about the sibling?')
+    await composer.press('Enter')
+    await expect(sideChatPanel).toBeVisible()
+    await expect(sideChatPanel.locator('.side-chat__bubble').first()).toHaveText('What about the sibling?')
+    await expect.poll(() => JSON.parse(readFileSync(join(fixtureRoot, 'btw-command.json'), 'utf8')).recordId).toBeUndefined()
+    await expect(sideChatPanel.getByRole('combobox')).toHaveValue('fixture-topic-2')
+    await expect.poll(() => JSON.parse(readFileSync(join(fixtureRoot, 'btw-command.json'), 'utf8')).question).toBe('What about the sibling?')
+
+    // Side chats are transient: closing drops visible topics; /btw reopens blank.
+    await sideChatPanel.getByRole('button', { name: 'Close side questions', exact: true }).click()
+    await expect(sideChatPanel).toHaveCount(0)
+    await composer.fill('/btw')
+    await composer.press('Enter')
+    await expect(sideChatPanel).toBeVisible()
+    await expect(sideChatPanel).toContainText('Ask a side question')
+    await expect(sideChatPanel.locator('.side-chat__topic-select select')).toHaveCount(0)
   })
 
   test('keeps wrapped editing native and aligned through classic scrollbar overflow', async () => {

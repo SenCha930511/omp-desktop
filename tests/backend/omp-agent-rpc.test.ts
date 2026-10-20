@@ -85,6 +85,10 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     send({ id: command.id, type: 'response', command: command.type, success: true, data: { received: command.type, entryId: command.entryId } })
   } else if (command.type === 'fork' || command.type === 'get_fork_messages') {
     send({ id: command.id, type: 'response', command: command.type, success: false, error: 'Unknown command ' + command.type })
+  } else if (command.type === 'btw' || command.type === 'btw_cancel' || command.type === 'get_btw_history') {
+    send({ id: command.id, type: 'response', command: command.type, success: true, data: { received: command.type, question: command.question, recordId: command.recordId } })
+  } else if (command.type === 'side_question' || command.type === 'side_question_cancel' || command.type === 'side_question_history') {
+    send({ id: command.id, type: 'response', command: command.type, success: false, error: 'Unknown command ' + command.type })
   } else if (command.type === 'set_fast_mode') {
     send({ type: 'fake_received', command: 'set_fast_mode', enabled: command.enabled })
     send({ id: command.id, type: 'response', command: 'set_fast_mode', success: true })
@@ -469,6 +473,49 @@ describe('OMP RPC command translation', () => {
 
     expect(response.command).toBe('get_branch_messages')
     expect(response.data).toMatchObject({ received: 'get_branch_messages' })
+  })
+
+  it('translates side questions into btw frames with recordId mapping', async () => {
+    const fake = fakeOmpAgent()
+    const manager = ompManager(fake.executable)
+    const runtime = await manager.start({ cwd: fake.cwd })
+
+    const open = await manager.command(runtime.runtimeId, { type: 'side_question', question: 'what is this?' })
+    expect(open.command).toBe('btw')
+    expect(open.data).toMatchObject({ received: 'btw', question: 'what is this?' })
+
+    const followUp = await manager.command(runtime.runtimeId, { type: 'side_question', question: 'and this?', topicId: 'abc-def' })
+    expect(followUp.command).toBe('btw')
+    expect(followUp.data).toMatchObject({ received: 'btw', question: 'and this?', recordId: 'abc-def' })
+
+    const cancel = await manager.command(runtime.runtimeId, { type: 'side_question_cancel', topicId: 'abc-def' })
+    expect(cancel.command).toBe('btw_cancel')
+    expect(cancel.data).toMatchObject({ received: 'btw_cancel', recordId: 'abc-def' })
+
+    const history = await manager.command(runtime.runtimeId, { type: 'side_question_history' })
+    expect(history.command).toBe('get_btw_history')
+    expect(history.data).toMatchObject({ received: 'get_btw_history' })
+  })
+
+  it('normalizes btw frames into side-question vocabulary and drops malformed ones', async () => {
+    const fake = fakeOmpAgent({ promptScript: `
+    send({ type: 'btw_record', record: { id: 'topic-1', question: 'q', answer: '', status: 'running', createdAt: 1, updatedAt: 1 } })
+    send({ type: 'btw_delta', recordId: 'topic-1', delta: 'OK' })
+    send({ type: 'btw_record', record: null })
+    send({ type: 'btw_delta', recordId: 7 })
+    send({ type: 'agent_end', isTerminal: true })` })
+    const manager = ompManager(fake.executable)
+    const events: Array<Record<string, unknown>> = []
+    manager.setEventSink(({ event }) => events.push(event))
+    const runtime = await manager.start({ cwd: fake.cwd })
+
+    await manager.command(runtime.runtimeId, { type: 'prompt', message: 'continue' })
+
+    await waitUntil(() => events.some((event) => event.type === 'agent_end'))
+    expect(events.filter((event) => event.type === 'side_question_record')).toHaveLength(1)
+    expect(events).toContainEqual(expect.objectContaining({ type: 'side_question_record', topic: expect.objectContaining({ id: 'topic-1' }) }))
+    expect(events).toContainEqual(expect.objectContaining({ type: 'side_question_delta', topicId: 'topic-1', delta: 'OK' }))
+    expect(events.some((event) => String(event.type).startsWith('btw'))).toBe(false)
   })
 
   it('rejects Prime-only commands with a clear error before they reach the agent', async () => {

@@ -138,6 +138,16 @@ export const OMP_RPC_ADAPTER: HarnessRpcAdapter = {
     if (OMP_UNSUPPORTED_COMMANDS.has(type)) throw new Error(`RPC command ${type} is not supported by the OMP harness`)
     if (type === 'fork') return { ...command, type: 'branch' }
     if (type === 'get_fork_messages') return { ...command, type: 'get_branch_messages' }
+    // Side questions ride the OMP /btw protocol; the renderer never sees harness names.
+    if (type === 'side_question') {
+      const { topicId, ...rest } = command
+      return { ...rest, type: 'btw', ...(topicId !== undefined ? { recordId: topicId } : {}) }
+    }
+    if (type === 'side_question_cancel') {
+      const { topicId, ...rest } = command
+      return { ...rest, type: 'btw_cancel', ...(topicId !== undefined ? { recordId: topicId } : {}) }
+    }
+    if (type === 'side_question_history') return { ...command, type: 'get_btw_history' }
     return stripStreamingBehavior(command)
   },
   normalizeEvent: (event) => {
@@ -146,6 +156,15 @@ export const OMP_RPC_ADAPTER: HarnessRpcAdapter = {
     // A non-terminal agent_end is a turn boundary inside a continuing run; it
     // must not finalize streaming rows in the renderer.
     if (event.type === 'agent_end' && event.isTerminal === false) return null
+    // Side-question frames: full topic record on every lifecycle change (last
+    // per id wins) plus answer deltas that append to the topic's latest turn.
+    // Malformed frames are dropped: the renderer can only fail on them.
+    if (event.type === 'btw_record') return isRecord(event.record) ? { type: 'side_question_record', topic: event.record } : null
+    if (event.type === 'btw_delta') {
+      return typeof event.recordId === 'string' && typeof event.delta === 'string'
+        ? { type: 'side_question_delta', topicId: event.recordId, delta: event.delta }
+        : null
+    }
     return event
   },
   buildServiceTierCommand: (serviceTier) => ({ type: 'set_fast_mode', enabled: serviceTier === 'priority' }),

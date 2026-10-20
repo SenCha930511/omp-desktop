@@ -40,6 +40,7 @@ export function usePanelLayout({
   const [smallestSidebarAllowed, setSmallestSidebarAllowed] = useState(false)
   const [smallestInspectorAllowed, setSmallestInspectorAllowed] = useState(false)
   const [inspectorWidth, setInspectorWidth] = useState(() => readPanelSize('omp-desktop.inspector-width', INSPECTOR_DEFAULT))
+  const [sideChatWidth, setSideChatWidth] = useState(() => readPanelSize('omp-desktop.side-chat-width', INSPECTOR_DEFAULT))
   const [sidebarWidth, setSidebarWidth] = useState(() => readPanelSize('omp-desktop.sidebar-width', SIDEBAR_DEFAULT))
   const [terminalHeight, setTerminalHeight] = useState(() => readPanelSize('omp-desktop.terminal-height', TERMINAL_DEFAULT))
   const [inspectorMax, setInspectorMax] = useState(660)
@@ -113,8 +114,10 @@ export function usePanelLayout({
   }, [inspectorOpen, terminalOpen, view])
 
   useEffect(() => setInspectorWidth((value) => Math.min(inspectorMax, Math.max(INSPECTOR_MIN, value))), [inspectorMax])
+  useEffect(() => setSideChatWidth((value) => Math.min(inspectorMax, Math.max(INSPECTOR_MIN, value))), [inspectorMax])
   useEffect(() => setTerminalHeight((value) => Math.min(terminalMax, Math.max(TERMINAL_MIN, value))), [terminalMax])
   useEffect(() => { window.localStorage.setItem('omp-desktop.inspector-width', String(inspectorWidth)) }, [inspectorWidth])
+  useEffect(() => { window.localStorage.setItem('omp-desktop.side-chat-width', String(sideChatWidth)) }, [sideChatWidth])
   useEffect(() => { window.localStorage.setItem('omp-desktop.sidebar-width', String(Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, sidebarWidth)))) }, [sidebarWidth])
   useEffect(() => setSidebarWidth((value) => Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, value))), [])
   useEffect(() => { window.localStorage.setItem('omp-desktop.terminal-height', String(terminalHeight)) }, [terminalHeight])
@@ -128,6 +131,8 @@ export function usePanelLayout({
     compactRestoreRef,
     inspectorWidth,
     setInspectorWidth,
+    sideChatWidth,
+    setSideChatWidth,
     sidebarWidth,
     setSidebarWidth,
     terminalHeight,

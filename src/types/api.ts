@@ -698,6 +698,25 @@ export interface AgentBrowserPointerEvent {
   durationMs: number
 }
 
+// Side questions are the app's vocabulary for the harness's /btw command: a
+// quick question that runs beside a live session's main turn. One topic holds
+// an opening turn plus follow-up turns (records nested under `followUps`,
+// positional — only the last one streams); the harness rejects a second
+// question while one is already running in the same session view.
+export const SIDE_QUESTION_STATUSES = ['running', 'complete', 'cancelled', 'error', 'interrupted'] as const
+export type SideQuestionStatus = (typeof SIDE_QUESTION_STATUSES)[number]
+export interface SideQuestionTurn {
+  question: string
+  answer: string
+  status: SideQuestionStatus
+  createdAt: number
+  updatedAt: number
+}
+export interface SideQuestionTopic extends SideQuestionTurn {
+  id: string
+  followUps: SideQuestionTurn[]
+}
+
 export interface DesktopApi {
   app: { getMeta(): Promise<AppMeta>; refreshHarnesses(): Promise<{ meta: AppMeta; settings: AppSettings }>; openExternal(url: string): Promise<boolean>; revealPath(path: string): Promise<boolean>; popupMenu(menu: ApplicationMenuName, x: number, y: number): Promise<boolean>; setTitleBarTheme(theme: Exclude<ThemeMode, 'system'>): Promise<boolean>; onOpenSettings(callback: () => void): () => void }
   updates: {

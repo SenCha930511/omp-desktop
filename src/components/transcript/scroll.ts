@@ -13,6 +13,7 @@ export function useTranscriptScroll(messages: TranscriptMessage[], active = true
   const previousMessagesRef = useRef(messages)
   const pinnedToBottomRef = useRef(true)
   const lastScrollTopRef = useRef(0)
+  const lastScrollHeightRef = useRef(0)
   const manualScrollUntilRef = useRef(0)
   const smoothScrollUntilRef = useRef(0)
   const [visibleLimit, setVisibleLimit] = useState(250)
@@ -76,8 +77,14 @@ export function useTranscriptScroll(messages: TranscriptMessage[], active = true
     const scroller = scrollRef.current
     if (!scroller) return
     const movedUp = scroller.scrollTop < lastScrollTopRef.current - 1
-    if (movedUp) manualScrollUntilRef.current = performance.now() + 150
+    // Content SHRINKING (streaming placeholder removed, message replaced by a
+    // shorter final version) makes the browser clamp scrollTop down — that
+    // reads exactly like a user scroll-up but is only the engine reflowing.
+    // Treat height-loss frames as reflow, never as intent to unfollow.
+    const shrank = scroller.scrollHeight < lastScrollHeightRef.current
+    if (movedUp && !shrank) manualScrollUntilRef.current = performance.now() + 150
     lastScrollTopRef.current = scroller.scrollTop
+    lastScrollHeightRef.current = scroller.scrollHeight
     // Content growth alone never fires scroll events — scrollTop stays parked
     // while scrollHeight rises — so any observed move is user-driven.
     const atBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 40
@@ -88,7 +95,7 @@ export function useTranscriptScroll(messages: TranscriptMessage[], active = true
       if (atBottom) smoothScrollUntilRef.current = 0
       else return
     }
-    if (movedUp || !atBottom) {
+    if ((movedUp || !atBottom) && !shrank) {
       // An explicit move away (wheel/trackpad up, scrollbar drag, keyboard)
       // breaks following; the jump button brings it back.
       pinnedToBottomRef.current = false

@@ -79,6 +79,7 @@ export const INITIAL_SLASH_COMMANDS: SlashCommand[] = [
   ['advisor', 'Advisor: on | off | status'], ['skillful', 'Toggle skill listing'],
   ['extended-context', 'Toggle extended context'], ['dirs', 'List workspace directories'],
   ['add-dir', 'Add workspace directory'], ['remove-dir', 'Remove workspace directory'],
+  ['btw', 'Open side questions'],
 ].map(([name, description]) => ({ name, description, source: 'builtin' }))
 
 export function slashSuggestions(commands: SlashCommand[], value: string) {

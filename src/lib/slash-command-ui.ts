@@ -8,7 +8,7 @@ import { DEFERRED_SLASH_COMMANDS, DEFERRED_TUI_MODES, INITIAL_SLASH_COMMANDS, tu
 const GUI_COMMANDS = new Set([
   'modelpreset', 'context', 'tools',
   'usage', 'jobs', 'compact', 'handoff', 'fresh', 'shake', 'todo',
-  'memory', 'advisor', 'skillful', 'extended-context', 'force', 'security',
+  'memory', 'advisor', 'skillful', 'extended-context', 'force', 'security', 'btw',
 ])
 
 const BUILTIN_COMMANDS = new Set([...INITIAL_SLASH_COMMANDS.map((command) => command.name), ...DEFERRED_SLASH_COMMANDS, ...DEFERRED_TUI_MODES, ...GUI_COMMANDS])

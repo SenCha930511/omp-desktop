@@ -15,11 +15,13 @@ interface ResizeHandleProps {
   startEdge?: boolean
   /** Defaults to `.session-workspace`; left panels live above it in the shell. */
   styleTarget?: string
+  /** Live-drag CSS variable override; defaults by orientation and edge. */
+  cssVariable?: string
 }
 
 const clamp = (value: number, min: number, max: number) => Math.round(Math.min(Math.max(min, max), Math.max(min, value)))
 
-export function ResizeHandle({ orientation, label, value, min, max, defaultValue, onChange, startEdge = false, styleTarget = '.session-workspace' }: ResizeHandleProps) {
+export function ResizeHandle({ orientation, label, value, min, max, defaultValue, onChange, startEdge = false, styleTarget = '.session-workspace', cssVariable: cssVariableProp }: ResizeHandleProps) {
   const cleanupRef = useRef<(() => void) | null>(null)
   const safeMax = Math.max(min, max)
   const readCoordinate = (event: Pick<PointerEvent, 'clientX' | 'clientY'>) => orientation === 'vertical' ? event.clientX : event.clientY
@@ -50,7 +52,7 @@ export function ResizeHandle({ orientation, label, value, min, max, defaultValue
     const startCoordinate = readCoordinate(event.nativeEvent)
     const startValue = value
     const workspace = target.closest<HTMLElement>(styleTarget)
-    const cssVariable = orientation === 'vertical' ? (startEdge ? '--sidebar-width' : '--inspector-width') : '--terminal-height'
+    const cssVariable = cssVariableProp ?? (orientation === 'vertical' ? (startEdge ? '--sidebar-width' : '--inspector-width') : '--terminal-height')
     let latestValue = startValue
     target.dataset.resizing = 'true'
     document.body.classList.add(`is-resizing-${orientation}`)
