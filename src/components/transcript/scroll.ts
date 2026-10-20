@@ -60,7 +60,7 @@ export function useTranscriptScroll(messages: TranscriptMessage[], active = true
     lastScrollTopRef.current = scroller.scrollTop
     // Content growth alone never fires scroll events — scrollTop stays parked
     // while scrollHeight rises — so any observed move is user-driven.
-    const atBottom = !hiddenAfter && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 40
+    const atBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 40
     if (movedUp || !atBottom) {
       // An explicit move away (wheel/trackpad up, scrollbar drag, keyboard)
       // breaks following; the jump button brings it back.
@@ -68,7 +68,12 @@ export function useTranscriptScroll(messages: TranscriptMessage[], active = true
       setAwayFromBottom(true)
     } else {
       // Reaching the bottom — from the jump button or a deliberate scroll
-      // down — re-engages following, so the view tracks live output again.
+      // down — re-engages following. When a search window masked the tail,
+      // it collapses exactly like the button so the live tail shows.
+      if (hiddenAfter) {
+        setWindowEnd(undefined)
+        setVisibleLimit(250)
+      }
       if (!pinnedToBottomRef.current) setHasNewContent(false)
       pinnedToBottomRef.current = true
       setAwayFromBottom(false)
