@@ -142,7 +142,7 @@ function SessionStatusMark({ status, attention }: { status: SessionRecord['statu
 
 type Translator = (key: MessageKey, values?: Record<string, string | number>) => string
 
-function updateControlCopy(state: AppUpdateState, t: Translator): { label: string; title: string } {
+export function updateControlCopy(state: AppUpdateState, t: Translator): { label: string; title: string } {
   const version = state.version ? ` ${state.version}` : ''
   switch (state.phase) {
     case 'checking':
@@ -184,7 +184,7 @@ function updateAnnouncement(state: AppUpdateState, t: Translator): string {
   }
 }
 
-function updateConfirmCopy(state: AppUpdateState, t: Translator): { title: string; body: string } {
+export function updateConfirmCopy(state: AppUpdateState, t: Translator): { title: string; body: string } {
   if (state.phase === 'downloaded')
     return {
       title: t('sidebar.update.confirmRestartTitle'),

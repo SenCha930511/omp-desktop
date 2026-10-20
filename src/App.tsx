@@ -978,6 +978,8 @@ export default function App() {
         meta={meta}
         providerCatalog={provider.catalog}
         voice={bridge?.voice ?? null}
+        updateState={appUpdates.state}
+        onUpdateAction={appUpdates.act}
         onClose={() => navigate('session')}
         onUpdate={settingsState.updateSettings}
         onRefreshHarnesses={refreshDetectedHarnesses}
