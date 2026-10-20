@@ -23,7 +23,7 @@ import {
   SquarePen,
   Trash2,
 } from 'lucide-react'
-import { type CSSProperties, memo, useEffect, useMemo, useState } from 'react'
+import { memo, useEffect, useMemo, useState } from 'react'
 import { sessionAttentionSignature, signatureCleared } from '@/app/session-attention'
 import { formatRelative } from '@/lib/data'
 import { HARNESS_PRODUCT_NAMES } from '@/lib/harness'
@@ -255,6 +255,7 @@ function SidebarView({
   const [archiveTarget, setArchiveTarget] = useState<SessionRecord | null>(null)
   const [removeTarget, setRemoveTarget] = useState<ProjectRecord | null>(null)
   const [confirmUpdate, setConfirmUpdate] = useState(false)
+  const [updateErrorOpen, setUpdateErrorOpen] = useState(false)
   const { activeSessions, sessionsByProject } = useMemo(() => indexSidebarSessions(projects, sessions), [projects, sessions])
   const needsAttention = (session: SessionRecord) => {
     const signature = sessionAttentionSignature(session)
@@ -641,12 +642,12 @@ function SidebarView({
               aria-label={updateCopy.title}
               disabled={updateBusy}
               onClick={() => {
-                if (updateState.phase === 'error') void onUpdateAction?.()
+                if (updateState.phase === 'error') setUpdateErrorOpen(true)
                 else setConfirmUpdate(true)
               }}
             >
-              <span className="sidebar-update__icon" style={{ '--update-progress': `${updateState.percent ?? 0}%` } as CSSProperties}>
-                <Download size={12} />
+              <span className="sidebar-update__icon">
+                {updateState.phase === 'checking' || updateState.phase === 'downloading' ? <LoaderCircle size={15} className="spin" /> : <Download size={15} />}
               </span>
               <span>{updateCopy.label}</span>
             </button>
@@ -733,6 +734,29 @@ function SidebarView({
         <button type="button" className="button" onClick={() => setArchiveTarget(null)}>{t('sessions.deleteCancel')}</button>
         <button type="button" className="button button--danger" onClick={() => { const target = archiveTarget; setArchiveTarget(null); void onArchiveSession(target) }}>{t('sessions.deleteConfirm')}</button>
       </>}><p>{t('sessions.deleteBody', { name: archiveTarget.title })}</p></Modal> : null}
+      {updateErrorOpen && updateState.phase === 'error' ? (
+        <Modal
+          title={t('sidebar.update.errorDialogTitle')}
+          onClose={() => setUpdateErrorOpen(false)}
+          footer={
+            <>
+              <button type="button" className="button" onClick={() => setUpdateErrorOpen(false)}>{t('sidebar.no')}</button>
+              <button
+                type="button"
+                className="button button--primary"
+                onClick={() => {
+                  setUpdateErrorOpen(false)
+                  void onUpdateAction?.()
+                }}
+              >
+                {t('sidebar.update.retryPlainLabel')}
+              </button>
+            </>
+          }
+        >
+          <p>{updateState.message ?? t('sidebar.update.errorTitle')}</p>
+        </Modal>
+      ) : null}
       {confirmUpdate ? (
         <Modal
           title={updateConfirm.title}

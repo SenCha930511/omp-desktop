@@ -81,8 +81,15 @@ describe('sidebar update control', () => {
     expect(update?.getAttribute('title')).toBe('network went away')
     expect(update?.disabled).toBe(false)
 
-    // Retrying re-checks straight away instead of asking to download and restart.
+    // A failed install shows the full reason instead of silently retrying.
     await press(update!)
+    const dialog = document.body.querySelector('[role="dialog"]')
+    expect(dialog).not.toBeNull()
+    expect(dialog!.textContent).toContain('network went away')
+    expect(onUpdateAction).not.toHaveBeenCalled()
+    const retry = [...document.body.querySelectorAll<HTMLButtonElement>('.modal__footer button')].find((button) => button.textContent === 'Retry update')
+    expect(retry).toBeDefined()
+    await press(retry!)
     expect(document.body.querySelector('[role="dialog"]')).toBeNull()
     expect(onUpdateAction).toHaveBeenCalledOnce()
   })

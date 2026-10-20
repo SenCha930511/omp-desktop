@@ -1,8 +1,32 @@
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import electronUpdater, { type AppUpdater, type ProgressInfo, type UpdateInfo } from 'electron-updater'
 import type { AppUpdateState } from '../../src/types/api'
 
 export const DEFAULT_CHECK_INTERVAL_MS = 3 * 60 * 60 * 1000
 const INITIAL_CHECK_DELAY_MS = 8_000
+
+const execFileAsync = promisify(execFile)
+
+/**
+ * ShipIt installs never survive ad-hoc signatures: the designated requirement
+ * of an ad-hoc bundle bakes in the build's cdHash, which changes every build,
+ * so every update fails validation only after a full download. Detecting the
+ * arrangement up front spares the user a doomed retry loop.
+ */
+export interface CodesignRunner { (command: string, args: readonly string[]): Promise<unknown> }
+
+export async function isDeveloperIdSigned(bundlePath: string, run: CodesignRunner = execFileAsync): Promise<boolean> {
+  if (process.platform !== 'darwin') return true
+  try {
+    const result = await run('codesign', ['-dv', bundlePath])
+    const output = typeof result === 'object' && result !== null && 'stdout' in result ? String(result.stdout) : ''
+    const extra = typeof result === 'object' && result !== null && 'stderr' in result ? String(result.stderr) : ''
+    return !/Signature\s*=\s*adhoc/i.test(`${output}\n${extra}`)
+  } catch {
+    return false
+  }
+}
 
 export interface UpdateAdapter {
   autoDownload: boolean
@@ -18,6 +42,8 @@ export interface UpdateAdapter {
 
 export interface UpdateServiceOptions {
   enabled: boolean
+  /** Developer ID status of this running bundle on macOS; false gates updates off. */
+  signed?: boolean
   checkIntervalMs?: number
   initialCheckDelayMs?: number
   setInterval?: typeof globalThis.setInterval
@@ -91,7 +117,11 @@ export class UpdateService {
   private readonly setTimeoutFn: typeof globalThis.setTimeout
 
   constructor(private readonly updater: UpdateAdapter, private readonly options: UpdateServiceOptions) {
-    this.state = options.enabled ? { phase: 'idle' } : { phase: 'unsupported', message: 'Automatic updates are available in installed builds.' }
+    this.state = !options.enabled
+      ? { phase: 'unsupported', message: 'Automatic updates are available in installed builds.' }
+      : options.signed === false
+        ? { phase: 'unsupported', message: 'Automatic updates need a Developer ID signed build. Download the newest OMP Desktop release from GitHub.' }
+        : { phase: 'idle' }
     this.setIntervalFn = options.setInterval ?? globalThis.setInterval
     this.clearIntervalFn = options.clearInterval ?? globalThis.clearInterval
     this.setTimeoutFn = options.setTimeout ?? globalThis.setTimeout
@@ -127,7 +157,7 @@ export class UpdateService {
   }
 
   start(): void {
-    if (!this.options.enabled || this.interval || this.initialTimer) return
+    if (!this.options.enabled || this.options.signed === false || this.interval || this.initialTimer) return
     this.initialTimer = this.setTimeoutFn(() => {
       this.initialTimer = null
       this.runScheduledCheck()
@@ -155,7 +185,7 @@ export class UpdateService {
   }
 
   check(): Promise<AppUpdateState> {
-    if (!this.options.enabled) return Promise.resolve(this.getState())
+    if (!this.options.enabled || this.options.signed === false) return Promise.resolve(this.getState())
     if (this.state.phase === 'available' || this.state.phase === 'downloading' || this.state.phase === 'downloaded') return Promise.resolve(this.getState())
     if (this.checkPromise) return this.checkPromise
     this.checkPromise = this.updater.checkForUpdates()

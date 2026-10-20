@@ -38,7 +38,7 @@ import { RepositoryUseGate } from './repository-use-gate'
 import { LEGACY_USER_DATA_DIR_NAME, migrateLegacyUserData } from './user-data-migration'
 import { VoiceService, voiceSecretStorageStatus } from './voice'
 import { isAllowedRendererAudioPermission } from './voice-permissions'
-import { createManualUpdateCheck, getAutoUpdater, UpdateService } from './updates'
+import { createManualUpdateCheck, getAutoUpdater, isDeveloperIdSigned, UpdateService } from './updates'
 
 // Development builds run the rebranded Electron bundle, whose product name
 // matches the packaged app, so both resolve to the same userData directory
@@ -795,7 +795,8 @@ async function bootstrap(): Promise<void> {
     homeDir: homedir(),
     harnesses: initialHarnesses,
   }
-  const updates = new UpdateService(getAutoUpdater(), { enabled: app.isPackaged })
+  const signed = app.isPackaged ? await isDeveloperIdSigned(resolve(process.resourcesPath, '..', '..')) : true
+  const updates = new UpdateService(getAutoUpdater(), { enabled: app.isPackaged, signed })
   updateService = updates
   const refreshHarnesses = async () => {
     const harnesses = await discovery.refresh()

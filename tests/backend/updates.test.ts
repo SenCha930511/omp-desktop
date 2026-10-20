@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AppUpdateState } from '../../src/types/api'
-import { createManualUpdateCheck, DEFAULT_CHECK_INTERVAL_MS, manualUpdateNotification, UpdateService, type UpdateAdapter } from '../../electron/main/updates'
+import { createManualUpdateCheck, DEFAULT_CHECK_INTERVAL_MS, isDeveloperIdSigned, manualUpdateNotification, UpdateService, type UpdateAdapter } from '../../electron/main/updates'
 
 class FakeUpdater extends EventEmitter {
   autoDownload = true
@@ -29,6 +29,29 @@ describe('automatic update service', () => {
       message: 'OMP Desktop Updates Unavailable',
       detail: 'Automatic updates are available in installed builds.',
     })
+  })
+
+  it('marks an ad-hoc signed bundle as unsupported without ever querying the updater', async () => {
+    const updater = new FakeUpdater()
+    const service = new UpdateService(updater, { enabled: true, signed: false })
+
+    expect(service.getState()).toMatchObject({ phase: 'unsupported', message: expect.stringContaining('Developer ID signed build') })
+    service.start()
+    await expect(service.check()).resolves.toMatchObject({ phase: 'unsupported' })
+    expect(updater.checkForUpdates).not.toHaveBeenCalled()
+  })
+
+  it('reads ad-hoc bundles from the codesign output and tolerates probe failures', async () => {
+    const adhoc = vi.fn(async () => ({ stdout: '', stderr: 'Signature=adhoc\nTeamIdentifier=not set\n' }))
+    const signed = vi.fn(async () => ({ stdout: 'Authority=Developer ID Application: Example (TEAM12AB3C)\nTeamIdentifier=TEAM12AB3C\n', stderr: '' }))
+    const broken = vi.fn(async () => { throw new Error('codesign missing') })
+    if (process.platform === 'darwin') {
+      await expect(isDeveloperIdSigned('/tmp/Lie.app', adhoc)).resolves.toBe(false)
+      await expect(isDeveloperIdSigned('/tmp/Truth.app', signed)).resolves.toBe(true)
+      await expect(isDeveloperIdSigned('/tmp/Lost.app', broken)).resolves.toBe(false)
+    } else {
+      await expect(isDeveloperIdSigned('/tmp/Truth.app', signed)).resolves.toBe(true)
+    }
   })
 
   it('coalesces concurrent manual update checks into one dialog', async () => {
