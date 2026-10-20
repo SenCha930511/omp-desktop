@@ -70,14 +70,16 @@
 .session-row-wrap.has-attention .session-status-mark--failed > span { background: var(--danger); }
 .sidebar__footer { flex: 0 0 auto; padding: 7px 8px 9px; border-top: 1px solid var(--border); }
 .sidebar__footer > .sidebar-update { opacity: 1; }
-.sidebar-update__icon { position: relative; width: 22px; height: 22px; display: grid; place-items: center; flex: 0 0 22px; margin-left: -3px; border: 1px solid color-mix(in srgb, var(--prime) 24%, transparent); border-radius: 50%; color: var(--prime); background: var(--prime-soft); transition: transform 150ms ease-out, color 150ms ease-out, background 150ms ease-out; }
+/* Footer rows share one 32px rhythm — the update control must not tower
+   over 命令/設定, so the badge stays a petite accent dot, not a button. */
+.sidebar-update__icon { position: relative; width: 18px; height: 18px; display: grid; place-items: center; flex: 0 0 18px; margin-left: -1px; border: 1px solid color-mix(in srgb, var(--prime) 28%, transparent); border-radius: 50%; color: var(--prime); background: var(--prime-soft); transition: transform 150ms ease-out, color 150ms ease-out, background 150ms ease-out; }
 .sidebar-update:hover .sidebar-update__icon { transform: translateY(-1px); background: color-mix(in srgb, var(--prime) 18%, var(--sidebar)); }
 .sidebar-update--checking .sidebar-update__icon, .sidebar-update--available .sidebar-update__icon { animation: update-pulse 1.4s ease-in-out infinite; }
 .sidebar-update--downloading .sidebar-update__icon { border-color: transparent; background: conic-gradient(var(--prime) var(--update-progress), var(--prime-soft) 0); }
 .sidebar-update--downloading .sidebar-update__icon::before { content: ''; position: absolute; inset: 2px; border-radius: inherit; background: var(--sidebar); }
 .sidebar-update--downloading .sidebar-update__icon > svg { position: relative; z-index: 1; }
 .sidebar-update--indeterminate .sidebar-update__icon { border-color: color-mix(in srgb, var(--prime) 24%, transparent); background: var(--prime-soft); animation: update-pulse 1.4s ease-in-out infinite; }
-.sidebar-update--downloaded .sidebar-update__icon { color: white; background: var(--prime); box-shadow: 0 0 0 3px var(--prime-soft); }
+.sidebar-update--downloaded .sidebar-update__icon { color: white; background: var(--prime); box-shadow: 0 0 0 2px var(--prime-soft); }
 .sidebar-update--error .sidebar-update__icon { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 25%, transparent); background: var(--danger-soft); }
 .sidebar-update:disabled { cursor: default; }
-@keyframes update-pulse { 50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--prime) 10%, transparent); } }
+@keyframes update-pulse { 50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--prime) 10%, transparent); } }
