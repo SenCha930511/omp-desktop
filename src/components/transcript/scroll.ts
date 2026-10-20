@@ -2,7 +2,10 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useI18n } from '@/lib/i18n'
 import type { TranscriptMessage } from '@/types/api'
 
-export function useTranscriptScroll(messages: TranscriptMessage[], active = true) {
+/** Grace window for the jump button's smooth ride; matches the snappiest browsers need. */
+const SMOOTH_SCROLL_GUARD_MS = 750
+
+export function useTranscriptScroll(messages: TranscriptMessage[], active = true, followKey?: string | null) {
   const { t } = useI18n()
   const scrollRef = useRef<HTMLDivElement>(null)
   const previousCountRef = useRef(0)
@@ -11,12 +14,29 @@ export function useTranscriptScroll(messages: TranscriptMessage[], active = true
   const pinnedToBottomRef = useRef(true)
   const lastScrollTopRef = useRef(0)
   const manualScrollUntilRef = useRef(0)
+  const smoothScrollUntilRef = useRef(0)
   const [visibleLimit, setVisibleLimit] = useState(250)
   const [windowEnd, setWindowEnd] = useState<number>()
   const [announcement, setAnnouncement] = useState('')
   const [awayFromBottom, setAwayFromBottom] = useState(false)
   const [hasNewContent, setHasNewContent] = useState(false)
   const streaming = messages.some((message) => message.streaming)
+  const followKeyRef = useRef(followKey)
+  if (followKeyRef.current !== followKey) {
+    // Switching sessions (or landing on a brand-new one) re-engages the same
+    // rule as pressing jump-to-bottom: a fresh conversation always follows
+    // its tail. Mutated during render so the effects below observe the reset.
+    followKeyRef.current = followKey
+    previousCountRef.current = 0
+    previousStreamingRef.current = false
+    pinnedToBottomRef.current = true
+    lastScrollTopRef.current = 0
+    manualScrollUntilRef.current = 0
+    setVisibleLimit(250)
+    setWindowEnd(undefined)
+    setAwayFromBottom(false)
+    setHasNewContent(false)
+  }
   const end = Math.min(messages.length, windowEnd ?? messages.length)
   const visibleMessages = useMemo(() => messages.slice(Math.max(0, end - visibleLimit), end), [messages, visibleLimit, end])
   const hiddenCount = end - visibleMessages.length
@@ -34,12 +54,12 @@ export function useTranscriptScroll(messages: TranscriptMessage[], active = true
     let frame: number | undefined
     if (firstLoadedTranscript) {
       frame = requestAnimationFrame(() => {
-        if (active && scroller && pinnedToBottomRef.current && performance.now() >= manualScrollUntilRef.current) scroller.scrollTo?.({ top: scroller.scrollHeight, behavior: 'auto' })
+        if (active && scroller && pinnedToBottomRef.current && performance.now() >= manualScrollUntilRef.current && performance.now() >= smoothScrollUntilRef.current) scroller.scrollTo?.({ top: scroller.scrollHeight, behavior: 'auto' })
       })
       pinnedToBottomRef.current = true
     } else if (streaming && pinnedToBottomRef.current) {
       frame = requestAnimationFrame(() => {
-        if (active && scroller && pinnedToBottomRef.current && performance.now() >= manualScrollUntilRef.current) scroller.scrollTo?.({ top: scroller.scrollHeight, behavior: 'auto' })
+        if (active && scroller && pinnedToBottomRef.current && performance.now() >= manualScrollUntilRef.current && performance.now() >= smoothScrollUntilRef.current) scroller.scrollTo?.({ top: scroller.scrollHeight, behavior: 'auto' })
       })
     }
     if (previousStreamingRef.current && !streaming) setAnnouncement(t('transcript.announcement.complete'))
@@ -61,6 +81,13 @@ export function useTranscriptScroll(messages: TranscriptMessage[], active = true
     // Content growth alone never fires scroll events — scrollTop stays parked
     // while scrollHeight rises — so any observed move is user-driven.
     const atBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 40
+    if (!movedUp && performance.now() < smoothScrollUntilRef.current) {
+      // Mid smooth ride started by the jump button: our own scroll events
+      // arrive above the bottom, which must not read as "user scrolled away".
+      // Landing at the bottom ends the window early.
+      if (atBottom) smoothScrollUntilRef.current = 0
+      else return
+    }
     if (movedUp || !atBottom) {
       // An explicit move away (wheel/trackpad up, scrollbar drag, keyboard)
       // breaks following; the jump button brings it back.
@@ -93,7 +120,8 @@ export function useTranscriptScroll(messages: TranscriptMessage[], active = true
       }
     }
     const observer = new ResizeObserver(() => {
-      if (pinnedToBottomRef.current && performance.now() >= manualScrollUntilRef.current) scroller.scrollTo?.({ top: scroller.scrollHeight, behavior: 'auto' })
+      // Growth during the smooth ride yields to the ride instead of snapping.
+      if (pinnedToBottomRef.current && performance.now() >= manualScrollUntilRef.current && performance.now() >= smoothScrollUntilRef.current) scroller.scrollTo?.({ top: scroller.scrollHeight, behavior: 'auto' })
     })
     observer.observe(content)
     scroller.addEventListener('wheel', stopFollowing, { passive: true })
@@ -104,9 +132,12 @@ export function useTranscriptScroll(messages: TranscriptMessage[], active = true
   const scrollToBottom = () => {
     if (windowEnd !== undefined) { setWindowEnd(undefined); setVisibleLimit(250) }
     const scroller = scrollRef.current
-    // An instant snap, not a smooth ride: mid-flight distance would read as
-    // "user scrolled away" in the events above and cancel the refollow.
-    if (scroller && typeof scroller.scrollTo === 'function') scroller.scrollTo({ top: scroller.scrollHeight, behavior: 'auto' })
+    // Smooth ride, guarded by the window above: without it the mid-flight
+    // distance would read as "user scrolled away" and cancel the refollow.
+    if (scroller && typeof scroller.scrollTo === 'function') {
+      smoothScrollUntilRef.current = performance.now() + SMOOTH_SCROLL_GUARD_MS
+      scroller.scrollTo({ top: scroller.scrollHeight, behavior: 'smooth' })
+    }
     pinnedToBottomRef.current = true
     setHasNewContent(false)
     setAwayFromBottom(false)

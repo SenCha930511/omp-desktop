@@ -52,6 +52,14 @@ function jumpButton(): HTMLButtonElement | null {
 }
 
 describe('transcript jump-to-bottom button', () => {
+  it('shows the live working word with the shine treatment while streaming', () => {
+    act(() => root.render(<Transcript messages={[...messages, { id: 'assistant-2', role: 'assistant', timestamp: 3, streaming: true, parts: [] }]} git={git} active onOpenChanges={() => undefined} onSuggestion={() => undefined} />))
+    const word = container.querySelector('.streaming-state .shine-sweep')
+    expect(word).not.toBeNull()
+    expect(word?.textContent).toContain('working')
+  })
+
+
   it('keeps a reader near the bottom in place when streaming continues', () => {
     const scrollTo = vi.fn()
     scroller.scrollTo = scrollTo
@@ -89,8 +97,33 @@ describe('transcript jump-to-bottom button', () => {
 
     act(() => jumpButton()?.click())
 
-    expect(scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: 'auto' })
+    expect(scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: 'smooth' })
     expect(jumpButton()).toBeNull()
+  })
+
+  it('treats the smooth ride as following the whole way down', () => {
+    fakeScrollMetrics(1000, 400, 0)
+    act(() => scroller.dispatchEvent(new Event('scroll')))
+    const scrollTo = vi.fn()
+    scroller.scrollTo = scrollTo as unknown as typeof scroller.scrollTo
+
+    act(() => jumpButton()?.click())
+    expect(scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: 'smooth' })
+
+    // Mid-flight distance must not unfollow or resurrect the jump button.
+    act(() => {
+      scroller.scrollTop = 320
+      scroller.dispatchEvent(new Event('scroll'))
+    })
+    expect(jumpButton()).toBeNull()
+
+    // Landing at the bottom ends the guard early; streaming growth follows again.
+    act(() => {
+      scroller.scrollTop = 600
+      scroller.dispatchEvent(new Event('scroll'))
+    })
+    act(() => root.render(<Transcript messages={[...messages, { id: 'assistant-2', role: 'assistant', timestamp: 3, streaming: true, parts: [{ type: 'text', text: 'Still working…' }] }]} git={git} onOpenChanges={() => undefined} onSuggestion={() => undefined} />))
+    expect(scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: 'auto' })
   })
 
   it('keeps following live output after the jump button is clicked', () => {

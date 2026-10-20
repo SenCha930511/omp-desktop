@@ -239,6 +239,7 @@ export class RpcRuntime {
     const response = await this.request(command, timeout)
     if (command.type === 'set_thinking_level' && response.success === true) {
       this.info.configuredThinkingLevel = command.level as RuntimeInfo['configuredThinkingLevel']
+      if (command.level !== 'auto') this.info.autoThinkingResolved = false
     }
     if (command.type === 'get_state') this.updateFromState(response.data)
     if (response.success === true && ['set_model', 'cycle_model', 'set_thinking_level', 'cycle_thinking_level'].includes(String(command.type))) {
@@ -477,6 +478,13 @@ export class RpcRuntime {
     if (!value) return
     if (value.type === 'thinking_level_changed') {
       this.info.configuredThinkingLevel = (value.configured ?? value.thinkingLevel) as RuntimeInfo['configuredThinkingLevel']
+      if (this.info.configuredThinkingLevel === 'auto') {
+        // Merely pointing the selector at auto is a config change; only a
+        // resolution event raised during a live turn counts as resolved.
+        if (this.info.isStreaming) this.info.autoThinkingResolved = true
+      } else {
+        this.info.autoThinkingResolved = false
+      }
     }
     if (value.type === 'available_commands_update') this.info.availableCommands = parseSlashCommands(value.commands)
     const liveUsageUpdate = this.liveContextUsage.handleEvent(value)
@@ -781,6 +789,8 @@ export class RpcRuntime {
         this.authoritativeContextUsage = undefined
         delete this.info.contextUsage
         delete this.info.sessionUsage
+        // A state dump is a persisted configuration, not resolution evidence.
+        this.info.autoThinkingResolved = false
       }
       this.info.sessionId = raw.sessionId
     }

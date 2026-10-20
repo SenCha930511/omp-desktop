@@ -33,7 +33,7 @@ it('keeps auto selected while OMP reports a concrete effective level', async () 
   let value: ProviderCatalog
   const syncRuntime = vi.fn(async () => undefined)
   const reportError = vi.fn()
-  const runtime: RuntimeInfo = { runtimeId: 'r', harness: 'omp', cwd: '/test', isStreaming: false, model: { provider: 'test', id: 'reasoner' }, thinkingLevel: 'high', configuredThinkingLevel: 'auto' }
+  const runtime: RuntimeInfo = { runtimeId: 'r', harness: 'omp', cwd: '/test', isStreaming: false, model: { provider: 'test', id: 'reasoner' }, thinkingLevel: 'high', configuredThinkingLevel: 'auto', autoThinkingResolved: true }
   function Harness({ active }: { active: RuntimeInfo }) {
     value = useProviderCatalog({ bridge, runtime: active, syncRuntime, reportError })
     return <span>{value.effort}</span>
@@ -51,6 +51,27 @@ it('keeps auto selected while OMP reports a concrete effective level', async () 
     expect(value!.resolvedAutoEffort).toBeUndefined()
     await act(async () => { value!.changeEffort('auto') })
     expect(command).toHaveBeenCalledWith('r', { type: 'set_thinking_level', level: 'auto' })
+  } finally { await act(async () => root.unmount()) }
+})
+
+it('shows plain auto while the runtime has not resolved the auto level yet', async () => {
+  const host = document.createElement('div')
+  const root = createRoot(host)
+  const model = { key: 'test/reasoner', id: 'reasoner', name: 'Reasoner', provider: 'test', reasoning: true, available: true, enabled: true, input: ['text'], availableThinkingLevels: ['off', 'high'], fastModeSupported: false, contextWindow: 1000, maxTokens: 100 }
+  const bridge = { agent: { command: vi.fn(async () => ({})) }, providers: { catalog: async () => ({ models: [model], providers: [] }) } } as unknown as DesktopApi
+  let value: ProviderCatalog
+  const syncRuntime = vi.fn(async () => undefined)
+  const reportError = vi.fn()
+  // A concrete persisted level without resolution evidence must not leak into the chip.
+  const runtime: RuntimeInfo = { runtimeId: 'r', harness: 'omp', cwd: '/test', isStreaming: false, model: { provider: 'test', id: 'reasoner' }, thinkingLevel: 'high', configuredThinkingLevel: 'auto' }
+  function Harness({ active }: { active: RuntimeInfo }) {
+    value = useProviderCatalog({ bridge, runtime: active, syncRuntime, reportError })
+    return <span>{value.effort}</span>
+  }
+  try {
+    await act(async () => root.render(<Harness active={runtime} />))
+    expect(value!.effort).toBe('auto')
+    expect(value!.resolvedAutoEffort).toBeUndefined()
   } finally { await act(async () => root.unmount()) }
 })
 

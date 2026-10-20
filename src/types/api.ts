@@ -202,6 +202,8 @@ export interface SessionUsage {
 
 export interface RuntimeInfo {
   configuredThinkingLevel?: PrimeEffortSelector
+  /** Became true once the engine resolved the auto thinking level mid-turn in this session. */
+  autoThinkingResolved?: boolean
   availableCommands?: import('../lib/slash-commands').SlashCommand[]
   runtimeId: string
   harness: HarnessId

@@ -50,6 +50,8 @@ interface TranscriptProps {
   onOpenChanges(): void
   onSuggestion(prompt: string): void
   suggestionsDisabled?: boolean
+  /** Identifies the conversation; a change re-engages bottom-following like the jump button. */
+  followKey?: string
   /** Render the changes card inline under the latest turn instead of beside the composer. */
   showChangesCard?: boolean
   onDismissChanges?(): void
@@ -75,7 +77,7 @@ function ActiveAssistantMessage({ message, harness, showReasoning, showTools }: 
           <>
             {message.parts.map((part, index) => (part.type === 'text' ? <MarkdownText key={index} text={part.text} /> : null))}
             <div className="streaming-state" aria-live="polite">
-              <ThinkingDots /> {t('transcript.working', { harness: HARNESS_SHORT_NAMES[harness] })} <LiveElapsed since={message.startedAt ?? message.timestamp} />
+              <ThinkingDots /> <span className="shine-sweep">{t('transcript.working', { harness: HARNESS_SHORT_NAMES[harness] })}</span> <LiveElapsed since={message.startedAt ?? message.timestamp} />
             </div>
           </>
         )}
@@ -101,12 +103,13 @@ export function Transcript({
   onUndoChanges,
   queuedMessageCount = 0,
   onOpenSessionReference,
+  followKey,
   onRetry,
   onRestorePrompt,
 }: TranscriptProps) {
   const { t } = useI18n()
   const groupedMessages = useMemo(() => coalesceAssistantTurns(messages), [messages])
-  const { announcement, awayFromBottom, hiddenCount, hiddenAfter, scrollRef, scrollToBottom, showEarlier, showNewer, revealIndex, updatePinnedState, visibleMessages } = useTranscriptScroll(groupedMessages, visible)
+  const { announcement, awayFromBottom, hiddenCount, hiddenAfter, scrollRef, scrollToBottom, showEarlier, showNewer, revealIndex, updatePinnedState, visibleMessages } = useTranscriptScroll(groupedMessages, visible, followKey)
   const search = useTranscriptSearch(groupedMessages, scrollRef, revealIndex, visible)
   const recovery = useMemo(() => failedTurn(messages), [messages])
   const activeAssistantId = useMemo(() => (active && groupedMessages.at(-1)?.role === 'assistant' ? groupedMessages.at(-1)?.id : undefined), [active, groupedMessages])
@@ -192,7 +195,7 @@ export function Transcript({
           {active && !activeAssistantId ? (
             <article className="message message--assistant transcript-active-placeholder" aria-live="polite">
               <div className="streaming-state">
-                <ThinkingDots /> {t('transcript.working', { harness: HARNESS_SHORT_NAMES[harness] })}
+                <ThinkingDots /> <span className="shine-sweep">{t('transcript.working', { harness: HARNESS_SHORT_NAMES[harness] })}</span>
               </div>
             </article>
           ) : null}

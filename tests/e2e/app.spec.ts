@@ -1001,8 +1001,15 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(presetsGroup).toBeVisible()
     await expect(presetsGroup.getByRole('option', { name: 'Switch to preset plan-deck' })).toContainText('fixture/claude-fixture:medium · medium')
     await presetsGroup.getByRole('option', { name: 'Switch to preset fast-cell' }).click()
-    await expect(page.getByText('Switched to preset fast-cell')).toBeVisible()
-    await page.getByRole('button', { name: 'Close command result', exact: true }).click()
+    // Preset switches run in the background: the harness gets the command, but
+    // no command-output panel shows up in the transcript chrome.
+    await expect.poll(() => {
+      const path = join(fixtureRoot, 'prompt-args.json')
+      if (!existsSync(path)) return ''
+      return JSON.parse(readFileSync(path, 'utf8')).message as string
+    }).toBe('/modelpreset switch fast-cell')
+    await expect(page.getByText('Switched to preset fast-cell')).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Close command result', exact: true })).toHaveCount(0)
   })
 
   test('translates a renderer fork into an OMP branch command', async () => {

@@ -30,6 +30,8 @@ function openApplicationMenu(menu: ApplicationMenuName, event: MouseEvent<HTMLBu
 interface TitleToolbarProps {
   project?: ProjectRecord
   gitBranch?: string
+  /** Active session name; the session view's title takes it over the project name. */
+  sessionTitle?: string
   view: WorkspaceView
   /** Active harness product name; the session view's fallback title. */
   productName?: string
@@ -50,6 +52,7 @@ interface TitleToolbarProps {
 export function TitleToolbar({
   project,
   gitBranch,
+  sessionTitle,
   view,
   productName = 'OMP Desktop',
   sidebarOpen,
@@ -85,7 +88,7 @@ export function TitleToolbar({
         ) : null}
       </div>
       <div className="title-toolbar__identity">
-        <strong>{project?.name ?? (view === 'session' ? productName : t(viewTitles[view]))}</strong>
+        <strong>{view === 'session' ? (sessionTitle ?? project?.name ?? productName) : (project?.name ?? t(viewTitles[view]))}</strong>
         {(gitBranch ?? project?.gitBranch) && view === 'session' ? (
           <span className="branch-pill">
             <GitBranch size={12} />

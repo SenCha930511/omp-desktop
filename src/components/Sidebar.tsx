@@ -4,6 +4,8 @@ import {
   Check,
   CheckCircle2,
   ChevronDown,
+  ChevronsDownUp,
+  ChevronsUpDown,
   ChevronRight,
   Copy,
   Download,
@@ -82,6 +84,7 @@ export function indexSidebarSessions(
   projects: ProjectRecord[],
   sessions: SessionRecord[],
   stats?: SidebarIndexStats,
+  activeSessionId?: string,
 ): { activeSessions: SessionRecord[]; sessionsByProject: Map<string, SessionRecord[]> } {
   const activeSessions: SessionRecord[] = []
   const owners = new Map<string, string[]>()
@@ -103,8 +106,17 @@ export function indexSidebarSessions(
     const difference = Date.parse(right.lastUserMessageAt ?? right.createdAt) - Date.parse(left.lastUserMessageAt ?? left.createdAt)
     return difference || right.createdAt.localeCompare(left.createdAt) || left.filePath.localeCompare(right.filePath)
   }
+  const compareVisible = (left: SessionRecord, right: SessionRecord) => {
+    // The session the user is on ("in use") leads its group; the rest follows
+    // most-recent-message order.
+    if (activeSessionId) {
+      if (left.id === activeSessionId && right.id !== activeSessionId) return -1
+      if (right.id === activeSessionId && left.id !== activeSessionId) return 1
+    }
+    return compareByLastUserMessage(left, right)
+  }
   activeSessions.sort(compareByLastUserMessage)
-  for (const projectSessions of sessionsByProject.values()) projectSessions.sort(compareByLastUserMessage)
+  for (const projectSessions of sessionsByProject.values()) projectSessions.sort(compareVisible)
   return { activeSessions, sessionsByProject }
 }
 
@@ -245,6 +257,8 @@ function SidebarView({
   const { t } = useI18n()
   const [query, setQuery] = useState('')
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
+  const noneCollapsed = projects.every((project) => !(collapsed[project.id] ?? false))
+  const allCollapsed = projects.every((project) => collapsed[project.id] ?? false)
   const [searchOpen, setSearchOpen] = useState(false)
   const sidebarRef = useFocusTrap<HTMLElement>(overlay, onClose)
   const [projectMenu, setProjectMenu] = useState<string | null>(null)
@@ -256,7 +270,7 @@ function SidebarView({
   const [removeTarget, setRemoveTarget] = useState<ProjectRecord | null>(null)
   const [confirmUpdate, setConfirmUpdate] = useState(false)
   const [updateErrorOpen, setUpdateErrorOpen] = useState(false)
-  const { activeSessions, sessionsByProject } = useMemo(() => indexSidebarSessions(projects, sessions), [projects, sessions])
+  const { activeSessions, sessionsByProject } = useMemo(() => indexSidebarSessions(projects, sessions, undefined, activeSessionId), [projects, sessions, activeSessionId])
   const needsAttention = (session: SessionRecord) => {
     const signature = sessionAttentionSignature(session)
     return Boolean(signature && !signatureCleared(signature, clearedAttention[session.id], session.unread))
@@ -406,6 +420,12 @@ function SidebarView({
         <div className="sidebar__section-heading">
           <span>{t('nav.projects')}</span>
           <span className="sidebar__section-heading-actions">
+            <IconButton size="small" label={t('projects.expandAll')} disabled={noneCollapsed} onClick={() => setCollapsed({})}>
+              <ChevronsUpDown size={13} />
+            </IconButton>
+            <IconButton size="small" label={t('projects.collapseAll')} disabled={allCollapsed} onClick={() => setCollapsed(Object.fromEntries(projects.map((project) => [project.id, true])))}>
+              <ChevronsDownUp size={13} />
+            </IconButton>
             <IconButton
               size="small"
               className="sidebar__sort-toggle"

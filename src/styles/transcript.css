@@ -76,10 +76,10 @@
 /* Live elapsed clock on running work rows: tabular digits keep the 1-second
    updates from shifting the adjacent dots around. */
 .live-elapsed { font-variant-numeric: tabular-nums; opacity: 0.78; }
-.work-timeline { display: flex; flex-direction: column; gap: 2px; padding: 4px 0 1px; }
+.work-timeline { display: flex; flex-direction: column; gap: 1px; padding: 4px 0 1px; }
 .work-disclosure.is-running .work-timeline { padding: 0 0 8px; }
 .work-disclosure.is-running .activity-line--reasoning { color: var(--text-tertiary); font-size: 12.5px; line-height: 1.55; }
-.activity-line { position: relative; min-width: 0; color: var(--text-secondary); font-size: 11.5px; line-height: 1.45; }
+.activity-line { position: relative; min-width: 0; color: var(--text-secondary); font-size: 11.5px; line-height: 1.38; }
 .activity-line--reasoning.reasoning-disclosure { margin: 0; padding: 0; color: var(--text-secondary); }
 .activity-line--reasoning .prose { margin: 0; color: inherit; font-size: inherit; line-height: inherit; }
 .activity-line--reasoning strong { font-weight: inherit; }
@@ -104,7 +104,7 @@
 .activity-line--question { color: var(--warning); background: color-mix(in srgb, var(--warning-soft) 58%, transparent); }
 .activity-line--question:hover { background: var(--warning-soft); }
 .activity-line--question .activity-line__icon, .activity-line--question .activity-line__kind, .activity-line--question .activity-tool__state { color: var(--warning); }
-.activity-tool__summary { width: 100%; min-height: 22px; display: flex; align-items: center; gap: 8px; padding: 2px 0; color: inherit; background: transparent; text-align: left; }
+.activity-tool__summary { width: 100%; min-height: 20px; display: flex; align-items: center; gap: 8px; padding: 1px 0; color: inherit; background: transparent; text-align: left; }
 .activity-tool__summary:disabled { opacity: 1; pointer-events: none; }
 .activity-tool__preview { min-width: 0; flex: 0 1 auto; max-width: 72ch; overflow: hidden; color: var(--text-tertiary); background: transparent; border: 0; padding: 0; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; }
 .activity-tool__summary .activity-tool__preview::before { content: '·'; margin-right: 8px; color: var(--text-tertiary); }
@@ -162,6 +162,13 @@
 .diff-count--add { color: var(--success); background: var(--diff-add); }
 .diff-count--remove { color: var(--danger); background: var(--diff-remove); }
 .streaming-state { display: flex; align-items: center; gap: 7px; margin-top: 10px; color: var(--text-tertiary); font-size: 11.5px; }
+/* CLI-style shine sweep on live status words: a light band glides across the
+   text on a slow beat so long runs read as moving, never hung. */
+.shine-sweep { background: linear-gradient(90deg, var(--text-tertiary) 42%, color-mix(in srgb, var(--text) 65%, #ffffff) 50%, var(--text-tertiary) 58%); background-size: 240% 100%; -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; color: transparent; animation: shine-sweep 3.2s linear infinite; }
+@keyframes shine-sweep { 0% { background-position: 120% 0; } 100% { background-position: -20% 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .shine-sweep { animation: none; background: none; -webkit-text-fill-color: currentColor; color: currentColor; }
+}
 .transcript-active-placeholder { align-items: center; }
 .transcript-active-placeholder .streaming-state { margin-top: 0; }
 .thinking-dots { min-width: 30px; height: 16px; display: inline-flex; align-items: center; gap: 4px; }

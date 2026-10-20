@@ -36,6 +36,7 @@ import { SAMPLE_GIT, SAMPLE_PROJECTS, SAMPLE_SCHEDULES, SAMPLE_SESSIONS, SAMPLE_
 import { openExternalUrl, revealPath } from '@/lib/desktop-actions'
 import { errorMessage } from '@/lib/errors'
 import { HARNESS_AGENT_NAMES, HARNESS_PRODUCT_NAMES, HARNESS_SHORT_NAMES } from '@/lib/harness'
+import { isBackgroundedSlashCommand } from '@/lib/slash-commands'
 import { I18nProvider, useI18n } from '@/lib/i18n'
 import { detectRendererPlatform } from '@/lib/platform-shortcuts'
 import { activeProjectScriptKind, ProjectScriptBusyError, setupNeedsRun } from '@/lib/project-scripts'
@@ -246,6 +247,21 @@ export default function App() {
   const activeSession = useMemo(() => sessions.find((session) => session.id === workspace.activeSessionId), [sessions, workspace.activeSessionId])
   const subagents = useSubagents(bridge, workspace.runtime?.runtimeId)
   const commandOutput = useCommandOutput(workspace.workspaceGeneration)
+  const backgroundCommandDepthRef = useRef(0)
+  const commandOutputBegin = useCallback((command: string) => {
+    if (isBackgroundedSlashCommand(command)) backgroundCommandDepthRef.current += 1
+    else commandOutput.begin(command)
+  }, [commandOutput])
+  const commandOutputFinish = useCallback((failure?: string, agentInvoked?: boolean) => {
+    if (backgroundCommandDepthRef.current > 0) backgroundCommandDepthRef.current -= 1
+    else commandOutput.finish(failure, agentInvoked)
+  }, [commandOutput])
+  const commandOutputAppend = useCallback((text: string, failed = false) => {
+    // Harness echoes for a backgrounded command must stay silent too: without
+    // a begun entry, append would otherwise open the panel on its own.
+    if (backgroundCommandDepthRef.current > 0) return
+    commandOutput.append(text, failed)
+  }, [commandOutput])
   const provider = useProviderCatalog({
     bridge,
     ready: settingsState.initialized,
@@ -388,7 +404,7 @@ export default function App() {
     clearQueuedPromptFlushFailures: workspace.clearQueuedPromptFlushFailures,
     clearQueuedPrompts: workspace.clearQueuedPrompts,
     queueAgentEvent: workspace.queueAgentEvent,
-    onCommandOutput: commandOutput.append,
+    onCommandOutput: commandOutputAppend,
     reconcileTranscriptForEvent: workspace.reconcileTranscriptForEvent,
     showExtensionUi: extension.showExtensionUi,
     clearExtensionUi: extension.clearExtensionUi,
@@ -580,8 +596,8 @@ export default function App() {
       if (value === true) submissionGenerationRef.current = workspace.workspaceRef.current.generation
       setSubmitting(value)
     },
-    onCommandStart: commandOutput.begin,
-    onCommandFinish: commandOutput.finish,
+    onCommandStart: commandOutputBegin,
+    onCommandFinish: commandOutputFinish,
     refreshSchedules,
     resetBrowserView: () => setBrowserGeneration((value) => value + 1),
     closeTerminalForSession: (sessionPath) => {
@@ -1039,6 +1055,7 @@ export default function App() {
         <div className="workbench" inert={layout.compactLayout && sidebarVisible ? true : undefined}>
           <TitleToolbar
             project={view === 'session' ? activeProject : undefined}
+            sessionTitle={view === 'session' ? activeSession?.title : undefined}
             gitBranch={git.branch}
             view={view}
             productName={HARNESS_PRODUCT_NAMES[activeHarness]}
@@ -1069,6 +1086,7 @@ export default function App() {
                     <Suspense fallback={<LoadingPanel label={t('app.panel.conversation')} />}>
                       <Transcript
                         key={workspace.activeSessionId ?? 'new-session'}
+                        followKey={workspace.activeSessionId ?? 'new-session'}
                         messages={workspace.messages}
                         git={turnGit}
                         harness={activeHarness}
@@ -1118,7 +1136,7 @@ export default function App() {
                         resolvedAutoEffort={provider.resolvedAutoEffort}
                         providers={provider.catalog?.providers ?? EMPTY_PROVIDERS}
                         presets={provider.catalog?.presets}
-                        onSwitchPreset={(preset) => void sendPrompt(`/modelpreset switch ${preset.name}`)}
+                        onSwitchPreset={(preset) => { void sendPrompt(`/modelpreset switch ${preset.name}`).catch(reportError) }}
                         onSavePreset={(name) => void sendPrompt(`/modelpreset save ${name}`)}
                         reasoningLevels={provider.reasoningLevels}
                         fast={provider.fast}

@@ -46,6 +46,14 @@ export function tuiOnlySubcommand(name: string, args: string): boolean {
   return (name === 'todo' && ['edit', 'expand', 'collapse'].includes(verb)) || (name === 'advisor' && verb === 'configure')
 }
 
+/**
+ * Commands the desktop runs as side effects rather than conversation. Their
+ * results are already visible in the dedicated chrome (the model picker
+ * reflects the switched preset), so the command chip would be pure noise.
+ * Matches both picker-initiated and manually typed invocations.
+ */
+export const isBackgroundedSlashCommand = (prompt: string): boolean => /^\/modelpreset\s+switch\s+\S/.test(prompt.trim())
+
 export function deferredSlashCommand(prompt: string): string | undefined {
   const invocation = parseSlashInvocation(prompt)
   if (!invocation) return

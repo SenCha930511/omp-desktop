@@ -346,7 +346,7 @@ export function useProviderCatalog({ bridge, ready = true, harness = 'omp', runt
     }
   }, [bridge, fallbackModel, harness, rememberSelection, setCatalogFor, updateFast, updateModel])
 
-  const resolvedAutoEffort = effort !== 'auto' ? undefined : PRIME_THINKING_LEVELS.find((level) => level === runtime?.thinkingLevel)
+  const resolvedAutoEffort = effort !== 'auto' || runtime?.autoThinkingResolved !== true ? undefined : PRIME_THINKING_LEVELS.find((level) => level === runtime.thinkingLevel)
 
   return {
     model, effort, fast, catalog, selectedModel, reasoningLevels, resolvedAutoEffort, modelsByProvider,

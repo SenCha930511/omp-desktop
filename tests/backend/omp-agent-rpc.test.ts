@@ -273,6 +273,28 @@ describe('OMP RPC handshake', () => {
     await manager.command(runtime.runtimeId, { type: 'set_thinking_level', level: 'high' })
     expect((await manager.list())[0].configuredThinkingLevel).toBe('high')
   })
+  it('shows auto as resolved only after a resolution event arrives mid-turn', async () => {
+    const fake = fakeOmpAgent({ promptScript: `
+    send({ type: 'thinking_level_changed', configured: 'auto', thinkingLevel: 'high' })
+    streaming = true
+    send({ type: 'agent_start' })
+    send({ type: 'thinking_level_changed', configured: 'auto', thinkingLevel: 'high' })
+    setTimeout(() => { streaming = false; send({ type: 'agent_end', isTerminal: true }) }, 100)` })
+    const manager = ompManager(fake.executable)
+    manager.setEventSink(() => undefined)
+    const runtime = await manager.start({ cwd: fake.cwd, model: lunaModel.key, thinking: 'auto' })
+    // Persisted state and config alone must not read as resolved.
+    expect((await manager.list())[0].autoThinkingResolved).toBeFalsy()
+
+    await manager.command(runtime.runtimeId, { type: 'prompt', message: 'resolve the auto effort' })
+    await waitUntil(() => (manager.list()[0]?.autoThinkingResolved) === true)
+
+    await manager.command(runtime.runtimeId, { type: 'set_thinking_level', level: 'high' })
+    expect((await manager.list())[0].autoThinkingResolved).toBe(false)
+    await manager.command(runtime.runtimeId, { type: 'set_thinking_level', level: 'auto' })
+    // Pointing the selector back at auto without a resolution stays silent.
+    expect((await manager.list())[0].autoThinkingResolved).toBe(false)
+  })
   it('releases the exact runtime environment after OMP termination', async () => {
     const fake = fakeOmpAgent()
     const manager = ompManager(fake.executable)

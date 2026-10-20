@@ -86,7 +86,7 @@ describe('transcript rendering', () => {
     expect(html).toContain('activity-line--reasoning')
     expect(html).not.toContain('work-disclosure__rail')
     expect(html).toContain('work-disclosure__button')
-    expect(html).toContain('role="status"><span>Thinking</span>')
+    expect(html).toContain('role="status"><span class="shine-sweep">Thinking</span>')
     expect(html).toContain('Checking <strong>the workspace</strong> now.')
     expect(html).not.toContain('**the workspace**')
     expect(html).not.toContain('Worked for')
@@ -153,7 +153,7 @@ describe('transcript rendering', () => {
 
     expect(html).toContain('activity-line--reasoning')
     expect(html.includes('activity-line--tool')).toBe(showTools)
-    expect(html).toContain('role="status"><span>Working</span>')
+    expect(html).toContain('role="status"><span class="shine-sweep">Working</span>')
   })
 
   it.each([[true, 'Working'], [false, 'Thinking']] as const)(
@@ -167,7 +167,7 @@ describe('transcript rendering', () => {
           { type: 'toolResult', name: 'read_file', text: 'done' },
         ],
       }], false, showTools)
-      expect(html).toContain(`role="status"><span>${status}</span>`)
+      expect(html).toContain(`role="status"><span class="shine-sweep">${status}</span>`)
     },
   )
 
@@ -178,12 +178,12 @@ describe('transcript rendering', () => {
       { type: 'tool_execution_start', toolCallId: 'tool-1', toolName: 'read_file' },
       { type: 'tool_execution_update', toolCallId: 'tool-1', toolName: 'read_file', partialResult: 'halfway' },
     ])
-    expect(render(updating, false, false)).toContain('role="status"><span>Working</span>')
+    expect(render(updating, false, false)).toContain('role="status"><span class="shine-sweep">Working</span>')
 
     const finished = replayPrimeEvents(updating, [
       { type: 'tool_execution_end', toolCallId: 'tool-1', toolName: 'read_file', result: 'done' },
     ])
-    expect(render(finished, false, false)).toContain('role="status"><span>Thinking</span>')
+    expect(render(finished, false, false)).toContain('role="status"><span class="shine-sweep">Thinking</span>')
   })
 
   it('keeps late results at their call site and follows newer reasoning or narrative', () => {
@@ -195,12 +195,12 @@ describe('transcript rendering', () => {
       { type: 'tool_execution_end', toolCallId: 'tool-1', toolName: 'read_file', result: 'done' },
     ])
     expect(reasoning[0].parts.map((part) => part.type)).toEqual(['thinking', 'toolCall', 'toolResult', 'thinking'])
-    expect(render(reasoning)).toContain('role="status"><span>Thinking</span>')
+    expect(render(reasoning)).toContain('role="status"><span class="shine-sweep">Thinking</span>')
 
     const narrative = replayPrimeEvents(reasoning, [
       { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Final answer.' } },
     ])
-    expect(render(narrative, false, false)).toContain('role="status"><span>Working</span>')
+    expect(render(narrative, false, false)).toContain('role="status"><span class="shine-sweep">Working</span>')
   })
 
   it('keeps external active work readable until the whole agent turn is done', () => {
