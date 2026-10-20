@@ -89,7 +89,61 @@ describe('transcript jump-to-bottom button', () => {
 
     act(() => jumpButton()?.click())
 
-    expect(scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: 'smooth' })
+    expect(scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: 'auto' })
+    expect(jumpButton()).toBeNull()
+  })
+
+  it('keeps following live output after the jump button is clicked', () => {
+    fakeScrollMetrics(1000, 400, 0)
+    act(() => scroller.dispatchEvent(new Event('scroll')))
+    expect(jumpButton()).not.toBeNull()
+
+    const scrollTo = vi.fn()
+    scroller.scrollTo = scrollTo as unknown as typeof scroller.scrollTo
+    act(() => jumpButton()?.click())
+    act(() => {
+      scroller.scrollTop = 600
+      scroller.dispatchEvent(new Event('scroll'))
+    })
+    expect(jumpButton()).toBeNull()
+
+    act(() => root.render(<Transcript messages={[...messages, { id: 'assistant-2', role: 'assistant', timestamp: 3, streaming: true, parts: [{ type: 'text', text: 'Still working…' }] }]} git={git} onOpenChanges={() => undefined} onSuggestion={() => undefined} />))
+    expect(scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: 'auto' })
+  })
+
+  it('re-engages following when the reader scrolls back down to the bottom while streaming', () => {
+    const scrollTo = vi.fn()
+    scroller.scrollTo = scrollTo as unknown as typeof scroller.scrollTo
+    fakeScrollMetrics(1000, 400, 0)
+    act(() => scroller.dispatchEvent(new Event('scroll')))
+    expect(jumpButton()).not.toBeNull()
+
+    act(() => root.render(<Transcript messages={[...messages, { id: 'assistant-2', role: 'assistant', timestamp: 3, streaming: true, parts: [{ type: 'text', text: 'Still working…' }] }]} git={git} onOpenChanges={() => undefined} onSuggestion={() => undefined} />))
+    expect(scrollTo).not.toHaveBeenCalled()
+
+    act(() => {
+      scroller.scrollTop = 580
+      scroller.dispatchEvent(new Event('scroll'))
+    })
+    expect(jumpButton()).toBeNull()
+
+    act(() => root.render(<Transcript messages={[...messages, { id: 'assistant-3', role: 'assistant', timestamp: 4, streaming: true, parts: [{ type: 'text', text: 'More output follows.' }] }]} git={git} onOpenChanges={() => undefined} onSuggestion={() => undefined} />))
+    expect(scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: 'auto' })
+  })
+
+  it('does not let content growth alone unfollow — parked scrollTop keeps tracking', () => {
+    const scrollTo = vi.fn()
+    scroller.scrollTo = scrollTo as unknown as typeof scroller.scrollTo
+    fakeScrollMetrics(1000, 400, 600)
+    act(() => scroller.dispatchEvent(new Event('scroll')))
+
+    // The model appends more content: scrollHeight grows to 1400 while the
+    // parked top stays at 600. Growth emits no scroll event, so following
+    // continues and the next message snaps the view to the new tail.
+    fakeScrollMetrics(1400, 400, 600)
+    act(() => root.render(<Transcript messages={[...messages, { id: 'assistant-2', role: 'assistant', timestamp: 3, streaming: true, parts: [{ type: 'text', text: 'Still working…' }] }]} git={git} onOpenChanges={() => undefined} onSuggestion={() => undefined} />))
+
+    expect(scrollTo).toHaveBeenCalled()
     expect(jumpButton()).toBeNull()
   })
 })

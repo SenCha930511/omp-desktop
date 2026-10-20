@@ -58,11 +58,21 @@ export function useTranscriptScroll(messages: TranscriptMessage[], active = true
     const movedUp = scroller.scrollTop < lastScrollTopRef.current - 1
     if (movedUp) manualScrollUntilRef.current = performance.now() + 150
     lastScrollTopRef.current = scroller.scrollTop
-    const pinned = !hiddenAfter && !movedUp && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 40
-    pinnedToBottomRef.current = pinned
-    if (pinned) setHasNewContent(false)
-    // Same-value updates bail out in React, so streaming scroll events stay cheap.
-    setAwayFromBottom((away) => (away === !pinned ? away : !pinned))
+    // Content growth alone never fires scroll events — scrollTop stays parked
+    // while scrollHeight rises — so any observed move is user-driven.
+    const atBottom = !hiddenAfter && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 40
+    if (movedUp || !atBottom) {
+      // An explicit move away (wheel/trackpad up, scrollbar drag, keyboard)
+      // breaks following; the jump button brings it back.
+      pinnedToBottomRef.current = false
+      setAwayFromBottom(true)
+    } else {
+      // Reaching the bottom — from the jump button or a deliberate scroll
+      // down — re-engages following, so the view tracks live output again.
+      if (!pinnedToBottomRef.current) setHasNewContent(false)
+      pinnedToBottomRef.current = true
+      setAwayFromBottom(false)
+    }
   }
 
   useEffect(() => {
@@ -74,6 +84,7 @@ export function useTranscriptScroll(messages: TranscriptMessage[], active = true
       if ((event instanceof WheelEvent && event.deltaY < 0) || (target instanceof Element && target.closest('summary,button[aria-expanded]'))) {
         pinnedToBottomRef.current = false
         manualScrollUntilRef.current = performance.now() + 150
+        if (event instanceof WheelEvent) setAwayFromBottom(true)
       }
     }
     const observer = new ResizeObserver(() => {
@@ -88,7 +99,9 @@ export function useTranscriptScroll(messages: TranscriptMessage[], active = true
   const scrollToBottom = () => {
     if (windowEnd !== undefined) { setWindowEnd(undefined); setVisibleLimit(250) }
     const scroller = scrollRef.current
-    if (scroller && typeof scroller.scrollTo === 'function') scroller.scrollTo({ top: scroller.scrollHeight, behavior: 'smooth' })
+    // An instant snap, not a smooth ride: mid-flight distance would read as
+    // "user scrolled away" in the events above and cancel the refollow.
+    if (scroller && typeof scroller.scrollTo === 'function') scroller.scrollTo({ top: scroller.scrollHeight, behavior: 'auto' })
     pinnedToBottomRef.current = true
     setHasNewContent(false)
     setAwayFromBottom(false)

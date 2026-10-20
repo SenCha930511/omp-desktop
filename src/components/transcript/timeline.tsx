@@ -89,12 +89,18 @@ function firstLine(text: string): string {
   return newline === -1 ? text : text.slice(0, newline)
 }
 
-/** Tail of the live stream — the collapsed row acts like a ticker, tracking
- * the in-progress line until the reader expands the section. */
+/** Tail of the live stream — the collapsed row acts like a ticker. It
+ * re-anchors at every sentence boundary (CJK or ASCII terminal marks), so
+ * each finished sentence swaps the preview to the sentence just starting,
+ * and long sentences keep scrolling from their tail. */
 function tailLine(text: string): string {
   const trimmed = text.replace(/\s+$/, '')
   const newline = trimmed.lastIndexOf('\n')
-  return newline === -1 ? trimmed : trimmed.slice(newline + 1)
+  const line = newline === -1 ? trimmed : trimmed.slice(newline + 1)
+  let cut = -1
+  for (const match of line.matchAll(/[。！？!?；;]|[.!?](?=\s|$)/g)) cut = match.index + match[0].length
+  const tail = cut === -1 ? line : line.slice(cut).trimStart()
+  return tail || line
 }
 
 /** Collapse a thinking blob into one plain-text preview line: settled rows
@@ -342,12 +348,16 @@ export function WorkTimeline({ parts, showReasoning, showTools, streaming = fals
         }
         if (part.type === 'toolResult') return showTools ? <StandaloneToolResult key={key} part={part} /> : null
         if (part.type === 'agentMessage') return <AgentActivityPart key={key} part={part} />
-        if (part.type === 'text')
+        if (part.type === 'text') {
+          // Punctuation-only chatter (a stray "·" or "…" the model emits
+          // between tool calls) is a stray glyph, not narration — drop it.
+          if (!/[\p{L}\p{N}]/u.test(part.text)) return null
           return (
             <div className="activity-line activity-line--note" key={key}>
               <MarkdownText text={part.text} />
             </div>
           )
+        }
         return null
       })}
     </div>

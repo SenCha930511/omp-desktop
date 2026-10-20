@@ -106,6 +106,40 @@ describe('transcript rendering', () => {
     expect(settled).toContain('title="Opening analysis"')
   })
 
+  it('re-anchors the streaming tail at the last sentence boundary', () => {
+    const cases = [
+      // CJK full stop: the preview follows the sentence just starting.
+      ['一段一樣的思考。新句進行中', '新句進行中'],
+      // ASCII terminals followed by whitespace end a sentence.
+      ['First pass complete. Now checking the remaining fixtures', 'Now checking the remaining fixtures'],
+      ['Boom! Next move', 'Next move'],
+    ] as const
+    for (const [body, expected] of cases) {
+      const html = renderToStaticMarkup(createElement(WorkTimeline, { parts: [{ type: 'thinking', text: body }] as TranscriptMessage['parts'], showReasoning: true, showTools: true, streaming: true }))
+      expect(html).toContain(`title="${expected}"`)
+    }
+    // A decimal point is not a boundary — the whole tail keeps ticking.
+    const decimal = renderToStaticMarkup(createElement(WorkTimeline, { parts: [{ type: 'thinking', text: 'Latency was 3.5 seconds so far' }] as TranscriptMessage['parts'], showReasoning: true, showTools: true, streaming: true }))
+    expect(decimal).toContain('title="Latency was 3.5 seconds so far"')
+  })
+
+  it('drops punctuation-only chatter rows between tool activity', () => {
+    const html = renderToStaticMarkup(createElement(WorkTimeline, {
+      parts: [
+        { type: 'toolCall', id: 'read-1', name: 'read' },
+        { type: 'toolResult', name: 'read', text: 'ok' },
+        { type: 'text', text: '·' },
+        { type: 'text', text: '… – ---' },
+        { type: 'text', text: '實際回報' },
+      ] as TranscriptMessage['parts'],
+      showReasoning: true, showTools: true, streaming: false,
+    }))
+    expect(html).not.toContain('·')
+    expect(html).not.toContain('… – ---')
+    expect(html.match(/activity-line--note/g)).toHaveLength(1)
+    expect(html).toContain('實際回報')
+  })
+
   it.each([
     ['a running tool', true, 'read_file', { path: 'package.json' }],
     ['a hidden running tool', false, 'read_file', { path: 'package.json' }],
