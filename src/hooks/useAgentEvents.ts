@@ -148,6 +148,11 @@ export function useAgentEvents({
       if (type === 'auto_retry_end' && event.success !== true) {
         setRuntime((current) => current?.runtimeId === runtimeId ? { ...current, isStreaming: false } : current)
       }
+      // Local-only slash commands admit immediately; their completion arrives
+      // as prompt_result with agentInvoked:false instead of agent_end.
+      if (type === 'prompt_result' && event.agentInvoked === false) {
+        setRuntime((current) => current?.runtimeId === runtimeId ? { ...current, isStreaming: false, isCompacting: false } : current)
+      }
       if (type === 'runtime_exit') {
         clearExtensionUi(runtimeId)
         runtimeSessionsRef.current.delete(runtimeId)

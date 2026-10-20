@@ -17,6 +17,7 @@ export function sessionLifecycleChange(event: Record<string, unknown>): SessionL
   if (type === 'auto_retry_start') return { status: 'running', markUnread: false }
   if (type === 'auto_retry_end' && event.success !== true) return { status: 'failed' }
   if (type === 'agent_end') return { status: 'complete', markUnread: true }
+  if (type === 'prompt_result' && event.agentInvoked === false) return { status: 'complete', markUnread: true }
   if (type === 'extension_error' || type === 'error' || type === 'transport_error') return { status: 'failed' }
   if (type === 'runtime_exit') return { status: event.expected === true ? 'complete' : 'failed', markUnread: event.expected === true }
   return undefined

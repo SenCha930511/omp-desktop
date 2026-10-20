@@ -15,6 +15,19 @@ describe('agent transport events', () => {
     expect(messages.at(-1)?.parts).toMatchObject([{ type: 'text', text: 'Malformed agent output' }])
   })
 
+  it('finalizes the stream when a local-only command completes via prompt_result', () => {
+    const messages = applyPrimeEvent([streamingMessage()], { type: 'prompt_result', agentInvoked: false })
+
+    expect(messages[0].streaming).toBe(false)
+    expect(messages).toHaveLength(1)
+  })
+
+  it('keeps streaming when prompt_result still involves the agent', () => {
+    const messages = applyPrimeEvent([streamingMessage()], { type: 'prompt_result', agentInvoked: true })
+
+    expect(messages[0].streaming).toBe(true)
+  })
+
   it('keeps the stream open when the desktop rate limiter drops events', () => {
     const messages = applyPrimeEvent([streamingMessage()], { type: 'transport_limit', kind: 'count', error: 'Prime Agent event rate exceeded the desktop limit' })
 

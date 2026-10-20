@@ -5,7 +5,7 @@ import { writeClipboardText } from '@/lib/clipboard'
 import type { CommandResult } from '@/hooks/useCommandOutput'
 import './command-output.css'
 
-export function CommandOutputPanel({ text, command, status, onClose, history = [], selectedId, onSelect }: { text: string; command?: string; status?: 'running' | 'completed' | 'failed'; onClose(): void; history?: CommandResult[]; selectedId?: number; onSelect?(id: number): void }) {
+export function CommandOutputPanel({ text, command, status, onClose, history = [], selectedId, onSelect, onClear }: { text: string; command?: string; status?: 'running' | 'completed' | 'failed'; onClose(): void; history?: CommandResult[]; selectedId?: number; onSelect?(id: number): void; onClear?(): void }) {
   const { t } = useI18n()
   const [expanded, setExpanded] = useState(true)
   const [copied, setCopied] = useState(false)
@@ -23,7 +23,14 @@ export function CommandOutputPanel({ text, command, status, onClose, history = [
     const timer = window.setTimeout(() => setCopied(false), 1500)
     return () => window.clearTimeout(timer)
   }, [copied])
-  if (!text && !command) return history.length && onSelect ? <button type="button" className="command-history-trigger" onClick={() => onSelect(history[0].id)}><Terminal size={13} />{t('conversation.history.reopen', { count: history.length })}</button> : null
+  if (!text && !command) return history.length && onSelect ? (
+    <span className="command-history-trigger">
+      <button type="button" className="command-history-trigger__reopen" onClick={() => onSelect(history[0].id)}>
+        <Terminal size={13} />{t('conversation.history.reopen', { count: history.length })}
+      </button>
+      {onClear ? <button type="button" className="command-history-trigger__clear" aria-label={t('conversation.history.clear')} title={t('conversation.history.clear')} onClick={onClear}><X size={12} /></button> : null}
+    </span>
+  ) : null
   const copy = async () => {
     try { await writeClipboardText(text); setCopied(true); setCopyFailed(false) } catch { setCopyFailed(true) }
   }

@@ -522,8 +522,13 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
         } else {
           startedPrompt = true
           appendUserMessage()
-          workspace.setRuntime({ ...activeRuntime, isStreaming: true })
-          appendPendingAssistant()
+          // Pure slash commands resolve without the model; agentic ones mark
+          // streaming themselves via agent_start — optimistically flashing a
+          // working state here would linger until the next real turn.
+          if (!slashCommand || compactCommand) {
+            workspace.setRuntime({ ...activeRuntime, isStreaming: true })
+            appendPendingAssistant()
+          }
           const response = await bridge.agent.command(activeRuntime.runtimeId, {
             type: 'prompt',
             message: prompt,

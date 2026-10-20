@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { PRIME_THINKING_LEVELS } from '@/types/api'
 import type { HarnessId, PrimeModelCatalog, PrimeModelDescriptor, PrimeThinkingLevel, PrimeEffortSelector, DesktopApi, RuntimeInfo, SessionRecord } from '@/types/api'
 
 /** Stable fallback identities so consumers can memoize on prop equality. */
@@ -58,6 +59,8 @@ export interface ProviderCatalog {
   catalog: PrimeModelCatalog | null
   selectedModel: PrimeModelDescriptor | undefined
   reasoningLevels: PrimeEffortSelector[]
+  /** The concrete level OMP resolved while the selection stays `auto`. */
+  resolvedAutoEffort: PrimeEffortSelector | undefined
   modelsByProvider: ReadonlyMap<string, PrimeModelDescriptor[]>
   refresh(force?: boolean): Promise<void>
   changeModel(modelKey: string): void
@@ -343,8 +346,10 @@ export function useProviderCatalog({ bridge, ready = true, harness = 'omp', runt
     }
   }, [bridge, fallbackModel, harness, rememberSelection, setCatalogFor, updateFast, updateModel])
 
+  const resolvedAutoEffort = effort !== 'auto' ? undefined : PRIME_THINKING_LEVELS.find((level) => level === runtime?.thinkingLevel)
+
   return {
-    model, effort, fast, catalog, selectedModel, reasoningLevels, modelsByProvider,
+    model, effort, fast, catalog, selectedModel, reasoningLevels, resolvedAutoEffort, modelsByProvider,
     refresh, changeModel, changeEffort, changeFast,
     setEnabled, setAllEnabled, setAllDisabled, setModelEnabled,
   }

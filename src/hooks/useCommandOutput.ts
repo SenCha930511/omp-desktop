@@ -39,10 +39,13 @@ export function useCommandOutput(owner: number) {
     })
   }, [owner])
   const dismiss = useCallback(() => setState((current) => current.owner === owner ? { ...current, visible: false } : current), [owner])
+  const clear = useCallback(() => setState((current) => current.owner === owner ? { owner, entries: [], visible: false } : current), [owner])
   const select = useCallback((id: number) => setState((current) => current.owner === owner && current.entries.some((entry) => entry.id === id) ? { ...current, selectedId: id, visible: true } : current), [owner])
   const history = state.owner === owner ? state.entries : []
   const selected = history.find((entry) => entry.id === state.selectedId) ?? history[0]
   const visible = state.owner === owner && state.visible
   return { text: visible ? selected?.text ?? '' : '', command: visible ? selected?.command : undefined, status: visible ? selected?.status : undefined,
-    history, selectedId: selected?.id, visible, begin, finish, append, dismiss, select }
+    history, selectedId: selected?.id, visible, begin, finish, append, dismiss, clear, select }
 }
+
+export type CommandOutputView = ReturnType<typeof useCommandOutput>

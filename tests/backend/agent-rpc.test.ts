@@ -366,6 +366,42 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     expect(manager.list()[0]?.sessionUsage?.cost).toBeGreaterThanOrEqual(0.42)
   })
 
+  it('clears streaming state when a local-only slash command completes via prompt_result', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-rpc-prompt-result-'))
+    dirs.push(cwd)
+    const executable = join(cwd, 'slash-agent.cjs')
+    writeFileSync(executable, `#!/usr/bin/env node
+const readline = require('node:readline')
+const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
+readline.createInterface({ input: process.stdin }).on('line', (line) => {
+  const command = JSON.parse(line)
+  if (command.type === 'negotiate_protocol') {
+    send({ id: command.id, type: 'response', command: 'negotiate_protocol', success: true, data: { protocolVersion: command.protocolVersion } })
+  } else if (command.type === 'get_state') {
+    send({ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'slash', isStreaming: started, isCompacting: false } })
+  } else if (command.type === 'prompt' && command.message === '/context') {
+    started = true
+    send({ id: command.id, type: 'response', command: 'prompt', success: true })
+    send({ type: 'agent_start' })
+  } else if (command.type === 'prompt') {
+    started = false
+    send({ id: command.id, type: 'response', command: 'prompt', success: true })
+    send({ type: 'prompt_result', agentInvoked: false })
+  }
+})
+let started = false
+`)
+    chmodSync(executable, 0o755)
+    const manager = managerFor(executable)
+
+    const runtime = await manager.start({ cwd })
+    await manager.command(runtime.runtimeId, { type: 'prompt', message: '/context' })
+    await waitUntil(() => manager.list().find((candidate) => candidate.runtimeId === runtime.runtimeId)?.isStreaming === true)
+    // The deferred completion signal arrives with the next frame batch, not a wall clock.
+    await manager.command(runtime.runtimeId, { type: 'prompt', message: 'flush' })
+    await waitUntil(() => manager.list().find((candidate) => candidate.runtimeId === runtime.runtimeId)?.isStreaming === false)
+  })
+
   it('reports a null session cost when get_session_stats omits it', async () => {
     const fake = fakeAgent("{ id: command.id, type: 'response', command: 'prompt', success: true }")
     const manager = managerFor(fake.executable)

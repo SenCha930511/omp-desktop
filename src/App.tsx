@@ -1085,7 +1085,7 @@ export default function App() {
                       />
                     </Suspense>
                     <ConversationDock>
-                      <CommandOutputPanel text={commandOutput.text} command={commandOutput.command} status={commandOutput.status} onClose={commandOutput.dismiss} history={commandOutput.history} selectedId={commandOutput.selectedId} onSelect={commandOutput.select} />
+                      <CommandOutputPanel text={commandOutput.text} command={commandOutput.command} status={commandOutput.status} onClose={commandOutput.dismiss} history={commandOutput.history} selectedId={commandOutput.selectedId} onSelect={commandOutput.select} onClear={commandOutput.clear} />
                       <Composer
                         availableCommands={workspace.runtime?.availableCommands}
                         key={
@@ -1102,6 +1102,7 @@ export default function App() {
                         model={provider.model}
                         effort={provider.effort}
                         modelsByProvider={provider.modelsByProvider}
+                        resolvedAutoEffort={provider.resolvedAutoEffort}
                         providers={provider.catalog?.providers ?? EMPTY_PROVIDERS}
                         reasoningLevels={provider.reasoningLevels}
                         fast={provider.fast}

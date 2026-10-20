@@ -47,6 +47,8 @@ interface ComposerProps {
   disabled?: boolean
   model: string
   effort: PrimeEffortSelector
+  /** Concrete level the runtime resolved while `effort` stays auto. */
+  resolvedAutoEffort?: PrimeEffortSelector
   modelsByProvider: ReadonlyMap<string, PrimeModelDescriptor[]>
   providers: PrimeProviderDescriptor[]
   reasoningLevels: PrimeEffortSelector[]
@@ -136,6 +138,7 @@ export const Composer = memo(function Composer({
   modelsByProvider,
   providers,
   reasoningLevels,
+  resolvedAutoEffort,
   fast,
   fastSupported,
   fastAvailable,
@@ -836,7 +839,9 @@ export const Composer = memo(function Composer({
             <SelectControl label={t('composer.reasoningEffort')} compact icon={<Gauge size={12} />} value={effort} onChange={(event) => onEffortChange(event.target.value as PrimeEffortSelector)}>
               {reasoningLevels.map((level) => (
                 <option key={level} value={level}>
-                  {t(reasoningLabelKeys[level])}
+                  {level === 'auto' && resolvedAutoEffort
+                    ? t('composer.reasoning.autoResolved', { level: t(reasoningLabelKeys[resolvedAutoEffort]) })
+                    : t(reasoningLabelKeys[level])}
                 </option>
               ))}
             </SelectControl>

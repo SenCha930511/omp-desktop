@@ -330,6 +330,12 @@ export function replayPrimeEvents(
       finalizeStreaming(Date.now(), true)
       continue
     }
+    // Local-only slash commands never raise agent_end — admission completes
+    // via prompt_result with agentInvoked:false, so that is their terminal.
+    if (type === 'prompt_result') {
+      if (raw.agentInvoked === false) finalizeStreaming(Date.now(), false)
+      continue
+    }
     if (type === 'retry_fallback_applied' || type === 'model_change') {
       const fallback = fallbackModelFromRecord(raw)
       if (!fallback) continue

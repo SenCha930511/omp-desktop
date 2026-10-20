@@ -335,6 +335,14 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
       send({ id: command.id, type: 'response', command: command.type, success: true, data: { agentInvoked: false } })
       return
     }
+    if (message === '/fixture-deferred') {
+      // The admission ack carries no agentInvoked flag; the completion
+      // arrives as prompt_result, exactly like a local-only slash command.
+      send({ id: command.id, type: 'response', command: command.type, success: true })
+      send({ type: 'command_output', text: 'Deferred command completed' })
+      send({ type: 'prompt_result', agentInvoked: false })
+      return
+    }
     if (message === 'subagent fixture') {
       send({ type: 'subagent_lifecycle', payload: { id: 'fixture-worker', agent: 'Explore', status: 'started', description: 'Inspect fixture' } })
       send({ type: 'subagent_event', payload: { id: 'fixture-worker', event: { type: 'message_update', message: { role: 'assistant', timestamp: 1, content: [{ type: 'thinking', thinking: 'Inspecting fixture code' }] } } } })
@@ -532,6 +540,14 @@ test.describe('OMP Desktop desktop smoke', () => {
     await page.getByRole('button', { name: 'Send message', exact: true }).click()
     await expect(page.getByText('Runtime context: 12 percent')).toBeVisible()
     await expect(page.getByRole('region', { name: 'Command result', exact: true })).toBeVisible()
+    // A local-only slash command whose ack omits the admission flag and
+    // completes via prompt_result must never flash a working turn.
+    await composer.fill('/fixture-deferred')
+    await page.getByRole('button', { name: 'Send message', exact: true }).click()
+    await expect(page.getByText('Deferred command completed')).toBeVisible()
+    await expect(page.locator('.thinking-dots')).toHaveCount(0)
+    await expect(page.locator('.work-disclosure.is-running')).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Send message', exact: true })).toBeVisible()
     await page.getByRole('button', { name: 'Close command result', exact: true }).click()
     await expect(page.getByText('Runtime context: 12 percent')).toHaveCount(0)
     await expect(page.getByRole('button', { name: 'Stop OMP', exact: true })).toHaveCount(0)
@@ -585,7 +601,7 @@ test.describe('OMP Desktop desktop smoke', () => {
   test('offers auto effort and persists the thinking disclosure setting', async () => {
     await page.locator('.session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
     const effort = page.getByRole('combobox', { name: 'Reasoning effort', exact: true })
-    await expect(effort.locator('option[value="auto"]')).toHaveText('Auto')
+    await expect(effort.locator('option[value="auto"]')).toHaveText(/^Auto( · .+)?$/)
     await effort.selectOption('auto')
     await expect(effort).toHaveValue('auto')
     await page.evaluate(() => window.desktop!.settings.update({ reasoningExpandedByDefault: true }))

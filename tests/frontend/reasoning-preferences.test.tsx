@@ -42,8 +42,13 @@ it('keeps auto selected while OMP reports a concrete effective level', async () 
     await act(async () => root.render(<Harness active={runtime} />))
     expect(value!.reasoningLevels).toEqual(['auto', 'off', 'high'])
     expect(value!.effort).toBe('auto')
+    // The chip display flips to the concrete level while selection stays auto.
+    expect(value!.resolvedAutoEffort).toBe('high')
     await act(async () => root.render(<Harness active={{ ...runtime, thinkingLevel: 'off' }} />))
     expect(value!.effort).toBe('auto')
+    expect(value!.resolvedAutoEffort).toBe('off')
+    await act(async () => root.render(<Harness active={{ ...runtime, thinkingLevel: 'auto' }} />))
+    expect(value!.resolvedAutoEffort).toBeUndefined()
     await act(async () => { value!.changeEffort('auto') })
     expect(command).toHaveBeenCalledWith('r', { type: 'set_thinking_level', level: 'auto' })
   } finally { await act(async () => root.unmount()) }

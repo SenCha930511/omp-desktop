@@ -508,6 +508,12 @@ export class RpcRuntime {
       this.info.isStreaming = false
       this.info.isCompacting = false
       this.bakeLiveContextUsage()
+    } else if (value.type === 'prompt_result' && value.agentInvoked === false) {
+      // Local-only slash commands complete with prompt_result, not agent_end;
+      // without this the runtime reports streaming until the next real turn.
+      this.info.isStreaming = false
+      this.info.isCompacting = false
+      this.bakeLiveContextUsage()
     } else if (value.type === 'compaction_start') {
       this.info.isCompacting = true
       this.lastRealCompactionEventAt = Date.now()
