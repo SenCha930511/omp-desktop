@@ -263,6 +263,13 @@ export interface PrimeProviderDescriptor {
   enabled: boolean
 }
 
+/** One OMP model preset: a name bound to a full role table and a default thinking level. */
+export interface PrimeModelPresetRecord {
+  name: string
+  modelRoles: Record<string, string>
+  defaultThinkingLevel?: string
+}
+
 export interface PrimeModelCatalog {
   primeVersion: string
   refreshedAt: string
@@ -271,6 +278,8 @@ export interface PrimeModelCatalog {
   warning?: string
   /** OMP harness has a vision model role configured, so images are delegated to it even for text-only models. */
   visionDelegation?: boolean
+  /** Saved `modelPresets` from the harness config; absent when none exist or the config is unreadable. */
+  presets?: PrimeModelPresetRecord[]
 }
 
 export interface PrimeEventEnvelope {

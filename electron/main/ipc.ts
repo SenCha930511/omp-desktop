@@ -1,4 +1,7 @@
 import { ipcMain, shell, type IpcMainEvent, type IpcMainInvokeEvent, type WebContents } from 'electron'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+import { readModelPresets } from './model-presets'
 import type { ApplicationMenuName, AppMeta, AppSettings, HarnessId, SessionChangeEvent, ThemeMode } from '../../src/types/api'
 import type { AgentRpcManager } from './agent-rpc'
 import type { GitService } from './git'
@@ -220,7 +223,11 @@ export function registerIpc(services: Services, expectedRendererUrl: string): Ip
   handle('agent:stop', (_event, runtimeId) => services.agents.stop(runtimeId))
   handle('agent:list', () => services.agents.list())
 
-  const providerCatalog = (force = false) => services.catalog.catalog(force, new Set(services.settings.get().ompDisabledProviders), new Set(services.settings.get().ompDisabledModels))
+  const providerCatalog = async (force = false) => {
+    const catalog = await services.catalog.catalog(force, new Set(services.settings.get().ompDisabledProviders), new Set(services.settings.get().ompDisabledModels))
+    const presets = await readModelPresets(join(homedir(), '.omp', 'agent', 'config.yml'))
+    return presets.length > 0 ? { ...catalog, presets } : catalog
+  }
   handle('providers:catalog', (_event, force, harness) => {
     requireHarness(harness)
     return providerCatalog(force === true)

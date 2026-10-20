@@ -23,7 +23,7 @@ import { useAppUpdates } from '@/hooks/useAppUpdates'
 import { useBootstrap } from '@/hooks/useBootstrap'
 import { useBrowserAnnotations } from '@/hooks/useBrowserAnnotations'
 import { useExtensionUi } from '@/hooks/useExtensionUi'
-import { INSPECTOR_DEFAULT, INSPECTOR_MIN, TERMINAL_DEFAULT, TERMINAL_MIN, usePanelLayout } from '@/hooks/usePanelLayout'
+import { INSPECTOR_DEFAULT, INSPECTOR_MIN, SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_MIN, TERMINAL_DEFAULT, TERMINAL_MIN, usePanelLayout } from '@/hooks/usePanelLayout'
 import { usePluginSkills } from '@/hooks/usePluginSkills'
 import { useProviderCatalog } from '@/hooks/useProviderCatalog'
 import { useSidebarActions } from '@/hooks/useSidebarActions'
@@ -1004,7 +1004,7 @@ export default function App() {
   return (
     <I18nProvider preference={settingsState.settings.locale}>
       <ReasoningExpandedContext.Provider value={settingsState.settings.reasoningExpandedByDefault}>
-      <div className="app-shell" data-density={settingsState.settings.conversationDensity} aria-busy={!initialized} data-platform={platform} data-ready={initialized ? 'true' : 'false'}>
+      <div className="app-shell" data-density={settingsState.settings.conversationDensity} aria-busy={!initialized} data-platform={platform} data-ready={initialized ? 'true' : 'false'} style={{ '--sidebar-width': `${layout.sidebarWidth}px` } as CSSProperties}>
         {sidebarVisible && initialized ? (
           <Sidebar
             projects={projects}
@@ -1020,6 +1020,19 @@ export default function App() {
             {...sidebarActions}
             overlay={layout.compactLayout}
             platform={platform}
+          />
+        ) : null}
+        {sidebarVisible && initialized && !layout.compactLayout ? (
+          <ResizeHandle
+            orientation="vertical"
+            startEdge
+            styleTarget=".app-shell"
+            label={t('app.resizeSidebar')}
+            value={layout.sidebarWidth}
+            min={SIDEBAR_MIN}
+            max={SIDEBAR_MAX}
+            defaultValue={SIDEBAR_DEFAULT}
+            onChange={layout.setSidebarWidth}
           />
         ) : null}
         {sidebarVisible && initialized ? <button type="button" className="panel-scrim panel-scrim--sidebar" aria-label={t('app.closeSidebar')} onClick={toggleSidebar} /> : null}
@@ -1104,6 +1117,9 @@ export default function App() {
                         modelsByProvider={provider.modelsByProvider}
                         resolvedAutoEffort={provider.resolvedAutoEffort}
                         providers={provider.catalog?.providers ?? EMPTY_PROVIDERS}
+                        presets={provider.catalog?.presets}
+                        onSwitchPreset={(preset) => void sendPrompt(`/modelpreset switch ${preset.name}`)}
+                        onSavePreset={(name) => void sendPrompt(`/modelpreset save ${name}`)}
                         reasoningLevels={provider.reasoningLevels}
                         fast={provider.fast}
                         fastSupported={provider.selectedModel?.fastModeSupported ?? false}

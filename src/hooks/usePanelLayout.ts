@@ -3,6 +3,9 @@ import type { WorkspaceView } from '@/types/api'
 
 export const INSPECTOR_MIN = 340
 export const INSPECTOR_DEFAULT = 520
+export const SIDEBAR_MIN = 180
+export const SIDEBAR_DEFAULT = 248
+export const SIDEBAR_MAX = 440
 export const CHAT_MIN = 360
 export const TERMINAL_MIN = 170
 export const TERMINAL_DEFAULT = 310
@@ -37,6 +40,7 @@ export function usePanelLayout({
   const [smallestSidebarAllowed, setSmallestSidebarAllowed] = useState(false)
   const [smallestInspectorAllowed, setSmallestInspectorAllowed] = useState(false)
   const [inspectorWidth, setInspectorWidth] = useState(() => readPanelSize('omp-desktop.inspector-width', INSPECTOR_DEFAULT))
+  const [sidebarWidth, setSidebarWidth] = useState(() => readPanelSize('omp-desktop.sidebar-width', SIDEBAR_DEFAULT))
   const [terminalHeight, setTerminalHeight] = useState(() => readPanelSize('omp-desktop.terminal-height', TERMINAL_DEFAULT))
   const [inspectorMax, setInspectorMax] = useState(660)
   const [terminalMax, setTerminalMax] = useState(520)
@@ -111,6 +115,8 @@ export function usePanelLayout({
   useEffect(() => setInspectorWidth((value) => Math.min(inspectorMax, Math.max(INSPECTOR_MIN, value))), [inspectorMax])
   useEffect(() => setTerminalHeight((value) => Math.min(terminalMax, Math.max(TERMINAL_MIN, value))), [terminalMax])
   useEffect(() => { window.localStorage.setItem('omp-desktop.inspector-width', String(inspectorWidth)) }, [inspectorWidth])
+  useEffect(() => { window.localStorage.setItem('omp-desktop.sidebar-width', String(Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, sidebarWidth)))) }, [sidebarWidth])
+  useEffect(() => setSidebarWidth((value) => Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, value))), [])
   useEffect(() => { window.localStorage.setItem('omp-desktop.terminal-height', String(terminalHeight)) }, [terminalHeight])
 
   return {
@@ -122,6 +128,8 @@ export function usePanelLayout({
     compactRestoreRef,
     inspectorWidth,
     setInspectorWidth,
+    sidebarWidth,
+    setSidebarWidth,
     terminalHeight,
     setTerminalHeight,
     inspectorMax,

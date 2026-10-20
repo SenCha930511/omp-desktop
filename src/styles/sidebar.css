@@ -1,5 +1,5 @@
 /* Sidebar */
-.sidebar { position: relative; z-index: 30; width: 248px; flex: 0 0 248px; height: 100%; display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--border); background: var(--sidebar); user-select: none; }
+.sidebar { position: relative; z-index: 30; width: var(--sidebar-width, 248px); flex: 0 0 var(--sidebar-width, 248px); height: 100%; display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--border); background: var(--sidebar); user-select: none; }
 .sidebar__titlebar { height: 52px; flex: 0 0 52px; display: flex; align-items: center; gap: 7px; padding-right: 8px; }
 .sidebar__titlebar .traffic-light-clearance { width: 84px; flex-basis: 84px; }
 .app-shell[data-platform='linux'] .sidebar__titlebar, .app-shell[data-platform='win32'] .sidebar__titlebar { padding-left: 8px; }

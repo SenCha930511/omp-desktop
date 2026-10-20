@@ -1,13 +1,17 @@
-import { Brain, Check, ChevronDown, Search } from 'lucide-react'
+import { Brain, Check, ChevronDown, Search, Zap } from 'lucide-react'
 import { memo, type KeyboardEvent as ReactKeyboardEvent, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useI18n } from '@/lib/i18n'
-import type { PrimeModelDescriptor, PrimeProviderDescriptor } from '@/types/api'
+import type { PrimeModelDescriptor, PrimeModelPresetRecord, PrimeProviderDescriptor } from '@/types/api'
 
 interface ModelPickerProps {
   value: string
   modelsByProvider: ReadonlyMap<string, PrimeModelDescriptor[]>
   providers: PrimeProviderDescriptor[]
   onChange(value: string): void
+  /** Harness model presets surfaced from the harness config. */
+  presets?: PrimeModelPresetRecord[]
+  onSwitchPreset?(preset: PrimeModelPresetRecord): void
+  onSavePreset?(name: string): void
 }
 
 interface ModelGroup {
@@ -15,10 +19,11 @@ interface ModelGroup {
   models: PrimeModelDescriptor[]
 }
 
-export const ModelPicker = memo(function ModelPicker({ value, modelsByProvider, providers, onChange }: ModelPickerProps) {
+export const ModelPicker = memo(function ModelPicker({ value, modelsByProvider, providers, onChange, presets = [], onSwitchPreset, onSavePreset }: ModelPickerProps) {
   const { t } = useI18n()
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
+  const [saveName, setSaveName] = useState('')
   // null, not a string sentinel: harness catalogs are user-authored, so a
   // provider whose id is literally "all" must still filter to itself.
   const [providerFilter, setProviderFilter] = useState<string | null>(null)
@@ -44,6 +49,16 @@ export const ModelPicker = memo(function ModelPicker({ value, modelsByProvider, 
   }, [groups, providerFilter, query])
   const visibleModels = useMemo(() => visibleGroups.flatMap((group) => group.models), [visibleGroups])
   const navigableModels = useMemo(() => visibleModels.filter((model) => model.available), [visibleModels])
+  // Presets ride the query but never the provider filter — a preset spans
+  // providers, so hiding it behind one would be wrong.
+  const visiblePresets = useMemo(() => {
+    if (!onSwitchPreset || providerFilter !== null) return []
+    const needle = query.trim().toLocaleLowerCase()
+    if (!needle) return presets
+    return presets.filter((preset) => `${preset.name} ${Object.keys(preset.modelRoles).join(' ')} ${Object.values(preset.modelRoles).join(' ')}`.toLocaleLowerCase().includes(needle))
+  }, [presets, providerFilter, query, onSwitchPreset])
+  const presetNavKey = (preset: PrimeModelPresetRecord) => `preset:${preset.name}`
+  const navigableKeys = useMemo(() => [...visiblePresets.map(presetNavKey), ...navigableModels.map((model) => model.key)], [visiblePresets, navigableModels])
   // The open reset reads the catalog through a ref: a background catalog
   // refresh must not wipe a query the user is still typing.
   const catalogRef = useRef({ groups, selected })
@@ -59,10 +74,10 @@ export const ModelPicker = memo(function ModelPicker({ value, modelsByProvider, 
     close(true)
   }
   const moveActive = (direction: 1 | -1) => {
-    if (!navigableModels.length) return
-    const current = navigableModels.findIndex((model) => model.key === activeKey)
-    const next = current < 0 ? (direction > 0 ? 0 : navigableModels.length - 1) : (current + direction + navigableModels.length) % navigableModels.length
-    setActiveKey(navigableModels[next].key)
+    if (!navigableKeys.length) return
+    const current = navigableKeys.indexOf(activeKey ?? '')
+    const next = current < 0 ? (direction > 0 ? 0 : navigableKeys.length - 1) : (current + direction + navigableKeys.length) % navigableKeys.length
+    setActiveKey(navigableKeys[next])
   }
 
   useEffect(() => {
@@ -76,8 +91,8 @@ export const ModelPicker = memo(function ModelPicker({ value, modelsByProvider, 
 
   useEffect(() => {
     if (!open) return
-    if (!navigableModels.some((model) => model.key === activeKey)) setActiveKey(navigableModels[0]?.key ?? null)
-  }, [activeKey, navigableModels, open])
+    if (!navigableKeys.includes(activeKey ?? '')) setActiveKey(navigableKeys[0] ?? null)
+  }, [activeKey, navigableKeys, open])
 
   useEffect(() => {
     if (!open || !activeKey) return
@@ -102,19 +117,25 @@ export const ModelPicker = memo(function ModelPicker({ value, modelsByProvider, 
       moveActive(-1)
     } else if (event.key === 'Home') {
       event.preventDefault()
-      setActiveKey(navigableModels[0]?.key ?? null)
+      setActiveKey(navigableKeys[0] ?? null)
     } else if (event.key === 'End') {
       event.preventDefault()
-      setActiveKey(navigableModels.at(-1)?.key ?? null)
+      setActiveKey(navigableKeys.at(-1) ?? null)
     } else if (event.key === 'Enter') {
       event.preventDefault()
+      const preset = activeKey ? visiblePresets.find((candidate) => presetNavKey(candidate) === activeKey) : undefined
+      if (preset && onSwitchPreset) {
+        onSwitchPreset(preset)
+        close(true)
+        return
+      }
       choose(navigableModels.find((model) => model.key === activeKey))
     }
     // Escape is owned by the popover container so it also dismisses from the
     // provider filters and the options, matching the native select it replaces.
   }
 
-  const resultCount = visibleModels.length
+  const resultCount = visibleModels.length + visiblePresets.length
   return (
     <div className="model-picker" ref={rootRef}>
       <button
@@ -193,6 +214,65 @@ export const ModelPicker = memo(function ModelPicker({ value, modelsByProvider, 
             ))}
           </div>
           <div className="model-picker__results" id={listId} role="listbox" aria-label={t('modelPicker.models')}>
+            {visiblePresets.length > 0 ? (
+              <div className="model-picker__group model-picker__group--presets" role="group" aria-label={t('modelPicker.presets')}>
+                <div className="model-picker__group-heading">
+                  <span>{t('modelPicker.presets')}</span>
+                  <small>{t('modelPicker.modelCount', { count: visiblePresets.length })}</small>
+                </div>
+                {visiblePresets.map((preset) => {
+                  const isActive = presetNavKey(preset) === activeKey
+                  const roles = Object.keys(preset.modelRoles).length
+                  return (
+                    <button
+                      type="button"
+                      tabIndex={-1}
+                      role="option"
+                      id={`${listId}-${presetNavKey(preset)}`}
+                      key={preset.name}
+                      aria-selected={false}
+                      aria-label={t('modelPicker.presetSwitch', { name: preset.name })}
+                      className={`model-picker__option model-picker__option--preset${isActive ? ' is-active' : ''}`}
+                      onMouseMove={() => setActiveKey(presetNavKey(preset))}
+                      onClick={() => { onSwitchPreset?.(preset); close(true) }}
+                    >
+                      <span className="model-picker__check"><Zap size={13} /></span>
+                      <span className="model-picker__identity">
+                        <strong>{preset.name}</strong>
+                        <small>{preset.modelRoles.default ?? t('modelPicker.presetRoles', { count: roles })}{preset.defaultThinkingLevel ? ` · ${preset.defaultThinkingLevel}` : ''}</small>
+                      </span>
+                    </button>
+                  )
+                })}
+                {onSavePreset ? (
+                  <div className="model-picker__preset-save">
+                    <input
+                      value={saveName}
+                      maxLength={64}
+                      placeholder={t('modelPicker.presetSavePlaceholder')}
+                      aria-label={t('modelPicker.presetSavePlaceholder')}
+                      onChange={(event) => setSaveName(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key !== 'Enter') return
+                        event.preventDefault()
+                        const name = saveName.trim()
+                        if (!name) return
+                        onSavePreset(name)
+                        setSaveName('')
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="button"
+                      disabled={!saveName.trim()}
+                      onClick={() => { const name = saveName.trim(); if (!name) return; onSavePreset(name); setSaveName('') }}
+                    >
+                      {t('modelPicker.presetSave')}
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
             {visibleGroups.map(({ provider, models }) => (
               <div className="model-picker__group" role="group" aria-label={provider.name} key={provider.id}>
                 <div className="model-picker__group-heading">

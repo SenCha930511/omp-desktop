@@ -5,7 +5,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ModelPicker } from '../../src/components/ModelPicker'
 import { groupModelsByProvider } from '../../src/hooks/useProviderCatalog'
-import type { PrimeModelDescriptor, PrimeProviderDescriptor } from '../../src/types/api'
+import type { PrimeModelDescriptor, PrimeModelPresetRecord, PrimeProviderDescriptor } from '../../src/types/api'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
@@ -78,6 +78,74 @@ async function setSearch(input: HTMLInputElement, value: string): Promise<void> 
     input.dispatchEvent(new Event('input', { bubbles: true }))
   })
 }
+
+describe('ModelPicker presets', () => {
+  const presets: PrimeModelPresetRecord[] = [
+    { name: 'fast-cell', modelRoles: { default: 'openai/gpt-5.6-sol:low', advisor: 'anthropic/claude-opus-4-8:max' }, defaultThinkingLevel: 'auto' },
+    { name: 'plan-deck', modelRoles: { default: 'anthropic/claude-opus-4-8:medium' }, defaultThinkingLevel: 'medium' },
+  ]
+  async function renderPresetPicker(onSwitchPreset = vi.fn(), onSavePreset = vi.fn()) {
+    await act(async () => {
+      root.render(<ModelPicker value="openai/gpt-5.6-sol" modelsByProvider={modelsByProvider} providers={providers} onChange={vi.fn()} presets={presets} onSwitchPreset={onSwitchPreset} onSavePreset={onSavePreset} />)
+    })
+    return { onSwitchPreset, onSavePreset }
+  }
+
+  it('lists presets above the models with their default role and level summary', async () => {
+    await renderPresetPicker()
+    await openPicker()
+    const group = container.querySelector('.model-picker__group--presets')
+    expect(group?.querySelector('.model-picker__group-heading')?.textContent).toContain('Model presets')
+    expect(optionLabels().slice(0, 2)).toEqual(['fast-cell', 'plan-deck'])
+    const first = group?.querySelectorAll('.model-picker__option--preset small')[0]
+    expect(first?.textContent).toBe('openai/gpt-5.6-sol:low · auto')
+  })
+
+  it('activates a preset by click and by keyboard entry, and keeps models out of its row', async () => {
+    const { onSwitchPreset } = await renderPresetPicker()
+    const search = await openPicker()
+    await act(async () => { container.querySelectorAll<HTMLButtonElement>('.model-picker__option--preset')[1]?.click() })
+    expect(onSwitchPreset).toHaveBeenCalledWith(presets[1])
+
+    await act(async () => root.unmount())
+    root = createRoot(container)
+    await act(async () => root.render(<ModelPicker value="openai/gpt-5.6-sol" modelsByProvider={modelsByProvider} providers={providers} onChange={vi.fn()} presets={presets} onSwitchPreset={onSwitchPreset} />))
+    await openPicker()
+    // Home lands on the first preset row deterministically regardless of the
+    // preselected model's position in the ring.
+    await act(async () => container.querySelector<HTMLInputElement>('input[aria-label="Search models"]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true })))
+    await act(async () => container.querySelector<HTMLInputElement>('input[aria-label="Search models"]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
+    expect(onSwitchPreset).toHaveBeenCalledTimes(2)
+    expect(onSwitchPreset).toHaveBeenLastCalledWith(presets[0])
+  })
+
+  it('searches presets by name and role value without hiding them behind a provider filter-less view', async () => {
+    await renderPresetPicker()
+    const search = await openPicker()
+    await setSearch(search, 'karate')
+    expect(optionLabels()).toHaveLength(0)
+    await setSearch(search, 'advisor')
+    expect(optionLabels()).toEqual(['fast-cell'])
+    await setSearch(search, 'plan-deck')
+    expect(optionLabels()).toEqual(['plan-deck'])
+  })
+
+  it('saves the current setup through the save row and clears the input', async () => {
+    const { onSavePreset } = await renderPresetPicker()
+    await openPicker()
+    const input = container.querySelector<HTMLInputElement>('.model-picker__preset-save input')!
+    await setSearch(input, 'desk-light')
+    await act(async () => { container.querySelector<HTMLButtonElement>('.model-picker__preset-save .button')?.click() })
+    expect(onSavePreset).toHaveBeenCalledWith('desk-light')
+    expect(input.value).toBe('')
+  })
+
+  it('renders no preset section when the harness has none', async () => {
+    await renderPicker()
+    await openPicker()
+    expect(container.querySelector('.model-picker__group--presets')).toBeNull()
+  })
+})
 
 describe('ModelPicker', () => {
   it('searches model names, ids, and providers', async () => {

@@ -1,7 +1,9 @@
 import { useEffect } from 'react'
 import { contextUsageFromEvent, sessionUsageFromEvent } from '@/app/agent-events'
 import { applySessionLifecycleEvent, sessionLifecycleChange } from '@/app/session-attention'
+import { shouldNotifyCompletion, showCompletionNotification } from '@/lib/completion-notify'
 import { fallbackModelFromRecord } from '@/lib/events/model-fallback'
+import { useI18n } from '@/lib/i18n'
 import { parseSessionActionSnapshot } from '@/lib/session-actions'
 import { parseSlashCommands } from '@/lib/slash-commands'
 import type { WorkspaceSnapshot } from '@/app/workspace'
@@ -48,6 +50,7 @@ export function useAgentEvents({
   refreshGitOnTerminalEvent,
   activeSessionVisible,
 }: UseAgentEventsOptions) {
+  const { t } = useI18n()
   useEffect(() => {
     if (!bridge) return
     let gitRefreshTimer: number | null = null
@@ -163,6 +166,13 @@ export function useAgentEvents({
         clearQueuedPromptFlushFailures()
         setRuntime((current) => current?.runtimeId === runtimeId ? { ...current, isStreaming: false, isCompacting: false } : current)
         if (refreshGitOnTerminalEvent) scheduleGitRefresh()
+        // Long runs often end while the window sits unfocused — nudge once
+        // per finished turn so the user knows to come back.
+        if (type === 'agent_end' && shouldNotifyCompletion()) {
+          const owned = runtimeOwnerRef.current?.runtimeId === runtimeId
+          const session = owned ? workspaceRef.current.session : undefined
+          showCompletionNotification(t('conversation.notify.completeTitle'), session?.title || t('conversation.notify.completeFallback'))
+        }
       }
     })
     return () => {
@@ -185,6 +195,7 @@ export function useAgentEvents({
     runtimeIdRef,
     runtimeOwnerRef,
     runtimeSessionsRef,
+    t,
     setRuntime,
     setSessions,
     showExtensionUi,

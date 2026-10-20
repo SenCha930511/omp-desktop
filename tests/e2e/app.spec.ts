@@ -86,6 +86,18 @@ function createHermeticFixture(): { userData: string; home: string; project: str
   const project = join(fixtureRoot, 'project')
   const secondary = join(fixtureRoot, 'secondary-project')
   const sessions = join(home, '.omp', 'agent', 'sessions', '-omp-project')
+  mkdirSync(join(home, '.omp', 'agent'), { recursive: true })
+  // Two harness model presets so the picker exposes its preset section.
+  writeFileSync(join(home, '.omp', 'agent', 'config.yml'), `modelPresets:
+  fast-cell:
+    modelRoles:
+      default: fixture/claude-fixture:low
+    defaultThinkingLevel: auto
+  plan-deck:
+    modelRoles:
+      default: fixture/claude-fixture:medium
+    defaultThinkingLevel: medium
+`)
   mkdirSync(userData, { recursive: true })
   mkdirSync(project, { recursive: true })
   mkdirSync(secondary, { recursive: true })
@@ -332,6 +344,16 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     }
     if (message === '/context') {
       send({ type: 'command_output', text: 'Runtime context: 12 percent' })
+      send({ id: command.id, type: 'response', command: command.type, success: true, data: { agentInvoked: false } })
+      return
+    }
+    if (message.startsWith('/modelpreset switch ')) {
+      send({ type: 'command_output', text: 'Switched to preset ' + message.slice('/modelpreset switch '.length) })
+      send({ id: command.id, type: 'response', command: command.type, success: true, data: { agentInvoked: false } })
+      return
+    }
+    if (message.startsWith('/modelpreset save ')) {
+      send({ type: 'command_output', text: 'Saved preset ' + message.slice('/modelpreset save '.length) })
       send({ id: command.id, type: 'response', command: command.type, success: true, data: { agentInvoked: false } })
       return
     }
@@ -949,7 +971,13 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect.poll(() => existsSync(join(fixtureRoot, 'prompt-admission-barrier-started'))).toBe(true)
     await expect(page.getByRole('button', { name: 'Stop OMP' })).toBeVisible()
 
+    // While the model works, a typed draft surfaces a queue-send action next
+    // to the red stop button instead of hiding the send path behind it.
+    await expect(page.getByRole('button', { name: 'Send message', exact: true })).toHaveCount(0)
     await composer.fill('barrier follow-up')
+    await expect(page.getByRole('button', { name: 'Send message', exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Stop OMP' })).toBeVisible()
+
     await composer.press('Enter')
     const queuedTray = page.getByRole('region', { name: 'Queued messages' })
     await expect(queuedTray.locator('.composer-queue__item')).toHaveCount(1)
@@ -963,6 +991,18 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(queuedTray.locator('.composer-queue__item')).toHaveCount(0)
     await expect(page.locator('.message--user').filter({ hasText: 'barrier follow-up' })).toHaveCount(1)
     await expect(page.locator('.message--activity').filter({ hasText: 'Cannot send prompt' })).toHaveCount(0)
+  })
+
+  test('switches model presets from the model picker', async () => {
+    await page.locator('.session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
+    await expect(page.locator('.model-picker__trigger')).toHaveAccessibleName('Model: Claude Fixture')
+    await page.locator('.model-picker__trigger').click()
+    const presetsGroup = page.locator('.model-picker__group--presets')
+    await expect(presetsGroup).toBeVisible()
+    await expect(presetsGroup.getByRole('option', { name: 'Switch to preset plan-deck' })).toContainText('fixture/claude-fixture:medium · medium')
+    await presetsGroup.getByRole('option', { name: 'Switch to preset fast-cell' }).click()
+    await expect(page.getByText('Switched to preset fast-cell')).toBeVisible()
+    await page.getByRole('button', { name: 'Close command result', exact: true }).click()
   })
 
   test('translates a renderer fork into an OMP branch command', async () => {
@@ -2397,6 +2437,25 @@ test.describe('OMP Desktop desktop smoke', () => {
 
   test('resizes the inspector horizontally and terminal vertically', async () => {
     await page.getByRole('button', { name: /^New session/ }).first().click()
+
+    const sidebar = page.locator('.sidebar')
+    const sidebarHandle = page.getByRole('separator', { name: 'Resize sidebar' })
+    await expect(sidebarHandle).toBeVisible()
+    const sidebarBefore = await sidebar.boundingBox()
+    const sidebarHandleBox = await sidebarHandle.boundingBox()
+    expect(sidebarBefore).not.toBeNull()
+    expect(sidebarHandleBox).not.toBeNull()
+    const sidebarCenterY = sidebarHandleBox!.y + sidebarHandleBox!.height / 2
+    await page.mouse.move(sidebarHandleBox!.x + sidebarHandleBox!.width / 2, sidebarCenterY)
+    await page.mouse.down()
+    await page.mouse.move(sidebarHandleBox!.x + 96, sidebarCenterY, { steps: 5 })
+    await page.mouse.up()
+    const sidebarAfter = await sidebar.boundingBox()
+    expect(sidebarAfter!.width).toBeGreaterThan(sidebarBefore!.width + 60)
+    await sidebarHandle.focus()
+    await page.keyboard.press('ArrowLeft')
+    expect((await sidebar.boundingBox())!.width).toBeLessThan(sidebarAfter!.width)
+
     await page.getByRole('tab', { name: 'Summary' }).click()
 
     const inspector = page.locator('.inspector')

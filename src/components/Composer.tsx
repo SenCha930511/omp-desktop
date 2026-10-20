@@ -23,6 +23,7 @@ import type {
   PrimeModelDescriptor,
   PrimeProviderDescriptor,
   PrimeEffortSelector,
+  PrimeModelPresetRecord,
   PromptDeliveryIntent,
   PromptImage,
   QueuedPrompt,
@@ -49,6 +50,10 @@ interface ComposerProps {
   effort: PrimeEffortSelector
   /** Concrete level the runtime resolved while `effort` stays auto. */
   resolvedAutoEffort?: PrimeEffortSelector
+  /** Harness-saved model presets; the picker switches or saves them. */
+  presets?: PrimeModelPresetRecord[]
+  onSwitchPreset?(preset: PrimeModelPresetRecord): void
+  onSavePreset?(name: string): void
   modelsByProvider: ReadonlyMap<string, PrimeModelDescriptor[]>
   providers: PrimeProviderDescriptor[]
   reasoningLevels: PrimeEffortSelector[]
@@ -139,6 +144,9 @@ export const Composer = memo(function Composer({
   providers,
   reasoningLevels,
   resolvedAutoEffort,
+  presets,
+  onSwitchPreset,
+  onSavePreset,
   fast,
   fastSupported,
   fastAvailable,
@@ -834,7 +842,7 @@ export const Composer = memo(function Composer({
                 void imageAttachments.ingest(files)
               }}
             />
-            <ModelPicker value={model} modelsByProvider={modelsByProvider} providers={providers} onChange={onModelChange} />
+            <ModelPicker value={model} modelsByProvider={modelsByProvider} providers={providers} onChange={onModelChange} presets={presets} onSwitchPreset={onSwitchPreset} onSavePreset={onSavePreset} />
             <ExecutingModelChip executingModel={executingModel} />
             <SelectControl label={t('composer.reasoningEffort')} compact icon={<Gauge size={12} />} value={effort} onChange={(event) => onEffortChange(event.target.value as PrimeEffortSelector)}>
               {reasoningLevels.map((level) => (
@@ -954,9 +962,25 @@ export const Composer = memo(function Composer({
                 <ArrowUp size={17} />
               </button>
             ) : busy ? (
-              <button type="button" className="send-button send-button--stop" aria-label={t('composer.stop')} onClick={() => void onStop()}>
-                <Square size={10} fill="currentColor" aria-hidden="true" />
-              </button>
+              <>
+                {value.trim() || images.length > 0 || unsupportedFiles.length > 0 || annotations.length > 0 || terminalSelection?.text ? (
+                  // Typing while the model works flips the action surface to a
+                  // queue-send; the stop control stays reachable beside it.
+                  <button
+                    type="button"
+                    className="send-button"
+                    aria-label={t('composer.send')}
+                    title={t('composer.send.queued')}
+                    disabled={processingImages || submitting || loading || disabled}
+                    onClick={() => void submit()}
+                  >
+                    <ArrowUp size={17} />
+                  </button>
+                ) : null}
+                <button type="button" className="send-button send-button--stop" aria-label={t('composer.stop')} onClick={() => void onStop()}>
+                  <Square size={10} fill="currentColor" aria-hidden="true" />
+                </button>
+              </>
             ) : (
               <button
                 type="button"

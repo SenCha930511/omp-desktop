@@ -11,11 +11,15 @@ interface ResizeHandleProps {
   max: number
   defaultValue: number
   onChange(value: number): void
+  /** Left-edge panels grow as the pointer moves right (the drag sign flips). */
+  startEdge?: boolean
+  /** Defaults to `.session-workspace`; left panels live above it in the shell. */
+  styleTarget?: string
 }
 
 const clamp = (value: number, min: number, max: number) => Math.round(Math.min(Math.max(min, max), Math.max(min, value)))
 
-export function ResizeHandle({ orientation, label, value, min, max, defaultValue, onChange }: ResizeHandleProps) {
+export function ResizeHandle({ orientation, label, value, min, max, defaultValue, onChange, startEdge = false, styleTarget = '.session-workspace' }: ResizeHandleProps) {
   const cleanupRef = useRef<(() => void) | null>(null)
   const safeMax = Math.max(min, max)
   const readCoordinate = (event: Pick<PointerEvent, 'clientX' | 'clientY'>) => orientation === 'vertical' ? event.clientX : event.clientY
@@ -27,8 +31,9 @@ export function ResizeHandle({ orientation, label, value, min, max, defaultValue
     let next: number | undefined
     if (event.key === 'Home') next = min
     if (event.key === 'End') next = safeMax
-    if (orientation === 'vertical' && event.key === 'ArrowLeft') next = value + step
-    if (orientation === 'vertical' && event.key === 'ArrowRight') next = value - step
+    // End-edge panels grow toward the left arrow; start-edge panels toward the right.
+    if (orientation === 'vertical' && event.key === 'ArrowLeft') next = startEdge ? value - step : value + step
+    if (orientation === 'vertical' && event.key === 'ArrowRight') next = startEdge ? value + step : value - step
     if (orientation === 'horizontal' && event.key === 'ArrowUp') next = value + step
     if (orientation === 'horizontal' && event.key === 'ArrowDown') next = value - step
     if (next === undefined) return
@@ -44,8 +49,8 @@ export function ResizeHandle({ orientation, label, value, min, max, defaultValue
     const pointerId = event.pointerId
     const startCoordinate = readCoordinate(event.nativeEvent)
     const startValue = value
-    const workspace = target.closest<HTMLElement>('.session-workspace')
-    const cssVariable = orientation === 'vertical' ? '--inspector-width' : '--terminal-height'
+    const workspace = target.closest<HTMLElement>(styleTarget)
+    const cssVariable = orientation === 'vertical' ? (startEdge ? '--sidebar-width' : '--inspector-width') : '--terminal-height'
     let latestValue = startValue
     target.dataset.resizing = 'true'
     document.body.classList.add(`is-resizing-${orientation}`)
@@ -54,7 +59,8 @@ export function ResizeHandle({ orientation, label, value, min, max, defaultValue
     const move = (moveEvent: PointerEvent) => {
       if (moveEvent.pointerId !== pointerId) return
       moveEvent.preventDefault()
-      latestValue = clamp(startValue - (readCoordinate(moveEvent) - startCoordinate), min, safeMax)
+      const delta = readCoordinate(moveEvent) - startCoordinate
+      latestValue = clamp(startEdge ? startValue + delta : startValue - delta, min, safeMax)
       workspace?.style.setProperty(cssVariable, `${latestValue}px`)
     }
     const finish = (finishEvent?: PointerEvent, commit = true) => {

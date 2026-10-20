@@ -121,6 +121,12 @@
 .worktree-picker__option-copy strong, .model-picker__identity strong { overflow: hidden; color: var(--text); font-size: 11.5px; font-weight: 580; text-overflow: ellipsis; white-space: nowrap; }
 .worktree-picker__option-copy > span, .model-picker__identity small { overflow: hidden; color: var(--text-tertiary); font-family: "SFMono-Regular", Menlo, monospace; font-size: 9.5px; text-overflow: ellipsis; white-space: nowrap; }
 .worktree-picker__empty, .model-picker__empty { display: block; padding: 8px; color: var(--text-tertiary); font-size: 10.5px; }
+/* Preset rows carry a leading bolt instead of a selection tick. */
+.model-picker__option--preset .model-picker__check { color: var(--prime); }
+.model-picker__preset-save { display: flex; gap: 5px; padding: 5px 7px 6px; border-top: 1px solid var(--border); margin-top: 3px; }
+.model-picker__preset-save input { flex: 1; min-width: 0; padding: 4px 7px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--canvas); color: var(--text); font-size: 10.5px; outline: none; }
+.model-picker__preset-save input:focus { border-color: var(--prime); }
+.model-picker__preset-save .button { height: 24px; padding: 0 9px; font-size: 10px; }
 .project-picker__add { margin: 5px -6px 0; padding: 6px 0 0; border-top: 1px solid var(--border); }
 /* Model-picker specifics: everything above is shared with the checkout picker
    so both composer popovers keep one control vocabulary. */
