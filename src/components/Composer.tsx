@@ -950,7 +950,15 @@ export const Composer = memo(function Composer({
               }}
             >
               {dictation.state === 'recording' ? (
-                <Square size={10} fill="currentColor" />
+                <>
+                  <span className="dictation-waveform" aria-hidden="true">
+                    <i />
+                    <i />
+                    <i />
+                    <i />
+                  </span>
+                  <Square size={10} fill="currentColor" />
+                </>
               ) : dictation.state === 'connecting' || dictation.state === 'transcribing' ? (
                 <LoaderCircle className="is-spinning" size={15} />
               ) : (

@@ -72,17 +72,17 @@ describe('sidebar expand and collapse all projects', () => {
     await renderSidebar(projects, sessions)
 
     expect(sessionRows().length).toBe(2)
-    expect(expandAllButton()?.disabled).toBe(true)
+    expect(expandAllButton()).toBeNull()
     expect(collapseAllButton()?.disabled).toBe(false)
 
     await press(collapseAllButton()!)
     expect(sessionRows().length).toBe(0)
+    expect(collapseAllButton()).toBeNull()
     expect(expandAllButton()?.disabled).toBe(false)
-    expect(collapseAllButton()?.disabled).toBe(true)
 
     await press(expandAllButton()!)
     expect(sessionRows().length).toBe(2)
-    expect(expandAllButton()?.disabled).toBe(true)
+    expect(expandAllButton()).toBeNull()
     expect(collapseAllButton()?.disabled).toBe(false)
   })
 })

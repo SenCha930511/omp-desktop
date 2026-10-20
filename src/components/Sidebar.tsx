@@ -257,8 +257,7 @@ function SidebarView({
   const { t } = useI18n()
   const [query, setQuery] = useState('')
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
-  const noneCollapsed = projects.every((project) => !(collapsed[project.id] ?? false))
-  const allCollapsed = projects.every((project) => collapsed[project.id] ?? false)
+  const allCollapsed = projects.length > 0 && projects.every((project) => collapsed[project.id] ?? false)
   const [searchOpen, setSearchOpen] = useState(false)
   const sidebarRef = useFocusTrap<HTMLElement>(overlay, onClose)
   const [projectMenu, setProjectMenu] = useState<string | null>(null)
@@ -420,11 +419,13 @@ function SidebarView({
         <div className="sidebar__section-heading">
           <span>{t('nav.projects')}</span>
           <span className="sidebar__section-heading-actions">
-            <IconButton size="small" label={t('projects.expandAll')} disabled={noneCollapsed} onClick={() => setCollapsed({})}>
-              <ChevronsUpDown size={13} />
-            </IconButton>
-            <IconButton size="small" label={t('projects.collapseAll')} disabled={allCollapsed} onClick={() => setCollapsed(Object.fromEntries(projects.map((project) => [project.id, true])))}>
-              <ChevronsDownUp size={13} />
+            <IconButton
+              size="small"
+              label={t(allCollapsed ? 'projects.expandAll' : 'projects.collapseAll')}
+              disabled={projects.length === 0}
+              onClick={() => setCollapsed(allCollapsed ? {} : Object.fromEntries(projects.map((project) => [project.id, true])))}
+            >
+              {allCollapsed ? <ChevronsUpDown size={13} /> : <ChevronsDownUp size={13} />}
             </IconButton>
             <IconButton
               size="small"

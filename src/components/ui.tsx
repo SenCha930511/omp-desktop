@@ -171,24 +171,15 @@ export function Modal({ title, children, onClose, footer }: { title: string; chi
 }
 
 export function OmpMark({ size = 24 }: { size?: number }) {
-  // A desktop window tile carrying the pi symbol: the title-bar slot and the
-  // pi strokes are cut out with a mask so the background shows through,
-  // matching assets/brand/omp-icon.svg. useId keeps mask references unique
-  // when several marks render at once (brand area plus transcript marks).
-  const maskId = `omp-mark-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`
+  // A desktop window tile carrying the pi symbol, matching assets/brand/omp-icon.svg.
   return (
     <span className="omp-mark" style={{ width: size, height: size }} role="img" aria-label="OMP">
       <svg viewBox="0 0 96 96" fill="none" focusable="false" aria-hidden="true">
-        <mask id={maskId} maskUnits="userSpaceOnUse">
-          <rect x="0" y="0" width="96" height="96" fill="#fff" />
-          <rect x="24" y="21" width="48" height="8" rx="4" fill="#000" />
-          <rect x="28" y="41" width="40" height="9" rx="4" fill="#000" />
-          <rect x="33" y="41" width="10" height="33" rx="4" fill="#000" />
-          <rect x="53" y="41" width="10" height="29" rx="4" fill="#000" />
-        </mask>
-        <g mask={`url(#${maskId})`}>
-          <rect x="6" y="6" width="84" height="84" rx="20" fill="currentColor" />
-        </g>
+        <rect x="6" y="6" width="84" height="84" rx="20" fill="#ffffff" />
+        <rect x="24" y="21" width="48" height="8" rx="4" fill="#171716" />
+        <rect x="28" y="41" width="40" height="9" rx="4" fill="#171716" />
+        <rect x="33" y="41" width="10" height="33" rx="4" fill="#171716" />
+        <rect x="53" y="41" width="10" height="29" rx="4" fill="#171716" />
         <circle cx="31" cy="25" r="3.4" fill="#f97316" />
       </svg>
     </span>

@@ -71,15 +71,23 @@ export function ResizeHandle({ orientation, label, value, min, max, defaultValue
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', finish)
       window.removeEventListener('pointercancel', cancel)
+      window.removeEventListener('keydown', onEscapeKey)
       cleanupRef.current = null
       if (commit && latestValue !== startValue) onChange(latestValue)
       else if (!commit) workspace?.style.setProperty(cssVariable, `${startValue}px`)
     }
     const cancel = (cancelEvent: PointerEvent) => finish(cancelEvent, false)
+    const onEscapeKey = (keyEvent: globalThis.KeyboardEvent) => {
+      if (keyEvent.key === 'Escape') {
+        keyEvent.preventDefault()
+        finish(undefined, false)
+      }
+    }
     cleanupRef.current = () => finish(undefined, false)
     window.addEventListener('pointermove', move, { passive: false })
     window.addEventListener('pointerup', finish)
     window.addEventListener('pointercancel', cancel)
+    window.addEventListener('keydown', onEscapeKey)
   }
 
   return (

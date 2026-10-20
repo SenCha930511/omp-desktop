@@ -1627,10 +1627,15 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(selectedSession).toHaveCount(1)
   })
 
-  test('keeps session options visible and starts a new session from a hovered project', async () => {
-    const sessionOptions = page.locator('.session-row__more').first()
-    await expect(sessionOptions).toBeVisible()
-    await expect.poll(() => sessionOptions.evaluate((node) => getComputedStyle(node).opacity)).toBe('1')
+  test('reveals session options on hover and starts a new session from a hovered project', async () => {
+    const sessionRowWrap = page.locator('.session-row-wrap').first()
+    const sessionOptions = sessionRowWrap.locator('.session-row__more')
+    await expect(sessionOptions).toBeAttached()
+    await expect.poll(() => sessionOptions.evaluate((node) => getComputedStyle(node).opacity)).toBe('0')
+    await expect.poll(async () => {
+      await sessionRowWrap.hover()
+      return sessionOptions.evaluate((node) => getComputedStyle(node).opacity)
+    }).toBe('1')
 
     const projectRow = page.locator('.project-row').first()
     const projectSession = projectRow.getByRole('button', { name: /^New session in / })

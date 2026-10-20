@@ -67,6 +67,13 @@
   --terminal-bright-cyan: #177f83;
   --terminal-bright-white: #20201e;
   --shadow-popover: 0 10px 30px rgba(0, 0, 0, .12);
+  --shadow-composer: 0 3px 16px rgba(0, 0, 0, .045), 0 0 0 .5px rgba(0, 0, 0, .08);
+  --shadow-composer-hover: 0 4px 20px rgba(0, 0, 0, .065), 0 0 0 .5px rgba(0, 0, 0, .14);
+  --shadow-composer-focus: 0 5px 24px rgba(0, 0, 0, .075), 0 0 0 1px color-mix(in srgb, var(--focus) 38%, var(--border-strong));
+  --border-hairline: 1px;
+  --ease-out: cubic-bezier(.165, .84, .44, 1);
+  --ease-snap: cubic-bezier(.32, .72, 0, 1);
+  --ease-overshoot: cubic-bezier(.34, 1.3, .64, 1);
   /* Shared transcript column measure: grows with the pane from the reading
      minimum, capped so prose stays readable on very wide monitors. Sized in
      cqi against .conversation-pane so the scrolled column and the absolutely
@@ -132,6 +139,13 @@
   --terminal-bright-cyan: #8ad9da;
   --terminal-bright-white: #f1f1ee;
   --shadow-popover: 0 12px 34px rgba(0, 0, 0, .38);
+  --shadow-composer: 0 4px 20px rgba(0, 0, 0, .28), 0 0 0 .5px rgba(255, 255, 255, .09);
+  --shadow-composer-hover: 0 6px 24px rgba(0, 0, 0, .36), 0 0 0 .5px rgba(255, 255, 255, .16);
+  --shadow-composer-focus: 0 8px 28px rgba(0, 0, 0, .42), 0 0 0 1px color-mix(in srgb, var(--focus) 42%, var(--border-strong));
+}
+
+@media (min-resolution: 2dppx) {
+  :root { --border-hairline: .5px; }
 }
 
 * { box-sizing: border-box; }
@@ -184,3 +198,62 @@ kbd { color: var(--text-tertiary); font: 10.5px/1.2 "SFMono-Regular", "SF Mono",
 .scroll-area::-webkit-scrollbar { width: 7px; height: 7px; }
 .scroll-area::-webkit-scrollbar-track { background: transparent; }
 .scroll-area::-webkit-scrollbar-thumb { background: var(--border-strong); border: 2px solid transparent; background-clip: padding-box; border-radius: 10px; }
+
+/* CDS 7-stop non-linear scroll fade mask (y ≈ x^1.5) driven by scroll(self block).
+   When a container does not overflow, initial-value 0px keeps both edges unmasked. */
+@property --scroll-fade-top {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+@property --scroll-fade-bottom {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+@keyframes scroll-fade-edges {
+  0% { --scroll-fade-top: 0px; --scroll-fade-bottom: 18px; }
+  3% { --scroll-fade-top: 18px; }
+  97% { --scroll-fade-bottom: 18px; }
+  100% { --scroll-fade-top: 18px; --scroll-fade-bottom: 0px; }
+}
+@keyframes scroll-fade-top-only {
+  0% { --scroll-fade-top: 0px; }
+  3%, 100% { --scroll-fade-top: 28px; }
+}
+.sidebar__scroll, .inspector-scroll, .file-changes, .file-tree, .command-results, .model-picker__results, .worktree-picker__options {
+  animation: scroll-fade-edges linear both;
+  animation-timeline: scroll(self block);
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0px,
+    rgba(0, 0, 0, .06) calc(var(--scroll-fade-top) * .16),
+    rgba(0, 0, 0, .18) calc(var(--scroll-fade-top) * .33),
+    rgba(0, 0, 0, .35) calc(var(--scroll-fade-top) * .5),
+    rgba(0, 0, 0, .55) calc(var(--scroll-fade-top) * .66),
+    rgba(0, 0, 0, .77) calc(var(--scroll-fade-top) * .83),
+    #000 var(--scroll-fade-top),
+    #000 calc(100% - var(--scroll-fade-bottom)),
+    rgba(0, 0, 0, .77) calc(100% - var(--scroll-fade-bottom) * .83),
+    rgba(0, 0, 0, .55) calc(100% - var(--scroll-fade-bottom) * .66),
+    rgba(0, 0, 0, .35) calc(100% - var(--scroll-fade-bottom) * .5),
+    rgba(0, 0, 0, .18) calc(100% - var(--scroll-fade-bottom) * .33),
+    rgba(0, 0, 0, .06) calc(100% - var(--scroll-fade-bottom) * .16),
+    transparent 100%
+  );
+}
+.transcript {
+  animation: scroll-fade-top-only linear both;
+  animation-timeline: scroll(self block);
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0px,
+    rgba(0, 0, 0, .06) calc(var(--scroll-fade-top) * .16),
+    rgba(0, 0, 0, .18) calc(var(--scroll-fade-top) * .33),
+    rgba(0, 0, 0, .35) calc(var(--scroll-fade-top) * .5),
+    rgba(0, 0, 0, .55) calc(var(--scroll-fade-top) * .66),
+    rgba(0, 0, 0, .77) calc(var(--scroll-fade-top) * .83),
+    #000 var(--scroll-fade-top),
+    #000 100%
+  );
+}

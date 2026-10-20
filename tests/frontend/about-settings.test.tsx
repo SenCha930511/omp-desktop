@@ -135,10 +135,12 @@ describe('about settings update row', () => {
     expect(retryAction).toHaveBeenCalledTimes(1)
   })
 
-  it('disables the manual control on development builds where updates are unsupported', async () => {
-    await renderAbout({ phase: 'unsupported', message: 'Automatic updates are available in installed builds.' })
+  it('keeps the manual check control clickable on builds where automatic updates are unsupported', async () => {
+    const onUpdateAction = await renderAbout({ phase: 'unsupported', message: 'Automatic updates are available in installed builds.' })
     const row = updateRow()
     expect(row?.status).toBe('Automatic updates are available in installed builds.')
-    expect(row?.button?.disabled).toBe(true)
+    expect(row?.button?.disabled).toBe(false)
+    await pressButton('Automatic updates')
+    expect(onUpdateAction).toHaveBeenCalledTimes(1)
   })
 })

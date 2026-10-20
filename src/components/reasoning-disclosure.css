@@ -1,7 +1,7 @@
 .reasoning-disclosure { margin: 4px 0 8px; color: var(--text-secondary); font-size: 12px; }
 .reasoning-disclosure > summary { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 22px; cursor: pointer; padding: 2px 0; list-style: none; user-select: none; color: var(--text-tertiary); font-size: 12px; }
 .reasoning-disclosure > summary::-webkit-details-marker { display: none; }
-.reasoning-disclosure > summary > svg { width: 16px; flex: 0 0 16px; transition: transform 120ms ease; }
+.reasoning-disclosure > summary > svg { width: 16px; flex: 0 0 16px; transition: transform 180ms var(--ease-out); }
 .reasoning-disclosure[open] > summary > svg { transform: rotate(90deg); }
 .reasoning-disclosure > summary:hover { color: var(--text); }
 /* The status label is a fixed token; CJK min-content squishes it into a
@@ -10,7 +10,7 @@
 /* dsh hides the one-line summary once the body itself is visible. */
 .reasoning-disclosure[open] > summary .reasoning-disclosure__preview { display: none; }
 .reasoning-disclosure > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 3px; }
-.reasoning-disclosure > div { margin: 6px 0 3px 24px; font-size: 13px; line-height: 1.6; }
+.reasoning-disclosure > div { margin: 6px 0 3px 24px; font-size: 13px; line-height: 1.6; animation: timeline-expand 200ms var(--ease-out); }
 .reasoning-disclosure__preview { flex: 0 1 auto; max-width: 72ch; min-width: 0; overflow: hidden; color: var(--text-tertiary); font-weight: 400; white-space: nowrap; text-overflow: ellipsis; }
 .reasoning-disclosure__preview::before { content: '·'; margin-right: 8px; }
 /* dsh's streaming row: instead of a hard ellipsis the live tail fades out,

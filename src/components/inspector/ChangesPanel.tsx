@@ -1,5 +1,5 @@
-import { ArrowDownToLine, File, FileCode2, GitBranch, LoaderCircle, RefreshCw, Sparkles, Undo2 } from 'lucide-react'
-import { memo, useEffect, useState } from 'react'
+import { ArrowDownToLine, Check, Columns2, Copy, File, FileCode2, GitBranch, LoaderCircle, RefreshCw, Rows2, Sparkles, Undo2 } from 'lucide-react'
+import { memo, useEffect, useMemo, useState } from 'react'
 import { errorMessage } from '@/lib/errors'
 import { type MessageKey, useI18n } from '@/lib/i18n'
 import { boundLines } from '@/lib/render-bounds'
@@ -8,6 +8,105 @@ import { EmptyState, IconButton, Modal, Segmented } from '../ui'
 
 const MAX_RENDERED_DIFF_CHARACTERS = 2 * 1024 * 1024
 const MAX_RENDERED_DIFF_LINES = 4_000
+
+type DiffMode = 'unified' | 'split'
+
+interface ParsedDiffLine {
+  kind: 'meta' | 'hunk' | 'context' | 'add' | 'remove'
+  oldNo: number | null
+  newNo: number | null
+  text: string
+}
+
+interface SplitDiffRow {
+  kind: 'meta' | 'hunk' | 'pair'
+  text?: string
+  left?: { lineNo: number | null; text: string; kind: 'context' | 'remove' | 'empty' }
+  right?: { lineNo: number | null; text: string; kind: 'context' | 'add' | 'empty' }
+}
+
+const HUNK_HEADER_RE = /^@@\s+-(\d+)(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s+@@/
+
+function parseDiffLines(lines: readonly string[]): ParsedDiffLine[] {
+  const hasHunks = lines.some((line) => HUNK_HEADER_RE.test(line))
+  if (!hasHunks) {
+    return lines.map((line, index) => ({
+      kind: line.startsWith('+') && !line.startsWith('+++') ? 'add' : line.startsWith('-') && !line.startsWith('---') ? 'remove' : 'context',
+      oldNo: null,
+      newNo: index + 1,
+      text: line,
+    }))
+  }
+  const result: ParsedDiffLine[] = []
+  let oldNo = 0
+  let newNo = 0
+  let inHunk = false
+  for (const line of lines) {
+    const hunkMatch = HUNK_HEADER_RE.exec(line)
+    if (hunkMatch) {
+      oldNo = Number.parseInt(hunkMatch[1]!, 10)
+      newNo = Number.parseInt(hunkMatch[2]!, 10)
+      inHunk = true
+      result.push({ kind: 'hunk', oldNo: null, newNo: null, text: line })
+      continue
+    }
+    if (!inHunk || line.startsWith('diff --git ') || line.startsWith('index ') || line.startsWith('--- ') || line.startsWith('+++ ')) {
+      result.push({ kind: 'meta', oldNo: null, newNo: null, text: line })
+      continue
+    }
+    if (line.startsWith('+')) {
+      result.push({ kind: 'add', oldNo: null, newNo: newNo++, text: line })
+    } else if (line.startsWith('-')) {
+      result.push({ kind: 'remove', oldNo: oldNo++, newNo: null, text: line })
+    } else {
+      result.push({ kind: 'context', oldNo: oldNo++, newNo: newNo++, text: line })
+    }
+  }
+  return result
+}
+
+function buildSplitRows(parsed: readonly ParsedDiffLine[]): SplitDiffRow[] {
+  const rows: SplitDiffRow[] = []
+  let index = 0
+  while (index < parsed.length) {
+    const item = parsed[index]!
+    if (item.kind === 'meta' || item.kind === 'hunk') {
+      rows.push({ kind: item.kind, text: item.text })
+      index += 1
+      continue
+    }
+    if (item.kind === 'context') {
+      rows.push({
+        kind: 'pair',
+        left: { lineNo: item.oldNo, text: item.text, kind: 'context' },
+        right: { lineNo: item.newNo, text: item.text, kind: 'context' },
+      })
+      index += 1
+      continue
+    }
+    const removals: ParsedDiffLine[] = []
+    const additions: ParsedDiffLine[] = []
+    while (index < parsed.length && parsed[index]!.kind === 'remove') {
+      removals.push(parsed[index]!)
+      index += 1
+    }
+    while (index < parsed.length && parsed[index]!.kind === 'add') {
+      additions.push(parsed[index]!)
+      index += 1
+    }
+    const pairCount = Math.max(removals.length, additions.length)
+    for (let pairIndex = 0; pairIndex < pairCount; pairIndex += 1) {
+      const rem = removals[pairIndex]
+      const add = additions[pairIndex]
+      rows.push({
+        kind: 'pair',
+        left: rem ? { lineNo: rem.oldNo, text: rem.text, kind: 'remove' } : { lineNo: null, text: '', kind: 'empty' },
+        right: add ? { lineNo: add.newNo, text: add.text, kind: 'add' } : { lineNo: null, text: '', kind: 'empty' },
+      })
+    }
+  }
+  return rows
+}
 
 type Translate = (key: MessageKey, values?: Record<string, string | number>) => string
 
@@ -28,8 +127,12 @@ function generateCommitSummary(files: GitStatus['files'], t: Translate): string 
   return `${verb} ${description}`
 }
 
-const DiffView = memo(function DiffView({ text }: { text: string }) {
+const DiffView = memo(function DiffView({ text, mode = 'unified' }: { text: string; mode?: DiffMode }) {
   const { t } = useI18n()
+  const { lines, truncated } = useMemo(() => (text ? boundLines(text, MAX_RENDERED_DIFF_CHARACTERS, MAX_RENDERED_DIFF_LINES) : { lines: [], truncated: false }), [text])
+  const parsed = useMemo(() => parseDiffLines(lines), [lines])
+  const splitRows = useMemo(() => (mode === 'split' ? buildSplitRows(parsed) : []), [mode, parsed])
+
   if (!text)
     return (
       <div className="diff-placeholder">
@@ -37,29 +140,63 @@ const DiffView = memo(function DiffView({ text }: { text: string }) {
         <span>{t('changes.diff.placeholder')}</span>
       </div>
     )
-  const { lines, truncated } = boundLines(text, MAX_RENDERED_DIFF_CHARACTERS, MAX_RENDERED_DIFF_LINES)
+
+  if (mode === 'split') {
+    return (
+      <pre className="diff-view diff-view--split">
+        {splitRows.map((row, index) =>
+          row.kind !== 'pair' ? (
+            <span key={index} className={`diff-line ${row.kind === 'hunk' ? 'diff-line--hunk' : 'diff-line--meta'}`}>
+              <i>{''}</i>
+              <i>{''}</i>
+              <code>{row.text || ' '}</code>
+            </span>
+          ) : (
+            <span key={index} className="diff-split-row">
+              <i className={row.left?.kind === 'remove' ? 'diff-split-cell--remove' : row.left?.kind === 'empty' ? 'diff-split-cell--empty' : ''}>{row.left?.lineNo ?? ''}</i>
+              <code className={row.left?.kind === 'remove' ? 'diff-split-cell--remove' : row.left?.kind === 'empty' ? 'diff-split-cell--empty' : ''}>{row.left?.text || ' '}</code>
+              <i className={row.right?.kind === 'add' ? 'diff-split-cell--add' : row.right?.kind === 'empty' ? 'diff-split-cell--empty' : ''}>{row.right?.lineNo ?? ''}</i>
+              <code className={row.right?.kind === 'add' ? 'diff-split-cell--add' : row.right?.kind === 'empty' ? 'diff-split-cell--empty' : ''}>{row.right?.text || ' '}</code>
+            </span>
+          ),
+        )}
+        {truncated ? (
+          <span className="diff-line diff-line--truncated">
+            <i>…</i>
+            <i>{''}</i>
+            <code>{t('changes.diff.truncated')}</code>
+          </span>
+        ) : null}
+      </pre>
+    )
+  }
+
   return (
     <pre className="diff-view">
-      {lines.map((line, index) => (
+      {parsed.map((line, index) => (
         <span
           key={index}
           className={
-            line.startsWith('+') && !line.startsWith('+++')
+            line.kind === 'add'
               ? 'diff-line diff-line--add'
-              : line.startsWith('-') && !line.startsWith('---')
+              : line.kind === 'remove'
                 ? 'diff-line diff-line--remove'
-                : line.startsWith('@@')
+                : line.kind === 'hunk'
                   ? 'diff-line diff-line--hunk'
-                  : 'diff-line'
+                  : line.kind === 'meta'
+                    ? 'diff-line diff-line--meta'
+                    : 'diff-line'
           }
         >
-          <i>{index + 1}</i>
-          <code>{line || ' '}</code>
+          <i>{line.oldNo ?? ''}</i>
+          <i>{line.newNo ?? ''}</i>
+          <code>{line.text || ' '}</code>
         </span>
       ))}
       {truncated ? (
         <span className="diff-line diff-line--truncated">
           <i>…</i>
+          <i>{''}</i>
           <code>{t('changes.diff.truncated')}</code>
         </span>
       ) : null}
@@ -84,6 +221,8 @@ export function ChangesPanel({
   const [scope, setScope] = useState<'unstaged' | 'staged'>('unstaged')
   const [selectedPath, setSelectedPath] = useState<string | undefined>(git.files[0]?.path)
   const [diff, setDiff] = useState('')
+  const [diffMode, setDiffMode] = useState<DiffMode>('unified')
+  const [copiedDiff, setCopiedDiff] = useState(false)
   const [loading, setLoading] = useState(false)
   const [commitOpen, setCommitOpen] = useState(false)
   const [commitMessage, setCommitMessage] = useState('')
@@ -268,6 +407,29 @@ export function ChangesPanel({
                 <span>{selectedPath}</span>
               </div>
               <div>
+                <button
+                  type="button"
+                  className={diffMode === 'split' ? 'is-active' : ''}
+                  aria-pressed={diffMode === 'split'}
+                  title={diffMode === 'split' ? 'Unified diff view' : 'Split diff view'}
+                  onClick={() => setDiffMode((current) => (current === 'unified' ? 'split' : 'unified'))}
+                >
+                  {diffMode === 'split' ? <Rows2 size={12} /> : <Columns2 size={12} />}
+                </button>
+                <button
+                  type="button"
+                  disabled={!diff}
+                  title="Copy diff"
+                  onClick={() => {
+                    if (!diff) return
+                    void navigator.clipboard?.writeText(diff)
+                    setCopiedDiff(true)
+                    window.setTimeout(() => setCopiedDiff(false), 1600)
+                  }}
+                >
+                  {copiedDiff ? <Check size={12} /> : <Copy size={12} />}
+                </button>
+                <span className="diff-header__divider" aria-hidden="true" />
                 {scope === 'unstaged' ? (
                   <button type="button" disabled={readOnly} onClick={() => void mutate('stage', [selectedPath])}>
                     <ArrowDownToLine size={12} /> {t('changes.stage')}
@@ -288,7 +450,7 @@ export function ChangesPanel({
               <LoaderCircle className="spin" size={15} /> {t('changes.loading')}
             </div>
           ) : (
-            <DiffView text={diff} />
+            <DiffView text={diff} mode={diffMode} />
           )}
         </div>
       </div>

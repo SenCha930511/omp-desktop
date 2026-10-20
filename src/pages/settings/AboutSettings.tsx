@@ -1,5 +1,5 @@
 import { CircleHelp, Download } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { updateConfirmCopy, updateControlCopy } from '@/components/Sidebar'
 import { Modal, OmpMark } from '@/components/ui'
 import { useI18n } from '@/lib/i18n'
@@ -15,14 +15,19 @@ interface AboutSettingsProps {
 export function AboutSettings({ meta, updateState, onUpdateAction, onOpenDocs }: AboutSettingsProps) {
   const { t } = useI18n()
   const [confirmUpdate, setConfirmUpdate] = useState(false)
+  const [manualChecking, setManualChecking] = useState(false)
+  const manualCheckTimerRef = useRef<number | null>(null)
+  useEffect(() => () => {
+    if (manualCheckTimerRef.current !== null) window.clearTimeout(manualCheckTimerRef.current)
+  }, [])
   const copy = updateState ? updateControlCopy(updateState, t) : null
   const needsInstallConfirm = updateState?.phase === 'available' || updateState?.phase === 'downloaded'
-  const checkBusy = updateState?.phase === 'checking' || updateState?.phase === 'downloading'
+  const checkBusy = manualChecking || updateState?.phase === 'checking' || updateState?.phase === 'downloading'
+  const buttonLabel = manualChecking ? t('sidebar.update.checkingLabel') : copy?.label ?? ''
   return (
     <>
       <header>
         <h1>{t('about.title')}</h1>
-        <p>{t('about.description')}</p>
       </header>
       <section className="about-card">
         <OmpMark size={48} />
@@ -42,13 +47,23 @@ export function AboutSettings({ meta, updateState, onUpdateAction, onOpenDocs }:
               <button
                 className="button"
                 type="button"
-                disabled={checkBusy || updateState.phase === 'unsupported'}
+                disabled={checkBusy}
                 onClick={() => {
                   if (needsInstallConfirm) setConfirmUpdate(true)
-                  else void onUpdateAction()
+                  else {
+                    if (updateState.phase === 'unsupported') {
+                      setManualChecking(true)
+                      if (manualCheckTimerRef.current !== null) window.clearTimeout(manualCheckTimerRef.current)
+                      manualCheckTimerRef.current = window.setTimeout(() => {
+                        manualCheckTimerRef.current = null
+                        setManualChecking(false)
+                      }, 500)
+                    }
+                    void onUpdateAction()
+                  }
                 }}
               >
-                {updateState.phase === 'available' || updateState.phase === 'downloaded' ? <><Download size={13} /> {copy.label}</> : copy.label}
+                {updateState.phase === 'available' || updateState.phase === 'downloaded' ? <><Download size={13} /> {buttonLabel}</> : buttonLabel}
               </button>
             ) : null}
           </div>

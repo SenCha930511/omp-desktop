@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, Search, X } from 'lucide-react'
+import { ArrowDown, ArrowUp, ChevronDown, Search, X } from 'lucide-react'
 import { createContext, useEffect, useId, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { isOverlayOpen } from '@/lib/app-shortcuts'
 import { useI18n } from '@/lib/i18n'
@@ -100,16 +100,26 @@ export function TranscriptSearchBar({ state }: { state: ReturnType<typeof useTra
   const { t } = useI18n()
   const id = useId()
   if (!state.open) return <button type="button" className="conversation-search-trigger" onClick={state.show} aria-label={t('conversation.search.open')} title={t('conversation.search.open')}><Search size={15} /></button>
-  return <section className="conversation-search" aria-label={t('conversation.search.open')} onKeyDown={(event) => {
+  const hasMatches = state.total > 0
+  return <section className={`conversation-search ${hasMatches ? 'has-matches' : ''}`} aria-label={t('conversation.search.open')} onKeyDown={(event) => {
     if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); state.close() }
     if (event.key === 'Enter' && event.target === state.inputRef.current) { event.preventDefault(); state.move(event.shiftKey ? -1 : 1) }
   }}>
-    <Search size={14} /><input ref={state.inputRef} id={id} aria-label={t('conversation.search.query')} placeholder={t('conversation.search.query')} value={state.query} onChange={(event) => state.changeQuery(event.target.value)} />
-    <select aria-label={t('conversation.search.scope')} value={state.scope} onChange={(event) => { const value = event.target.value; if (value === 'all' || value === 'messages' || value === 'tools' || value === 'thinking') state.changeScope(value) }}>
-      {(['all', 'messages', 'tools', 'thinking'] as const).map((scope) => <option key={scope} value={scope}>{t(`conversation.search.${scope}`)}</option>)}
-    </select><span className="conversation-search__count" role="status">{state.total ? `${state.index + 1}/${state.total}` : state.query.trim() ? t('conversation.search.none') : '0/0'}</span>
-    <button type="button" disabled={!state.total} aria-label={t('conversation.search.previous')} onClick={() => state.move(-1)}><ArrowUp size={14} /></button>
-    <button type="button" disabled={!state.total} aria-label={t('conversation.search.next')} onClick={() => state.move(1)}><ArrowDown size={14} /></button>
-    <button type="button" aria-label={t('conversation.search.close')} onClick={state.close}><X size={14} /></button>
+    <Search className="conversation-search__icon" size={14} aria-hidden="true" />
+    <input ref={state.inputRef} id={id} aria-label={t('conversation.search.query')} placeholder={t('conversation.search.query')} value={state.query} onChange={(event) => state.changeQuery(event.target.value)} />
+    <span className="conversation-search__divider" aria-hidden="true" />
+    <label className="conversation-search__scope">
+      <select aria-label={t('conversation.search.scope')} value={state.scope} onChange={(event) => { const value = event.target.value; if (value === 'all' || value === 'messages' || value === 'tools' || value === 'thinking') state.changeScope(value) }}>
+        {(['all', 'messages', 'tools', 'thinking'] as const).map((scope) => <option key={scope} value={scope}>{t(`conversation.search.${scope}`)}</option>)}
+      </select>
+      <ChevronDown size={11} aria-hidden="true" />
+    </label>
+    <span className={`conversation-search__count ${hasMatches ? 'is-active' : ''}`} role="status">{state.total ? `${state.index + 1}/${state.total}` : state.query.trim() ? t('conversation.search.none') : '0/0'}</span>
+    <span className="conversation-search__divider" aria-hidden="true" />
+    <div className="conversation-search__nav">
+      <button type="button" disabled={!state.total} aria-label={t('conversation.search.previous')} title={t('conversation.search.previous')} onClick={() => state.move(-1)}><ArrowUp size={13} /></button>
+      <button type="button" disabled={!state.total} aria-label={t('conversation.search.next')} title={t('conversation.search.next')} onClick={() => state.move(1)}><ArrowDown size={13} /></button>
+      <button type="button" className="conversation-search__close" aria-label={t('conversation.search.close')} title={t('conversation.search.close')} onClick={state.close}><X size={13} /></button>
+    </div>
   </section>
 }
