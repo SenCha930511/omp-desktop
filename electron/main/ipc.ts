@@ -20,6 +20,7 @@ import type { VoiceService } from './voice'
 import type { UpdateService } from './updates'
 import type { AgentBrowserService } from './browser/agent-service'
 import { requireExistingPath, requireRecord, requireString, requireWebUrl } from './validation'
+import { deleteProjectSessions, resolveProjectRoots } from './project-sessions'
 
 interface Services {
   meta: AppMeta
@@ -193,7 +194,22 @@ export function registerIpc(services: Services, expectedRendererUrl: string): Ip
   handle(IPC_CHANNELS.projects.add, () => services.projects.add())
   handle(IPC_CHANNELS.projects.grantInferred, (_event, path) => services.projects.grantInferred(path))
   handle(IPC_CHANNELS.projects.relocate, (_event, id) => services.projects.relocate(id))
-  handle(IPC_CHANNELS.projects.remove, (_event, id) => services.projects.remove(id))
+  handle(IPC_CHANNELS.projects.remove, async (_event, id) => {
+    // Capture the project's folders before the removal dismisses them; the
+    // renderer only knows the id, so the main process derives what to purge.
+    const target = (await services.projects.list()).find((project) => project.id === id)
+    const removed = await services.projects.remove(id)
+    if (!removed) return false
+    if (target) {
+      await deleteProjectSessions({
+        listSessions: () => services.sessions.list(undefined, true, true),
+        deleteSession: (filePath) => services.sessions.delete(filePath),
+        closeBrowserView: (filePath) => services.browser.closeForSession(filePath),
+        killTerminal: (filePath) => services.terminals.killForSession(filePath),
+      }, await resolveProjectRoots(target.folders))
+    }
+    return true
+  })
   handle(IPC_CHANNELS.projects.touch, (_event, id) => services.projects.touch(id))
   handle(IPC_CHANNELS.projects.setPinned, (_event, id, pinned) => services.projects.setPinned(id, pinned))
   handle(IPC_CHANNELS.projects.updateScripts, (_event, id, scripts) => services.projects.updateScripts(id, scripts))

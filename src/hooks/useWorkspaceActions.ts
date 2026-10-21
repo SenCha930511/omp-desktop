@@ -303,16 +303,25 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     } catch (error) { reportError(error) }
   }
   const removeProject = async (project: ProjectRecord) => {
-    const { bridge, projects, sessions, workspace, setProjects, setToast, reportError } = getDeps()
+    const { bridge, projects, sessions, workspace, setProjects, setSessions, setToast, closeTerminalForSession, clearSessionAttention, reportError } = getDeps()
     try {
       if (bridge && !await bridge.projects.remove(project.id, project.harness)) throw new Error('This project could not be removed.')
+      // The main process deleted the project's saved sessions with it; mirror
+      // the per-session cleanup the single-session delete path performs.
+      const doomed = sessions.filter((item) => projectContainsPath(project, item.projectPath))
+      for (const item of doomed) {
+        clearSessionAttention(item)
+        closeTerminalForSession(item.filePath)
+        clearComposerDraft(`${project.id}:${item.id}`)
+      }
       setProjects((items) => items.filter((item) => item.id !== project.id))
+      setSessions((items) => items.filter((item) => !projectContainsPath(project, item.projectPath)))
       if (workspace.workspaceRef.current.project?.id === project.id) {
         const fallback = projects.find((item) => item.id !== project.id)
         const session = fallback ? sessions.find((candidate) => !candidate.archived && projectContainsPath(fallback, candidate.projectPath)) : undefined
         workspace.activateWorkspace(fallback, session)
       }
-      setToast('Project removed. Files and saved sessions were kept.')
+      setToast('Project removed. Its saved sessions were deleted.')
     } catch (error) { reportError(error) }
   }
   const togglePinProject = async (project: ProjectRecord) => {
