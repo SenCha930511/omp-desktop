@@ -71,6 +71,16 @@ const DEFAULT_RPC_CHUNK_ASSEMBLY_TIMING: RpcChunkAssemblyTiming = {
   schedule: (callback, delayMs) => setTimeout(callback, delayMs),
   cancel: (timer) => clearTimeout(timer as NodeJS.Timeout),
 }
+/**
+ * omp redirects a resumed session's writes to a forked copy when the requested
+ * session file is still held open by another process (a terminal TUI, another
+ * app window). get_state keeps reporting the requested path, so the child's
+ * stderr notice is the only reliable signal. Without this check the desktop
+ * runs on the fork while the session list shows both the original session and
+ * the empty stub the abandoned fork left behind.
+ */
+const SESSION_HELD_ELSEWHERE = /is open for writing in another (?:omp )?process/
+const SESSION_HELD_ELSEWHERE_MESSAGE = 'This session is open in another OMP process (for example, a terminal or another OMP Desktop window). Close it there, then try again.'
 
 export class RpcRuntime {
   readonly runtimeId = randomUUID()
@@ -85,6 +95,7 @@ export class RpcRuntime {
   private readonly eventForwarder: AgentEventForwarder
   private stopped = false
   private info: RuntimeInfo
+  private resumedSession = false
   private requestedServiceTier: PrimeServiceTier = 'default'
   private contextUsageRefresh: Promise<void> | null = null
   private contextUsageRefreshRequest: ContextUsageRefreshRequest | null = null
@@ -134,6 +145,7 @@ export class RpcRuntime {
     this.watchdogTimings = { ...DEFAULT_COMPACTION_WATCHDOG_TIMINGS, ...watchdogTimings }
     this.info = { runtimeId: this.runtimeId, harness: this.adapter.id, cwd, isStreaming: false, isCompacting: false, sessionActions: emptySessionActionSnapshot() }
     if (args.indexOf('--thinking') >= 0 && args[args.indexOf('--thinking') + 1] === 'auto') this.info.configuredThinkingLevel = 'auto'
+    this.resumedSession = args.indexOf('--resume') >= 0
     this.eventForwarder = new AgentEventForwarder(this.runtimeId, onEvent)
     // The harness child is spawned with the authorized cwd as its working
     // directory.
@@ -177,6 +189,7 @@ export class RpcRuntime {
     }
     const response = await this.request({ type: 'get_state' }, 60_000)
     this.updateFromState(response.data)
+    if (this.resumedSession) await this.assertSessionNotHeldElsewhere()
     // Optional on older OMP builds; observability must not prevent startup.
     void this.request({ type: 'set_subagent_subscription', level: 'events' }, 5_000).catch(() => undefined)
     const contextDeadline = new Promise<void>((resolve) => {
@@ -185,6 +198,23 @@ export class RpcRuntime {
     })
     await Promise.race([this.refreshContextUsage(), contextDeadline])
     return this.snapshot()
+  }
+
+  /**
+   * The fork notice is emitted during boot — measurably before the get_state
+   * response on a held session — so the immediate check after get_state is
+   * almost always decisive; a single 400ms retry covers slower flushes. A
+   * clean resume pays at most that one retry.
+   */
+  private async assertSessionNotHeldElsewhere(): Promise<void> {
+    for (let attempt = 0; ; attempt += 1) {
+      if (SESSION_HELD_ELSEWHERE.test(this.transport.stderrTail())) throw new Error(SESSION_HELD_ELSEWHERE_MESSAGE)
+      if (attempt >= 1) return
+      await new Promise((resolve) => {
+        const timer = setTimeout(resolve, 400)
+        timer.unref()
+      })
+    }
   }
 
   applyCapabilities(model: PrimeModelDescriptor | undefined, visionDelegation = false): void {
@@ -232,6 +262,7 @@ export class RpcRuntime {
   async command(command: RpcObject): Promise<RpcObject> {
     this.lastActivityAt = Date.now()
     this.scheduleCompactionPoll()
+    if (this.resumedSession && SESSION_HELD_ELSEWHERE.test(this.transport.stderrTail())) throw new Error(SESSION_HELD_ELSEWHERE_MESSAGE)
     if (command.type === 'extension_ui_response') {
       await this.transport.enqueue(`${JSON.stringify(command)}\n`).done
       return { type: 'response', command: 'extension_ui_response', success: true }

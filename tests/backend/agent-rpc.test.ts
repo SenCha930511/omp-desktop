@@ -1204,3 +1204,72 @@ describe('framed RPC transport stdio failure', () => {
     expect(failures).toEqual([pipeError])
   })
 })
+
+describe('session held elsewhere detection', () => {
+  const writeConflictAgent = (): { cwd: string; executable: string } => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-rpc-conflict-'))
+    dirs.push(cwd)
+    const executable = join(cwd, 'conflict-agent.cjs')
+    writeFileSync(executable, `#!/usr/bin/env node
+const readline = require('node:readline')
+const rl = readline.createInterface({ input: process.stdin })
+rl.on('line', (line) => {
+  let command
+  try { command = JSON.parse(line) } catch { return }
+  if (command.type === 'get_state') {
+    process.stdout.write(JSON.stringify({ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'conflict', isStreaming: false } }) + '\\n')
+    if (process.env.FAKE_CONFLICT === '1') {
+      setTimeout(() => process.stderr.write('Session /fake/session.jsonl is open for writing in another omp process, so this session now saves to a forked file.\\n'), Number(process.env.FAKE_CONFLICT_AFTER_MS || 0))
+    }
+  } else {
+    process.stdout.write(JSON.stringify({ id: command.id, type: 'response', command: command.type, success: true }) + '\\n')
+  }
+})
+`)
+    chmodSync(executable, 0o755)
+    return { cwd, executable }
+  }
+
+  it('fails a resumed start when omp reports the session is held by another process', async () => {
+    const fake = writeConflictAgent()
+    const runtime = new RpcRuntime(process.execPath, [fake.executable, '--resume', '/fake/session.jsonl'], fake.cwd, () => undefined, () => undefined, { FAKE_CONFLICT: '1' })
+    try {
+      await expect(runtime.handshake()).rejects.toThrow('This session is open in another OMP process')
+    } finally {
+      await runtime.stop()
+    }
+  })
+
+  it('lets a clean resumed start through after the grace window', async () => {
+    const fake = writeConflictAgent()
+    const runtime = new RpcRuntime(process.execPath, [fake.executable, '--resume', '/fake/session.jsonl'], fake.cwd, () => undefined, () => undefined)
+    try {
+      await expect(runtime.handshake()).resolves.toBeTruthy()
+    } finally {
+      await runtime.stop()
+    }
+  })
+
+  it('rejects later commands once the conflict notice arrives after the start window', async () => {
+    const fake = writeConflictAgent()
+    const runtime = new RpcRuntime(process.execPath, [fake.executable, '--resume', '/fake/session.jsonl'], fake.cwd, () => undefined, () => undefined, { FAKE_CONFLICT: '1', FAKE_CONFLICT_AFTER_MS: '800' })
+    try {
+      await expect(runtime.handshake()).resolves.toBeTruthy()
+      await new Promise((resolve) => { const timer = setTimeout(resolve, 900); timer.unref() })
+      await expect(runtime.command({ type: 'compact' })).rejects.toThrow('This session is open in another OMP process')
+    } finally {
+      await runtime.stop()
+    }
+  })
+
+  it('ignores the notice for runtimes that did not resume a session', async () => {
+    const fake = writeConflictAgent()
+    const runtime = new RpcRuntime(process.execPath, [fake.executable], fake.cwd, () => undefined, () => undefined, { FAKE_CONFLICT: '1' })
+    try {
+      await expect(runtime.handshake()).resolves.toBeTruthy()
+      await expect(runtime.command({ type: 'compact' })).resolves.toBeTruthy()
+    } finally {
+      await runtime.stop()
+    }
+  })
+})
