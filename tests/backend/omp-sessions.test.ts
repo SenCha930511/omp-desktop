@@ -199,6 +199,11 @@ describe('OMP catalog discovery', () => {
     const unsubscribe = service.onDidChange((event) => { if (event.filePath) reshoots.push(event.filePath) })
     try {
       await new Promise((resolve) => setTimeout(resolve, 150))
+      // fs.watch can still be catching up on the file's creation during the
+      // settle window; a residual event would satisfy the wait below against
+      // a catalog that has not reconciled the rewrite yet. Only events from
+      // after the rewrite count.
+      reshoots.length = 0
       rewriteTitleSlot(file, 'Renamed by harness')
       const canonical = realpathSync(file)
       await vi.waitFor(() => expect(reshoots).toContain(canonical), { timeout: 10_000, interval: 50 })
