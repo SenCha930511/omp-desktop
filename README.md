@@ -15,15 +15,19 @@ OMP Desktop is a derivative of [GooeyPi](https://github.com/am-will/gooey-pi) by
 ### Work with agents
 
 - Stream conversations with Markdown, reasoning summaries, tool activity, retries, and context compaction. Thinking sections can start expanded for every session (**Settings → Harness**), and each one still folds on demand.
+- Fenced code blocks carry a language header with a one-click copy button, and long prompts collapse to a readable preview that expands in place.
 - Search loaded conversation history with ⌘F / Ctrl+F, including reasoning and tool arguments. Search temporarily reveals matching collapsed content; closing it restores the disclosures. Saved sessions load up to the latest 400 messages, with separate content budgets.
 - Retry a failed turn through OMP's native `/retry`, restore its prompt beside an existing draft, or copy the error.
 - Pin the subagent roster, filter by activity, and see unread updates without losing each agent's reading position.
 - Revisit the latest five command results in the current workspace, including after closing the output panel.
-- Choose a model, reasoning level, and Fast mode when the selected model supports it.
+- Choose a model or a saved model preset, a reasoning level, and Fast mode when the selected model supports it.
 - Queue a follow-up or steer an agent while it is working.
+- Ask a side question from the dock beside a live session — it rides OMP's `/btw` protocol without derailing the main thread.
+- See the active approval mode at a glance next to the composer.
 - Paste or drop PNG, JPEG, GIF, and WebP images into a prompt when the model supports vision.
-- Resume, rename, search, and archive persistent sessions.
-- See running, finished, failed, and waiting-for-input work in one Activity view, then clear items you have handled.
+- Type in Chinese, Japanese, or Korean without Enter or Escape leaking through mid-composition.
+- Resume, rename, search, archive, or permanently delete persistent sessions. A new session appears as a draft placeholder in the sidebar until its first prompt adopts it.
+- See running, finished, failed, and waiting-for-input work in one Activity view, then clear items you have handled. Work that finishes in the background can raise a notification.
 
 ### Keep projects organized
 
@@ -31,11 +35,12 @@ OMP Desktop is a derivative of [GooeyPi](https://github.com/am-will/gooey-pi) by
 - Search projects, chats, and branches from the sidebar.
 - Switch between linked Git worktrees from the composer.
 - Create a branch worktree and open it as a new OMP Desktop workspace.
+- Delete a project in one confirmation: its saved OMP sessions are permanently removed from disk with it, while the workspace folder itself is kept.
 - Mention another top-level session with `@session`, copy its UUID, or let agents create and message model-selected sessions for parallel work.
 
 ### Use the built-in coding workspace
 
-- Review Git status and diffs, stage or unstage files, restore changes with confirmation, and commit without leaving the app. After each reply, the changes card lists only the files that turn edited — never older dirty state — with a one-click undo for that batch.
+- Review Git status and split-pane diffs, stage or unstage files, restore changes with confirmation, and commit without leaving the app. After each reply, the changes card lists only the files that turn edited — never older dirty state — with a one-click undo for that batch.
 - Browse project files and reveal them in your system file manager.
 - Open multiple terminal tabs for a session. Highlight terminal output to attach it to the next prompt.
 - Open the right-hand Summary, Changes, Browser, or Files panel whenever you need it.
@@ -71,10 +76,10 @@ Ask User and computer control are off by default. You can enable, disable, or re
 
 ### Make it comfortable
 
-- Choose a light, dark, or system theme and adjust the interface text size.
+- Choose a light, dark, or system theme and adjust the interface text size; the dark theme keeps text crisp with font-weight compensation, and macOS window controls track the interface scale.
 - Use the app in English, 繁體中文, or 简体中文 — pick a language or follow the system (**Settings → Appearance**).
-- Reduce motion, resize the workspace panels, or let them become overlays in a narrow window.
-- Use keyboard navigation and the command palette for common actions.
+- Reduce motion, resize the sidebar and workspace panels, or let them become overlays in a narrow window.
+- Use keyboard navigation and the command palette for common actions; palette selection wraps around at both ends.
 
 ## Get started
 
@@ -153,6 +158,8 @@ The Queue and Steer shortcuts can be swapped in **Settings → Harness → Messa
 ## Local data and safety
 
 OMP Desktop is built around local projects and local harness sessions. It does not rewrite session history or take ownership of OMP credentials.
+
+Deleting a conversation or a project is permanent on the harness side: the session files are removed from OMP's own session directory. Workspace folders and their contents are never touched by deletion.
 
 Remote pages open in a separate browser profile with Node access disabled. Project paths and desktop actions are checked in the main process, and third-party capabilities still run with your operating-system permissions. Review packages, commands, MCP servers, and projects before allowing them to act.
 
