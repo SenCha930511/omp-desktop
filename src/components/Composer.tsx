@@ -8,7 +8,7 @@ import { appendCapabilityRouting } from '@/lib/capability-mentions'
 import { clearComposerDraft, readComposerDraft, saveComposerDraft, takeComposerDraft } from '@/lib/composer-draft'
 import { contextDialLabel, formatSessionCost, PRICING_UNAVAILABLE } from '@/lib/format-cost'
 import { type MessageKey, useI18n } from '@/lib/i18n'
-import { messageActionForKey } from '@/lib/message-shortcuts'
+import { isImeComposingOrGuarded, messageActionForKey, splitAttachmentFileName } from '@/lib/message-shortcuts'
 import { appendSessionRouting, findSessionMentions } from '@/lib/session-mentions'
 import { appendTerminalContextToPrompt } from '@/lib/terminal-context'
 import { INITIAL_SLASH_COMMANDS, slashSuggestions, type SlashCommand } from '@/lib/slash-commands'
@@ -41,6 +41,7 @@ import { ExecutingModelChip, type ExecutingModelChipProps } from './ExecutingMod
 import { ModelPicker } from './ModelPicker'
 import { ProjectPicker } from './ProjectPicker'
 import { IconButton, SelectControl } from './ui'
+export { splitAttachmentFileName } from '@/lib/message-shortcuts'
 interface ComposerProps {
   availableCommands?: SlashCommand[]
   busy: boolean
@@ -222,6 +223,7 @@ export const Composer = memo(function Composer({
   const menuRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const composingRef = useRef(false)
+  const lastCompositionEndAtRef = useRef<number | null>(null)
   const acceptedMentionRef = useRef<{ start: number; text: string } | null>(null)
   const submittingRef = useRef(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -286,7 +288,7 @@ export const Composer = memo(function Composer({
       setMenu(null)
     }
     const onEscape = (event: KeyboardEvent) => {
-      if (!composingRef.current && !event.isComposing && event.keyCode !== 229 && event.key === 'Escape') setMenu(null)
+      if (event.key === 'Escape' && !isImeComposingOrGuarded(event, composingRef.current, lastCompositionEndAtRef.current)) setMenu(null)
     }
     document.addEventListener('mousedown', close)
     document.addEventListener('keydown', onEscape)
@@ -525,7 +527,7 @@ export const Composer = memo(function Composer({
       setContextMenuOpen(false)
     }
     const onEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setContextMenuOpen(false)
+      if (event.key === 'Escape' && !isImeComposingOrGuarded(event, composingRef.current, lastCompositionEndAtRef.current)) setContextMenuOpen(false)
     }
     document.addEventListener('mousedown', close)
     document.addEventListener('keydown', onEscape)
@@ -649,10 +651,15 @@ export const Composer = memo(function Composer({
               if (pastedText) insertAtCaret(event.currentTarget, pastedText)
               void imageAttachments.ingest(files)
             }}
-            onCompositionStart={() => { composingRef.current = true }}
-            onCompositionEnd={() => { composingRef.current = false }}
+            onCompositionStart={() => {
+              composingRef.current = true
+            }}
+            onCompositionEnd={(event) => {
+              composingRef.current = false
+              lastCompositionEndAtRef.current = event.nativeEvent.timeStamp
+            }}
             onKeyDown={(event) => {
-              if (composingRef.current || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return
+              if (isImeComposingOrGuarded(event.nativeEvent, composingRef.current, lastCompositionEndAtRef.current)) return
               if (event.key === 'Backspace') acceptedMentionRef.current = null
               if (menu && suggestions.length && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
                 event.preventDefault()
@@ -802,29 +809,37 @@ export const Composer = memo(function Composer({
                 </button>
               </div>
             ) : null}
-            {images.map((image) => (
-              <div className="composer-attachment" key={image.id}>
-                <img src={`data:${image.mimeType};base64,${image.data}`} alt="" />
-                <span>
-                  <ImageIcon size={12} />
-                  {image.name}
-                </span>
-                <button type="button" aria-label={t('composer.removeAttachment', { name: image.name })} onClick={() => imageAttachments.remove(image.id)}>
-                  <X size={12} />
-                </button>
-              </div>
-            ))}
-            {unsupportedFiles.map((file) => (
-              <div className="composer-attachment" key={file.id}>
-                <span>
-                  <Paperclip size={12} />
-                  {file.name}
-                </span>
-                <button type="button" aria-label={t('composer.removeAttachment', { name: file.name })} onClick={() => imageAttachments.remove(file.id)}>
-                  <X size={12} />
-                </button>
-              </div>
-            ))}
+            {images.map((image) => {
+              const { stem, ext } = splitAttachmentFileName(image.name)
+              return (
+                <div className="composer-attachment" key={image.id} title={image.name}>
+                  <img src={`data:${image.mimeType};base64,${image.data}`} alt="" />
+                  <span className="composer-attachment__name">
+                    <ImageIcon size={12} />
+                    <span className="composer-attachment__stem">{stem}</span>
+                    {ext ? <span className="composer-attachment__ext">{ext}</span> : null}
+                  </span>
+                  <button type="button" aria-label={t('composer.removeAttachment', { name: image.name })} onClick={() => imageAttachments.remove(image.id)}>
+                    <X size={12} />
+                  </button>
+                </div>
+              )
+            })}
+            {unsupportedFiles.map((file) => {
+              const { stem, ext } = splitAttachmentFileName(file.name)
+              return (
+                <div className="composer-attachment" key={file.id} title={file.name}>
+                  <span className="composer-attachment__name">
+                    <Paperclip size={12} />
+                    <span className="composer-attachment__stem">{stem}</span>
+                    {ext ? <span className="composer-attachment__ext">{ext}</span> : null}
+                  </span>
+                  <button type="button" aria-label={t('composer.removeAttachment', { name: file.name })} onClick={() => imageAttachments.remove(file.id)}>
+                    <X size={12} />
+                  </button>
+                </div>
+              )
+            })}
           </div>
         ) : null}
         {attachmentError ? (
@@ -844,6 +859,7 @@ export const Composer = memo(function Composer({
         <div className="composer__footer">
           <div className="composer__controls">
             <IconButton
+              className="composer-add"
               label={t('composer.menu.add')}
               data-composer-menu-trigger
               aria-expanded={menu === 'add'}
@@ -872,7 +888,7 @@ export const Composer = memo(function Composer({
             />
             <ModelPicker value={model} modelsByProvider={modelsByProvider} providers={providers} onChange={onModelChange} presets={presets} onSwitchPreset={onSwitchPreset} onSavePreset={onSavePreset} />
             <ExecutingModelChip executingModel={executingModel} />
-            <SelectControl label={t('composer.reasoningEffort')} compact icon={<Gauge size={12} />} value={effort} onChange={(event) => onEffortChange(event.target.value as PrimeEffortSelector)}>
+            <SelectControl className="composer-effort__trigger" label={t('composer.reasoningEffort')} compact icon={<Gauge size={12} />} value={effort} onChange={(event) => onEffortChange(event.target.value as PrimeEffortSelector)}>
               {reasoningLevels.map((level) => (
                 <option key={level} value={level}>
                   {level === 'auto' && resolvedAutoEffort

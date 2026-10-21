@@ -36,10 +36,13 @@
 .composer-input > textarea { width: 100%; height: 100%; min-height: 36px; max-height: 164px; field-sizing: content; display: block; padding: 7px 10px 8px; border: 0; resize: none; outline: 0; color: var(--text); background: transparent; caret-color: var(--text); font: inherit; font-size: 14px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: break-word; }
 .composer-input > textarea::placeholder { color: var(--text-tertiary); }
 .composer-attachments { display: flex; align-items: center; gap: 6px; padding: 1px 6px 7px; overflow-x: auto; }
-.composer-attachment { max-width: 190px; height: 34px; display: flex; align-items: center; gap: 5px; flex: 0 0 auto; padding: 3px 4px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-subtle); }
+.composer-attachment { max-width: 190px; height: 34px; display: flex; align-items: center; gap: 5px; flex: 0 0 auto; padding: 3px 4px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-subtle); animation: attachment-grow-in 220ms var(--ease-overshoot); }
+@keyframes attachment-grow-in { from { opacity: 0; transform: scale(.92); } to { opacity: 1; transform: scale(1); } }
 .composer-attachment > img { width: 26px; height: 26px; flex: 0 0 auto; border-radius: 4px; object-fit: cover; }
-.composer-attachment > span { min-width: 0; display: flex; align-items: center; gap: 4px; overflow: hidden; color: var(--text-secondary); font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
-.composer-attachment > span svg { flex: 0 0 auto; }
+.composer-attachment > span, .composer-attachment__name { min-width: 0; display: flex; align-items: center; flex: 1 1 auto; overflow: hidden; color: var(--text-secondary); font-size: 10.5px; white-space: nowrap; }
+.composer-attachment > span svg, .composer-attachment__name > svg { flex: 0 0 auto; margin-right: 4px; }
+.composer-attachment__stem { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer-attachment__ext { flex-shrink: 0; white-space: nowrap; }
 .composer-attachment > button { width: 23px; height: 23px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 5px; color: var(--text-tertiary); background: transparent; }
 .composer-attachment > button:hover { color: var(--text); background: var(--surface-hover); }
 .composer-attachment-error { margin: -1px 7px 6px; color: var(--danger); font-size: 10.5px; line-height: 1.35; }
@@ -77,10 +80,12 @@
 .composer-annotation__body small:first-of-type { font-family: "SFMono-Regular", Menlo, monospace; }
 .composer-annotation > button { width: 22px; height: 22px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 5px; color: var(--text-tertiary); background: transparent; }
 .composer-annotation > button:hover { color: var(--text); background: var(--surface-hover); }
-.composer__footer { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; min-width: 0; margin-top: 2px; padding-top: 6px; border-top: var(--border-hairline, 1px) solid color-mix(in srgb, var(--border) 62%, transparent); }
+.composer__footer { --cmp-chin-row-h: 28px; --cmp-chin-control-h: 36px; --cmp-chin-touch-grow: calc((var(--cmp-chin-control-h) - var(--cmp-chin-row-h)) / 2); position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; min-width: 0; margin-top: 2px; padding-top: 6px; border-top: var(--border-hairline, 1px) solid color-mix(in srgb, var(--border) 62%, transparent); }
 .composer__controls, .composer__actions { display: flex; align-items: center; min-width: 0; }
 .composer__controls { gap: 3px; row-gap: 5px; flex-wrap: wrap; }
 .composer__actions { gap: 5px; }
+.composer-add, .worktree-picker__trigger, .model-picker__trigger, .composer-project__trigger, .composer-effort__trigger, .approval-mode-toggle, .permissions-chip { position: relative; overflow: visible; }
+.composer-add::after, .worktree-picker__trigger::after, .model-picker__trigger::after, .composer-project__trigger::after, .composer-effort__trigger::after, .approval-mode-toggle::after, .permissions-chip::after { content: ''; position: absolute; inset: calc(var(--cmp-chin-touch-grow, 4px) * -1) 0; }
 .context-usage-dial { --context-color: var(--prime); position: relative; width: 26.4px; height: 26.4px; display: grid; place-items: center; flex: 0 0 26.4px; border-radius: 50%; background: conic-gradient(var(--context-color) var(--context-percent), var(--surface-selected) 0); color: var(--text-secondary); cursor: help; font-variant-numeric: tabular-nums; transition: transform 120ms var(--ease-out); }
 .context-usage-dial::before { content: ''; position: absolute; inset: 2.65px; border-radius: inherit; background: var(--surface-raised); }
 .context-usage-dial > span { position: absolute; z-index: 1; inset: 0; display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; padding: 0; font-size: 8.5px; font-weight: 650; line-height: 1; text-align: center; transform: translateY(.25px); }

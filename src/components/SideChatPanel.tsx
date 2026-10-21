@@ -2,6 +2,7 @@ import { ArrowUp, ChevronDown, CirclePlus, Plus, Square, X } from 'lucide-react'
 import { memo, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { isTopicRunning, type SideQuestionSessionState } from '@/hooks/useSideQuestions'
 import { useI18n } from '@/lib/i18n'
+import { isImeComposingOrGuarded } from '@/lib/message-shortcuts'
 import type { SideQuestionTopic, SideQuestionTurn } from '@/types/api'
 import { MarkdownText } from './MarkdownText'
 import { IconButton } from './ui'
@@ -63,6 +64,8 @@ export const SideChatPanel = memo(function SideChatPanel({ state, hasSession, on
   const threadRef = useRef<HTMLDivElement | null>(null)
   const pinnedRef = useRef(true)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const composingRef = useRef(false)
+  const lastCompositionEndAtRef = useRef<number | null>(null)
 
   const running = sideChatBusy(state)
   const activeTopic = state.topics.find((topic) => topic.id === state.activeTopicId) ?? null
@@ -91,7 +94,8 @@ export const SideChatPanel = memo(function SideChatPanel({ state, hasSession, on
   }
 
   const onComposerKey = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return
+    if (isImeComposingOrGuarded(event.nativeEvent, composingRef.current, lastCompositionEndAtRef.current)) return
+    if (event.key !== 'Enter' || event.shiftKey) return
     event.preventDefault()
     submit()
   }
@@ -170,6 +174,13 @@ export const SideChatPanel = memo(function SideChatPanel({ state, hasSession, on
           onChange={(event) => {
             setDraft(event.target.value)
             fitTextarea()
+          }}
+          onCompositionStart={() => {
+            composingRef.current = true
+          }}
+          onCompositionEnd={(event) => {
+            composingRef.current = false
+            lastCompositionEndAtRef.current = event.nativeEvent.timeStamp
           }}
           onKeyDown={onComposerKey}
         />

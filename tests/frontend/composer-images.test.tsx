@@ -73,6 +73,11 @@ function pngFile(name: string, read?: () => Promise<ArrayBuffer>): File {
   return file
 }
 
+function withTimeStamp<T extends Event>(event: T, timeStamp: number): T {
+  Object.defineProperty(event, 'timeStamp', { configurable: true, value: timeStamp })
+  return event
+}
+
 it('does not accept commands or close the command menu during IME composition', async () => {
   const send = renderComposer()
   const textarea = container.querySelector('textarea')!
@@ -84,8 +89,12 @@ it('does not accept commands or close the command menu during IME composition', 
   expect(send).not.toHaveBeenCalled()
   expect(container.querySelector('[role="listbox"]')).not.toBeNull()
   expect(textarea.value).toBe('/')
-  act(() => textarea.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true })))
-  act(() => textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+  // Composition has ended; the shared IME guard still swallows the leaked
+  // commit keys inside its window, then normal Escape handling resumes.
+  act(() => textarea.dispatchEvent(withTimeStamp(new CompositionEvent('compositionend', { bubbles: true }), 1000)))
+  act(() => textarea.dispatchEvent(withTimeStamp(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }), 1200)))
+  expect(container.querySelector('[role="listbox"]')).not.toBeNull()
+  act(() => textarea.dispatchEvent(withTimeStamp(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }), 1600)))
   expect(container.querySelector('[role="listbox"]')).toBeNull()
 })
 
