@@ -272,10 +272,10 @@ function AgentActivityPart({ part }: { part: Extract<MessagePart, { type: 'agent
 
 function CompactionPart({ part }: { part: Extract<MessagePart, { type: 'compaction' }> }) {
   const { t } = useI18n()
-  const [manualOpen, setOpen] = useState(false)
-  const reveal = useContext(SearchRevealContext)
-  const open = manualOpen || reveal
-  const canExpand = Boolean(part.summary || part.error)
+  // A static status row: no expansion. The expandable details panel below
+  // used to open with an empty summary and read as a stray input box; the
+  // condensed summary adds nothing the transcript itself does not carry, and
+  // the failure state is already announced by the CircleAlert state label.
   const label =
     part.status === 'running'
       ? t('transcript.compaction.running')
@@ -300,11 +300,10 @@ function CompactionPart({ part }: { part: Extract<MessagePart, { type: 'compacti
         <CircleAlert size={12} /> {part.status === 'cancelled' ? t('transcript.compaction.state.cancelled') : t('transcript.compaction.state.needsAttention')}
       </>
     )
-  const details = part.error || part.summary
   const tokenLabel = part.tokensBefore === undefined ? '' : t('transcript.compaction.tokensBefore', { count: part.tokensBefore.toLocaleString() })
   return (
     <div className={`activity-line activity-line--compaction is-${part.status}`}>
-      <button type="button" className="activity-tool__summary" disabled={!canExpand} onClick={() => setOpen((value) => !value)} aria-expanded={canExpand ? open : undefined}>
+      <div className="activity-tool__summary is-static">
         <span className="activity-line__icon">
           {part.status === 'running' ? <LoaderCircle className="spin" size={13} /> : part.status === 'done' ? <Layers3 size={13} /> : <CircleAlert size={13} />}
         </span>
@@ -312,13 +311,7 @@ function CompactionPart({ part }: { part: Extract<MessagePart, { type: 'compacti
         <span className="activity-compaction__reason">{t(part.reason ? COMPACTION_REASON_KEYS[part.reason] : COMPACTION_REASON_KEYS.context)}</span>
         {tokenLabel ? <span className="activity-compaction__tokens">{tokenLabel}</span> : null}
         <span className="activity-tool__state">{state}</span>
-        {canExpand ? open ? <ChevronDown size={13} /> : <ChevronRight size={13} /> : null}
-      </button>
-      {open && details ? (
-        <div className={`activity-compaction__details ${part.status === 'done' ? '' : 'is-error'}`}>
-          <MarkdownText text={boundText(details, 40_000, t('transcript.compaction.truncated'))} />
-        </div>
-      ) : null}
+      </div>
     </div>
   )
 }

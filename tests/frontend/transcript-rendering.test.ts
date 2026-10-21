@@ -473,7 +473,11 @@ describe('transcript rendering', () => {
     expect(html).toContain('Context compacted')
     expect(html).toContain('overflow recovery')
     expect(html).toContain('99,175 tokens before')
-    expect(html).toContain('aria-expanded="false"')
+    // The compaction row is static: no expansion affordance and no details
+    // panel (the condensed summary used to render as a stray input box).
+    expect(html).not.toContain('aria-expanded')
+    expect(html).not.toContain('activity-compaction__details')
+    expect(html).not.toContain('The earlier work was summarized.')
     expect(html).not.toContain('OMP message')
   })
 

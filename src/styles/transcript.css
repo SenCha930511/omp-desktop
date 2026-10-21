@@ -97,9 +97,9 @@
 .activity-compaction__reason, .activity-compaction__tokens { min-width: 0; overflow: hidden; color: var(--text-tertiary); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .activity-compaction__tokens { margin-left: auto; }
 .activity-line--compaction .activity-tool__state { margin-left: 6px; }
-.activity-compaction__details { max-height: 260px; margin: 0 5px 5px 26px; padding: 8px 10px; overflow: auto; border-left: 2px solid color-mix(in srgb, var(--prime) 42%, var(--border)); color: var(--text-secondary); background: color-mix(in srgb, var(--canvas) 64%, transparent); animation: timeline-expand 180ms var(--ease-out); }
-.activity-compaction__details.is-error { border-left-color: var(--danger); color: var(--danger); }
-.activity-compaction__details .prose { margin: 0; font-size: 11.5px; line-height: 1.5; }
+/* Compaction rows are static status lines: no expansion chevron, no details
+   panel (it displayed the condensed summary and read as a stray input box). */
+.activity-line--compaction .activity-tool__summary.is-static { pointer-events: none; }
 .activity-agent__name { min-width: 0; flex: 1; overflow: hidden; color: var(--prime); font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
 .activity-agent__details { margin: 0 5px 5px 26px; padding: 7px 9px; border-left: 2px solid color-mix(in srgb, var(--prime) 45%, var(--border)); color: var(--text-secondary); animation: timeline-expand 180ms var(--ease-out); }
 .activity-agent__details .prose { margin: 0; font-size: 11.5px; line-height: 1.5; }
