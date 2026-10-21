@@ -480,7 +480,7 @@ function SidebarView({
                 >
                   <NotebookPen size={13} />
                 </IconButton>
-                {running ? (
+                {running && isCollapsed ? (
                   <span className="project-working" title={t('sidebar.agentWorking')}>
                     <LoaderCircle className="spin" size={13} />
                   </span>

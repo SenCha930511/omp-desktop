@@ -44,7 +44,11 @@
    filled prime background across the whole row. Removed per request: the row
    looks like any other; the attention state survives only in the session
    nav count badge. */
-.session-row-wrap.is-selected { color: var(--text); background: var(--surface-selected); box-shadow: inset 0 0 0 1px var(--prime); }
+/* Selected session reads the Claude way: a soft fill with strong-weight
+   foreground text and no outline ring. Keyboard focus keeps the global
+   button:focus-visible outline from base.css. */
+.session-row-wrap.is-selected { color: var(--text); background: var(--surface-selected); }
+.session-row-wrap.is-selected .session-row__title { font-weight: 560; }
 /* The draft placeholder has no session behind it: keep it visually tentative
    (italic, muted until selected) with a single discard action. */
 .session-row-wrap.is-placeholder > .session-row { align-items: center; }

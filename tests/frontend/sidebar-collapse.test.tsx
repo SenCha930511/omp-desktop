@@ -85,4 +85,21 @@ describe('sidebar expand and collapse all projects', () => {
     expect(expandAllButton()).toBeNull()
     expect(collapseAllButton()?.disabled).toBe(false)
   })
+
+  it('moves the running spinner from the session rows to the collapsed project row', async () => {
+    await renderSidebar([project], [{ ...session, status: 'running' }])
+
+    // Expanded: only the running session row spins; the folder row stays quiet.
+    expect(container.querySelector('.session-row__spinner')).not.toBeNull()
+    expect(container.querySelector('.project-working')).toBeNull()
+
+    // Collapsed: the folder row takes over so activity stays visible without expanding.
+    await press(collapseAllButton()!)
+    expect(sessionRows().length).toBe(0)
+    expect(container.querySelector('.project-working')).not.toBeNull()
+
+    await press(expandAllButton()!)
+    expect(container.querySelector('.session-row__spinner')).not.toBeNull()
+    expect(container.querySelector('.project-working')).toBeNull()
+  })
 })
