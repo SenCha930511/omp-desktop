@@ -1,5 +1,5 @@
-import { ChevronDown, X } from 'lucide-react'
-import { type ButtonHTMLAttributes, type ReactNode, type RefObject, type SelectHTMLAttributes, useEffect, useId, useRef } from 'react'
+import { X } from 'lucide-react'
+import { type ButtonHTMLAttributes, type ReactNode, type RefObject, useEffect, useId, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { useI18n } from '@/lib/i18n'
 
@@ -23,40 +23,6 @@ export function BrowserGlobe({ size = 18 }: { size?: number }) {
       <ellipse cx="12" cy="12" rx="3.65" ry="9" />
       <path d="M3 12h18" />
     </svg>
-  )
-}
-
-interface SelectControlProps extends SelectHTMLAttributes<HTMLSelectElement> {
-  icon?: ReactNode
-  compact?: boolean
-  label: string
-}
-
-export function SelectControl({ icon, compact, className = '', label, children, ...props }: SelectControlProps) {
-  const selectRef = useRef<HTMLSelectElement>(null)
-  return (
-    <label
-      className={`select-control ${compact ? 'select-control--compact' : ''} ${className}`}
-      title={label}
-      onMouseDown={(event) => {
-        // A native select only opens from a direct hit on the control itself,
-        // which shrinks to a sliver beside the icon and chevron; the rest of
-        // the chip was dead space. A label mousedown is a trusted gesture, so
-        // showPicker() opens the dropdown from anywhere on the chip.
-        if (event.button !== 0 || event.target === selectRef.current || selectRef.current?.disabled) return
-        event.preventDefault()
-        selectRef.current?.showPicker()
-      }}
-    >
-      <span className="select-control__icon" aria-hidden="true">
-        {icon}
-      </span>
-      <span className="sr-only">{label}</span>
-      <select ref={selectRef} aria-label={label} {...props}>
-        {children}
-      </select>
-      <ChevronDown className="select-control__chevron" size={12} aria-hidden="true" />
-    </label>
   )
 }
 

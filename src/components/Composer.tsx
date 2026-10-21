@@ -1,4 +1,4 @@
-import { ArrowUp, AtSign, Check, ChevronDown, Clock3, Command, Edit3, Gauge, ImageIcon, LoaderCircle, MessageCirclePlus, Mic, Paperclip, Plus, Shield, ShieldAlert, ShieldCheck, ShieldQuestionMark, Square, SquareTerminal, Trash2, X, Zap } from 'lucide-react'
+import { ArrowUp, AtSign, Check, ChevronDown, Clock3, Command, Edit3, ImageIcon, LoaderCircle, MessageCirclePlus, Mic, Paperclip, Plus, Shield, ShieldAlert, ShieldCheck, ShieldQuestionMark, Square, SquareTerminal, Trash2, X, Zap } from 'lucide-react'
 import type { CSSProperties } from 'react'
 import { memo, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useComposerImages } from '@/hooks/useComposerImages'
@@ -38,9 +38,10 @@ import type {
 } from '@/types/api'
 import { CheckoutPicker } from './CheckoutPicker'
 import { ExecutingModelChip, type ExecutingModelChipProps } from './ExecutingModelChip'
+import { EffortPicker } from './EffortPicker'
 import { ModelPicker } from './ModelPicker'
 import { ProjectPicker } from './ProjectPicker'
-import { IconButton, SelectControl } from './ui'
+import { IconButton } from './ui'
 export { splitAttachmentFileName } from '@/lib/message-shortcuts'
 interface ComposerProps {
   availableCommands?: SlashCommand[]
@@ -120,17 +121,6 @@ interface ComposerProps {
   /** Stable per-workspace key; without it the composer keeps no draft of its own. */
   draftKey?: string
 }
-
-const reasoningLabelKeys = {
-  auto: 'composer.reasoning.auto',
-  off: 'composer.reasoning.off',
-  minimal: 'composer.reasoning.minimal',
-  low: 'composer.reasoning.low',
-  medium: 'composer.reasoning.medium',
-  high: 'composer.reasoning.high',
-  xhigh: 'composer.reasoning.xhigh',
-  max: 'composer.reasoning.max',
-} as const satisfies Record<PrimeEffortSelector, MessageKey>
 
 const approvalModeMeta = {
   inherit: { icon: Shield, labelKey: 'composer.approval.inherit', settingsKey: 'agent.approval.inherit', yolo: false },
@@ -908,15 +898,7 @@ export const Composer = memo(function Composer({
             />
             <ModelPicker value={model} modelsByProvider={modelsByProvider} providers={providers} onChange={onModelChange} presets={presets} onSwitchPreset={onSwitchPreset} onSavePreset={onSavePreset} />
             <ExecutingModelChip executingModel={executingModel} />
-            <SelectControl className="composer-effort__trigger" label={t('composer.reasoningEffort')} compact icon={<Gauge size={12} />} value={effort} onChange={(event) => onEffortChange(event.target.value as PrimeEffortSelector)}>
-              {reasoningLevels.map((level) => (
-                <option key={level} value={level}>
-                  {level === 'auto' && resolvedAutoEffort
-                    ? t('composer.reasoning.autoResolved', { level: t(reasoningLabelKeys[resolvedAutoEffort]) })
-                    : t(reasoningLabelKeys[level])}
-                </option>
-              ))}
-            </SelectControl>
+            <EffortPicker value={effort} levels={reasoningLevels} resolvedAutoEffort={resolvedAutoEffort} onChange={onEffortChange} />
             <div className="approval-mode" ref={approvalMenuRef}>
               <button
                 type="button"

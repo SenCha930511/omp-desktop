@@ -670,10 +670,11 @@ test.describe('OMP Desktop desktop smoke', () => {
 
   test('offers auto effort and persists the thinking disclosure setting', async () => {
     await page.locator('.session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
-    const effort = page.getByRole('combobox', { name: 'Reasoning effort', exact: true })
-    await expect(effort.locator('option[value="auto"]')).toHaveText(/^Auto( · .+)?$/)
-    await effort.selectOption('auto')
-    await expect(effort).toHaveValue('auto')
+    const effortTrigger = page.locator('.effort-picker__trigger')
+    await expect(effortTrigger.locator('span')).toHaveText(/^Auto( · .+)?$/)
+    await effortTrigger.click()
+    await page.locator('.effort-picker__menu').getByRole('option').filter({ hasText: 'Auto' }).click()
+    await expect(effortTrigger.locator('span')).toHaveText(/^Auto( · .+)?$/)
     await page.evaluate(() => window.desktop!.settings.update({ reasoningExpandedByDefault: true }))
     await page.reload()
     await expect(page.locator('.app-shell')).toHaveAttribute('data-ready', 'true')
@@ -794,31 +795,30 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(transcript).toHaveClass(/is-scrolled/)
   })
 
-  test('opens the reasoning effort picker from anywhere on its chip', async () => {
-    // The native select shrinks to a sliver beside its icon and chevron
-    // (field-sizing: content); clicks on the rest of the chip must still
-    // open the picker instead of hitting dead space.
-    const effort = page.getByRole('combobox', { name: 'Reasoning effort', exact: true })
-    await expect(effort).toBeVisible()
-    await page.evaluate(() => {
-      const scope = globalThis as { __pickerCalls?: string[] }
-      scope.__pickerCalls = []
-      HTMLSelectElement.prototype.showPicker = function showPickerRecorded(this: HTMLSelectElement) {
-        scope.__pickerCalls?.push(this.getAttribute('aria-label') ?? '')
-      }
-    })
-    // Raw mouse clicks at the chip's icon and chevron — the spots that used
-    // to be dead space outside the native select's own box.
-    const iconBox = await page.locator('.composer-effort__trigger .select-control__icon').boundingBox()
-    if (!iconBox) throw new Error('effort icon is not visible')
-    await page.mouse.click(iconBox.x + iconBox.width / 2, iconBox.y + iconBox.height / 2)
-    await expect.poll(() => page.evaluate(() => (globalThis as { __pickerCalls?: string[] }).__pickerCalls)).toEqual(['Reasoning effort'])
-    // The trailing padding of the chip (the chevron hides in narrow panes)
-    // must open the picker too.
-    const chipBox = await page.locator('.composer-effort__trigger').boundingBox()
-    if (!chipBox) throw new Error('effort chip is not visible')
-    await page.mouse.click(chipBox.x + chipBox.width - 3, chipBox.y + chipBox.height / 2)
-    await expect.poll(() => page.evaluate(() => (globalThis as { __pickerCalls?: string[] }).__pickerCalls)).toEqual(['Reasoning effort', 'Reasoning effort'])
+  test('picks the reasoning effort from a popover menu', async () => {
+    const trigger = page.locator('.effort-picker__trigger')
+    await expect(trigger).toBeVisible()
+    // The level list starts from the catalog-wide defaults and narrows once
+    // the fixture model's own levels arrive; wait for that to settle.
+    await expect(trigger.locator('span')).toHaveText(/^Auto( · .+)?$/)
+    await trigger.click()
+    const menu = page.locator('.effort-picker__menu')
+    await expect(menu).toBeVisible()
+    // The fixture runtime reasons at auto/low/medium/high.
+    const options = menu.getByRole('option')
+    await expect(options).toHaveCount(4)
+    await expect(options.filter({ hasText: 'Auto' })).toHaveAttribute('aria-selected', 'true')
+    await options.filter({ hasText: 'High' }).click()
+    await expect(page.locator('.effort-picker__trigger > span')).toHaveText('High')
+    await expect(menu).toHaveCount(0)
+    // Keyboard navigation mirrors the native select the popover replaces.
+    await trigger.focus()
+    await trigger.click()
+    await expect(menu).toBeVisible()
+    await page.keyboard.press('ArrowDown')
+    await page.keyboard.press('Escape')
+    await expect(menu).toHaveCount(0)
+    await expect(page.locator('.effort-picker__trigger > span')).toHaveText('High')
   })
 
   test('switches the approval mode from the composer pill', async () => {
@@ -1220,16 +1220,18 @@ test.describe('OMP Desktop desktop smoke', () => {
 
     const model = page.locator('.model-picker')
     const modelTrigger = model.locator('.model-picker__trigger')
-    const reasoning = page.locator('.select-control').filter({ has: page.getByRole('combobox', { name: 'Reasoning effort' }) })
+    const effortTrigger = page.locator('.effort-picker__trigger')
     await expect(modelTrigger.locator('span')).toHaveCSS('display', 'block')
-    await expect(reasoning.locator('.select-control__chevron')).toHaveCSS('display', 'none')
-    await expect(reasoning.getByRole('combobox')).toHaveCSS('opacity', '1')
+    await expect(effortTrigger.locator('svg').last()).toHaveCSS('display', 'none')
+    await expect(effortTrigger.locator('span')).toBeVisible()
 
     await page.locator('.conversation-column').evaluate((node) => { node.style.flex = '0 0 300px' })
     await expect(modelTrigger.locator('span')).toHaveCSS('display', 'none')
     await expect(modelTrigger.locator('svg').first()).not.toHaveCSS('display', 'none')
-    await expect(reasoning.getByRole('combobox')).toHaveCSS('opacity', '0')
-    await expect(reasoning.locator('.select-control__icon')).not.toHaveCSS('display', 'none')
+    const effortBox = await effortTrigger.boundingBox()
+    expect(effortBox?.width).toBeCloseTo(28, 0)
+    await expect(effortTrigger.locator('span')).toHaveCSS('display', 'none')
+    await expect(effortTrigger.locator('svg').first()).not.toHaveCSS('display', 'none')
 
     const controlBounds = await page.locator('.composer__footer').evaluate((footer) => {
       const controls = footer.querySelector<HTMLElement>('.composer__controls')!

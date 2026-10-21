@@ -1,19 +1,15 @@
 @container (max-width: 620px) {
-  .permissions-chip:not(.worktree-picker__trigger, .model-picker__trigger) { display: none; }
+  .permissions-chip:not(.worktree-picker__trigger, .model-picker__trigger, .effort-picker__trigger) { display: none; }
   .worktree-picker__trigger, .model-picker__trigger { display: inline-flex; max-width: 112px; }
   .composer__controls { min-width: 0; }
-  .select-control select { max-width: 92px; }
-  .select-control__chevron, .worktree-picker__chevron, .model-picker__trigger > svg:last-child { display: none; }
+  .worktree-picker__chevron, .model-picker__trigger > svg:last-child, .effort-picker__trigger > svg:last-child { display: none; }
 }
 
 @container (max-width: 490px) {
-  .select-control { position: relative; width: 28px; flex: 0 0 28px; justify-content: center; gap: 0; padding-inline: 0; }
-  .select-control select { position: absolute; inset: 0; width: 100%; height: 100%; max-width: none; opacity: 0; cursor: pointer; }
-  .select-control__icon { pointer-events: none; }
   .fast-mode-toggle { width: 28px; justify-content: center; padding-inline: 0; }
-  .fast-mode-toggle__label, .worktree-picker__label, .model-picker__trigger > span { display: none; }
-  .worktree-picker, .worktree-picker__trigger, .model-picker, .model-picker__trigger { width: 28px; max-width: 28px; flex: 0 0 28px; }
-  .worktree-picker__trigger, .model-picker__trigger { justify-content: center; padding-inline: 0; }
+  .fast-mode-toggle__label, .worktree-picker__label, .model-picker__trigger > span, .effort-picker__trigger > span { display: none; }
+  .worktree-picker, .worktree-picker__trigger, .model-picker, .model-picker__trigger, .effort-picker, .effort-picker__trigger { width: 28px; max-width: 28px; flex: 0 0 28px; }
+  .worktree-picker__trigger, .model-picker__trigger, .effort-picker__trigger { justify-content: center; padding-inline: 0; }
   .composer-note { display: none; }
 }
 
@@ -26,7 +22,7 @@
   .conversation-pane { min-width: 360px; }
   .changes-body { grid-template-columns: 155px minmax(0, 1fr); }
   .file-changes small { display: none; }
-  .permissions-chip:not(.worktree-picker__trigger, .model-picker__trigger) { display: none; }
+  .permissions-chip:not(.worktree-picker__trigger, .model-picker__trigger, .effort-picker__trigger) { display: none; }
   .worktree-picker__trigger, .model-picker__trigger { display: inline-flex; max-width: 112px; }
 }
 
