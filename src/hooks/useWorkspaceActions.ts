@@ -500,22 +500,23 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
           if (!provider.model) throw new Error(`No model is available for ${HARNESS_AGENT_NAMES[activeHarness]}. Enable or connect a provider, then try again.`)
           activeRuntime = await bridge.agent.start({ cwd: selected.cwd, sessionPath: selected.sessionFile, model: provider.model, thinking: provider.effort, fast: provider.fast, harness: activeHarness })
           startedRuntime = true
-          if (workspace.workspaceRef.current.generation !== generation) { await bridge.agent.stop(activeRuntime.runtimeId).catch(() => false); return }
+          // The prompt is hereby submitted work: launching survives workspace
+          // switches. Earlier builds stopped the just-started runtime when the
+          // user navigated mid-launch, silently deleting the "starting" draft —
+          // the launch now continues in the background and only the adoption
+          // and view mutations below stay generation-guarded.
           const indexedSession = await indexStartedSession({
             bridge,
             harness: activeHarness,
             sessionFile: activeRuntime.sessionFile,
             setSessions,
-            isCurrent: () => workspace.workspaceRef.current.generation === generation,
           })
-          if (workspace.workspaceRef.current.generation !== generation) {
-            await bridge.agent.stop(activeRuntime.runtimeId).catch(() => false)
-            return
-          }
           // A prompt that started from the draft placeholder adopts the
           // session it just created, replacing the placeholder with the real
-          // row without touching the in-flight turn.
-          if (!admitted.sessionFile && indexedSession) workspace.adoptSessionId(indexedSession)
+          // row without touching the in-flight turn. Adopt only when the
+          // workspace is still this one; after a switch the merged catalog row
+          // stands on its own.
+          if (workspace.workspaceRef.current.generation === generation && !admitted.sessionFile && indexedSession) workspace.adoptSessionId(indexedSession)
           startedSessionNeedsTitle = !indexedSession || indexedSession.title === 'Untitled session'
         }
         if (activeRuntime.cwd !== selected.cwd || (selected.sessionFile && activeRuntime.sessionFile !== selected.sessionFile)) {
@@ -552,7 +553,9 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
           // streaming themselves via agent_start — optimistically flashing a
           // working state here would linger until the next real turn.
           if (!slashCommand || compactCommand) {
-            workspace.setRuntime({ ...activeRuntime, isStreaming: true })
+            // setRuntime replaces the pill state, so unlike the guarded
+            // message appends it must not fire for a navigated-away workspace.
+            if (workspace.workspaceRef.current.generation === generation) workspace.setRuntime({ ...activeRuntime, isStreaming: true })
             appendPendingAssistant()
           }
           const response = await bridge.agent.command(activeRuntime.runtimeId, {
@@ -569,6 +572,9 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
           if (slashCommand && !compactCommand && workspace.workspaceRef.current.generation === generation) getDeps().onCommandFinish?.(undefined, data?.agentInvoked !== false)
           completeQueuedFlush()
           if (startedRuntime && startedSessionNeedsTitle && data?.agentInvoked !== false) {
+            // Title bookkeeping touches only the global sessions list, so it
+            // runs even when the user navigated away mid-launch — the renamed
+            // row belongs in the sidebar regardless of the active workspace.
             void titleStartedSession({
               bridge,
               harness: activeHarness,
@@ -576,7 +582,6 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
               sessionFile: activeRuntime.sessionFile,
               prompt,
               setSessions,
-              isCurrent: () => workspace.workspaceRef.current.generation === generation,
             })
           }
         }

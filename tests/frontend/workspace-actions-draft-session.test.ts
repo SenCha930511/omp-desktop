@@ -161,13 +161,14 @@ describe('draft session adoption on first prompt', () => {
     const setSessions: React.Dispatch<React.SetStateAction<SessionRecord[]>> = (update) => {
       sessions = typeof update === 'function' ? update(sessions) : update
     }
+    const agentMocks = {
+      list: vi.fn(async () => []),
+      start: vi.fn(async () => runtime({ sessionFile: sessionFile ?? session().filePath })),
+      command: vi.fn(async () => ({})),
+      stop: vi.fn(async () => false),
+    }
     const bridge = {
-      agent: {
-        list: vi.fn(async () => []),
-        start: vi.fn(async () => runtime({ sessionFile: sessionFile ?? session().filePath })),
-        command: vi.fn(async () => ({})),
-        stop: vi.fn(async () => false),
-      },
+      agent: agentMocks,
       sessions: { list: vi.fn(async () => catalog) },
     } as unknown as DesktopApi
     const actions = createWorkspaceActions(
@@ -221,7 +222,7 @@ describe('draft session adoption on first prompt', () => {
           reportError: vi.fn(),
         }) as unknown as WorkspaceActionsDeps,
     )
-    return { actions, bridge, adoptSessionId }
+    return { actions, bridge, agentMocks, adoptSessionId, workspaceRef, getSessions: () => sessions }
   }
 
   it('adopts the session indexed by a prompt sent from the draft placeholder', async () => {
@@ -247,5 +248,24 @@ describe('draft session adoption on first prompt', () => {
     await actions.sendPrompt('first draft prompt')
 
     expect(adoptSessionId).not.toHaveBeenCalled()
+  })
+
+  it('keeps the launched session alive when the workspace switches mid-launch', async () => {
+    const { actions, agentMocks, adoptSessionId, workspaceRef, getSessions } = promptFixture({ sessionFile: undefined, catalog: [{ ...session(), title: 'Untitled session' }] })
+    // Simulates clicking another session while the harness is still starting:
+    // activateWorkspace bumps the generation during agent.start.
+    agentMocks.start.mockImplementationOnce(async () => {
+      workspaceRef.current = { ...workspaceRef.current, generation: 2 }
+      return runtime({ sessionFile: session().filePath })
+    })
+
+    await actions.sendPrompt('first draft prompt')
+
+    // The submitted prompt is authored work: the launch must survive, the
+    // prompt is still delivered, and the session row persists in the sidebar.
+    expect(agentMocks.stop).not.toHaveBeenCalled()
+    expect(agentMocks.command).toHaveBeenCalledWith('started-runtime', expect.objectContaining({ type: 'prompt', message: 'first draft prompt' }))
+    expect(adoptSessionId).not.toHaveBeenCalled()
+    expect(getSessions()).toEqual(expect.arrayContaining([expect.objectContaining({ filePath: session().filePath })]))
   })
 })
