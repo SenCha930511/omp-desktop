@@ -1815,7 +1815,9 @@ test.describe('OMP Desktop desktop smoke', () => {
     const restored = page.locator('.session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' })
     await expect(restored).toHaveClass(/is-selected/)
     await expect(page.locator('.session-row-wrap.is-selected')).toHaveCount(1)
-    await expect(projectRow).toHaveClass(/is-selected/)
+    // Selection belongs to the session row while its project is expanded; the
+    // project row carries it only when collapsed.
+    await expect(projectRow).not.toHaveClass(/is-selected/)
     await expect(page.locator('.toast')).toHaveCount(0)
   })
 
@@ -2061,12 +2063,16 @@ test.describe('OMP Desktop desktop smoke', () => {
     await projectRow.click({ button: 'right' })
     const menu = page.getByRole('menu', { name: 'Project options for Multi-folder fixture' })
     await expect(menu).toBeVisible()
-    await menu.getByRole('menuitem', { name: 'Remove project' }).click()
+    await menu.getByRole('menuitem', { name: 'Delete project' }).click()
 
-    const dialog = page.getByRole('dialog', { name: 'Remove project' })
-    await expect(dialog).toContainText('The folder and saved sessions will not be deleted.')
-    await dialog.getByRole('button', { name: 'Remove', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: 'Delete project' })
+    await expect(dialog).toContainText('All of its saved sessions will be permanently deleted from OMP Desktop.')
+    await dialog.getByRole('button', { name: 'Delete', exact: true }).click()
     await expect(page.locator('.project-row')).toHaveCount(0)
+    // Removal is destructive on the harness side: the project's saved session
+    // files are deleted while the workspace folder itself is kept.
+    expect(existsSync(fixtureSessionFile)).toBe(false)
+    expect(existsSync(fixturePrimarySessionFile)).toBe(false)
     expect(existsSync(join(fixtureRoot, 'project'))).toBe(true)
   })
 
