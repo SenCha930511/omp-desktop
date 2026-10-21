@@ -1466,9 +1466,9 @@ test.describe('OMP Desktop desktop smoke', () => {
     const activityCount = page.locator('.sidebar__primary button[title="Activity"] .nav-count')
     await expect(activityCount).toHaveText('1')
     await expect(titles.nth(0)).toHaveText('Hermetic desktop fixture')
-    const attentionColor = await primaryRow.evaluate((node) => getComputedStyle(node).backgroundColor.match(/\d+(?:\.\d+)?/g)?.map(Number) ?? [])
-    expect(attentionColor.length).toBeGreaterThanOrEqual(3)
-    expect(attentionColor[2]).toBeGreaterThan(attentionColor[1])
+    // The attention row no longer paints a filled background; the marker
+    // survives as the has-attention class plus the Activity count badge
+    // asserted above — do not re-pin a color here.
 
     await primaryRow.locator('.session-row').click()
     await expect(primaryRow).not.toHaveClass(/has-attention/)
