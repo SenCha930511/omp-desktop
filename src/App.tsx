@@ -1061,6 +1061,8 @@ export default function App() {
         voice={bridge?.voice ?? null}
         updateState={appUpdates.state}
         onUpdateAction={appUpdates.act}
+        onCheckLatestRelease={appUpdates.checkLatestRelease}
+        onOpenExternal={bridge ? (url: string) => bridge.app.openExternal(url) : undefined}
         onClose={() => navigate('session')}
         onUpdate={settingsState.updateSettings}
         onRefreshHarnesses={refreshDetectedHarnesses}

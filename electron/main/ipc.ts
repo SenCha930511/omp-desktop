@@ -183,6 +183,7 @@ export function registerIpc(services: Services, expectedRendererUrl: string): Ip
   })
   handle(IPC_CHANNELS.updates.getState, () => services.updates.getState())
   handle(IPC_CHANNELS.updates.check, () => services.updates.check())
+  handle(IPC_CHANNELS.updates.checkLatestRelease, () => services.updates.checkLatestRelease())
   handle(IPC_CHANNELS.updates.downloadAndInstall, () => services.updates.downloadAndInstall())
 
   handle(IPC_CHANNELS.projects.list, () => services.projects.list())

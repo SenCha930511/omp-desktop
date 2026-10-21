@@ -21,6 +21,7 @@ const INVOKE_CASES: Array<[domain: string, method: string, channel: string, args
   ['app', 'setTitleBarTheme', 'app:set-title-bar-theme', ['dark']],
   ['updates', 'getState', 'updates:get-state', []],
   ['updates', 'check', 'updates:check', []],
+  ['updates', 'checkLatestRelease', 'updates:check-latest-release', []],
   ['updates', 'downloadAndInstall', 'updates:download-and-install', []],
   ['projects', 'list', 'projects:list', ['omp']],
   ['projects', 'listFiles', 'projects:list-files', ['/repo', 'omp']],

@@ -45,6 +45,7 @@ const api: DesktopApi = {
   updates: {
     getState: () => invoke(IPC_CHANNELS.updates.getState),
     check: () => invoke(IPC_CHANNELS.updates.check),
+    checkLatestRelease: () => invoke(IPC_CHANNELS.updates.checkLatestRelease),
     downloadAndInstall: () => invoke(IPC_CHANNELS.updates.downloadAndInstall),
     onChanged: (callback) => subscribe<AppUpdateState>(IPC_CHANNELS.updates.onChanged, callback),
   },

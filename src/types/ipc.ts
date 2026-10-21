@@ -14,6 +14,7 @@ export const IPC_CHANNELS = {
   updates: {
     getState: 'updates:get-state',
     check: 'updates:check',
+    checkLatestRelease: 'updates:check-latest-release',
     downloadAndInstall: 'updates:download-and-install',
     onChanged: 'updates:changed',
   },

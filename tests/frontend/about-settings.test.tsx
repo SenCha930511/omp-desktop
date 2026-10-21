@@ -143,4 +143,78 @@ describe('about settings update row', () => {
     await pressButton('Automatic updates')
     expect(onUpdateAction).toHaveBeenCalledTimes(1)
   })
+
+  it('checks GitHub for a newer release on unsigned builds and then opens the download page', async () => {
+    const onUpdateAction = vi.fn()
+    const onCheckLatestRelease = vi.fn(async () => ({
+      currentVersion: '1.2.0',
+      latestVersion: '1.3.0',
+      newer: true,
+      url: 'https://github.com/SenCha930511/omp-desktop/releases/tag/v1.3.0',
+    }))
+    const onOpenExternal = vi.fn()
+    await act(async () => {
+      root.render(<AboutSettings
+        updateState={{ phase: 'unsupported', message: 'Automatic updates need a Developer ID signed build.' }}
+        onUpdateAction={onUpdateAction}
+        onCheckLatestRelease={onCheckLatestRelease}
+        onOpenExternal={onOpenExternal}
+        onOpenDocs={noop}
+      />)
+    })
+
+    await pressButton('Automatic updates')
+    expect(onCheckLatestRelease).toHaveBeenCalledTimes(1)
+    expect(onUpdateAction).not.toHaveBeenCalled()
+    expect(updateRow()?.button?.textContent).toContain('Open download page')
+    expect(container.textContent).toContain('A newer release 1.3.0 is available on GitHub')
+
+    await pressButton('Open download page')
+    expect(onOpenExternal).toHaveBeenCalledWith('https://github.com/SenCha930511/omp-desktop/releases/tag/v1.3.0')
+    expect(onCheckLatestRelease).toHaveBeenCalledTimes(1)
+    expect(onUpdateAction).not.toHaveBeenCalled()
+  })
+
+  it('confirms against GitHub when the unsigned build already runs the latest release', async () => {
+    const onUpdateAction = vi.fn()
+    const onCheckLatestRelease = vi.fn(async () => ({
+      currentVersion: '1.3.0',
+      latestVersion: '1.3.0',
+      newer: false,
+      url: 'https://github.com/SenCha930511/omp-desktop/releases/tag/v1.3.0',
+    }))
+    await act(async () => {
+      root.render(<AboutSettings
+        updateState={{ phase: 'unsupported' }}
+        onUpdateAction={onUpdateAction}
+        onCheckLatestRelease={onCheckLatestRelease}
+        onOpenDocs={noop}
+      />)
+    })
+
+    await pressButton('Automatic updates')
+    expect(onCheckLatestRelease).toHaveBeenCalledTimes(1)
+    expect(onUpdateAction).not.toHaveBeenCalled()
+    expect(container.textContent).toContain('Checked GitHub: 1.3.0 is the latest release.')
+    expect(updateRow()?.button?.textContent).not.toContain('Open download page')
+  })
+
+  it('reports inline when the GitHub latest-release check fails', async () => {
+    const onUpdateAction = vi.fn()
+    const onCheckLatestRelease = vi.fn(async () => { throw new Error('offline') })
+    await act(async () => {
+      root.render(<AboutSettings
+        updateState={{ phase: 'unsupported' }}
+        onUpdateAction={onUpdateAction}
+        onCheckLatestRelease={onCheckLatestRelease}
+        onOpenDocs={noop}
+      />)
+    })
+
+    await pressButton('Automatic updates')
+    expect(onCheckLatestRelease).toHaveBeenCalledTimes(1)
+    expect(onUpdateAction).not.toHaveBeenCalled()
+    expect(container.textContent).toContain('Could not check GitHub for a newer release. Try again later.')
+    expect(updateRow()?.button?.disabled).toBe(false)
+  })
 })

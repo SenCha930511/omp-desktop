@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { AppUpdateState, DesktopApi } from '@/types/api'
+import type { AppUpdateState, DesktopApi, LatestReleaseCheck } from '@/types/api'
 
 const FALLBACK_STATE: AppUpdateState = { phase: 'unsupported', message: 'Automatic updates are available in installed builds.' }
 
@@ -33,5 +33,14 @@ export function useAppUpdates(bridge: DesktopApi | null, reportError: (error: un
     }
   }, [bridge, reportError, state.phase])
 
-  return { state, act }
+  // Unsupported (unsigned) builds can't self-update, but the manual check
+  // still deserves a real answer: compare against the latest GitHub release
+  // instead of echoing the static disclaimer. Errors surface inline on the
+  // About page rather than as a toast so the row keeps its context.
+  const checkLatestRelease = useCallback((): Promise<LatestReleaseCheck> => {
+    if (!bridge) return Promise.reject(new Error('Desktop bridge unavailable'))
+    return bridge.updates.checkLatestRelease()
+  }, [bridge])
+
+  return { state, act, checkLatestRelease }
 }

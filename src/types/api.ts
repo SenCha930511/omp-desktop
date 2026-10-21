@@ -48,6 +48,14 @@ export interface AppUpdateState {
   message?: string
 }
 
+/** Result of the manual GitHub latest-release check used when the running bundle cannot self-update. */
+export interface LatestReleaseCheck {
+  currentVersion: string
+  latestVersion: string
+  newer: boolean
+  url: string
+}
+
 export interface ProjectScripts {
   setup: string
   run: string
@@ -726,6 +734,7 @@ export interface DesktopApi {
   updates: {
     getState(): Promise<AppUpdateState>
     check(): Promise<AppUpdateState>
+    checkLatestRelease(): Promise<LatestReleaseCheck>
     downloadAndInstall(): Promise<boolean>
     onChanged(callback: (state: AppUpdateState) => void): () => void
   }

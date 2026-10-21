@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AppUpdateState } from '../../src/types/api'
-import { createManualUpdateCheck, DEFAULT_CHECK_INTERVAL_MS, isDeveloperIdSigned, manualUpdateNotification, UpdateService, type UpdateAdapter } from '../../electron/main/updates'
+import { compareReleaseVersions, createManualUpdateCheck, DEFAULT_CHECK_INTERVAL_MS, fetchLatestRelease, isDeveloperIdSigned, manualUpdateNotification, parseLatestRelease, UpdateService, type UpdateAdapter } from '../../electron/main/updates'
 
 class FakeUpdater extends EventEmitter {
   autoDownload = true
@@ -235,5 +235,72 @@ describe('automatic update service', () => {
     const service = new UpdateService(updater as unknown as UpdateAdapter, { enabled: false })
     expect(service.isEnabled()).toBe(false)
     expect(manualUpdateNotification(service.getState())).toMatchObject({ type: 'info', message: 'OMP Desktop Updates Unavailable' })
+  })
+})
+
+describe('latest release check for unsigned builds', () => {
+  it('compares dotted versions numerically across segment counts and prefixes', () => {
+    expect(compareReleaseVersions('1.3.0', '1.2.0')).toBe(1)
+    expect(compareReleaseVersions('v1.2.0', '1.2.0')).toBe(0)
+    expect(compareReleaseVersions('1.2.0', '1.2.1')).toBe(-1)
+    expect(compareReleaseVersions('1.10.0', '1.9.9')).toBe(1)
+    expect(compareReleaseVersions('1.2', '1.2.0')).toBe(0)
+    expect(compareReleaseVersions('1.3.0-beta.1', '1.3.0')).toBe(1)
+  })
+
+  it('parses a GitHub latest-release payload and falls back to the releases page', () => {
+    expect(parseLatestRelease('{"tag_name":"v1.3.0","html_url":"https://github.com/SenCha930511/omp-desktop/releases/tag/v1.3.0"}'))
+      .toEqual({ version: '1.3.0', url: 'https://github.com/SenCha930511/omp-desktop/releases/tag/v1.3.0' })
+    expect(parseLatestRelease('{"tag_name":"v0.9.1"}'))
+      .toEqual({ version: '0.9.1', url: 'https://github.com/SenCha930511/omp-desktop/releases' })
+    expect(parseLatestRelease('not json')).toBeNull()
+    expect(parseLatestRelease('{"name":"missing tag"}')).toBeNull()
+    expect(parseLatestRelease('{"tag_name":"   "}')).toBeNull()
+  })
+
+  it('ignores non-200 responses from the releases API', async () => {
+    const fetch = vi.fn(async () => ({ status: 403, body: 'rate limited' }))
+    await expect(fetchLatestRelease(fetch)).resolves.toBeNull()
+    expect(fetch).toHaveBeenCalledTimes(1)
+    const ok = vi.fn(async () => ({ status: 200, body: '{"tag_name":"v2.0.0","html_url":"https://github.com/SenCha930511/omp-desktop/releases/tag/v2.0.0"}' }))
+    await expect(fetchLatestRelease(ok)).resolves.toEqual({ version: '2.0.0', url: 'https://github.com/SenCha930511/omp-desktop/releases/tag/v2.0.0' })
+  })
+
+  it('reports a newer GitHub release relative to the running version', async () => {
+    const updater = new FakeUpdater()
+    const service = new UpdateService(updater as unknown as UpdateAdapter, {
+      enabled: true,
+      signed: false,
+      currentVersion: '1.2.0',
+      fetchLatestRelease: async () => ({ version: '1.3.0', url: 'https://github.com/SenCha930511/omp-desktop/releases/tag/v1.3.0' }),
+    })
+    await expect(service.checkLatestRelease()).resolves.toEqual({
+      currentVersion: '1.2.0',
+      latestVersion: '1.3.0',
+      newer: true,
+      url: 'https://github.com/SenCha930511/omp-desktop/releases/tag/v1.3.0',
+    })
+  })
+
+  it('reports up to date when GitHub latest matches the running version', async () => {
+    const updater = new FakeUpdater()
+    const service = new UpdateService(updater as unknown as UpdateAdapter, {
+      enabled: true,
+      signed: false,
+      currentVersion: '1.3.0',
+      fetchLatestRelease: async () => ({ version: '1.3.0', url: 'https://github.com/SenCha930511/omp-desktop/releases/tag/v1.3.0' }),
+    })
+    await expect(service.checkLatestRelease()).resolves.toMatchObject({ latestVersion: '1.3.0', newer: false })
+  })
+
+  it('fails the manual check when GitHub does not yield a release', async () => {
+    const updater = new FakeUpdater()
+    const service = new UpdateService(updater as unknown as UpdateAdapter, {
+      enabled: true,
+      signed: false,
+      currentVersion: '1.2.0',
+      fetchLatestRelease: async () => null,
+    })
+    await expect(service.checkLatestRelease()).rejects.toThrow('Could not read the latest OMP Desktop release from GitHub')
   })
 })

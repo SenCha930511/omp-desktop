@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import { get } from 'node:https'
 import { promisify } from 'node:util'
 import electronUpdater, { type AppUpdater, type ProgressInfo, type UpdateInfo } from 'electron-updater'
 import type { AppUpdateState } from '../../src/types/api'
@@ -28,6 +29,70 @@ export async function isDeveloperIdSigned(bundlePath: string, run: CodesignRunne
   }
 }
 
+/**
+ * Unsigned (ad-hoc) bundles cannot self-update, but a manual "check for
+ * updates" still deserves a real answer: ask GitHub for the newest published
+ * release and compare it with the running version so the About page can point
+ * the user at a concrete download instead of a static disclaimer.
+ */
+export const GITHUB_RELEASES_API_URL = 'https://api.github.com/repos/SenCha930511/omp-desktop/releases/latest'
+export const GITHUB_RELEASES_URL = 'https://github.com/SenCha930511/omp-desktop/releases'
+const LATEST_RELEASE_TIMEOUT_MS = 10_000
+
+export interface LatestRelease { version: string; url: string }
+
+export interface LatestReleaseCheck {
+  currentVersion: string
+  latestVersion: string
+  newer: boolean
+  url: string
+}
+
+export interface ReleaseFetchResult { status: number; body: string }
+export interface ReleaseFetcher { (url: string): Promise<ReleaseFetchResult> }
+
+/** Plain dotted-numeric compare; pre-release/build suffixes are ignored. */
+export function compareReleaseVersions(a: string, b: string): number {
+  const normalize = (value: string) => value.trim().replace(/^v/i, '').split(/[.-]/).map((part) => Number.parseInt(part, 10) || 0)
+  const left = normalize(a)
+  const right = normalize(b)
+  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+    const delta = (left[index] ?? 0) - (right[index] ?? 0)
+    if (delta !== 0) return delta < 0 ? -1 : 1
+  }
+  return 0
+}
+
+export function parseLatestRelease(body: string): LatestRelease | null {
+  let parsed: unknown
+  try { parsed = JSON.parse(body) } catch { return null }
+  if (typeof parsed !== 'object' || parsed === null) return null
+  const record = parsed as Record<string, unknown>
+  if (typeof record.tag_name !== 'string') return null
+  const version = record.tag_name.trim().replace(/^v/i, '')
+  if (!version) return null
+  const url = typeof record.html_url === 'string' && /^https:\/\//.test(record.html_url) ? record.html_url : GITHUB_RELEASES_URL
+  return { version, url }
+}
+
+function nodeReleaseFetch(url: string): Promise<ReleaseFetchResult> {
+  return new Promise((resolve, reject) => {
+    const request = get(url, { headers: { accept: 'application/vnd.github+json', 'user-agent': 'omp-desktop' } }, (response) => {
+      const chunks: Buffer[] = []
+      response.on('data', (chunk: Buffer) => chunks.push(chunk))
+      response.on('end', () => resolve({ status: response.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') }))
+    })
+    request.on('error', reject)
+    request.setTimeout(LATEST_RELEASE_TIMEOUT_MS, () => { request.destroy(new Error('Latest release check timed out')) })
+  })
+}
+
+export async function fetchLatestRelease(fetch: ReleaseFetcher = nodeReleaseFetch, url = GITHUB_RELEASES_API_URL): Promise<LatestRelease | null> {
+  const result = await fetch(url)
+  if (result.status !== 200) return null
+  return parseLatestRelease(result.body)
+}
+
 export interface UpdateAdapter {
   autoDownload: boolean
   autoInstallOnAppQuit: boolean
@@ -44,6 +109,10 @@ export interface UpdateServiceOptions {
   enabled: boolean
   /** Developer ID status of this running bundle on macOS; false gates updates off. */
   signed?: boolean
+  /** Running app version, used by the manual GitHub latest-release check. */
+  currentVersion?: string
+  /** Injected seam for tests; defaults to the network fetch against GitHub. */
+  fetchLatestRelease?: () => Promise<LatestRelease | null>
   checkIntervalMs?: number
   initialCheckDelayMs?: number
   setInterval?: typeof globalThis.setInterval
@@ -196,6 +265,24 @@ export class UpdateService {
       })
       .finally(() => { this.checkPromise = null })
     return this.checkPromise
+  }
+
+  /**
+   * Manual "check for updates" fallback for unsigned/dev builds: the static
+   * unsupported message stays the updater state, but the About page can still
+   * answer with a concrete GitHub release comparison.
+   */
+  async checkLatestRelease(): Promise<LatestReleaseCheck> {
+    const fetcher = this.options.fetchLatestRelease ?? (() => fetchLatestRelease())
+    const release = await fetcher()
+    if (!release) throw new Error('Could not read the latest OMP Desktop release from GitHub')
+    const currentVersion = this.options.currentVersion ?? '0.0.0'
+    return {
+      currentVersion,
+      latestVersion: release.version,
+      newer: compareReleaseVersions(release.version, currentVersion) > 0,
+      url: release.url,
+    }
   }
 
   downloadAndInstall(): Promise<boolean> {

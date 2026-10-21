@@ -4,7 +4,7 @@ import { BrowserGlobe, Modal } from '@/components/ui'
 import { errorMessage } from '@/lib/errors'
 import { type MessageKey, useI18n } from '@/lib/i18n'
 import { detectRendererPlatform } from '@/lib/platform-shortcuts'
-import type { AppMeta, AppSettings, AppUpdateState, DesktopApi, PrimeModelCatalog } from '@/types/api'
+import type { AppMeta, AppSettings, AppUpdateState, DesktopApi, LatestReleaseCheck, PrimeModelCatalog } from '@/types/api'
 import { AboutSettings } from './settings/AboutSettings'
 import { AgentSettings } from './settings/AgentSettings'
 import { AppearanceSettings } from './settings/AppearanceSettings'
@@ -34,6 +34,8 @@ interface SettingsPageProps {
   voice: DesktopApi['voice'] | null
   updateState?: AppUpdateState | null
   onUpdateAction?(): void | Promise<void>
+  onCheckLatestRelease?(): Promise<LatestReleaseCheck>
+  onOpenExternal?(url: string): Promise<boolean> | void
   onUpdate: SettingsUpdate
   onClose(): void
   onResetBrowser(): Promise<void> | void
@@ -56,6 +58,8 @@ export function SettingsPage({
   voice,
   updateState,
   onUpdateAction,
+  onCheckLatestRelease,
+  onOpenExternal,
   onClose,
   onUpdate,
   onResetBrowser,
@@ -132,7 +136,7 @@ export function SettingsPage({
       case 'privacy':
         return <PrivacySettings settings={settings} onUpdate={onUpdate} />
       case 'about':
-        return <AboutSettings meta={meta} updateState={updateState} onUpdateAction={onUpdateAction} onOpenDocs={onOpenDocs} />
+        return <AboutSettings meta={meta} updateState={updateState} onUpdateAction={onUpdateAction} onCheckLatestRelease={onCheckLatestRelease} onOpenExternal={onOpenExternal} onOpenDocs={onOpenDocs} />
     }
   })()
 

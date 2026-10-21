@@ -797,7 +797,7 @@ async function bootstrap(): Promise<void> {
     harnesses: initialHarnesses,
   }
   const signed = app.isPackaged ? await isDeveloperIdSigned(resolve(process.resourcesPath, '..', '..')) : true
-  const updates = new UpdateService(getAutoUpdater(), { enabled: app.isPackaged, signed })
+  const updates = new UpdateService(getAutoUpdater(), { enabled: app.isPackaged, signed, currentVersion: meta.version })
   updateService = updates
   const refreshHarnesses = async () => {
     const harnesses = await discovery.refresh()
