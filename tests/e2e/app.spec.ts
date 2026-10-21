@@ -1670,6 +1670,10 @@ test.describe('OMP Desktop desktop smoke', () => {
     const disclosure = page.locator('.work-disclosure__button')
     await expect(disclosure).toHaveCount(1)
     await disclosure.click()
+    // Collapsed reasoning bodies render only on demand now (deferred mount) —
+    // unfold the row itself before reading its prose, like the subagent flow.
+    await expect(page.locator('.transcript .reasoning-disclosure')).toHaveCount(1)
+    await page.locator('.transcript .reasoning-disclosure > summary').click()
     await expect(page.locator('.transcript .reasoning-disclosure .prose').getByText(reasoning, { exact: true })).toHaveCount(1)
     await expect(page.locator('.activity-line--tool')).toContainText('fixture_external_tool')
     await expect(selectedSession).toHaveCount(1)

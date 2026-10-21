@@ -42,6 +42,19 @@ const realFileSystem: JsonStateStoreFileSystem = {
 }
 
 describe('JsonStateStore', () => {
+  it('returns isolated field snapshots without exposing mutable state', async () => {
+    const store = new JsonStateStore(join(makeDirectory(), 'state.json'))
+    await store.ready()
+    await store.update((state) => { state.dismissedProjectPaths = ['/original'] })
+    const authorization = store.getProjectAuthorizationState()
+    authorization.dismissedProjectPaths.push('/injected')
+    authorization.projects.length = 0
+    const schedules = store.getSchedules()
+    schedules.length = 100
+    expect(store.getProjectAuthorizationState().dismissedProjectPaths).toEqual(['/original'])
+    expect(store.getSchedules()).toEqual([])
+    await store.beginShutdown()
+  })
   it('keeps ask_user off on a fresh install and preserves an explicit opt-in', async () => {
     const dir = makeDirectory()
     const path = join(dir, 'state.json')

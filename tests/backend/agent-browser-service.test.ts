@@ -100,13 +100,14 @@ class FakeGuest extends EventEmitter {
   }
 }
 
-function fixture(options?: { actionTimeoutMs?: number }) {
+function fixture(options?: { actionTimeoutMs?: number; backgroundGraceMs?: number }) {
   const guests = new Map<number, FakeGuest>()
   const service = new AgentBrowserService({
     getGuest: (id) => guests.get(id) as unknown as WebContents,
     attachTimeoutMs: 1_500,
     loadTimeoutMs: 1_500,
     actionTimeoutMs: options?.actionTimeoutMs,
+    backgroundGraceMs: options?.backgroundGraceMs,
   })
   const states: AgentBrowserState[] = []
   service.onDidChange((state) => states.push(state))
@@ -135,6 +136,48 @@ function fixture(options?: { actionTimeoutMs?: number }) {
 }
 
 describe('AgentBrowserService', () => {
+  it('keeps throttling disabled throughout slow multi-step automation', async () => {
+    const { service, openAttached } = fixture({ actionTimeoutMs: 30_000, backgroundGraceMs: 100 })
+    try {
+      const { guest, tabId } = await openAttached('/sessions/slow.jsonl')
+      vi.useFakeTimers()
+      const execute = guest.executeJavaScript.bind(guest)
+      const capture = guest.capturePage.bind(guest)
+      vi.spyOn(guest, 'executeJavaScript').mockImplementation(async (code) => {
+        await new Promise((resolve) => setTimeout(resolve, 20_000))
+        return execute(code)
+      })
+      vi.spyOn(guest, 'capturePage').mockImplementation(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20_000))
+        return capture()
+      })
+      const screenshot = service.screenshot('/sessions/slow.jsonl', { tabId })
+      await vi.advanceTimersByTimeAsync(45_000)
+      expect(guest.throttling).toBe(false)
+      await vi.advanceTimersByTimeAsync(15_000)
+      expect(await screenshot).toMatchObject({ mimeType: 'image/jpeg' })
+      await vi.advanceTimersByTimeAsync(101)
+      expect(guest.throttling).toBe(true)
+    } finally { service.beginShutdown(); vi.useRealTimers(); vi.restoreAllMocks() }
+  })
+  it('restores background throttling after automation settles and releases all guest leases on shutdown', async () => {
+    const { service, openAttached } = fixture({ backgroundGraceMs: 20 })
+    try {
+      const first = await openAttached('/sessions/a.jsonl', 'https://example.com/')
+      const second = await openAttached('/sessions/b.jsonl', 'https://example.org/')
+      expect(first.guest.throttling).toBe(false)
+      expect(second.guest.throttling).toBe(false)
+      await new Promise((resolve) => setTimeout(resolve, 40))
+      expect(first.guest.throttling).toBe(true)
+      expect(second.guest.throttling).toBe(true)
+      service.navigateTab(first.tabId, 'reload')
+      expect(first.guest.throttling).toBe(false)
+      expect(second.guest.throttling).toBe(false)
+      service.beginShutdown()
+      expect(first.guest.throttling).toBe(true)
+      expect(second.guest.throttling).toBe(true)
+    } finally { service.beginShutdown() }
+  })
   it('opens a tab once the renderer attaches an approved guest and navigates it', async () => {
     const { service, openAttached } = fixture()
     const { guest, tabId, result } = await openAttached('/sessions/a.jsonl', 'https://example.com/')

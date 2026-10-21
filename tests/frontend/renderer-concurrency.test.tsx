@@ -334,6 +334,27 @@ describe('agent event frame queue', () => {
   const delta = (text: string) => ({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: text } })
   const messageText = (state: ReturnType<typeof useWorkspaceRuntime>) => (state.messages[0]?.parts[0] as { text?: string } | undefined)?.text ?? ''
 
+  it('recovers a read-buffer overflow once with a fresh event boundary', async () => {
+    setDocumentVisibility('visible')
+    const initial = deferred<TranscriptMessage[]>()
+    const recovery = deferred<TranscriptMessage[]>()
+    const read = vi.fn().mockReturnValueOnce(initial.promise).mockReturnValueOnce(recovery.promise)
+    const workspace = mountWorkspace(read)
+    await act(async () => { workspace.render(); await Promise.resolve() })
+    act(() => {
+      workspace.state().queueAgentEvent(delta('stale-prefix'))
+      workspace.state().queueAgentEvent(delta('x'.repeat(9 * 1024 * 1024)))
+      for (let index = 0; index < 5; index += 1) workspace.state().queueAgentEvent(delta('dropped'))
+    })
+    expect(read).toHaveBeenCalledTimes(1)
+    await act(async () => { initial.resolve([message('stale-disk')]); await initial.promise })
+    expect(read).toHaveBeenCalledTimes(2)
+    act(() => workspace.state().queueAgentEvent(delta(':new-tail')))
+    await act(async () => { recovery.resolve([message('authoritative')]); await recovery.promise })
+    expect(messageText(workspace.state())).toBe('authoritative:new-tail')
+    expect(read).toHaveBeenCalledTimes(2)
+  })
+
   it('cancels the pending animation frame before a synchronous flush', async () => {
     const pendingFrame = 417
     const rafSpy = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation(() => pendingFrame)
@@ -466,6 +487,7 @@ describe('bootstrap critical path', () => {
         projects: { list: async () => [project] },
         sessions: {
           list: listSessions,
+          sync: async () => ({ kind: 'snapshot', revision: 1, records: await listSessions() }),
           onChanged: (callback: typeof catalogChanged) => { catalogChanged = callback; return () => undefined },
         },
         agent: {

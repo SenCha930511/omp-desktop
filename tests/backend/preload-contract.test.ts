@@ -36,6 +36,7 @@ const INVOKE_CASES: Array<[domain: string, method: string, channel: string, args
   ['projects', 'markSetupStarted', 'projects:mark-setup-started', ['project-id', 'npm install', 'omp']],
   ['projects', 'finishSetup', 'projects:finish-setup', ['project-id', 'npm install', 0, 'omp']],
   ['sessions', 'list', 'sessions:list', ['/repo', true, 'omp', true]],
+  ['sessions', 'sync', 'sessions:sync', [3, 'omp']],
   ['sessions', 'read', 'sessions:read', ['/session.jsonl']],
   ['sessions', 'rename', 'sessions:rename', ['/session.jsonl', 'Title']],
   ['sessions', 'archive', 'sessions:archive', ['/session.jsonl', true]],
@@ -140,6 +141,7 @@ describe('preload bridge contract', () => {
 
   it.each([
     ['input', 'terminal:input', ['terminal', 'text']],
+    ['acknowledge', 'terminal:acknowledge', ['terminal', 10]],
     ['resize', 'terminal:resize', ['terminal', 120, 40]],
     ['setActiveContext', 'terminal:set-active-context', ['terminal', { label: 'shell', content: 'output' }]],
     ['clearActiveContext', 'terminal:clear-active-context', ['terminal']],

@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { createTranscriptStore } from '@/app/transcript-store'
 import {
   AGENT_EVENT_FLUSH_CHUNK,
   admitAgentEvent,
@@ -68,7 +69,9 @@ export function useWorkspaceRuntime({
   initialMessages,
   reportError,
 }: UseWorkspaceRuntimeOptions) {
-  const [messages, setMessages] = useState(initialMessages)
+  const [transcriptStore] = useState(() => createTranscriptStore(initialMessages))
+  const transcriptSummary = useSyncExternalStore(transcriptStore.subscribeSummary, transcriptStore.getSummary)
+  const setMessages = transcriptStore.update
   const [pendingQueuedPrompts, setPendingQueuedPrompts] = useState<QueuedPrompt[]>([])
   const pendingQueuedPromptsRef = useRef<QueuedPrompt[]>([])
   const queuedPromptsByOwnerRef = useRef<Map<string, QueuedPrompt[]>>(new Map())
@@ -257,6 +260,7 @@ export function useWorkspaceRuntime({
       sessionFile: selected.sessionFile,
       eventBuffer: previousLoad?.generation === selected.generation
         && previousLoad.sessionFile === selected.sessionFile
+        && !previousLoad.eventBuffer.overflowed
         ? previousLoad.eventBuffer
         : createPrimeEventBuffer(),
       runtimeId,
@@ -271,6 +275,7 @@ export function useWorkspaceRuntime({
         && workspaceRef.current.generation === pendingLoad.generation
         && workspaceRef.current.sessionFile === pendingLoad.sessionFile,
       onValue: (value) => {
+        if (pendingLoad.eventBuffer.overflowed) return
         const current = workspaceRef.current
         const readMarker = pendingLoad.runtimeId ? {
           generation: pendingLoad.generation,
@@ -302,7 +307,15 @@ export function useWorkspaceRuntime({
         reportError(error)
       },
       onFinally: () => {
+        const recovering = transcriptLoadRef.current === pendingLoad && pendingLoad.eventBuffer.overflowed
         if (transcriptLoadRef.current === pendingLoad) transcriptLoadRef.current = null
+        if (recovering && workspaceRef.current.generation === pendingLoad.generation && workspaceRef.current.sessionFile === pendingLoad.sessionFile) {
+          if (document.visibilityState === 'visible') {
+            reconcileOnVisibleRef.current = false
+            startTranscriptRead(workspaceRef.current, pendingLoad.reconciliation, pendingLoad.runtimeId)
+          } else reconcileOnVisibleRef.current = true
+          return
+        }
         if (workspaceRef.current.generation === pendingLoad.generation && !pendingLoad.reconciliation) {
           setLoadingSession(false)
         }
@@ -319,6 +332,7 @@ export function useWorkspaceRuntime({
   }, [bridge, flushAgentEvents, reportError])
 
   const runOverflowReconciliation = useCallback(() => {
+    if (transcriptLoadRef.current?.eventBuffer.overflowed) { reconcileOnVisibleRef.current = true; return }
     reconcileOnVisibleRef.current = false
     pendingAgentEventsRef.current = []
     if (agentEventFrameRef.current !== null) {
@@ -615,7 +629,9 @@ export function useWorkspaceRuntime({
   }, [])
 
   return {
-    messages,
+    get messages() { return transcriptStore.getSnapshot() },
+    transcriptStore,
+    transcriptSummary,
     setMessages,
     pendingQueuedPrompts,
     queuePrompt,

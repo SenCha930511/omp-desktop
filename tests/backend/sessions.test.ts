@@ -7,7 +7,7 @@ import { AgentRpcManager } from '../../electron/main/agent-rpc'
 import { ProjectService } from '../../electron/main/projects'
 import { SessionService, type SessionServiceOptions } from '../../electron/main/sessions'
 import { boundedSessionDiscoveryNames, SessionMetadataCatalog, type SessionCatalogIo } from '../../electron/main/sessions/catalog'
-import { applyLiveMetadata, createSessionMetadataReader, METADATA_VERIFY_TAIL_BYTES, readSessionMetadata, type SessionMetadata } from '../../electron/main/sessions/metadata'
+import { applyLiveMetadata, createIncrementalMetadataReader, createSessionMetadataReader, METADATA_VERIFY_TAIL_BYTES, readSessionMetadata, type SessionMetadata } from '../../electron/main/sessions/metadata'
 import { JsonStateStore } from '../../electron/main/store'
 import { waitUntil } from '../helpers/wait'
 
@@ -257,6 +257,21 @@ describe('SessionService catalog scaling', () => {
 })
 
 describe('incremental session metadata reads', () => {
+  it('counts completed accumulator strings against the retained payload budget', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-cache-budget-')); dirs.push(dir)
+    const file = join(dir, 'large.jsonl')
+    writeFileSync(file, `${'x'.repeat(8 * 1024)}\n`)
+    const openStream = vi.fn((path: string, start: number, end: number) => createReadStream(path, { start, end }))
+    const reader = createIncrementalMetadataReader({
+      createAccumulator: () => ({ title: '' }),
+      ingestLine: (accumulator, line) => { accumulator.title = line },
+      snapshot: (accumulator, path) => ({ ...metadata(path, '/project', 'large'), title: accumulator.title }),
+    }, { inspect: stat, openStream }, 0, 12 * 1024)
+    expect((await reader(file)).title).toHaveLength(8 * 1024)
+    await reader(file)
+    expect(openStream).toHaveBeenCalledTimes(2)
+    expect(openStream.mock.calls.map((call) => call[1])).toEqual([0, 0])
+  })
   function trackedReader(): { reader: ReturnType<typeof createSessionMetadataReader>; opens: Array<{ start: number; end: number }> } {
     const opens: Array<{ start: number; end: number }> = []
     const reader = createSessionMetadataReader({

@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react'
-import { requestFailureMessage } from '@/app/workspace'
+import { requestFailureMessage, type WorkspaceSnapshot } from '@/app/workspace'
 import { clearComposerDraft } from '@/lib/composer-draft'
 import { errorMessage } from '@/lib/errors'
 import { HARNESS_AGENT_NAMES } from '@/lib/harness'
@@ -10,7 +10,7 @@ import { deferredSlashCommand } from '@/lib/slash-commands'
 import { resolveLocale, translate } from '@/lib/i18n'
 import type { DEFAULT_SETTINGS } from '@/lib/data'
 import { type createSingleFlightAdmission, findProjectForSession, findRuntimeForWorkspace, newSessionProject, projectContainsPath, workspaceCwd } from '@/lib/workspace'
-import type { CapabilityMutationInput, ExtensionInstallInput, GitStatus, McpConnectionInput, McpStateInput, DesktopApi, ProjectRecord, ProjectSortMode, PromptDeliveryIntent, PromptImage, ScheduleInput, SchedulePatch, SessionRecord, TranscriptMessage, WorkspaceView } from '@/types/api'
+import type { CapabilityMutationInput, ExtensionInstallInput, McpConnectionInput, McpStateInput, DesktopApi, ProjectRecord, ProjectSortMode, PromptDeliveryIntent, PromptImage, ScheduleInput, SchedulePatch, SessionRecord, TranscriptMessage, WorkspaceView } from '@/types/api'
 import type { useAppSettings } from '@/hooks/useAppSettings'
 import type { usePanelLayout } from '@/hooks/usePanelLayout'
 import type { usePluginSkills } from '@/hooks/usePluginSkills'
@@ -30,11 +30,10 @@ export interface WorkspaceActionsDeps {
   provider: ProviderCatalog
   pluginSkills: ReturnType<typeof usePluginSkills>
   submissionAdmissionRef: MutableRefObject<ReturnType<typeof createSingleFlightAdmission>>
-  gitRequestRef: MutableRefObject<number>
+  refreshGit(selected?: Pick<WorkspaceSnapshot, 'generation' | 'cwd'>): Promise<void>
   demoTimerRef: MutableRefObject<number[]>
   setProjects: Dispatch<SetStateAction<ProjectRecord[]>>
   setSessions: Dispatch<SetStateAction<SessionRecord[]>>
-  setGitSnapshot: Dispatch<SetStateAction<{ cwd: string | undefined; status: GitStatus }>>
   setView: Dispatch<SetStateAction<WorkspaceView>>
   setPaletteOpen: Dispatch<SetStateAction<boolean>>
   setToast: Dispatch<SetStateAction<string | null>>
@@ -128,18 +127,16 @@ export function parseMcpCommand(prompt: string): McpCommand | undefined {
  */
 export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
   const grantProject = async (project: ProjectRecord): Promise<ProjectRecord> => {
-    const { bridge, workspace, setProjects, gitRequestRef, setGitSnapshot } = getDeps()
+    const { bridge, workspace, setProjects, refreshGit } = getDeps()
     if (!bridge || !project.inferred) return project
     const granted = await bridge.projects.grantInferred(project.primaryFolder, project.harness)
     setProjects((items) => items.map((item) => item.id === project.id ? granted : item))
     const selected = workspace.workspaceRef.current
     if (selected.project?.id !== project.id) return granted
     workspace.workspaceRef.current = { ...selected, project: granted, cwd: workspaceCwd(granted, selected.session) }
-    const requestId = ++gitRequestRef.current
     const cwd = workspaceCwd(granted, selected.session)
     if (!cwd) return granted
-    const nextGit = await bridge.git.status(cwd)
-    if (gitRequestRef.current === requestId && workspace.workspaceRef.current.generation === selected.generation && workspace.workspaceRef.current.cwd === cwd) setGitSnapshot({ cwd, status: nextGit })
+    await refreshGit({ generation: selected.generation, cwd })
     return granted
   }
   const persistPanel = (patch: Partial<typeof DEFAULT_SETTINGS>) => { void getDeps().settingsState.updateSettings(patch) }
@@ -295,7 +292,7 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     } catch (error) { reportError(error) }
   }
   const relocateProject = async (project: ProjectRecord) => {
-    const { bridge, workspace, setProjects, setView, setToast, settingsState, reportError } = getDeps()
+    const { bridge, workspace, setProjects, setView, setToast, reportError } = getDeps()
     if (!bridge) { setToast('Project relocation is available in the desktop app.'); return }
     try {
       const updated = await bridge.projects.relocate(project.id, project.harness)

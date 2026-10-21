@@ -73,7 +73,7 @@ describe('agent event admission bound', () => {
   it('keeps routing to a pending transcript load regardless of queue depth', () => {
     const queue: PendingAgentEvent[] = Array.from({ length: 2 }, () => ({ generation: 1, event: {} }))
     const buffered: Record<string, unknown>[] = []
-    const pendingLoad = { generation: 1, eventBuffer: { push: (event: Record<string, unknown>) => { buffered.push(event) } } }
+    const pendingLoad = { generation: 1, eventBuffer: { push: (event: Record<string, unknown>) => { buffered.push(event); return true } } }
     expect(admitAgentEvent(1, { type: 'message_update' }, pendingLoad as never, queue, 2)).toBe('transcript')
     expect(buffered).toHaveLength(1)
   })

@@ -61,8 +61,11 @@ export function SubagentsPanel({ state, connected, showReasoning = true, showToo
   const [open, setOpen] = useState(false)
   const [visited, setVisited] = useState<string[]>([])
   const selected = state.agents.find((agent) => agent.id === state.selectedId)
+  const retained = selected ? [...visited.filter((id) => id !== selected.id), selected.id].slice(-3) : visited
   const unread = useSubagentAttention(state.agents, selected?.id)
-  useEffect(() => { if (selected) setVisited((ids) => ids.includes(selected.id) ? ids : [...ids, selected.id]) }, [selected?.id])
+  useEffect(() => {
+    if (selected) setVisited((ids) => [...ids.filter((id) => id !== selected.id), selected.id].slice(-3))
+  }, [selected?.id])
   const selectedExecution = useMemo(() => selected ? subagentExecution(selected) : undefined, [selected])
   const running = state.agents.filter((agent) => agent.status === 'running').length
   const back = () => { state.select(undefined); setOpen(false) }
@@ -84,7 +87,7 @@ export function SubagentsPanel({ state, connected, showReasoning = true, showToo
     {error && (open || pinned || selected) && <p className="subagents__error" role="alert">{error}</p>}
     <div className="subagents__body">
     {children}
-    {state.agents.filter((agent) => agent.id === selected?.id || visited.includes(agent.id)).map((agent) => <div className="subagents__page" key={`${agent.id}:${agent.revision ?? 0}`} hidden={agent.id !== selected?.id}>
+    {state.agents.filter((agent) => retained.includes(agent.id)).map((agent) => <div className="subagents__page" key={`${agent.id}:${agent.revision ?? 0}`} hidden={agent.id !== selected?.id}>
       <AgentTranscript agent={agent} active={agent.id === selected?.id} showReasoning={showReasoning} showTools={showTools} />
     </div>)}
     {pinned && roster}

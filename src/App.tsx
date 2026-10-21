@@ -9,7 +9,7 @@ import { CommandOutputPanel } from '@/components/CommandOutputPanel'
 import { useCommandOutput } from '@/hooks/useCommandOutput'
 import { SubagentsPanel } from '@/components/SubagentsPanel'
 import { conversationExecution } from '@/lib/execution-state'
-import { isTopicRunning, useSideQuestions } from '@/hooks/useSideQuestions'
+import { useSideQuestions } from '@/hooks/useSideQuestions'
 import { useSubagents } from '@/hooks/useSubagents'
 import { NoHarnessPrompt } from '@/components/NoHarnessPrompt'
 import type { ProjectScriptKind } from '@/components/ProjectRunControl'
@@ -19,6 +19,7 @@ import type { TerminalDrawerHandle } from '@/components/TerminalDrawer'
 import { TitleToolbar } from '@/components/TitleToolbar'
 import { useAgentBrowserTabs } from '@/hooks/useAgentBrowserTabs'
 import { useAgentEvents } from '@/hooks/useAgentEvents'
+import { useGitStatus } from '@/hooks/useGitStatus'
 import { useAppSettings } from '@/hooks/useAppSettings'
 import { useAppUpdates } from '@/hooks/useAppUpdates'
 import { useBootstrap } from '@/hooks/useBootstrap'
@@ -41,13 +42,12 @@ import { isBackgroundedSlashCommand, type SlashCommand } from '@/lib/slash-comma
 import { I18nProvider, useI18n } from '@/lib/i18n'
 import { detectRendererPlatform } from '@/lib/platform-shortcuts'
 import { activeProjectScriptKind, ProjectScriptBusyError, setupNeedsRun } from '@/lib/project-scripts'
-import { createSingleFlightAdmission, findProjectForSession, gitStatusForWorkspace, shouldRefreshGitOnSessionTransition, turnFileDeltas, workspaceCwd } from '@/lib/workspace'
+import { createSingleFlightAdmission, findProjectForSession, shouldRefreshGitOnSessionTransition, turnFileDeltas, workspaceCwd } from '@/lib/workspace'
 import {
   type AutomationScheduleRecord,
   type CheckoutAction,
   type CheckoutCatalog,
   type GitFileChange,
-  type GitStatus,
   HARNESS_IDS,
   type HarnessId,
   type PrimeModelDescriptor,
@@ -58,12 +58,11 @@ import {
   type ScheduleTiming,
   type SessionRecord,
   type TerminalSelectionContext,
-  type TranscriptMessage,
   type WorkspaceView,
 } from '@/types/api'
 
-const Transcript = lazy(() => import('@/components/Transcript').then((module) => ({ default: module.Transcript })))
-const Inspector = lazy(() => import('@/components/Inspector').then((module) => ({ default: module.Inspector })))
+const Transcript = lazy(() => import('@/components/ConversationTranscript').then((module) => ({ default: module.ConversationTranscript })))
+const Inspector = lazy(() => import('@/components/WorkspaceInspector').then((module) => ({ default: module.WorkspaceInspector })))
 const SideChatPanel = lazy(() => import('@/components/SideChatPanel').then((module) => ({ default: module.SideChatPanel })))
 const TerminalDrawer = lazy(() => import('@/components/TerminalDrawer').then((module) => ({ default: module.TerminalDrawer })))
 const CommandPalette = lazy(() => import('@/components/CommandPalette').then((module) => ({ default: module.CommandPalette })))
@@ -78,9 +77,6 @@ const hasBridge = () => typeof window !== 'undefined' && typeof window.desktop !
 // Stable fallback identities keep memoized children from re-rendering while the catalog loads.
 const EMPTY_MODELS: PrimeModelDescriptor[] = []
 const EMPTY_PROVIDERS: PrimeProviderDescriptor[] = []
-// Stable identity for the Inspector while the Summary tab is inactive: the
-// streaming transcript array must not reach the memoized inspector subtree.
-const EMPTY_MESSAGES: TranscriptMessage[] = []
 const HARNESS_PROVIDER_DOCS: Record<HarnessId, string> = {
   omp: 'https://github.com/can1357/oh-my-pi/blob/main/docs/providers.md',
 }
@@ -132,7 +128,6 @@ export default function App() {
   const [schedules, setSchedules] = useState<AutomationScheduleRecord[]>(() => (bridge ? [] : SAMPLE_SCHEDULES))
   const [scheduleFocusId, setScheduleFocusId] = useState<string | null>(null)
   const [scheduleError, setScheduleError] = useState('')
-  const [gitSnapshot, setGitSnapshot] = useState(() => ({ cwd: bridge ? undefined : SAMPLE_PROJECTS[0]?.primaryFolder, status: bridge ? ({ isRepo: false, files: [] } as GitStatus) : SAMPLE_GIT }))
   const [checkoutCatalog, setCheckoutCatalog] = useState<CheckoutCatalog>()
   const [checkoutsLoading, setCheckoutsLoading] = useState(false)
   const [view, setView] = useState<WorkspaceView>('session')
@@ -153,7 +148,6 @@ export default function App() {
   const turnResultPendingRef = useRef(false)
   const submissionAdmissionRef = useRef(createSingleFlightAdmission())
   const queuedFlushRef = useRef(false)
-  const gitRequestRef = useRef(0)
   const checkoutRequestRef = useRef(0)
   const scheduleRequestRef = useRef(0)
   const demoTimerRef = useRef<number[]>([])
@@ -248,7 +242,7 @@ export default function App() {
     [activeHarness, settingsState.settings.lastSelectedModels, settingsState.updateSettings],
   )
   const activeSession = useMemo(() => sessions.find((session) => session.id === workspace.activeSessionId), [sessions, workspace.activeSessionId])
-  const subagents = useSubagents(bridge, workspace.runtime?.runtimeId)
+  const subagents = useSubagents(bridge, workspace.runtime?.runtimeId, view === 'session')
   // Key side questions under the app's own session identity, not the harness
   // state dump: real OMP get_state omits sessionFile (only its TUI fixture
   // reported one), which had kept the probe — and the whole feature — from
@@ -312,7 +306,10 @@ export default function App() {
     [activeTerminalSessionPath, terminalSessionKey, terminalSessions],
   )
   const terminalOpen = Boolean(activeTerminalSession)
-  const git = gitStatusForWorkspace(gitSnapshot, activeCwd)
+  const { git, refreshGit } = useGitStatus({
+    bridge, cwd: activeCwd, generation: workspace.workspaceGeneration, workspaceRef: workspace.workspaceRef, reportError,
+    initial: { cwd: initialProject?.primaryFolder, status: bridge ? { isRepo: false, files: [] } : SAMPLE_GIT },
+  })
   useEffect(() => {
     setChangesCardDismissed(false)
   }, [activeCwd])
@@ -396,20 +393,6 @@ export default function App() {
     }
   }, [view])
 
-  const refreshGit = useCallback(async () => {
-    const requestId = ++gitRequestRef.current
-    const cwd = activeCwd
-    if (!bridge || !cwd) {
-      setGitSnapshot({ cwd, status: { isRepo: false, files: [] } })
-      return
-    }
-    try {
-      const next = await bridge.git.status(cwd)
-      if (gitRequestRef.current === requestId && workspace.workspaceRef.current.cwd === cwd) setGitSnapshot({ cwd, status: next })
-    } catch (error) {
-      if (gitRequestRef.current === requestId && workspace.workspaceRef.current.cwd === cwd) reportError(error)
-    }
-  }, [activeCwd, bridge, reportError, workspace.workspaceRef])
   const undoChanges = useCallback(async () => {
     const files = turnChanges ?? []
     if (!bridge || !activeCwd || !files.length) return
@@ -444,12 +427,6 @@ export default function App() {
     activeSessionVisible: view === 'session',
   })
 
-  useEffect(() => {
-    void refreshGit()
-    return () => {
-      gitRequestRef.current += 1
-    }
-  }, [refreshGit])
   const refreshCheckouts = useCallback(async () => {
     const requestId = ++checkoutRequestRef.current
     if (!bridge || !activeProject || activeProject.inferred) {
@@ -617,11 +594,10 @@ export default function App() {
     provider,
     pluginSkills,
     submissionAdmissionRef,
-    gitRequestRef,
+    refreshGit,
     demoTimerRef,
     setProjects,
     setSessions,
-    setGitSnapshot,
     setView,
     setPaletteOpen,
     setToast,
@@ -1175,7 +1151,7 @@ export default function App() {
                       <Transcript
                         key={workspace.activeSessionId ?? 'new-session'}
                         followKey={workspace.activeSessionId ?? 'new-session'}
-                        messages={workspace.messages}
+                        transcript={workspace.transcriptStore}
                         git={turnGit}
                         harness={activeHarness}
                         loading={workspace.loadingSession}
@@ -1352,7 +1328,7 @@ export default function App() {
                       project={activeProject}
                       cwd={activeCwd}
                       runtime={workspace.runtime}
-                      messages={settingsState.inspectorTab === 'summary' ? workspace.messages : EMPTY_MESSAGES}
+                      transcript={workspace.transcriptStore}
                       git={git}
                       automations={inspectorAutomations}
                       onOpenAutomation={openAutomation}

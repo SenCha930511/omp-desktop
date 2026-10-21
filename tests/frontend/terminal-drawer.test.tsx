@@ -3,6 +3,7 @@
 import { act, type RefObject } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { Terminal } from '@xterm/xterm'
 import { TerminalDrawer, type TerminalDrawerHandle } from '../../src/components/TerminalDrawer'
 import type { DesktopApi, TerminalExitEvent } from '../../src/types/api'
 
@@ -40,6 +41,7 @@ describe('TerminalDrawer project command handle', () => {
       terminal: {
         create,
         kill,
+        acknowledge: vi.fn(),
         onData: vi.fn(() => () => undefined),
         onExit: vi.fn((callback: (event: TerminalExitEvent) => void) => {
           terminalExitListeners.push(callback)
@@ -69,6 +71,29 @@ describe('TerminalDrawer project command handle', () => {
   function createHandle() {
     return { current: null } as RefObject<TerminalDrawerHandle | null>
   }
+
+  it('preserves all output emitted before creation resolves and acknowledges only its own stream', async () => {
+    let complete!: (value: { terminalId: string; shell: string }) => void
+    create.mockImplementationOnce(() => new Promise((resolve) => { complete = resolve }))
+    const writes: string[] = []
+    vi.spyOn(Terminal.prototype, 'write').mockImplementation((data, callback) => {
+      if (typeof data === 'string') writes.push(data)
+      callback?.()
+    })
+    renderDrawer(createHandle())
+    const clientId = create.mock.calls[0][0].clientId
+    const onData = vi.mocked(window.desktop.terminal.onData).mock.calls[0][0]
+    const output = `${'x'.repeat(300 * 1024)}tail`
+    act(() => {
+      onData({ terminalId: 'foreign', clientId: 'another-client', data: 'foreign output' })
+      onData({ terminalId: 'early', clientId, data: output.slice(0, 180 * 1024) })
+      onData({ terminalId: 'early', clientId, data: output.slice(180 * 1024) })
+    })
+    expect(window.desktop.terminal.acknowledge).not.toHaveBeenCalled()
+    await act(async () => { complete({ terminalId: 'early', shell: '/bin/sh' }) })
+    expect(writes.join('')).toBe(output)
+    expect(window.desktop.terminal.acknowledge).toHaveBeenCalledExactlyOnceWith('early', output.length)
+  })
 
   it('runs a labelled command tab and passes the command to terminal.create', async () => {
     const handle = createHandle()

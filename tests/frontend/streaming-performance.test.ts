@@ -14,10 +14,28 @@ import { createSidebarActionProxy } from '../../src/hooks/useSidebarActions'
 import { mergeSessionCatalog } from '../../src/hooks/useBootstrap'
 import { shouldRefreshGitOnSessionTransition } from '../../src/lib/workspace'
 import type { ProjectRecord, SessionRecord, TranscriptMessage } from '../../src/types/api'
+import { createAssistantTurnCoalescer } from '../../src/lib/assistant-turns'
 
 Object.defineProperty(globalThis, 'self', { value: globalThis })
 afterEach(() => vi.restoreAllMocks())
 const { admitAgentEvent, eventsForWorkspace } = await import('../../src/app/agent-events')
+
+it('preserves historical assistant groups when only a later turn streams', () => {
+  const coalesce = createAssistantTurnCoalescer()
+  const messages: TranscriptMessage[] = [
+    { id: 'a', role: 'assistant', timestamp: 1, parts: [{ type: 'text', text: 'First' }] },
+    { id: 'b', role: 'assistant', timestamp: 2, completedAt: 3, parts: [{ type: 'text', text: 'Second' }] },
+    { id: 'u', role: 'user', timestamp: 4, parts: [] },
+    { id: 'live', role: 'assistant', timestamp: 5, streaming: true, parts: [] },
+  ]
+  const first = coalesce(messages)
+  const next = coalesce([...messages.slice(0, -1), { ...messages[3], parts: [{ type: 'text', text: 'Next token' }] }])
+  expect(next[0]).toBe(first[0])
+  expect(next[0].completedAt).toBe(3)
+  expect(next[0].parts).toHaveLength(2)
+  expect(next[1]).toBe(messages[2])
+  expect(next[2]).not.toBe(first[2])
+})
 
 const transcript = (): TranscriptMessage[] => [{
   id: 'assistant-1',
@@ -63,6 +81,15 @@ function runTranscriptRace(frameBeforeRead: boolean): TranscriptMessage[] {
 }
 
 describe('streamed transcript event ownership', () => {
+  it('routes transcript-read payload overflow through authoritative reconciliation', () => {
+    const eventBuffer = createPrimeEventBuffer({ maxBytes: 256 })
+    const owner = { generation: 4, eventBuffer }
+    const frames: PendingAgentEvent[] = []
+    expect(admitAgentEvent(4, delta('x'.repeat(1_000)), owner, frames)).toBe('overflow')
+    expect(eventBuffer.size).toBe(0)
+    expect(eventBuffer.payloadBytes).toBe(0)
+    expect(frames).toHaveLength(0)
+  })
   it('applies buffered deltas exactly once when the transcript read resolves before RAF', () => {
     expect(transcriptText(runTranscriptRace(false))).toBe('loaded:one-two')
   })

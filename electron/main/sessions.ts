@@ -2,7 +2,8 @@ import { watch, type Dirent, type Stats } from 'node:fs'
 import { readdir, realpath, unlink } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
-import type { HarnessId, SessionChangeEvent, SessionRecord, TranscriptMessage } from '../../src/types/api'
+import type { HarnessId, SessionCatalogUpdate, SessionChangeEvent, SessionRecord, TranscriptMessage } from '../../src/types/api'
+import { SessionCatalogSync } from './sessions/sync'
 
 import { comparePaths, createAdmissionQueue, createSingleFlight, type AdmissionQueue } from './lib/async'
 import { resolveExecutable, runProcess, type ExecutableSource } from './process-utils'
@@ -84,6 +85,8 @@ export class SessionService {
   private readonly catalog: SessionMetadataCatalog
   private readonly metadataReader: SessionMetadataReader
   private readonly transcriptReads = createSingleFlight<string, TranscriptMessage[]>()
+  private catalogSyncQueue: Promise<void> = Promise.resolve()
+  private readonly catalogSync = new SessionCatalogSync()
   private readonly transcriptAdmission: AdmissionQueue
   private readonly transcriptReader: TranscriptReader
   private readonly isSessionPathAuthorized: SessionPathAuthorizer
@@ -194,6 +197,18 @@ export class SessionService {
       if (!bySession.has(key)) bySession.set(key, runtime)
     }
     return bySession
+  }
+
+  async sync(revision: unknown = undefined): Promise<SessionCatalogUpdate> {
+    if (revision !== undefined && (typeof revision !== 'number' || !Number.isSafeInteger(revision) || revision < 0)) throw new TypeError('Invalid catalog revision')
+    // A caller observing a later invalidation must never join a scan that already captured older records.
+    const operation = this.catalogSyncQueue.then(async () => {
+      this.catalogSync.publish(await this.list(undefined, true))
+      return this.catalogSync.read(revision)
+    })
+    this.catalogSyncQueue = operation.then(() => undefined, () => undefined)
+    // IPC supplies the process-boundary clone; no mutable catalog state is sent back into services.
+    return operation
   }
 
   async projectPaths(): Promise<string[]> {

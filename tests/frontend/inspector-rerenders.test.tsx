@@ -67,7 +67,7 @@ const toggleSidebar = async () => act(async () => { window.dispatchEvent(new Key
 
 const renderApp = async () => {
   // Resolve the lazy inspector chunk up front so its Suspense boundary settles on mount.
-  await import('../../src/components/Inspector')
+  await import('../../src/components/WorkspaceInspector')
   await act(async () => { root.render(<App />) })
   await act(async () => {})
 }

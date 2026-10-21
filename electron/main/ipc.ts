@@ -1,3 +1,4 @@
+import { IPC_CHANNELS } from '../../src/types/ipc'
 import { ipcMain, shell, type IpcMainEvent, type IpcMainInvokeEvent, type WebContents } from 'electron'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -104,6 +105,16 @@ export function registerIpc(services: Services, expectedRendererUrl: string): Ip
   let announceRendererReady: (() => void) | null = null
   const whenRendererReady = new Promise<void>((resolve) => { announceRendererReady = resolve })
 
+  const broadcast = (channel: typeof IPC_CHANNELS.sessions.onChanged | typeof IPC_CHANNELS.schedules.onChanged
+    | typeof IPC_CHANNELS.browser.onChanged | typeof IPC_CHANNELS.browser.onPointer | typeof IPC_CHANNELS.browser.onActivity, payload: unknown): void => {
+    if (closed) return
+    for (const [id, contents] of authorized) {
+      if (contents.isDestroyed()) { authorized.delete(id); continue }
+      if (isTrustedRendererUrl(contents.getURL(), expectedRendererUrl)
+        && isTrustedRendererUrl(contents.mainFrame.url, expectedRendererUrl)) contents.send(channel, payload)
+    }
+  }
+
   const verify = (event: IpcEvent): void => {
     const trustedFrame = event.senderFrame === event.sender.mainFrame
       && isTrustedRendererUrl(event.senderFrame.url, expectedRendererUrl)
@@ -131,21 +142,21 @@ export function registerIpc(services: Services, expectedRendererUrl: string): Ip
     return { harness: 'omp', service: services.sessions }
   }
 
-  handle('app:get-meta', () => {
+  handle(IPC_CHANNELS.app.getMeta, () => {
     announceRendererReady?.()
     announceRendererReady = null
     return services.meta
   })
-  handle('app:refresh-harnesses', () => services.refreshHarnesses())
-  handle('app:popup-menu', (event, menu, x, y) => services.popupApplicationMenu(event.sender, requireApplicationMenu(menu), requireMenuCoordinate(x), requireMenuCoordinate(y)))
-  handle('app:set-title-bar-theme', (event, theme) => services.setTitleBarTheme(event.sender, requireResolvedTheme(theme)))
-  handle('app:open-external', async (_event, url) => {
+  handle(IPC_CHANNELS.app.refreshHarnesses, () => services.refreshHarnesses())
+  handle(IPC_CHANNELS.app.popupMenu, (event, menu, x, y) => services.popupApplicationMenu(event.sender, requireApplicationMenu(menu), requireMenuCoordinate(x), requireMenuCoordinate(y)))
+  handle(IPC_CHANNELS.app.setTitleBarTheme, (event, theme) => services.setTitleBarTheme(event.sender, requireResolvedTheme(theme)))
+  handle(IPC_CHANNELS.app.openExternal, async (_event, url) => {
     try { await shell.openExternal(requireWebUrl(url, { mailto: true }), { activate: true }); return true } catch (error) {
       console.warn('Rejected app:open-external:', error instanceof Error ? error.message : error)
       return false
     }
   })
-  handle('app:reveal-path', async (_event, path) => {
+  handle(IPC_CHANNELS.app.revealPath, async (_event, path) => {
     let requested: string
     try { requested = await requireExistingPath(path) } catch (error) {
       console.warn('Rejected app:reveal-path:', error instanceof Error ? error.message : error)
@@ -170,38 +181,42 @@ export function registerIpc(services: Services, expectedRendererUrl: string): Ip
     console.warn('Rejected app:reveal-path: no authorization domain covers the path')
     return false
   })
-  handle('updates:get-state', () => services.updates.getState())
-  handle('updates:check', () => services.updates.check())
-  handle('updates:download-and-install', () => services.updates.downloadAndInstall())
+  handle(IPC_CHANNELS.updates.getState, () => services.updates.getState())
+  handle(IPC_CHANNELS.updates.check, () => services.updates.check())
+  handle(IPC_CHANNELS.updates.downloadAndInstall, () => services.updates.downloadAndInstall())
 
-  handle('projects:list', () => services.projects.list())
-  handle('projects:list-files', (_event, root) => services.projects.listFiles(root))
-  handle('projects:list-checkouts', (_event, projectId) => services.checkouts.list(projectId))
-  handle('projects:execute-checkout', (_event, projectId, action) => services.checkouts.execute(projectId, action))
-  handle('projects:add', () => services.projects.add())
-  handle('projects:grant-inferred', (_event, path) => services.projects.grantInferred(path))
-  handle('projects:relocate', (_event, id) => services.projects.relocate(id))
-  handle('projects:remove', (_event, id) => services.projects.remove(id))
-  handle('projects:touch', (_event, id) => services.projects.touch(id))
-  handle('projects:pin', (_event, id, pinned) => services.projects.setPinned(id, pinned))
-  handle('projects:update-scripts', (_event, id, scripts) => services.projects.updateScripts(id, scripts))
-  handle('projects:mark-setup-started', (_event, id, setup) => services.projects.markSetupStarted(id, setup))
-  handle('projects:finish-setup', (_event, id, setup, exitCode) => services.projects.finishSetup(id, setup, exitCode))
+  handle(IPC_CHANNELS.projects.list, () => services.projects.list())
+  handle(IPC_CHANNELS.projects.listFiles, (_event, root) => services.projects.listFiles(root))
+  handle(IPC_CHANNELS.projects.listCheckouts, (_event, projectId) => services.checkouts.list(projectId))
+  handle(IPC_CHANNELS.projects.executeCheckout, (_event, projectId, action) => services.checkouts.execute(projectId, action))
+  handle(IPC_CHANNELS.projects.add, () => services.projects.add())
+  handle(IPC_CHANNELS.projects.grantInferred, (_event, path) => services.projects.grantInferred(path))
+  handle(IPC_CHANNELS.projects.relocate, (_event, id) => services.projects.relocate(id))
+  handle(IPC_CHANNELS.projects.remove, (_event, id) => services.projects.remove(id))
+  handle(IPC_CHANNELS.projects.touch, (_event, id) => services.projects.touch(id))
+  handle(IPC_CHANNELS.projects.setPinned, (_event, id, pinned) => services.projects.setPinned(id, pinned))
+  handle(IPC_CHANNELS.projects.updateScripts, (_event, id, scripts) => services.projects.updateScripts(id, scripts))
+  handle(IPC_CHANNELS.projects.markSetupStarted, (_event, id, setup) => services.projects.markSetupStarted(id, setup))
+  handle(IPC_CHANNELS.projects.finishSetup, (_event, id, setup, exitCode) => services.projects.finishSetup(id, setup, exitCode))
 
-  handle('sessions:list', (_event, projectPath, includeArchived, harness, force) => {
+  handle(IPC_CHANNELS.sessions.list, (_event, projectPath, includeArchived, harness, force) => {
     requireHarness(harness)
     return services.sessions.list(projectPath, includeArchived, force)
   })
-  handle('sessions:read', async (_event, filePath) => (await sessionsForPath(filePath)).service.read(filePath))
-  handle('sessions:rename', async (_event, filePath, title) => (await sessionsForPath(filePath)).service.rename(filePath, title))
-  handle('sessions:delete', async (_event, filePath) => {
+  handle(IPC_CHANNELS.sessions.sync, (_event, revision, harness) => {
+    requireHarness(harness)
+    return services.sessions.sync(revision)
+  })
+  handle(IPC_CHANNELS.sessions.read, async (_event, filePath) => (await sessionsForPath(filePath)).service.read(filePath))
+  handle(IPC_CHANNELS.sessions.rename, async (_event, filePath, title) => (await sessionsForPath(filePath)).service.rename(filePath, title))
+  handle(IPC_CHANNELS.sessions.delete, async (_event, filePath) => {
     const routed = await sessionsForPath(filePath)
     const result = await routed.service.delete(filePath)
     services.browser.closeForSession(filePath)
     await services.terminals.killForSession(filePath)
     return result
   })
-  handle('sessions:archive', async (_event, filePath, archived) => {
+  handle(IPC_CHANNELS.sessions.archive, async (_event, filePath, archived) => {
     const routed = await sessionsForPath(filePath)
     const result = await routed.service.archive(filePath, archived)
     if (archived === true) {
@@ -211,7 +226,7 @@ export function registerIpc(services: Services, expectedRendererUrl: string): Ip
     return result
   })
 
-  handle('agent:start', (_event, rawOptions) => {
+  handle(IPC_CHANNELS.agent.start, (_event, rawOptions) => {
     const options = requireRecord(rawOptions, 'options')
     requireHarness(options.harness)
     // The manager start schema rejects unknown keys; the routing field must
@@ -219,20 +234,20 @@ export function registerIpc(services: Services, expectedRendererUrl: string): Ip
     const { harness: _harness, ...startOptions } = options
     return services.agents.start(startOptions)
   })
-  handle('agent:command', (_event, runtimeId, command) => services.agents.command(runtimeId, command))
-  handle('agent:stop', (_event, runtimeId) => services.agents.stop(runtimeId))
-  handle('agent:list', () => services.agents.list())
+  handle(IPC_CHANNELS.agent.command, (_event, runtimeId, command) => services.agents.command(runtimeId, command))
+  handle(IPC_CHANNELS.agent.stop, (_event, runtimeId) => services.agents.stop(runtimeId))
+  handle(IPC_CHANNELS.agent.list, () => services.agents.list())
 
   const providerCatalog = async (force = false) => {
     const catalog = await services.catalog.catalog(force, new Set(services.settings.get().ompDisabledProviders), new Set(services.settings.get().ompDisabledModels))
     const presets = await readModelPresets(join(homedir(), '.omp', 'agent', 'config.yml'))
     return presets.length > 0 ? { ...catalog, presets } : catalog
   }
-  handle('providers:catalog', (_event, force, harness) => {
+  handle(IPC_CHANNELS.providers.catalog, (_event, force, harness) => {
     requireHarness(harness)
     return providerCatalog(force === true)
   })
-  handle('providers:set-enabled', async (_event, providerId, enabled, harness) => {
+  handle(IPC_CHANNELS.providers.setEnabled, async (_event, providerId, enabled, harness) => {
     requireHarness(harness)
     const id = requireString(providerId, 'providerId', { min: 1, max: 128, trim: true })
     if (typeof enabled !== 'boolean') throw new TypeError('enabled must be a boolean')
@@ -262,7 +277,7 @@ export function registerIpc(services: Services, expectedRendererUrl: string): Ip
     })
     return providerCatalog()
   })
-  handle('providers:set-disabled', async (_event, providerIds, harness) => {
+  handle(IPC_CHANNELS.providers.setDisabled, async (_event, providerIds, harness) => {
     requireHarness(harness)
     if (!Array.isArray(providerIds) || providerIds.length > 256) throw new TypeError('providerIds must be a bounded array')
     const ids = [...new Set(providerIds.map((value, index) => requireString(value, `providerIds[${index}]`, { min: 1, max: 128, trim: true })))].sort()
@@ -277,7 +292,7 @@ export function registerIpc(services: Services, expectedRendererUrl: string): Ip
     await services.settings.update({ ompDisabledProviders: ids.filter((id) => !OPT_IN_PROVIDERS.has(id)), ompEnabledProviders: nextEnabledProviders, ompDisabledModels: disabledModels })
     return providerCatalog()
   })
-  handle('providers:set-model-enabled', async (_event, modelKey, enabled, harness) => {
+  handle(IPC_CHANNELS.providers.setModelEnabled, async (_event, modelKey, enabled, harness) => {
     requireHarness(harness)
     const key = requireString(modelKey, 'modelKey', { min: 3, max: 385, trim: true })
     if (typeof enabled !== 'boolean') throw new TypeError('enabled must be a boolean')
@@ -307,59 +322,60 @@ export function registerIpc(services: Services, expectedRendererUrl: string): Ip
     return providerCatalog()
   })
 
-  handle('voice:credential-status', () => services.voice.credentialStatus())
-  handle('voice:save-api-key', (_event, provider, apiKey) => services.voice.saveApiKey(provider, apiKey))
-  handle('voice:delete-api-key', (_event, provider) => services.voice.deleteApiKey(provider))
-  handle('voice:create-realtime-call', (_event, request) => services.voice.createRealtimeCall(request))
-  handle('voice:transcribe', (_event, request) => services.voice.transcribe(request))
-  handle('voice:test-self-hosted', (_event, request) => services.voice.testSelfHosted(request))
+  handle(IPC_CHANNELS.voice.credentialStatus, () => services.voice.credentialStatus())
+  handle(IPC_CHANNELS.voice.saveApiKey, (_event, provider, apiKey) => services.voice.saveApiKey(provider, apiKey))
+  handle(IPC_CHANNELS.voice.deleteApiKey, (_event, provider) => services.voice.deleteApiKey(provider))
+  handle(IPC_CHANNELS.voice.createRealtimeCall, (_event, request) => services.voice.createRealtimeCall(request))
+  handle(IPC_CHANNELS.voice.transcribe, (_event, request) => services.voice.transcribe(request))
+  handle(IPC_CHANNELS.voice.testSelfHosted, (_event, request) => services.voice.testSelfHosted(request))
 
-  handle('terminal:create', (event, options) => services.terminals.create(event.sender, options))
-  handle('terminal:bind-session', (event, terminalId, sessionPath) => services.terminals.bindSession(event.sender, terminalId, sessionPath))
-  on('terminal:input', (event, terminalId, data) => services.terminals.input(event.sender, terminalId, data))
-  on('terminal:resize', (event, terminalId, cols, rows) => services.terminals.resize(event.sender, terminalId, cols, rows))
-  on('terminal:set-active-context', (event, terminalId, context) => services.terminals.setActiveContext(event.sender, terminalId, context))
-  on('terminal:clear-active-context', (event, terminalId) => services.terminals.clearActiveContext(event.sender, terminalId))
-  handle('terminal:kill', (event, terminalId) => services.terminals.kill(event.sender, terminalId))
+  handle(IPC_CHANNELS.terminal.create, (event, options) => services.terminals.create(event.sender, options))
+  handle(IPC_CHANNELS.terminal.bindSession, (event, terminalId, sessionPath) => services.terminals.bindSession(event.sender, terminalId, sessionPath))
+  on(IPC_CHANNELS.terminal.input, (event, terminalId, data) => services.terminals.input(event.sender, terminalId, data))
+  on(IPC_CHANNELS.terminal.acknowledge, (event, terminalId, consumedChars) => services.terminals.acknowledge(event.sender, terminalId, consumedChars))
+  on(IPC_CHANNELS.terminal.resize, (event, terminalId, cols, rows) => services.terminals.resize(event.sender, terminalId, cols, rows))
+  on(IPC_CHANNELS.terminal.setActiveContext, (event, terminalId, context) => services.terminals.setActiveContext(event.sender, terminalId, context))
+  on(IPC_CHANNELS.terminal.clearActiveContext, (event, terminalId) => services.terminals.clearActiveContext(event.sender, terminalId))
+  handle(IPC_CHANNELS.terminal.kill, (event, terminalId) => services.terminals.kill(event.sender, terminalId))
 
-  handle('git:status', (_event, cwd) => services.git.status(cwd))
-  handle('git:diff', (_event, cwd, path, staged) => services.git.diff(cwd, path, staged))
-  handle('git:stage', (_event, cwd, paths) => services.git.stage(cwd, paths))
-  handle('git:unstage', (_event, cwd, paths) => services.git.unstage(cwd, paths))
-  handle('git:restore', (_event, cwd, paths) => services.git.restore(cwd, paths))
-  handle('git:commit', (_event, cwd, message) => services.git.commit(cwd, message))
+  handle(IPC_CHANNELS.git.status, (_event, cwd) => services.git.status(cwd))
+  handle(IPC_CHANNELS.git.diff, (_event, cwd, path, staged) => services.git.diff(cwd, path, staged))
+  handle(IPC_CHANNELS.git.stage, (_event, cwd, paths) => services.git.stage(cwd, paths))
+  handle(IPC_CHANNELS.git.unstage, (_event, cwd, paths) => services.git.unstage(cwd, paths))
+  handle(IPC_CHANNELS.git.restore, (_event, cwd, paths) => services.git.restore(cwd, paths))
+  handle(IPC_CHANNELS.git.commit, (_event, cwd, message) => services.git.commit(cwd, message))
 
-  handle('plugins:list', (_event, projectPath, harness) => {
+  handle(IPC_CHANNELS.plugins.list, (_event, projectPath, harness) => {
     requireHarness(harness)
     return services.plugins.list(projectPath)
   })
-  handle('plugins:install', (_event, source, harness) => {
+  handle(IPC_CHANNELS.plugins.install, (_event, source, harness) => {
     requireHarness(harness)
     return services.plugins.install(source)
   })
-  handle('plugins:install-extension', (_event, input, harness) => {
+  handle(IPC_CHANNELS.plugins.installExtension, (_event, input, harness) => {
     requireHarness(harness)
     return services.plugins.installExtension(input)
   })
-  handle('plugins:connect-mcp', (_event, input, harness) => {
+  handle(IPC_CHANNELS.plugins.connectMcp, (_event, input, harness) => {
     requireHarness(harness)
     return services.plugins.connectMcp(input)
   })
-  handle('plugins:set-mcp-enabled', (_event, input, harness) => {
+  handle(IPC_CHANNELS.plugins.setMcpEnabled, (_event, input, harness) => {
     requireHarness(harness)
     return services.plugins.setMcpEnabled(input)
   })
-  handle('plugins:mutate-capability', (_event, input, harness) => {
+  handle(IPC_CHANNELS.plugins.mutateCapability, (_event, input, harness) => {
     requireHarness(harness)
     return services.plugins.mutateCapability(input)
   })
-  handle('plugins:refresh', (_event, harness) => {
+  handle(IPC_CHANNELS.plugins.refresh, (_event, harness) => {
     requireHarness(harness)
     return services.plugins.refresh()
   })
 
-  handle('settings:get', () => services.settings.get())
-  handle('settings:update', async (_event, patch) => {
+  handle(IPC_CHANNELS.settings.get, () => services.settings.get())
+  handle(IPC_CHANNELS.settings.update, async (_event, patch) => {
     const previous = services.settings.get()
     const patchRecord = requireRecord(patch, 'settings patch')
     if (patchRecord.computerUseEnabled === true && !previous.computerUseEnabled) await services.cuaDriver.requireAvailable()
@@ -370,64 +386,44 @@ export function registerIpc(services: Services, expectedRendererUrl: string): Ip
     }
     return settings
   })
-  handle('settings:reset-browser-data', () => services.settings.resetBrowserData())
+  handle(IPC_CHANNELS.settings.resetBrowserData, () => services.settings.resetBrowserData())
 
-  handle('browser:state', () => services.browser.state())
-  handle('browser:attach-tab', (_event, tabId, webContentsId) => services.browser.attachTab(tabId, webContentsId))
-  handle('browser:select-tab', (_event, tabId) => services.browser.selectTab(tabId))
-  handle('browser:close-tab', (_event, tabId) => services.browser.closeTab(tabId))
-  handle('browser:set-preview-context', (_event, webContentsId, sessionFile) => services.browser.setPreviewContext(webContentsId, sessionFile))
-  handle('browser:navigate-tab', (_event, tabId, action, url) => services.browser.navigateTab(tabId, action, url))
+  handle(IPC_CHANNELS.browser.state, () => services.browser.state())
+  handle(IPC_CHANNELS.browser.attachTab, (_event, tabId, webContentsId) => services.browser.attachTab(tabId, webContentsId))
+  handle(IPC_CHANNELS.browser.selectTab, (_event, tabId) => services.browser.selectTab(tabId))
+  handle(IPC_CHANNELS.browser.closeTab, (_event, tabId) => services.browser.closeTab(tabId))
+  handle(IPC_CHANNELS.browser.setPreviewContext, (_event, webContentsId, sessionFile) => services.browser.setPreviewContext(webContentsId, sessionFile))
+  handle(IPC_CHANNELS.browser.navigateTab, (_event, tabId, action, url) => services.browser.navigateTab(tabId, action, url))
 
 
-  handle('schedules:list', (_event, harness) => services.schedules.list(requireHarness(harness)))
-  handle('schedules:get', (_event, id) => services.schedules.get(id))
-  handle('schedules:preview', (_event, timing, count) => services.schedules.preview(timing, count))
-  handle('schedules:create', (_event, input, harness) => services.schedules.create(input, 'user', requireHarness(harness)))
-  handle('schedules:update', (_event, id, patch) => services.schedules.update(id, patch))
-  handle('schedules:pause', (_event, id) => services.schedules.pause(id))
-  handle('schedules:resume', (_event, id) => services.schedules.resume(id))
-  handle('schedules:delete', (_event, id) => services.schedules.delete(id))
-  handle('schedules:run-now', (_event, id) => services.schedules.runNow(id))
+  handle(IPC_CHANNELS.schedules.list, (_event, harness) => services.schedules.list(requireHarness(harness)))
+  handle(IPC_CHANNELS.schedules.get, (_event, id) => services.schedules.get(id))
+  handle(IPC_CHANNELS.schedules.preview, (_event, timing, count) => services.schedules.preview(timing, count))
+  handle(IPC_CHANNELS.schedules.create, (_event, input, harness) => services.schedules.create(input, 'user', requireHarness(harness)))
+  handle(IPC_CHANNELS.schedules.update, (_event, id, patch) => services.schedules.update(id, patch))
+  handle(IPC_CHANNELS.schedules.pause, (_event, id) => services.schedules.pause(id))
+  handle(IPC_CHANNELS.schedules.resume, (_event, id) => services.schedules.resume(id))
+  handle(IPC_CHANNELS.schedules.delete, (_event, id) => services.schedules.delete(id))
+  handle(IPC_CHANNELS.schedules.runNow, (_event, id) => services.schedules.runNow(id))
 
   const forwardSessionChange = (change: SessionChangeEvent): void => {
-    for (const [id, contents] of authorized) {
-      if (contents.isDestroyed()) { authorized.delete(id); continue }
-      if (isTrustedRendererUrl(contents.getURL(), expectedRendererUrl)
-        && isTrustedRendererUrl(contents.mainFrame.url, expectedRendererUrl)) contents.send('sessions:changed', change)
-    }
+    broadcast(IPC_CHANNELS.sessions.onChanged, change)
   }
   const unsubscribeSessionChanges = services.sessions.onDidChange(forwardSessionChange)
   const scheduleSubscription = services.schedules.onDidChange((change) => {
-    for (const [id, contents] of authorized) {
-      if (contents.isDestroyed()) { authorized.delete(id); continue }
-      if (isTrustedRendererUrl(contents.getURL(), expectedRendererUrl)
-        && isTrustedRendererUrl(contents.mainFrame.url, expectedRendererUrl)) contents.send('schedules:changed', change)
-    }
+    broadcast(IPC_CHANNELS.schedules.onChanged, change)
   })
   const unsubscribeScheduleChanges = typeof scheduleSubscription === 'function' ? scheduleSubscription : () => undefined
   const browserSubscription = services.browser.onDidChange((state) => {
-    for (const [id, contents] of authorized) {
-      if (contents.isDestroyed()) { authorized.delete(id); continue }
-      if (isTrustedRendererUrl(contents.getURL(), expectedRendererUrl)
-        && isTrustedRendererUrl(contents.mainFrame.url, expectedRendererUrl)) contents.send('browser:changed', state)
-    }
+    broadcast(IPC_CHANNELS.browser.onChanged, state)
   })
   const unsubscribeBrowserChanges = typeof browserSubscription === 'function' ? browserSubscription : () => undefined
   const pointerSubscription = services.browser.onPointer((event) => {
-    for (const [id, contents] of authorized) {
-      if (contents.isDestroyed()) { authorized.delete(id); continue }
-      if (isTrustedRendererUrl(contents.getURL(), expectedRendererUrl)
-        && isTrustedRendererUrl(contents.mainFrame.url, expectedRendererUrl)) contents.send('browser:pointer', event)
-    }
+    broadcast(IPC_CHANNELS.browser.onPointer, event)
   })
   const unsubscribeBrowserPointer = typeof pointerSubscription === 'function' ? pointerSubscription : () => undefined
   const activitySubscription = services.browser.onActivity((event) => {
-    for (const [id, contents] of authorized) {
-      if (contents.isDestroyed()) { authorized.delete(id); continue }
-      if (isTrustedRendererUrl(contents.getURL(), expectedRendererUrl)
-        && isTrustedRendererUrl(contents.mainFrame.url, expectedRendererUrl)) contents.send('browser:activity', event)
-    }
+    broadcast(IPC_CHANNELS.browser.onActivity, event)
   })
   const unsubscribeBrowserActivity = typeof activitySubscription === 'function' ? activitySubscription : () => undefined
 

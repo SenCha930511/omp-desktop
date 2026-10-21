@@ -20,6 +20,9 @@ export interface ProviderCatalog {
   catalog(force?: boolean, disabledProviders?: ReadonlySet<string>, disabledModels?: ReadonlySet<string>): Promise<PrimeModelCatalog>
 }
 
+export interface RuntimeRetentionOptions { idleMs?: number; warmCount?: number }
+const RETENTION_EVENTS = new Set(['agent_start', 'agent_end', 'runtime_state', 'session_action_update', 'compaction_start', 'compaction_end', 'auto_retry_end', 'prompt_result', 'runtime_exit'])
+
 export class AgentRpcManager {
   private readonly runtimes = new Map<string, RpcRuntime>()
   private readonly startingRuntimes = new Set<string>()
@@ -38,6 +41,9 @@ export class AgentRpcManager {
     retireIfIdle: () => Promise<boolean>,
   ) => Promise<WorkspaceUseLease> = async () => ({ release: () => undefined })
   private closed = false
+  private readonly commandsInFlight = new Map<string, number>()
+  private readonly idleSince = new Map<string, number>()
+  private idleTimer: NodeJS.Timeout | null = null
 
   constructor(
     private readonly executable: ExecutableSource,
@@ -48,6 +54,7 @@ export class AgentRpcManager {
     private readonly adapter: HarnessRpcAdapter = OMP_RPC_ADAPTER,
     /** OMP approval-mode override consumed by the harness arg builder. */
     private readonly approvalMode: () => string | undefined = () => undefined,
+    private readonly retention: RuntimeRetentionOptions = {},
   ) {}
 
   setEventSink(sink: (envelope: PrimeEventEnvelope) => void): void { this.eventSink = sink }
@@ -76,7 +83,12 @@ export class AgentRpcManager {
     this.runtimeEndListener = listener
   }
 
-  beginShutdown(): void { this.closed = true }
+  beginShutdown(): void {
+    this.closed = true
+    if (this.idleTimer) clearTimeout(this.idleTimer)
+    this.idleTimer = null
+    this.idleSince.clear()
+  }
 
   async start(raw: unknown): Promise<RuntimeInfo> {
     return this.startWithMode(raw, true)
@@ -150,12 +162,17 @@ export class AgentRpcManager {
           executable,
           args,
           cwd,
-          (event) => this.eventSink(event),
+          (event) => {
+            this.eventSink(event)
+            if (RETENTION_EVENTS.has(String(event.event.type))) this.scheduleIdleRetirement()
+          },
           (closed) => {
             this.startingRuntimes.delete(closed.runtimeId)
             this.runtimes.delete(closed.runtimeId)
             this.retiringRuntimes.delete(closed.runtimeId)
             this.runtimeEnvironmentRevisions.delete(closed.runtimeId)
+            this.idleSince.delete(closed.runtimeId)
+            this.scheduleIdleRetirement()
             notifyRuntimeEnd(closed.snapshot())
           },
           runtimeEnvironment,
@@ -173,6 +190,7 @@ export class AgentRpcManager {
       if (runtime.snapshot().fastModeSupported && options.fast === true) await runtime.setServiceTier('priority', true)
       try { this.runtimeStartListener(runtimeEnvironment, runtime.snapshot()) } catch { /* capability binding must never fail a start */ }
       this.startingRuntimes.delete(runtime.runtimeId)
+      this.scheduleIdleRetirement()
       return runtime.snapshot()
     } catch (error) {
       if (runtime) {
@@ -201,7 +219,14 @@ export class AgentRpcManager {
   }
 
   async command(runtimeId: unknown, rawCommand: unknown): Promise<RpcObject> {
+    let admittedId: string | undefined
     try {
+      this.requireOpen()
+      const runtime = this.requireRuntime(runtimeId)
+      if (this.retiringRuntimes.has(runtime.runtimeId)) throw new Error('Runtime is being retired')
+      admittedId = runtime.runtimeId
+      this.commandsInFlight.set(admittedId, (this.commandsInFlight.get(admittedId) ?? 0) + 1)
+      this.idleSince.delete(admittedId)
       return await this.dispatchCommand(runtimeId, rawCommand)
     } catch (error) {
       // Delivery failures for user-visible commands (steer, prompt, follow_up)
@@ -210,6 +235,13 @@ export class AgentRpcManager {
       const type = isRecord(rawCommand) && typeof rawCommand.type === 'string' ? rawCommand.type : 'invalid'
       console.error(`[agent-rpc] ${new Date().toISOString()} command ${type} failed:`, error instanceof Error ? error.message : error)
       throw error
+    } finally {
+      if (admittedId) {
+        const remaining = (this.commandsInFlight.get(admittedId) ?? 1) - 1
+        if (remaining) this.commandsInFlight.set(admittedId, remaining)
+        else this.commandsInFlight.delete(admittedId)
+        this.scheduleIdleRetirement()
+      }
     }
   }
 
@@ -330,7 +362,7 @@ export class AgentRpcManager {
       return path !== undefined && canonicalSessionPath(path) === wanted
     })
     if (!runtime) return false
-    const response = await runtime.command({ type: 'set_session_name', name: title })
+    const response = await this.command(runtime.runtimeId, { type: 'set_session_name', name: title })
     return response.success === true
   }
 
@@ -345,17 +377,16 @@ export class AgentRpcManager {
     if (!this.runtimes.has(runtime.runtimeId)
       || (this.runtimeEnvironmentRevisions.get(runtime.runtimeId) ?? wantedRevision) >= wantedRevision) return
     if (this.isIdle(runtime)) {
-      await runtime.stop()
-      return
+      if (await this.retireForCheckout(runtime)) return
     }
     const timer = setTimeout(() => { void this.retireWhenIdle(runtime) }, 250)
     timer.unref()
   }
 
-  private async retireForCheckout(runtime: RpcRuntime): Promise<boolean> {
+  private async retireForCheckout(runtime: RpcRuntime, eligible: () => boolean = () => true): Promise<boolean> {
     const decision = await this.withRuntimeAdmission(async () => {
       if (!this.runtimes.has(runtime.runtimeId)) return 'gone'
-      if (!this.isIdle(runtime)) return 'busy'
+      if (!this.isIdle(runtime) || !eligible()) return 'busy'
       this.retiringRuntimes.add(runtime.runtimeId)
       return 'retiring'
     })
@@ -363,7 +394,10 @@ export class AgentRpcManager {
     if (decision === 'busy') return false
     try {
       const stopped = await runtime.stop()
-      if (stopped && this.runtimes.get(runtime.runtimeId) === runtime) this.runtimes.delete(runtime.runtimeId)
+      if (stopped && this.runtimes.get(runtime.runtimeId) === runtime) {
+        this.runtimes.delete(runtime.runtimeId)
+        this.idleSince.delete(runtime.runtimeId)
+      }
       return stopped
     } finally {
       this.retiringRuntimes.delete(runtime.runtimeId)
@@ -371,6 +405,7 @@ export class AgentRpcManager {
   }
 
   private isIdle(runtime: RpcRuntime): boolean {
+    if ((this.commandsInFlight.get(runtime.runtimeId) ?? 0) > 0) return false
     if (this.startingRuntimes.has(runtime.runtimeId)) return false
     if (this.retiringRuntimes.has(runtime.runtimeId)) return false
     const snapshot = runtime.snapshot()
@@ -383,6 +418,52 @@ export class AgentRpcManager {
     if (this.closed) throw new Error(`${this.adapter.agentName} manager is shutting down`)
   }
 
+  /** One timer for safely idle children beyond the warm budget, never one polling loop per child. */
+  private scheduleIdleRetirement(): void {
+    if (this.idleTimer) clearTimeout(this.idleTimer)
+    this.idleTimer = null
+    if (this.closed) return
+    const now = Date.now()
+    const idle: RpcRuntime[] = []
+    for (const runtime of this.runtimes.values()) {
+      if (!this.isIdle(runtime)) { this.idleSince.delete(runtime.runtimeId); continue }
+      if (!this.idleSince.has(runtime.runtimeId)) this.idleSince.set(runtime.runtimeId, now)
+      idle.push(runtime)
+    }
+    const recency = new Map([...this.idleSince.keys()].map((id, index) => [id, index]))
+    idle.sort((a, b) => recency.get(b.runtimeId)! - recency.get(a.runtimeId)!)
+    const expiredCandidates = idle.slice(this.retention.warmCount ?? 1)
+    if (!expiredCandidates.length) return
+    const idleMs = this.retention.idleMs ?? 5 * 60_000
+    const deadline = Math.min(...expiredCandidates.map((runtime) => this.idleSince.get(runtime.runtimeId)! + idleMs))
+    this.idleTimer = setTimeout(() => {
+      this.idleTimer = null
+      void (async () => {
+        for (const runtime of expiredCandidates) {
+          const since = this.idleSince.get(runtime.runtimeId)
+          if (since === undefined || Date.now() - since < idleMs) continue
+          // The existing admission barrier marks retiring atomically against new commands.
+          try {
+            const eligible = () => {
+              const recentIdle = [...this.idleSince.keys()].reverse().filter((id) => {
+                const candidate = this.runtimes.get(id)
+                return candidate !== undefined && this.isIdle(candidate)
+              })
+              const since = this.idleSince.get(runtime.runtimeId)
+              return since !== undefined && Date.now() - since >= idleMs
+                && recentIdle.slice(this.retention.warmCount ?? 1).includes(runtime.runtimeId)
+            }
+            if (!await this.retireForCheckout(runtime, eligible)) this.idleSince.set(runtime.runtimeId, Date.now())
+          } catch (error) {
+            this.idleSince.set(runtime.runtimeId, Date.now())
+            console.warn('Idle runtime retirement failed:', error)
+          }
+        }
+      })().catch((error) => console.warn('Idle runtime retirement failed:', error)).finally(() => this.scheduleIdleRetirement())
+    }, Math.max(0, deadline - now))
+    this.idleTimer.unref()
+  }
+
   private async admitRuntime(createRuntime: () => RpcRuntime): Promise<RpcRuntime> {
     return this.withRuntimeAdmission(async () => {
       this.requireOpen()
@@ -391,8 +472,11 @@ export class AgentRpcManager {
       // still-starting runtimes remain alive, with no numeric concurrency cap.
       const idle = [...this.runtimes.values()].find((runtime) => this.isIdle(runtime))
       if (idle) {
-        const stopped = await idle.stop()
-        if (stopped && this.runtimes.get(idle.runtimeId) === idle) this.runtimes.delete(idle.runtimeId)
+        this.retiringRuntimes.add(idle.runtimeId)
+        try {
+          const stopped = await idle.stop()
+          if (stopped && this.runtimes.get(idle.runtimeId) === idle) this.runtimes.delete(idle.runtimeId)
+        } finally { this.retiringRuntimes.delete(idle.runtimeId) }
       }
       this.requireOpen()
       const runtime = createRuntime()

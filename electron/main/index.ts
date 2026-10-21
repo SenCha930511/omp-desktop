@@ -1,3 +1,4 @@
+import { IPC_CHANNELS } from '../../src/types/ipc'
 import { app, BrowserWindow, dialog, Menu, nativeTheme, protocol, safeStorage, session, webContents } from 'electron'
 import type { BrowserWindowConstructorOptions, Input, WebContents } from 'electron'
 import { extname, isAbsolute, join, relative, resolve, win32 as win32Path } from 'node:path'
@@ -569,7 +570,7 @@ async function bootstrap(): Promise<void> {
     getSettings: () => stateStore.getSettings(),
     onOpen: () => requestWindow('menu bar'),
     onSettings: () => requestWindow('settings', (window) => {
-      if (!window.webContents.isDestroyed()) window.webContents.send('app:open-settings')
+      if (!window.webContents.isDestroyed()) window.webContents.send(IPC_CHANNELS.app.onOpenSettings)
     }),
     onQuit: () => app.quit(),
     startInBackground,
@@ -817,7 +818,7 @@ async function bootstrap(): Promise<void> {
     if (!shutdownStarted && renderer && !renderer.isDestroyed()
       && isTrustedRendererUrl(renderer.getURL(), trustedRendererUrl)
       && isTrustedRendererUrl(renderer.mainFrame.url, trustedRendererUrl)) {
-      renderer.send('agent:event', envelope)
+      renderer.send(IPC_CHANNELS.agent.onEvent, envelope)
     }
   }
   ompManager.setEventSink(forwardAgentEvent)
@@ -826,7 +827,7 @@ async function bootstrap(): Promise<void> {
     if (!shutdownStarted && renderer && !renderer.isDestroyed()
       && isTrustedRendererUrl(renderer.getURL(), trustedRendererUrl)
       && isTrustedRendererUrl(renderer.mainFrame.url, trustedRendererUrl)) {
-      renderer.send('updates:changed', state)
+      renderer.send(IPC_CHANNELS.updates.onChanged, state)
     }
   })
   installApplicationMenu({

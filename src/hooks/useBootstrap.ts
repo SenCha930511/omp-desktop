@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { errorMessage } from '@/lib/errors'
+import { applySessionCatalogDelta } from '@/lib/session-catalog'
 import { findRuntimeForWorkspace, selectStartupWorkspace } from '@/lib/workspace'
 import type { WorkspaceSnapshot } from '@/app/workspace'
 import type {
@@ -245,6 +246,7 @@ export function useBootstrap({
     let disposed = false
     let refreshTimer: number | null = null
     let requestId = 0
+    let serverRevision: number | undefined
     const pendingChangedFiles = new Map<string, number>()
     let pendingCatalogRevision = 0
     let nextRevision = 0
@@ -260,16 +262,22 @@ export function useBootstrap({
         const currentRequest = ++requestId
         const changedFiles = new Map(pendingChangedFiles)
         const catalogRevision = pendingCatalogRevision
-        void bridge.sessions.list(undefined, true, harness).then((nextSessions) => {
+        const baseRevision = serverRevision
+        void bridge.sessions.sync(baseRevision, harness).then(async (response) => {
+          if (response.kind === 'delta' && response.baseRevision !== baseRevision) return bridge.sessions.sync(undefined, harness)
+          return response
+        }).then((update) => {
           if (disposed || currentRequest !== requestId) return
-          setSessions((current) => mergeSessionCatalog(
-            current,
-            nextSessions,
-            workspaceRef.current.sessionFile,
-            changedFiles,
-            catalogRevision,
-            sessionHasOpenExtensionUi,
-          ))
+          serverRevision = update.revision
+          setSessions((current) => {
+            const changedPaths = update.kind === 'delta' ? new Set([...update.removals, ...update.upserts.map((record) => record.filePath)]) : undefined
+            const records = update.kind === 'snapshot' ? update.records : [
+              ...update.upserts,
+              ...current.filter((record) => changedFiles.has(record.filePath) && !changedPaths?.has(record.filePath)),
+            ]
+            const merged = mergeSessionCatalog(current, records, workspaceRef.current.sessionFile, changedFiles, catalogRevision, sessionHasOpenExtensionUi)
+            return update.kind === 'snapshot' ? merged : applySessionCatalogDelta(current, update, merged)
+          })
           for (const [filePath, changedRevision] of changedFiles) {
             if (pendingChangedFiles.get(filePath) === changedRevision) pendingChangedFiles.delete(filePath)
           }

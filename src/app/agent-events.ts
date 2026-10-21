@@ -1,4 +1,5 @@
 import type { PrimeEventBuffer } from '@/lib/events'
+import { EVENT_REPLAY_MAX_BYTES, EVENT_REPLAY_MAX_EVENTS, eventPayloadBytes } from '@/lib/event-buffer'
 import type { PrimeContextUsage, SessionUsage, SessionUsageTokens, TranscriptMessage } from '@/types/api'
 
 export interface PendingAgentEvent {
@@ -135,7 +136,8 @@ export function reconcileTranscriptMessages(
 }
 
 /** Maximum events held for animation-frame replay before falling back to an authoritative transcript read. */
-export const AGENT_EVENT_QUEUE_LIMIT = 50_000
+export const AGENT_EVENT_QUEUE_LIMIT = EVENT_REPLAY_MAX_EVENTS
+const framePayloads = new WeakMap<PendingAgentEvent[], { length: number; bytes: number }>()
 
 /** Maximum events replayed per macrotask when draining a large queue on visibilitychange. */
 export const AGENT_EVENT_FLUSH_CHUNK = 2_000
@@ -148,11 +150,15 @@ export function admitAgentEvent(
   queueLimit = AGENT_EVENT_QUEUE_LIMIT,
 ): 'transcript' | 'frame' | 'overflow' {
   if (pendingLoad?.generation === generation) {
-    pendingLoad.eventBuffer.push(event)
-    return 'transcript'
+    return pendingLoad.eventBuffer.push(event) ? 'transcript' : 'overflow'
   }
   if (frameQueue.length >= queueLimit) return 'overflow'
+  const cached = framePayloads.get(frameQueue)
+  const retained = cached?.length === frameQueue.length ? cached.bytes : frameQueue.reduce((bytes, entry) => bytes + eventPayloadBytes(entry.event), 0)
+  const bytes = eventPayloadBytes(event)
+  if (retained + bytes > EVENT_REPLAY_MAX_BYTES) return 'overflow'
   frameQueue.push({ generation, event })
+  framePayloads.set(frameQueue, { length: frameQueue.length, bytes: retained + bytes })
   return 'frame'
 }
 

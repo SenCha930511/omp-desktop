@@ -1,4 +1,5 @@
 import { HARNESS_AGENT_NAMES } from '@/lib/harness'
+import { EVENT_REPLAY_MAX_BYTES, EVENT_REPLAY_MAX_EVENTS, eventPayloadBytes } from '@/lib/event-buffer'
 import type { MessagePart, QueuedPrompt, TranscriptMessage } from '@/types/api'
 import { applyCompactionEvent, isCompactionEvent } from './compaction'
 import { nextTranscriptId, withPartId } from './ids'
@@ -372,15 +373,33 @@ export function replayPrimeEvents(
 
 export interface PrimeEventBuffer {
   readonly size: number
-  push(event: Record<string, unknown>): void
+  readonly payloadBytes: number
+  readonly overflowed: boolean
+  push(event: Record<string, unknown>): boolean
   replay(messages: TranscriptMessage[]): TranscriptMessage[]
 }
 
-export function createPrimeEventBuffer(): PrimeEventBuffer {
+export function createPrimeEventBuffer({ maxEvents = EVENT_REPLAY_MAX_EVENTS, maxBytes = EVENT_REPLAY_MAX_BYTES } = {}): PrimeEventBuffer {
   const events: Record<string, unknown>[] = []
+  let payloadBytes = 0
+  let overflowed = false
   return {
     get size() { return events.length },
-    push(event) { events.push(event) },
+    get payloadBytes() { return payloadBytes },
+    get overflowed() { return overflowed },
+    push(event) {
+      if (overflowed) return false
+      const bytes = eventPayloadBytes(event, maxBytes)
+      if (events.length >= maxEvents || payloadBytes + bytes > maxBytes) {
+        overflowed = true
+        events.length = 0
+        payloadBytes = 0
+        return false
+      }
+      payloadBytes += bytes
+      events.push(event)
+      return true
+    },
     replay(messages) { return replayPrimeEvents(messages, events) },
   }
 }

@@ -1,6 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { useDocumentVisible } from './useDocumentVisible'
 import type { DesktopApi } from '@/types/api'
 import { record, string } from '@/lib/events/parse'
+import { terminalSubagentPhase } from '@/lib/subagent-status'
 
 export interface SubagentView {
   id: string
@@ -50,11 +52,16 @@ export function applySubagentFrame(current: SubagentView[], frame: Record<string
   return existing ? current.map((agent) => agent.id === id ? next : agent) : [...current, next].slice(-256)
 }
 
-export function useSubagents(bridge: DesktopApi | null, runtimeId?: string) {
+export function useSubagents(bridge: DesktopApi | null, runtimeId?: string, visible = true) {
   const [state, setState] = useState<{ owner?: string; agents: SubagentView[]; error?: string }>({ agents: [] })
   const [selectedId, select] = useState<string>()
-  const selectedRevision = state.agents.find((agent) => agent.id === selectedId)?.revision
+  const selected = state.agents.find((agent) => agent.id === selectedId)
+  const selectedRevision = selected?.revision
+  const selectedStatus = selected?.status
+  const documentVisible = useDocumentVisible()
+  const cursors = useRef(new Map<string, number>())
   useEffect(() => {
+    cursors.current.clear()
     setState({ owner: runtimeId, agents: [] })
     select(undefined)
     if (!bridge || !runtimeId) return
@@ -84,18 +91,25 @@ export function useSubagents(bridge: DesktopApi | null, runtimeId?: string) {
   }, [bridge, runtimeId])
 
   useEffect(() => {
-    if (!bridge || !runtimeId || !selectedId || state.owner !== runtimeId) return
+    if (!bridge || !runtimeId || !selectedId || state.owner !== runtimeId || !visible || !documentVisible) return
     let active = true
-    let cursor = 0
+    const key = `${runtimeId}:${selectedId}:${selectedRevision ?? 0}`
+    let cursor = cursors.current.get(key) ?? 0
     let timer: ReturnType<typeof setTimeout>
+    let failures = 0
     const read = async () => {
+      let succeeded = false
       try {
         const response = await bridge.agent.command(runtimeId, { type: 'get_subagent_messages', subagentId: selectedId, fromByte: cursor })
         if (!active) return
         const data = record(response.data)
         if (!data || !Array.isArray(data.messages) || typeof data.nextByte !== 'number') throw new Error('Invalid subagent transcript')
         cursor = data.nextByte
+        cursors.current.set(key, cursor)
+        while (cursors.current.size > 256) cursors.current.delete(cursors.current.keys().next().value!)
         const messages = data.messages
+        succeeded = true
+        failures = 0
         setState((current) => {
           if (current.owner !== runtimeId) return current
           if (!messages.length && data.reset !== true) return current.error ? { ...current, error: undefined } : current
@@ -104,12 +118,14 @@ export function useSubagents(bridge: DesktopApi | null, runtimeId?: string) {
           }) }
         })
       } catch (error) {
+        failures += 1
         if (active) setState((current) => ({ ...current, error: String(error) }))
       }
-      if (active) timer = setTimeout(() => void read(), 1_500)
+      const completed = terminalSubagentPhase(selectedStatus ?? '') !== undefined
+      if (active && (!completed || (!succeeded && failures < 3))) timer = setTimeout(() => void read(), 1_500 * Math.max(1, failures))
     }
     void read()
     return () => { active = false; clearTimeout(timer) }
-  }, [bridge, runtimeId, selectedId, selectedRevision, state.owner])
+  }, [bridge, runtimeId, selectedId, selectedRevision, selectedStatus, state.owner, visible, documentVisible])
   return { agents: state.owner === runtimeId ? state.agents : [], error: state.owner === runtimeId ? state.error : undefined, selectedId, select }
 }

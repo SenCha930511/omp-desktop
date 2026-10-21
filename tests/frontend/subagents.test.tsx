@@ -17,6 +17,18 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals())
 
 describe('subagent observability', () => {
+  it('bounds retained transcript trees to three recently opened agents', () => {
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    const agents = Array.from({ length: 6 }, (_, index) => ({ id: String(index), agent: `Agent ${index}`, status: 'completed', messages: [] }))
+    try {
+      for (const agent of agents) {
+        act(() => root.render(<SubagentsPanel connected state={{ agents, selectedId: agent.id, select: vi.fn(), error: undefined }} />))
+        expect(host.querySelectorAll('.subagents__page').length).toBeLessThanOrEqual(3)
+        expect(host.querySelector('.subagents__page:not([hidden]) h2')?.textContent).toBe(agent.agent)
+      }
+    } finally { act(() => root.unmount()) }
+  })
   it('acknowledges viewed updates, ignores elapsed ticks and marks later completion unread', () => {
     const host = document.createElement('div')
     const root = createRoot(host)

@@ -295,6 +295,10 @@ export interface SessionChangeEvent {
   harness?: HarnessId
 }
 
+export type SessionCatalogUpdate =
+  | { kind: 'snapshot'; revision: number; records: SessionRecord[] }
+  | { kind: 'delta'; baseRevision: number; revision: number; upserts: SessionRecord[]; removals: string[] }
+
 export interface SkillRecord {
   id: string
   name: string
@@ -438,8 +442,8 @@ export interface GitDiff { path?: string; staged: boolean; text: string; truncat
 export type ProcessFailureReason = 'timeout' | 'overflow' | 'exit' | 'blocked'
 export interface ProcessOutcome { ok: boolean; output: string; reason?: ProcessFailureReason }
 
-export interface TerminalSpawnOptions { cwd: string; sessionPath?: string; shell?: string; command?: string; cols?: number; rows?: number }
-export interface TerminalDataEvent { terminalId: string; data: string }
+export interface TerminalSpawnOptions { cwd: string; sessionPath?: string; clientId?: string; shell?: string; command?: string; cols?: number; rows?: number }
+export interface TerminalDataEvent { terminalId: string; clientId?: string; data: string }
 export interface TerminalExitEvent { terminalId: string; exitCode: number; signal?: number }
 export interface TerminalSelectionContext { tabId: string; label: string; text: string; truncated: boolean }
 export interface TerminalPromptContext extends TerminalSelectionContext { cwd?: string }
@@ -742,6 +746,7 @@ export interface DesktopApi {
   }
   sessions: {
     list(projectPath?: string, includeArchived?: boolean, harness?: HarnessId, force?: boolean): Promise<SessionRecord[]>
+    sync(revision?: number, harness?: HarnessId): Promise<SessionCatalogUpdate>
     read(filePath: string): Promise<TranscriptMessage[]>
     rename(filePath: string, title: string): Promise<boolean>
     archive(filePath: string, archived?: boolean): Promise<boolean>
@@ -773,6 +778,7 @@ export interface DesktopApi {
     create(options: TerminalSpawnOptions): Promise<{ terminalId: string; shell: string }>
     bindSession(terminalId: string, sessionPath: string): Promise<boolean>
     input(terminalId: string, data: string): void
+    acknowledge(terminalId: string, consumedChars: number): void
     resize(terminalId: string, cols: number, rows: number): void
     setActiveContext(terminalId: string, context: TerminalActiveContext): void
     clearActiveContext(terminalId: string): void

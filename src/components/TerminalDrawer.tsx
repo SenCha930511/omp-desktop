@@ -252,7 +252,8 @@ const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(function 
     let offData: (() => void) | undefined
     let offExit: (() => void) | undefined
     let cancelled = false
-    const bufferedData = new Map<string, string>()
+    const clientId = crypto.randomUUID()
+    const bufferedData = new Map<string, string[]>()
     const bufferedExits = new Map<string, number>()
     let exitAnnounced = false
     const announceExit = (exitCode: number) => {
@@ -278,10 +279,15 @@ const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(function 
     if (window.desktop && cwd) {
       // Subscribe before create resolves: a fast shell can emit its prompt or exit before the IPC reply.
       offData = window.desktop.terminal.onData((event) => {
-        if (event.terminalId === terminalIdRef.current) terminal.write(event.data, scheduleActiveContext)
-        else if (!terminalIdRef.current) {
-          const next = `${bufferedData.get(event.terminalId) ?? ''}${event.data}`
-          bufferedData.set(event.terminalId, next.slice(-256 * 1024))
+        if (event.terminalId === terminalIdRef.current) terminal.write(event.data, () => {
+          if (cancelled) return
+          window.desktop?.terminal.acknowledge(event.terminalId, event.data.length)
+          scheduleActiveContext()
+        })
+        else if (!terminalIdRef.current && event.clientId === clientId) {
+          const chunks = bufferedData.get(event.terminalId) ?? []
+          chunks.push(event.data)
+          bufferedData.set(event.terminalId, chunks)
         }
       })
       offExit = window.desktop.terminal.onExit((event) => {
@@ -289,7 +295,7 @@ const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(function 
         else if (!terminalIdRef.current) bufferedExits.set(event.terminalId, event.exitCode)
       })
       window.desktop.terminal
-        .create({ cwd, shell, command, cols: terminal.cols, rows: terminal.rows })
+        .create({ cwd, shell, command, clientId, cols: terminal.cols, rows: terminal.rows })
         .then(({ terminalId, shell: actualShell }) => {
           if (cancelled) {
             void window.desktop.terminal.kill(terminalId)
@@ -297,13 +303,14 @@ const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(function 
           }
           terminalIdRef.current = terminalId
           onStateChangeRef.current({ shellName: actualShell.split('/').at(-1) ?? actualShell, connected: true })
-          const initialOutput = bufferedData.get(terminalId)
+          const initialOutput = bufferedData.get(terminalId)?.join('')
           const bindCurrentSession = async () => {
             if (sessionPathRef.current) await window.desktop.terminal.bindSession(terminalId, sessionPathRef.current)
             scheduleActiveContext()
           }
           if (initialOutput)
             terminal.write(initialOutput, () => {
+              if (!cancelled && initialOutput.length) window.desktop?.terminal.acknowledge(terminalId, initialOutput.length)
               void bindCurrentSession().catch(() => undefined)
             })
           else void bindCurrentSession().catch(() => undefined)

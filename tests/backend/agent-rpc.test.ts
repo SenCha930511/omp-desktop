@@ -760,6 +760,21 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     expect(ended).toEqual([{ RUNTIME_CLAIM: '1' }])
   })
 
+  it('reclaims excess children after concurrent turns become idle while keeping one warm', async () => {
+    const fake = fakeAgent("{ id: command.id, type: 'response', command: 'prompt', success: true }",
+      "{ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'retained', isStreaming: stateCalls++ === 0 } }")
+    const manager = new AgentRpcManager(fake.executable, async (cwd) => cwd, async (path) => path,
+      undefined, undefined, OMP_RPC_ADAPTER, undefined, { idleMs: 100, warmCount: 1 })
+    managers.push(manager)
+    const first = await manager.start({ cwd: fake.cwd })
+    const second = await manager.start({ cwd: fake.cwd })
+    expect(manager.list()).toHaveLength(2)
+    await manager.command(first.runtimeId, { type: 'get_state' })
+    await manager.command(second.runtimeId, { type: 'get_state' })
+    await waitUntil(() => manager.list().length === 1)
+    expect(manager.list()[0].runtimeId).toBe(second.runtimeId)
+  })
+
   it('distinguishes interactive and unattended runtime environments', async () => {
     const fake = fakeAgent("{ id: command.id, type: 'response', command: 'prompt', success: true }")
     const manager = managerFor(fake.executable)

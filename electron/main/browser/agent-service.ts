@@ -1,5 +1,6 @@
 import type { WebContents } from 'electron'
 import { randomBytes } from 'node:crypto'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import type { AgentBrowserActivityEvent, AgentBrowserPointerEvent, AgentBrowserState, AgentBrowserTabRecord } from '../../../src/types/api'
 import { canonicalSessionPath } from '../session-paths'
 import { requireRecord, requireString } from '../validation'
@@ -98,6 +99,8 @@ export interface AgentBrowserServiceOptions {
   loadTimeoutMs?: number
   /** Deadline for a single guest call; also bounds the per-tab queue release. */
   actionTimeoutMs?: number
+  /** Grace after automation settles before restoring host-window background throttling. */
+  backgroundGraceMs?: number
 }
 
 function isAllowedTabUrl(raw: string): boolean {
@@ -143,6 +146,10 @@ export class AgentBrowserService {
   private readonly loadTimeoutMs: number
   private readonly actionTimeoutMs: number
   private closed = false
+  private readonly activityScope = new AsyncLocalStorage<() => void>()
+  private activeCalls = 0
+  private backgroundTimer: NodeJS.Timeout | null = null
+  private backgroundAllowed = true
 
   constructor(private readonly options: AgentBrowserServiceOptions) {
     this.attachTimeoutMs = options.attachTimeoutMs ?? ATTACH_TIMEOUT_MS
@@ -153,6 +160,9 @@ export class AgentBrowserService {
   // ---- lifecycle -----------------------------------------------------------
 
   beginShutdown(): void {
+    if (this.backgroundTimer) clearTimeout(this.backgroundTimer)
+    this.backgroundTimer = null
+    this.setBackgroundAllowed(true)
     this.closed = true
     for (const tab of this.tabs.values()) this.releaseTab(tab)
     if (this.previewTab) this.revokeTab(this.previewTab)
@@ -168,6 +178,7 @@ export class AgentBrowserService {
   approveGuest(contents: WebContents): void {
     if (this.closed) return
     this.approvedGuests.add(contents.id)
+    contents.setBackgroundThrottling(this.backgroundAllowed)
     contents.once('destroyed', () => {
       this.approvedGuests.delete(contents.id)
       if (this.previewTab?.webContentsId === contents.id) {
@@ -221,6 +232,7 @@ export class AgentBrowserService {
     const action = requireString(actionValue, 'action', { min: 1, max: 16, trim: true })
     const guest = tab.webContentsId === null ? undefined : this.options.getGuest(tab.webContentsId)
     if (!guest || guest.isDestroyed()) return false
+    this.extendBackgroundActivity()
     if (action === 'back') { if (guest.canGoBack()) guest.goBack() }
     else if (action === 'forward') { if (guest.canGoForward()) guest.goForward() }
     else if (action === 'reload') guest.reload()
@@ -246,7 +258,7 @@ export class AgentBrowserService {
     if (tab.unbindGuest) this.detachTab(tab, false)
     tab.webContentsId = webContentsId
     this.bindGuestEvents(tab, guest)
-    guest.setBackgroundThrottling(false)
+    guest.setBackgroundThrottling(this.backgroundAllowed)
     // A recreated webview (renderer reload) starts at about:blank; restore the
     // tab's last known location so the registry stays authoritative.
     if (tab.url && tab.url !== 'about:blank' && guest.getURL() !== tab.url) {
@@ -374,9 +386,11 @@ export class AgentBrowserService {
     this.emitActivity(tab)
     this.push()
     try {
-      const guest = await this.waitForGuest(tab)
-      if (url !== 'about:blank') await this.loadAndSettle(guest, url)
-      return { tabId: tab.tabId, ...await this.describe(tab, guest) }
+      return await this.withActivity(async () => {
+        const guest = await this.waitForGuest(tab)
+        if (url !== 'about:blank') await this.loadAndSettle(guest, url)
+        return { tabId: tab.tabId, ...await this.describe(tab, guest) }
+      }, this.attachTimeoutMs + this.loadTimeoutMs + this.actionTimeoutMs)
     } catch (error) {
       this.removeTab(tab)
       throw error
@@ -449,12 +463,12 @@ export class AgentBrowserService {
     return this.withTab(sessionKey, params, async (tab, guest) => {
       const info = await this.pageInfo(guest)
       // Show the agent its own pointer in the capture so it can calibrate.
-      if (tab.pointer) await guardGuestCall(guest, guest.executeJavaScript(cursorMarkerScript(tab.pointer.x, tab.pointer.y)), this.actionTimeoutMs).catch(() => undefined)
+      if (tab.pointer) await this.guardGuest(guest, guest.executeJavaScript(cursorMarkerScript(tab.pointer.x, tab.pointer.y)), this.actionTimeoutMs).catch(() => undefined)
       let image: Electron.NativeImage
       try {
-        image = await guardGuestCall(guest, guest.capturePage(undefined, { stayHidden: true, stayAwake: true }), this.actionTimeoutMs)
+        image = await this.guardGuest(guest, guest.capturePage(undefined, { stayHidden: true, stayAwake: true }), this.actionTimeoutMs)
       } finally {
-        if (tab.pointer) void guardGuestCall(guest, guest.executeJavaScript(removeCursorMarkerScript()), this.actionTimeoutMs).catch(() => undefined)
+        if (tab.pointer) void this.guardGuest(guest, guest.executeJavaScript(removeCursorMarkerScript()), this.actionTimeoutMs).catch(() => undefined)
       }
       const size = image.getSize()
       if (!size.width || !size.height) throw new Error('The browser tab has no visible content to capture yet')
@@ -644,7 +658,7 @@ export class AgentBrowserService {
     this.emitActivity(tab)
     const generation = tab.generation
     // Serialize actions per tab so concurrent tool calls cannot interleave input events.
-    const run = tab.serial.tail.then(async () => {
+    const run = tab.serial.tail.then(() => this.withActivity(async () => {
       this.assertActionAuthority(tab, sessionKey, generation)
       const guest = await this.waitForGuest(tab)
       this.assertActionAuthority(tab, sessionKey, generation)
@@ -652,7 +666,7 @@ export class AgentBrowserService {
       // Revocation after this point does not attempt to cancel an operation
       // already using Electron's guest APIs; it may finish or fail naturally.
       return action(tab, guest)
-    })
+    }))
     tab.serial.tail = releaseQueueEventually(run, this.actionTimeoutMs + QUEUE_RELEASE_GRACE_MS)
     return run
   }
@@ -664,7 +678,57 @@ export class AgentBrowserService {
   }
 
   private async runPageScript(guest: WebContents, script: string, label: string): Promise<Record<string, unknown>> {
-    return parseScriptJson(await guardGuestCall(guest, guest.executeJavaScript(script), this.actionTimeoutMs), label)
+    return parseScriptJson(await this.guardGuest(guest, guest.executeJavaScript(script), this.actionTimeoutMs), label)
+  }
+
+  /** Electron applies an unthrottled guest to its whole host window, so one owner manages all leases. */
+  private setBackgroundAllowed(allowed: boolean): void {
+    if (this.backgroundAllowed === allowed) return
+    this.backgroundAllowed = allowed
+    for (const id of this.approvedGuests) {
+      const guest = this.options.getGuest(id)
+      if (guest && !guest.isDestroyed()) guest.setBackgroundThrottling(allowed)
+    }
+  }
+
+  private extendBackgroundActivity(): void {
+    if (this.closed) return
+    this.setBackgroundAllowed(false)
+    if (this.backgroundTimer) clearTimeout(this.backgroundTimer)
+    this.backgroundTimer = null
+    if (this.activeCalls) return
+    this.backgroundTimer = setTimeout(() => {
+      this.backgroundTimer = null
+      if (!this.closed && !this.activeCalls) this.setBackgroundAllowed(true)
+    }, this.options.backgroundGraceMs ?? 5_000)
+    this.backgroundTimer.unref()
+  }
+
+  private async guardGuest<T>(guest: WebContents, call: Promise<T>, timeoutMs: number): Promise<T> {
+    const renew = this.activityScope.getStore()
+    renew?.()
+    try { return await guardGuestCall(guest, call, timeoutMs) } finally { renew?.() }
+  }
+
+  private async withActivity<T>(action: () => Promise<T>, deadlineMs = this.actionTimeoutMs + QUEUE_RELEASE_GRACE_MS): Promise<T> {
+    this.activeCalls += 1
+    this.extendBackgroundActivity()
+    let released = false
+    const release = () => {
+      if (released) return
+      released = true
+      this.activeCalls -= 1
+      this.extendBackgroundActivity()
+    }
+    let timer: NodeJS.Timeout | undefined
+    const renew = () => {
+      if (released) return
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(release, deadlineMs)
+      timer.unref()
+    }
+    renew()
+    try { return await this.activityScope.run(renew, action) } finally { if (timer) clearTimeout(timer); release() }
   }
   private emitActivity(tab: TabState): void {
     const event: AgentBrowserActivityEvent = { sessionFile: tab.sessionKey, tabId: tab.tabId }
@@ -713,10 +777,15 @@ export class AgentBrowserService {
     guest.on('did-navigate', sync)
     guest.on('did-navigate-in-page', sync)
     guest.on('page-title-updated', sync)
+    const activity = () => this.extendBackgroundActivity()
+    guest.on('did-start-loading', activity)
+    guest.on('did-stop-loading', activity)
     tab.unbindGuest = () => {
       guest.removeListener('did-navigate', sync)
       guest.removeListener('did-navigate-in-page', sync)
       guest.removeListener('page-title-updated', sync)
+      guest.removeListener('did-start-loading', activity)
+      guest.removeListener('did-stop-loading', activity)
     }
   }
 

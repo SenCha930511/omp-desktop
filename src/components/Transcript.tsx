@@ -1,5 +1,6 @@
 import { ChevronDown, LoaderCircle } from 'lucide-react'
 import { useMemo } from 'react'
+import { createAssistantTurnCoalescer } from '@/lib/assistant-turns'
 import { HARNESS_SHORT_NAMES } from '@/lib/harness'
 import { useI18n } from '@/lib/i18n'
 import type { GitStatus, HarnessId, TranscriptMessage } from '@/types/api'
@@ -16,26 +17,7 @@ import { failedTurn, TurnRecovery } from './TurnRecovery'
 export { tokenizeSyntax } from './transcript/syntax'
 export { classifyTool, formatWorkedDuration } from './transcript/timeline'
 
-export function coalesceAssistantTurns(messages: TranscriptMessage[]): TranscriptMessage[] {
-  let changed = false
-  const grouped: TranscriptMessage[] = []
-  for (const message of messages) {
-    const previous = grouped.at(-1)
-    if (message.role !== 'assistant' || previous?.role !== 'assistant') {
-      grouped.push(message)
-      continue
-    }
-    changed = true
-    const streaming = Boolean(previous.streaming || message.streaming)
-    grouped[grouped.length - 1] = {
-      ...previous,
-      completedAt: streaming ? undefined : (message.completedAt ?? previous.completedAt),
-      streaming,
-      parts: [...previous.parts, ...message.parts],
-    }
-  }
-  return changed ? grouped : messages
-}
+export { coalesceAssistantTurns } from '@/lib/assistant-turns'
 
 interface TranscriptProps {
   messages: TranscriptMessage[]
@@ -108,7 +90,8 @@ export function Transcript({
   onRestorePrompt,
 }: TranscriptProps) {
   const { t } = useI18n()
-  const groupedMessages = useMemo(() => coalesceAssistantTurns(messages), [messages])
+  const coalesce = useMemo(createAssistantTurnCoalescer, [])
+  const groupedMessages = useMemo(() => coalesce(messages), [coalesce, messages])
   const { announcement, awayFromBottom, hiddenCount, hiddenAfter, scrollRef, scrollToBottom, showEarlier, showNewer, revealIndex, updatePinnedState, visibleMessages } = useTranscriptScroll(groupedMessages, visible, followKey)
   const search = useTranscriptSearch(groupedMessages, scrollRef, revealIndex, visible)
   const recovery = useMemo(() => failedTurn(messages), [messages])

@@ -2,8 +2,9 @@ import { createReadStream, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { StrictJsonlDecoder, strictJsonLines } from '../../electron/main/jsonl'
+import { JsonlLineBuffer } from '../../electron/main/jsonl-line-buffer'
 
 const dirs: string[] = []
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }) })
@@ -13,6 +14,39 @@ async function collect(stream: Readable, maxUnframedBytes?: number): Promise<str
   for await (const line of strictJsonLines(stream, maxUnframedBytes)) lines.push(line)
   return lines
 }
+
+describe('shared incremental line buffer', () => {
+  it('copies a long fragmented record only once at assembly', () => {
+    const chunk = Buffer.alloc(64 * 1024, 120)
+    const buffer = new JsonlLineBuffer()
+    const concat = vi.spyOn(Buffer, 'concat')
+    try {
+      for (let index = 0; index < 128; index += 1) expect([...buffer.push(chunk)]).toEqual([])
+      expect(concat).not.toHaveBeenCalled()
+      expect([...buffer.push('\n')][0]).toHaveLength(8 * 1024 * 1024)
+      expect(concat).toHaveBeenCalledTimes(1)
+      expect(buffer.byteLength).toBe(0)
+    } finally { concat.mockRestore() }
+  })
+
+  it('can resume independent speculative snapshots, including split UTF-8', () => {
+    const buffer = new JsonlLineBuffer()
+    const euro = Buffer.from('€')
+    expect([...buffer.push(euro.subarray(0, 1))]).toEqual([])
+    expect(buffer.snapshot()).toBe('�')
+    const resumed = buffer.clone()
+    expect([...resumed.push(Buffer.concat([euro.subarray(1), Buffer.from('\r\n')]))]).toEqual(['€'])
+    expect(buffer.byteLength).toBe(1)
+    expect([...buffer.push('x\n')]).toEqual(['�x'])
+  })
+
+  it('accepts CRLF at the byte limit even when the delimiter is split', () => {
+    const buffer = new JsonlLineBuffer(3)
+    expect([...buffer.push('abc\r')]).toEqual([])
+    expect([...buffer.push('\n')]).toEqual(['abc'])
+    expect(() => [...buffer.push('abcd')]).toThrow(/maximum frame size/)
+  })
+})
 
 describe('StrictJsonlDecoder', () => {
   it('frames only on LF across UTF-8 chunks', () => {

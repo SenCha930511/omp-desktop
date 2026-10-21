@@ -1,3 +1,4 @@
+import { IPC_CHANNELS } from '../../src/types/ipc'
 import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { basename, isAbsolute, join } from 'node:path'
 import { execFile } from 'node:child_process'
@@ -18,11 +19,14 @@ interface OwnedTerminal {
   cwd: string
   shell: string
   sessionPath?: string
+  clientId?: string
   activeContext?: TerminalActiveContext
   outputWindowStartedAt: number
   outputWindowBytes: number
   pendingOutput: string
   pendingOutputBytes: number
+  unacknowledgedChars: number
+  paused: boolean
   flushTimer?: NodeJS.Timeout
   terminating: boolean
   exited: boolean
@@ -53,6 +57,8 @@ function systemShells(): Set<string> {
 const MAX_TERMINAL_OUTPUT_BYTES_PER_SECOND = 16 * 1024 * 1024
 const MAX_TOTAL_TERMINAL_OUTPUT_BYTES_PER_SECOND = 32 * 1024 * 1024
 const MAX_TERMINAL_IPC_CHUNK_BYTES = 1024 * 1024
+export const TERMINAL_OUTPUT_HIGH_WATER = 256 * 1024
+const TERMINAL_OUTPUT_LOW_WATER = 64 * 1024
 const MAX_TERMINAL_CONTEXT_CHARS = 48 * 1024
 
 const execFileAsync = promisify(execFile)
@@ -137,7 +143,8 @@ export class TerminalService {
 
   async create(owner: WebContents, raw: unknown): Promise<{ terminalId: string; shell: string }> {
     const options = requireRecord(raw, 'terminal options')
-    rejectUnknownKeys(options, ['cwd', 'sessionPath', 'shell', 'command', 'cols', 'rows'], 'terminal options')
+    rejectUnknownKeys(options, ['cwd', 'sessionPath', 'clientId', 'shell', 'command', 'cols', 'rows'], 'terminal options')
+    const clientId = options.clientId === undefined ? undefined : requireString(options.clientId, 'clientId', { min: 1, max: 128 })
     const cwd = await this.authorizeCwd(requireString(options.cwd, 'cwd', { min: 1, max: 4096 }))
     const sessionPath = options.sessionPath === undefined
       ? undefined
@@ -161,7 +168,7 @@ export class TerminalService {
       throw error
     }
     if (owner.isDestroyed()) { try { terminal.kill() } catch { /* owner closed during spawn */ }; workspaceUse.release(); throw new Error('Terminal owner was closed') }
-    const owned: OwnedTerminal = { terminal, owner, ownerId: owner.id, cwd, shell, sessionPath, outputWindowStartedAt: Date.now(), outputWindowBytes: 0, pendingOutput: '', pendingOutputBytes: 0, terminating: false, exited: false, workspaceUse }
+    const owned: OwnedTerminal = { terminal, owner, ownerId: owner.id, cwd, shell, sessionPath, clientId, outputWindowStartedAt: Date.now(), outputWindowBytes: 0, pendingOutput: '', pendingOutputBytes: 0, unacknowledgedChars: 0, paused: false, terminating: false, exited: false, workspaceUse }
     this.terminals.set(terminalId, owned)
     terminal.onData((data) => this.forwardOutput(terminalId, owned, data))
     terminal.onExit(({ exitCode, signal }) => {
@@ -171,7 +178,7 @@ export class TerminalService {
       this.removeActive(terminalId, owned)
       if (owned.flushTimer) clearTimeout(owned.flushTimer)
       this.flushOutput(terminalId, owned)
-      if (!owner.isDestroyed()) { try { owner.send('terminal:exit', { terminalId, exitCode, signal } satisfies TerminalExitEvent) } catch { /* renderer exited */ } }
+      if (!owner.isDestroyed()) { try { owner.send(IPC_CHANNELS.terminal.onExit, { terminalId, exitCode, signal } satisfies TerminalExitEvent) } catch { /* renderer exited */ } }
     })
     return { terminalId, shell }
   }
@@ -180,6 +187,20 @@ export class TerminalService {
     const terminal = this.owned(owner, idValue)
     const data = requireString(dataValue, 'terminal data', { max: 64 * 1024 })
     terminal.terminal.write(data)
+  }
+
+  /** xterm acknowledges UTF-16 units only after its write callback; sender ownership is checked again here. */
+  acknowledge(owner: WebContents, idValue: unknown, consumedValue: unknown): void {
+    const id = requireString(idValue, 'terminalId', { min: 1, max: 128 })
+    if (!this.terminals.has(id)) return
+    const owned = this.owned(owner, id)
+    const consumed = requireInteger(consumedValue, 'consumedChars', 1, Number.MAX_SAFE_INTEGER)
+    if (consumed > owned.unacknowledgedChars) throw new TypeError('Terminal acknowledgement exceeds outstanding output')
+    owned.unacknowledgedChars -= consumed
+    if (owned.paused && owned.unacknowledgedChars + owned.pendingOutput.length <= TERMINAL_OUTPUT_LOW_WATER) {
+      owned.paused = false
+      owned.terminal.resume()
+    }
   }
 
   async bindSession(owner: WebContents, idValue: unknown, sessionPathValue: unknown): Promise<boolean> {
@@ -270,13 +291,23 @@ export class TerminalService {
     }
     if (owned.pendingOutputBytes + bytes > MAX_TERMINAL_IPC_CHUNK_BYTES) this.flushOutput(id, owned)
     owned.pendingOutput += data; owned.pendingOutputBytes += bytes
+    this.pauseIfBacklogged(owned)
     if (!owned.flushTimer) owned.flushTimer = setTimeout(() => { owned.flushTimer = undefined; this.flushOutput(id, owned) }, 16)
   }
 
   private flushOutput(id: string, owned: OwnedTerminal): void {
     if (!owned.pendingOutput || owned.owner.isDestroyed()) { owned.pendingOutput = ''; owned.pendingOutputBytes = 0; return }
     const data = owned.pendingOutput; owned.pendingOutput = ''; owned.pendingOutputBytes = 0
-    try { owned.owner.send('terminal:data', { terminalId: id, data } satisfies TerminalDataEvent) } catch { /* renderer exited */ }
+    owned.unacknowledgedChars += data.length
+    this.pauseIfBacklogged(owned)
+    try { owned.owner.send(IPC_CHANNELS.terminal.onData, { terminalId: id, clientId: owned.clientId, data } satisfies TerminalDataEvent) } catch { /* renderer exited */ }
+  }
+
+  private pauseIfBacklogged(owned: OwnedTerminal): void {
+    if (!owned.paused && !owned.exited && owned.unacknowledgedChars + owned.pendingOutput.length >= TERMINAL_OUTPUT_HIGH_WATER) {
+      owned.paused = true
+      owned.terminal.pause()
+    }
   }
 
   private terminate(id: string, owned: OwnedTerminal): Promise<void> {

@@ -51,7 +51,7 @@ export function useTranscriptSearch(messages: TranscriptMessage[], root: RefObje
   const [index, setIndex] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
   const previousFocus = useRef<HTMLElement | null>(null)
-  const results = useMemo(() => searchTranscript(messages, query, scope), [messages, query, scope])
+  const results = useMemo(() => open && active ? searchTranscript(messages, query, scope) : [], [messages, query, scope, open, active])
   const matchId = open && query.trim() ? results[index % Math.max(1, results.length)] : undefined
   const revealRef = useRef(revealIndex)
   revealRef.current = revealIndex

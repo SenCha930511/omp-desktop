@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { WebContents } from 'electron'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { TerminalService } from '../../electron/main/terminal'
+import { TerminalService, TERMINAL_OUTPUT_HIGH_WATER } from '../../electron/main/terminal'
 
 const dirs: string[] = []
 const testShell = ['/bin/zsh', '/bin/bash', '/bin/sh'].find((shell) => {
@@ -17,6 +17,39 @@ const waitFor = async (predicate: () => boolean, timeout = 4_000) => {
 }
 
 describe('TerminalService', () => {
+  it('pauses a real producer until its renderer consumes output, then preserves the complete stream', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-pty-flow-')); dirs.push(cwd)
+    let consuming = false
+    let pending = 0
+    let exited = false
+    let output = ''
+    const service = new TerminalService(async () => cwd, () => testShell)
+    const owner = {
+      id: 404, isDestroyed: () => false,
+      send(channel: string, event: { terminalId: string; data?: string }) {
+        if (channel === 'terminal:exit') { exited = true; return }
+        if (!event.data) return
+        output += event.data
+        if (consuming) queueMicrotask(() => service.acknowledge(owner as unknown as WebContents, event.terminalId, event.data!.length))
+        else pending += event.data.length
+      },
+    } as unknown as WebContents
+    const executable = process.execPath.replaceAll("'", "'\\''")
+    const created = await service.create(owner, { cwd, shell: testShell,
+      command: `'${executable}' -e 'process.stdout.write("FLOW_BEGIN" + "x".repeat(2 * 1024 * 1024) + "FLOW_END")'`, cols: 80, rows: 24 })
+    try {
+      await waitFor(() => pending >= TERMINAL_OUTPUT_HIGH_WATER)
+      expect(exited).toBe(false)
+      expect(pending).toBeLessThanOrEqual(TERMINAL_OUTPUT_HIGH_WATER + 1024 * 1024)
+      expect(() => service.acknowledge({ id: 405 } as WebContents, created.terminalId, 1)).toThrow()
+      expect(() => service.acknowledge(owner, created.terminalId, pending + 1)).toThrow(/exceeds/)
+      consuming = true
+      service.acknowledge(owner, created.terminalId, pending)
+      await waitFor(() => exited)
+      const body = output.slice(output.indexOf('FLOW_BEGIN') + 'FLOW_BEGIN'.length, output.indexOf('FLOW_END'))
+      expect(body).toBe('x'.repeat(2 * 1024 * 1024))
+    } finally { await service.kill(owner, created.terminalId) }
+  })
   it('holds repository use until the terminal exits', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'gooeypi-terminal-use-')); dirs.push(cwd)
     const owner = { id: 39, isDestroyed: () => false, send: vi.fn() } as unknown as WebContents

@@ -6,7 +6,7 @@ describe('renderer bundle boundaries', () => {
   const terminalStyles = readFileSync('src/styles/terminal.css', 'utf8')
 
   it('keeps Transcript and its Markdown graph out of the initial App module graph', () => {
-    expect(appSource).toContain("const Transcript = lazy(() => import('@/components/Transcript')")
+    expect(appSource).toContain("const Transcript = lazy(() => import('@/components/ConversationTranscript')")
     expect(appSource).not.toContain("import { Transcript } from '@/components/Transcript'")
     expect(appSource).toContain(`<Suspense fallback={<LoadingPanel label={t('app.panel.conversation')} />}>`)
   })
