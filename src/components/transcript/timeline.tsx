@@ -354,7 +354,7 @@ export function WorkTimeline({ parts, showReasoning, showTools, streaming = fals
           if (!/[\p{L}\p{N}]/u.test(part.text)) return null
           return (
             <div className="activity-line activity-line--note" key={key}>
-              <MarkdownText text={part.text} />
+              <MarkdownText text={part.text} streaming={streaming} />
             </div>
           )
         }

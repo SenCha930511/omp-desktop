@@ -18,6 +18,10 @@ const session: SessionRecord = {
 type Workspace = ReturnType<typeof useWorkspaceRuntime>
 let latest: Workspace
 
+// A module-level identity keeps startTranscriptRead's useCallback stable across
+// renders; an inline arrow would re-fire the transcript effect every render.
+const stableReportError = () => undefined
+
 function Probe({
   bridge,
   harness = 'omp',
@@ -38,7 +42,7 @@ function Probe({
     initialSession,
     sessions,
     initialMessages: [],
-    reportError: () => undefined,
+    reportError: stableReportError,
   })
   return null
 }
@@ -229,5 +233,90 @@ describe('prompt admission versus background transcript reads', () => {
 
     expect(latest.messages.map((message) => message.id)).toEqual(['record-1'])
     expect(latest.loadingSession).toBe(false)
+  })
+})
+
+describe('draft session adoption', () => {
+  it('adopts the started session without bumping the generation or touching the transcript', () => {
+    act(() => { root.render(createElement(Probe, { bridge: null })) })
+    act(() => { latest.activateWorkspace(project, undefined) })
+    expect(latest.activeSessionId).toBeUndefined()
+    const generation = latest.workspaceGeneration
+    act(() => { latest.setMessages([{ id: 'user-draft', role: 'user', timestamp: 1, parts: [{ type: 'text', text: 'first draft prompt' }] }]) })
+
+    act(() => { latest.adoptSessionId(session) })
+
+    expect(latest.activeSessionId).toBe('session')
+    expect(latest.workspaceRef.current.session?.id).toBe('session')
+    expect(latest.workspaceRef.current.sessionFile).toBe(session.filePath)
+    expect(latest.workspaceRef.current.cwd).toBe('/project')
+    expect(latest.workspaceGeneration).toBe(generation)
+    expect(latest.messages.map((message) => message.id)).toEqual(['user-draft'])
+  })
+
+  it('skips the cold transcript read when the in-flight turn owns the adopted session', async () => {
+    // Never-resolve so a rogue read cannot settle and churn the effect loop.
+    const read = vi.fn(() => new Promise<TranscriptMessage[]>(() => undefined))
+    const bridge = {
+      sessions: { read },
+      agent: { list: vi.fn(async () => []) },
+    } as unknown as DesktopApi
+
+    await act(async () => { root.render(createElement(Probe, { bridge })) })
+    await flush()
+    // Enter the draft state through the public action (drafts have no session).
+    await act(async () => { latest.activateWorkspace(project, undefined) })
+    await flush()
+
+    await act(async () => {
+      latest.setMessages([{ id: 'user-draft', role: 'user', timestamp: 1, parts: [{ type: 'text', text: 'first draft prompt' }] }])
+    })
+
+    // sendPrompt adopts and attaches in the same batch; the transcript effect
+    // must see a locally-owned session and stay off the disk.
+    read.mockClear()
+    const generation = latest.workspaceGeneration
+    await act(async () => {
+      latest.adoptSessionId(session)
+      latest.attachRuntime({ runtimeId: 'runtime-1', harness: 'omp', sessionId: session.id, sessionFile: session.filePath, cwd: '/project', isStreaming: true }, generation)
+    })
+    await flush()
+
+    expect(read).not.toHaveBeenCalled()
+    expect(latest.messages.map((message) => message.id)).toEqual(['user-draft'])
+  })
+
+  it('keeps the in-flight transcript when the adopted row flaps in the catalog', async () => {
+    const read = vi.fn(() => new Promise<TranscriptMessage[]>(() => undefined))
+    const bridge = {
+      sessions: { read },
+      agent: { list: vi.fn(async () => []) },
+    } as unknown as DesktopApi
+
+    await act(async () => { root.render(createElement(Probe, { bridge, sessions: [] })) })
+    await flush()
+    await act(async () => { latest.activateWorkspace(project, undefined) })
+    await flush()
+
+    await act(async () => {
+      latest.setMessages([{ id: 'user-draft', role: 'user', timestamp: 1, parts: [{ type: 'text', text: 'first draft prompt' }] }])
+    })
+
+    const generation = latest.workspaceGeneration
+    await act(async () => {
+      latest.adoptSessionId(session)
+      latest.attachRuntime({ runtimeId: 'runtime-1', harness: 'omp', sessionId: session.id, sessionFile: session.filePath, cwd: '/project', isStreaming: true }, generation)
+    })
+    await flush()
+
+    // The catalog catches up …
+    await act(async () => { root.render(createElement(Probe, { bridge, sessions: [session] })) })
+    await flush()
+    // … then momentarily drops the row on a stale refresh: no blanking.
+    await act(async () => { root.render(createElement(Probe, { bridge, sessions: [] })) })
+    await flush()
+
+    expect(read).not.toHaveBeenCalled()
+    expect(latest.messages.map((message) => message.id)).toEqual(['user-draft'])
   })
 })

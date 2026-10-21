@@ -217,6 +217,31 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     if (!bridge) workspace.setMessages([])
     setView('session'); setPaletteOpen(false)
   }
+  // The draft placeholder row's own activation: unlike newSession it never
+  // clears the composer draft, and re-activating the same draft is a no-op so
+  // the composer is not remounted under the click.
+  const openDraftSession = (project: ProjectRecord) => {
+    const { layout, settingsState, workspace, setView } = getDeps()
+    if (layout.compactLayout) { layout.setSmallestSidebarAllowed(false); settingsState.setSidebarOpen(false) }
+    const current = workspace.workspaceRef.current
+    if (current.project?.id !== project.id || current.session) workspace.activateWorkspace(project)
+    setView('session')
+  }
+  // Trashing the draft placeholder discards it without a confirmation or any
+  // backend call: fall back to the project's newest unarchived session, or
+  // stay on a fresh draft when the project has none.
+  const discardDraftSession = async (project: ProjectRecord) => {
+    const { sessions, workspace, setSessions, setView, clearSessionAttention, reportError } = getDeps()
+    const session = sessions.find((candidate) => !candidate.archived && projectContainsPath(project, candidate.projectPath))
+    if (session) {
+      clearSessionAttention(session)
+      setSessions((items) => items.map((item) => item.id === session.id ? { ...item, unread: false } : item))
+    }
+    const generation = workspace.activateWorkspace(project, session)
+    setView('session')
+    try { await workspace.reconcileRuntime(generation) }
+    catch (error) { if (workspace.workspaceRef.current.generation === generation) reportError(error) }
+  }
   const navigate = (nextView: WorkspaceView) => {
     const { layout, settingsState, setView, setPaletteOpen } = getDeps()
     if (layout.compactLayout) { layout.setSmallestSidebarAllowed(false); settingsState.setSidebarOpen(false) }
@@ -490,6 +515,10 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
             await bridge.agent.stop(activeRuntime.runtimeId).catch(() => false)
             return
           }
+          // A prompt that started from the draft placeholder adopts the
+          // session it just created, replacing the placeholder with the real
+          // row without touching the in-flight turn.
+          if (!admitted.sessionFile && indexedSession) workspace.adoptSessionId(indexedSession)
           startedSessionNeedsTitle = !indexedSession || indexedSession.title === 'Untitled session'
         }
         if (activeRuntime.cwd !== selected.cwd || (selected.sessionFile && activeRuntime.sessionFile !== selected.sessionFile)) {
@@ -719,7 +748,7 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
 
   return {
     grantProject, persistPanel, toggleSidebar, toggleInspector, toggleTerminal,
-    selectProject, selectSession, newSession, navigate, renameSession, setSessionArchived, deleteSession,
+    selectProject, selectSession, newSession, openDraftSession, discardDraftSession, navigate, renameSession, setSessionArchived, deleteSession,
     addProject, relocateProject, removeProject, togglePinProject, setProjectSortMode, sendPrompt, stopRuntime, installSkill, installExtension, connectMcp, setMcpEnabled, mutateCapability,
     createSchedule, updateSchedule, mutateSchedule, openScheduledSession,
     openBrowser, openChanges,

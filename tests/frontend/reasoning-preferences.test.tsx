@@ -3,10 +3,32 @@ import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { expect, it, vi } from 'vitest'
 import { ReasoningDisclosure, ReasoningExpandedContext } from '../../src/components/ReasoningDisclosure'
+import { SearchRevealContext } from '../../src/components/TranscriptSearch'
 import { type ProviderCatalog, useProviderCatalog } from '../../src/hooks/useProviderCatalog'
 import type { DesktopApi, RuntimeInfo } from '../../src/types/api'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
+
+it('mounts expensive reasoning only when expanded or revealed by search', () => {
+  const host = document.createElement('div')
+  const root = createRoot(host)
+  const body = vi.fn(() => <p>Expensive reasoning</p>)
+  const render = (reveal: boolean) => root.render(<SearchRevealContext.Provider value={reveal}><ReasoningDisclosure>{bodyElement()}</ReasoningDisclosure></SearchRevealContext.Provider>)
+  function bodyElement() { const Body = body; return <Body /> }
+  try {
+    act(() => render(false))
+    expect(body).not.toHaveBeenCalled()
+    act(() => host.querySelector('summary')!.click())
+    expect(host.textContent).toContain('Expensive reasoning')
+    act(() => host.querySelector('summary')!.click())
+    expect(host.querySelector('p')).toBeNull()
+    act(() => render(true))
+    expect(host.querySelector('details')?.open).toBe(true)
+    expect(host.textContent).toContain('Expensive reasoning')
+    act(() => render(false))
+    expect(host.querySelector('p')).toBeNull()
+  } finally { act(() => root.unmount()) }
+})
 
 it('lets users toggle thinking and updates its default when the setting changes', () => {
   const host = document.createElement('div')

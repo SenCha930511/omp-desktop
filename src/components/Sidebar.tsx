@@ -51,6 +51,10 @@ export interface SidebarProps {
   onSelectSession(session: SessionRecord): void
   onNavigate(view: WorkspaceView): void
   onNewSession(project?: ProjectRecord): void
+  /** Selects the draft-session placeholder row without clearing the composer draft. */
+  onSelectDraftSession?(project: ProjectRecord): void
+  /** Discards the draft placeholder; no confirmation, no backend call. */
+  onDiscardDraftSession?(project: ProjectRecord): void | Promise<void>
   onAddProject(): void
   onRemoveProject(project: ProjectRecord): void
   projectSortMode?: ProjectSortMode
@@ -242,6 +246,8 @@ function SidebarView({
   onSelectSession,
   onNavigate,
   onNewSession,
+  onSelectDraftSession = () => undefined,
+  onDiscardDraftSession = () => undefined,
   onAddProject,
   onRemoveProject,
   projectSortMode = 'recent',
@@ -270,6 +276,9 @@ function SidebarView({
   const [confirmUpdate, setConfirmUpdate] = useState(false)
   const [updateErrorOpen, setUpdateErrorOpen] = useState(false)
   const { activeSessions, sessionsByProject } = useMemo(() => indexSidebarSessions(projects, sessions, undefined, activeSessionId), [projects, sessions, activeSessionId])
+  // Draft state: a project is active but no session has been created yet. The
+  // placeholder row stands in until the first prompt adopts a real session.
+  const draftProjectId = activeProjectId && !activeSessionId ? activeProjectId : undefined
   const needsAttention = (session: SessionRecord) => {
     const signature = sessionAttentionSignature(session)
     return Boolean(signature && !signatureCleared(signature, clearedAttention[session.id], session.unread))
@@ -472,7 +481,7 @@ function SidebarView({
           return (
             <div className="project-group" key={project.id}>
               <div
-                className={`project-row ${activeProjectId === project.id && activeView === 'session' ? 'is-selected' : ''}`}
+                className={`project-row ${activeProjectId === project.id && activeView === 'session' && draftProjectId !== project.id ? 'is-selected' : ''}`}
                 onContextMenu={(event) => {
                   event.preventDefault()
                   setProjectMenu(project.id)
@@ -548,6 +557,35 @@ function SidebarView({
               </div>
               {!isCollapsed ? (
                 <div className="session-list">
+                  {draftProjectId === project.id ? (
+                    <div className={`session-row-wrap is-placeholder ${activeView === 'session' ? 'is-selected' : ''}`}>
+                      <button
+                        type="button"
+                        title={t('sidebar.untitledSession')}
+                        className="session-row"
+                        onClick={() => {
+                          setSessionMenu(null)
+                          onSelectDraftSession(project)
+                        }}
+                      >
+                        <NotebookPen size={12} aria-hidden="true" />
+                        <span className="session-row__text">
+                          <span className="session-row__title">{t('sidebar.untitledSession')}</span>
+                        </span>
+                      </button>
+                      <IconButton
+                        size="small"
+                        className="session-row__archive"
+                        label={t('sessions.deleteNamed', { name: t('sidebar.untitledSession') })}
+                        onClick={() => {
+                          setSessionMenu(null)
+                          void onDiscardDraftSession(project)
+                        }}
+                      >
+                        <Trash2 size={13} />
+                      </IconButton>
+                    </div>
+                  ) : null}
                   {boundedSidebarSessions(projectSessions).map((session) => (
                     <div
                       key={session.id}
@@ -625,7 +663,7 @@ function SidebarView({
                       ) : null}
                     </div>
                   ))}
-                  {projectSessions.length === 0 ? (
+                  {projectSessions.length === 0 && draftProjectId !== project.id ? (
                     <button
                       type="button"
                       title={t('sidebar.newSessionIn', { name: project.name })}
@@ -822,6 +860,8 @@ export function areSidebarPropsEqual(previous: SidebarProps, next: SidebarProps)
     previous.onSelectSession === next.onSelectSession &&
     previous.onNavigate === next.onNavigate &&
     previous.onNewSession === next.onNewSession &&
+    previous.onSelectDraftSession === next.onSelectDraftSession &&
+    previous.onDiscardDraftSession === next.onDiscardDraftSession &&
     previous.onAddProject === next.onAddProject &&
     previous.onRemoveProject === next.onRemoveProject &&
     previous.projectSortMode === next.projectSortMode &&

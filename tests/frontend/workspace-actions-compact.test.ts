@@ -75,6 +75,9 @@ function fixture({ runtime: configuredRuntime = null, sessionStatus = 'idle', ow
     runtimeIdRef,
     runtimeOwnerRef,
     prepareForPrompt: () => true,
+    adoptSessionId: (next: SessionRecord) => {
+      workspaceRef.current = { ...workspaceRef.current, session: next, sessionFile: next.filePath }
+    },
     attachRuntime: (next: RuntimeInfo | undefined) => { currentRuntime = next ?? null },
     setRuntime: (next: RuntimeInfo | ((current: RuntimeInfo | null) => RuntimeInfo | null)) => {
       currentRuntime = typeof next === 'function' ? next(currentRuntime) : next

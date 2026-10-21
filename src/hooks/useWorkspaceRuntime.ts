@@ -98,6 +98,10 @@ export function useWorkspaceRuntime({
   const deferredReconciliationRef = useRef<TranscriptReconciliationMarker | null>(null)
   const pendingAgentEventsRef = useRef<PendingAgentEvent[]>([])
   const lastTranscriptReadWorkspaceRef = useRef<{ generation: number; sessionFile: string } | null>(null)
+  // Set by adoptSessionId until the session catalog catches up with the row it
+  // just indexed; guards the empty-transcript branch below from wiping the
+  // in-flight turn while `activeSession` is briefly undefined.
+  const adoptionPendingCatalogRef = useRef<string | null>(null)
   const agentEventFrameRef = useRef<number | null>(null)
   const chunkedFlushTimerRef = useRef<number | null>(null)
   const reconcileOnVisibleRef = useRef(false)
@@ -166,6 +170,7 @@ export function useWorkspaceRuntime({
 
   const activateWorkspace = useCallback((project?: ProjectRecord, session?: SessionRecord, nextRuntime?: RuntimeInfo) => {
     pendingAgentEventsRef.current = []
+    adoptionPendingCatalogRef.current = null
     promptAdmissionRevisionRef.current = 0
     promptAdmissionGenerationRef.current = null
     reconciliationNeededRef.current = null
@@ -205,6 +210,26 @@ export function useWorkspaceRuntime({
     }
     return generation
   }, [attachRuntime, bridge])
+
+  // A draft workspace adopts the session its first prompt started. This only
+  // mutates session identity — no generation bump, transcript reset, or
+  // runtime re-attach — so an in-flight admission keeps its guards while the
+  // sidebar selection and composer key move to the real session.
+  const adoptSessionId = useCallback((session: SessionRecord) => {
+    const current = workspaceRef.current
+    workspaceRef.current = {
+      ...current,
+      session,
+      sessionFile: session.filePath,
+      cwd: workspaceCwd(current.project, session),
+    }
+    // The just-started runtime attaches in the same batch, making the session
+    // locally owned; mark the workspace as read so the transcript effect does
+    // not fire a cold file read that would clobber the in-flight admission.
+    lastTranscriptReadWorkspaceRef.current = { generation: current.generation, sessionFile: session.filePath }
+    adoptionPendingCatalogRef.current = session.id
+    setActiveSessionId(session.id)
+  }, [])
 
   const reconcileRuntime = useCallback(async (generation: number) => {
     if (!bridge) return
@@ -529,7 +554,10 @@ export function useWorkspaceRuntime({
 
   useEffect(() => {
     if (!bridge || !activeSession?.filePath) {
-      if (bridge && !activeSession) {
+      // While an adopted session is un-read the catalog may flap (row missing
+      // under the live workspace): keep the in-flight transcript instead of
+      // blanking it under older on-disk state. Cleared by activateWorkspace.
+      if (bridge && !activeSession && adoptionPendingCatalogRef.current !== workspaceRef.current.session?.id) {
         transcriptLoadRef.current = null
         lastTranscriptReadWorkspaceRef.current = null
         setMessages([])
@@ -609,6 +637,7 @@ export function useWorkspaceRuntime({
     runtimeOwnerRef,
     workspaceRef,
     activateWorkspace,
+    adoptSessionId,
     attachRuntime,
     reconcileRuntime,
     prepareForPrompt,

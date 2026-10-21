@@ -43,6 +43,13 @@
 .session-row-wrap.has-attention:not(.is-selected) { background: color-mix(in srgb, var(--prime-soft) 88%, var(--sidebar)); }
 .session-row-wrap.has-attention:not(.is-selected):hover, .session-row-wrap.has-attention:not(.is-selected):focus-within { background: color-mix(in srgb, var(--prime-soft) 72%, var(--surface-hover)); }
 .session-row-wrap.is-selected { color: var(--text); background: var(--surface-selected); box-shadow: inset 0 0 0 1px var(--prime); }
+/* The draft placeholder has no session behind it: keep it visually tentative
+   (italic, muted until selected) with a single discard action. */
+.session-row-wrap.is-placeholder > .session-row { align-items: center; }
+.session-row-wrap.is-placeholder .session-row__title { font-style: italic; }
+.session-row-wrap.is-placeholder:not(.is-selected) .session-row__title { color: var(--text-tertiary); }
+.session-row-wrap.is-placeholder .session-row__archive { right: 3px; }
+.session-row-wrap.is-placeholder:hover > .session-row, .session-row-wrap.is-placeholder:focus-within > .session-row { padding-right: 30px; }
 
 .session-row-wrap > .session-row { padding-right: 8px; transition: padding-right 140ms var(--ease-out); }
 .session-row-wrap:hover > .session-row, .session-row-wrap:focus-within > .session-row, .session-row-wrap:has(.session-row__more[aria-expanded="true"], .session-row__archive.is-confirming) > .session-row { padding-right: 55px; }
