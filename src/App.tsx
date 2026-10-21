@@ -140,7 +140,7 @@ export default function App() {
   const [submitting, setSubmitting] = useState(false)
   const [restorePrompt, setRestorePrompt] = useState<{ owner: number; id: number; text: string }>()
   const submissionGenerationRef = useRef<number | undefined>(undefined)
-  const { toast, setToast } = useToast()
+  const { toast, toastTone, setToast, setToastHovered } = useToast()
   const [changesCardDismissed, setChangesCardDismissed] = useState(false)
   /** Edits attributed to the last completed turn; null until a turn finishes in this window. */
   const [turnChanges, setTurnChanges] = useState<GitFileChange[] | null>(null)
@@ -158,7 +158,7 @@ export default function App() {
   activeProjectScriptRunRef.current = activeProjectScriptRun
 
   const reportError = useCallback((error: unknown) => {
-    setToast(errorMessage(error))
+    setToast(errorMessage(error), 'error')
   }, [])
   // The shell handlers answer with false instead of rejecting, so the refusal
   // reaches the user as a toast rather than disappearing into a dropped result.
@@ -1404,7 +1404,7 @@ export default function App() {
           />
         ) : null}
         {toast ? (
-          <div className="toast" role="status">
+          <div className={`toast toast--${toastTone}`} data-tone={toastTone} role="status" onMouseEnter={() => setToastHovered(true)} onMouseLeave={() => setToastHovered(false)}>
             {toast}
             <button type="button" aria-label={t('app.dismiss')} onClick={() => setToast(null)}>
               ×

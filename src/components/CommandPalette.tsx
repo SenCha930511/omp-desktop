@@ -2,6 +2,7 @@ import { Bell, CalendarClock, Folder, LayoutPanelLeft, NotebookPen, PackageOpen,
 import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useI18n } from '@/lib/i18n'
+import { isImeComposingOrGuarded } from '@/lib/message-shortcuts'
 import { shortcutLabel } from '@/lib/platform-shortcuts'
 import type { WorkspaceView } from '@/types/api'
 import { BrowserGlobe, useAppShellOverlay, useFocusTrap } from './ui'
@@ -39,6 +40,10 @@ export function CommandPalette({
   const [active, setActive] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
   const paletteRef = useFocusTrap<HTMLDivElement>(open, onClose)
+  // IME composition owns the arrow/enter/escape keys while the candidate
+  // window is up; the shared guard also covers the post-commit key leak.
+  const composingRef = useRef(false)
+  const lastCompositionEndAtRef = useRef<number | null>(null)
   const commands: Command[] = [
     { id: 'new', label: t('palette.newSession'), detail: t('palette.newSessionDetail'), shortcut: shortcutLabel(platform, ['Primary', 'N']), icon: <NotebookPen size={14} />, run: onNewSession },
     { id: 'projects', label: t('palette.openProjects'), detail: t('palette.openProjectsDetail'), icon: <Folder size={14} />, run: () => onNavigate('projects') },
@@ -83,11 +88,21 @@ export function CommandPalette({
     if (open) {
       setQuery('')
       setActive(0)
+      // A close mid-composition would otherwise leave the guard latched for
+      // the next mount if a call site ever keeps this component mounted.
+      composingRef.current = false
+      lastCompositionEndAtRef.current = null
       requestAnimationFrame(() => inputRef.current?.focus())
     }
   }, [open])
   useEffect(() => setActive(0), [query])
   useAppShellOverlay(open)
+  const activeCommandId = visible[active]?.id
+  // Wrap-around selection can land past the listbox fold; keep the active
+  // option in view without scrolling the input out of place.
+  useEffect(() => {
+    if (activeCommandId) document.getElementById(`command-${activeCommandId}`)?.scrollIntoView?.({ block: 'nearest' })
+  }, [activeCommandId, query])
   if (!open) return null
   const choose = (command?: Command) => {
     if (!command) return
@@ -107,15 +122,23 @@ export function CommandPalette({
             aria-controls="command-results"
             aria-activedescendant={visible[active] ? `command-${visible[active].id}` : undefined}
             onChange={(event) => setQuery(event.target.value)}
+            onCompositionStart={() => {
+              composingRef.current = true
+            }}
+            onCompositionEnd={(event) => {
+              composingRef.current = false
+              lastCompositionEndAtRef.current = event.nativeEvent.timeStamp
+            }}
             placeholder={t('palette.searchPlaceholder')}
             onKeyDown={(event) => {
+              if (isImeComposingOrGuarded(event.nativeEvent, composingRef.current, lastCompositionEndAtRef.current)) return
               if (event.key === 'ArrowDown') {
                 event.preventDefault()
-                setActive((value) => Math.min(visible.length - 1, value + 1))
+                if (visible.length > 0) setActive((value) => (value + 1) % visible.length)
               }
               if (event.key === 'ArrowUp') {
                 event.preventDefault()
-                setActive((value) => Math.max(0, value - 1))
+                if (visible.length > 0) setActive((value) => (value - 1 + visible.length) % visible.length)
               }
               if (event.key === 'Enter') {
                 event.preventDefault()

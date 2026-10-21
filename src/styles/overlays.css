@@ -48,6 +48,8 @@
 .command-results > p { padding: 26px; color: var(--text-tertiary); text-align: center; }
 .command-palette footer { height: 33px; display: flex; align-items: center; gap: 13px; padding: 0 12px; border-top: 1px solid var(--border); color: var(--text-tertiary); background: var(--surface-subtle); font-size: 9.5px; }
 .toast { position: fixed; z-index: 300; left: 50%; bottom: 18px; max-width: min(520px, calc(100% - 32px)); min-height: 36px; display: flex; align-items: center; gap: 10px; padding: 7px 8px 7px 12px; transform: translateX(-50%); border: 1px solid var(--border-strong); border-radius: 9px; color: var(--text); background: var(--surface-raised); box-shadow: var(--shadow-popover); font-size: 11.5px; }
+.toast--error { border-color: color-mix(in srgb, var(--danger) 45%, var(--border-strong)); background: color-mix(in srgb, var(--danger-soft) 35%, var(--surface-raised)); }
+.toast--warning { border-color: color-mix(in srgb, var(--warning) 45%, var(--border-strong)); }
 .toast button { width: 22px; height: 22px; border-radius: 5px; color: var(--text-tertiary); background: transparent; }
 .toast button:hover { background: var(--surface-hover); }
 .panel-scrim { display: none; }
