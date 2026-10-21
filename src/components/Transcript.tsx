@@ -92,7 +92,7 @@ export function Transcript({
   const { t } = useI18n()
   const coalesce = useMemo(createAssistantTurnCoalescer, [])
   const groupedMessages = useMemo(() => coalesce(messages), [coalesce, messages])
-  const { announcement, awayFromBottom, hiddenCount, hiddenAfter, scrollRef, scrollToBottom, showEarlier, showNewer, revealIndex, updatePinnedState, visibleMessages } = useTranscriptScroll(groupedMessages, visible, followKey)
+  const { announcement, awayFromBottom, hiddenCount, hiddenAfter, scrollRef, scrollToBottom, scrolled, showEarlier, showNewer, revealIndex, updatePinnedState, visibleMessages } = useTranscriptScroll(groupedMessages, visible, followKey)
   const search = useTranscriptSearch(groupedMessages, scrollRef, revealIndex, visible)
   const recovery = useMemo(() => failedTurn(messages), [messages])
   // One-shot entrance tracking: messages present when the transcript settles
@@ -111,6 +111,7 @@ export function Transcript({
   const transcriptClasses = [
     'transcript',
     'scroll-area',
+    scrolled ? 'is-scrolled' : '',
     queuedMessageCount > 0 ? 'has-queued-messages' : '',
     search.open ? 'is-searching' : '',
   ]

@@ -274,9 +274,13 @@ kbd { color: var(--text-tertiary); font: 10.5px/1.2 "SFMono-Regular", "SF Mono",
     transparent 100%
   );
 }
-.transcript {
-  animation: scroll-fade-top-only linear both;
-  animation-timeline: scroll(self block);
+/* The transcript scroller never carries a scroll()-driven animation: a
+   registered custom property animates only on the main thread, which
+   demotes the scroller from threaded scrolling, and the first wheel
+   gesture landing on a busy renderer (streaming session, heavy history)
+   is then swallowed. The scroll hook toggles `is-scrolled` instead. */
+.transcript.is-scrolled {
+  --scroll-fade-top: 28px;
   mask-image: linear-gradient(
     to bottom,
     transparent 0px,

@@ -756,6 +756,44 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect.poll(async () => page.evaluate(async () => (await window.desktop.settings.get()).subagentsPanelPinned)).toBe(false)
   })
 
+  test('moves the transcript on the very first wheel scroll of a long history', async () => {
+    // A long code-heavy history keeps the renderer busy right after the
+    // session opens, and the transcript is the surface users scroll first.
+    // The first wheel gesture must move it immediately, not after a second
+    // gesture: scroll-driven decorations on the scroller itself demote it
+    // from threaded scrolling, which swallows the first gesture.
+    const sessionDir = join(fixtureSessionFile, '..')
+    const fixtureHeader = JSON.parse(readFileSync(fixtureSessionFile, 'utf8').split('\n')[1]) as { cwd: string }
+    const entries: string[] = [JSON.stringify({ type: 'session', version: 3, id: 'scroll-history-fixture', timestamp: '2026-04-02T00:00:00.000Z', cwd: fixtureHeader.cwd })]
+    let parent: string | null = null
+    for (let turn = 0; turn < 220; turn += 1) {
+      const userId = `scroll-user-${turn}`
+      const assistantId = `scroll-assistant-${turn}`
+      const stamp = `2026-04-02T00:${String(Math.floor(turn / 60)).padStart(2, '0')}:${String(turn % 60).padStart(2, '0')}.000Z`
+      entries.push(JSON.stringify({ type: 'message', id: userId, parentId: parent, timestamp: stamp, message: { role: 'user', content: [{ type: 'text', text: `Turn ${turn}: explain the module and add a fenced example.` }], timestamp: Date.parse(stamp) } }))
+      entries.push(JSON.stringify({
+        type: 'message',
+        id: assistantId,
+        parentId: userId,
+        timestamp: stamp,
+        message: { role: 'assistant', content: [{ type: 'text', text: `**Turn ${turn} reply.**\n\nThe module wires the handler:\n\n\`\`\`ts\nexport function handle(value: number): string {\n  return \`handled-\${value}\`\n}\n\`\`\`\n\n${'The summary continues with detail about the change and its verification. '.repeat(4)}` }] },
+      }))
+      parent = assistantId
+    }
+    writeFileSync(join(sessionDir, '2026-04-02T00-00-00-000Z_019fdf24-eeee-7000-8000-000000000005.jsonl'), [ompTitleSlot('Scroll history fixture', '2026-04-02T00:00:00.000Z'), ...entries, ''].join('\n'))
+    await page.locator('.session-row-wrap').filter({ hasText: 'Scroll history fixture' }).locator('.session-row').click()
+    const transcript = page.locator('.transcript')
+    await expect(transcript.locator('.message').first()).toBeVisible({ timeout: 15_000 })
+    await expect.poll(() => transcript.evaluate((element) => element.scrollTop)).toBeGreaterThan(1_000)
+    const bottom = await transcript.evaluate((element) => element.scrollTop)
+    const bounds = await transcript.boundingBox()
+    if (!bounds) throw new Error('transcript is not visible')
+    await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2)
+    await page.mouse.wheel(0, -800)
+    await expect.poll(() => transcript.evaluate((element) => element.scrollTop), { timeout: 2_000 }).toBeLessThan(bottom - 150)
+    await expect(transcript).toHaveClass(/is-scrolled/)
+  })
+
   test('adapts terminal command output, notifications, empty results and failures to the desktop panel', async () => {
     await expect(page.locator('.model-picker__trigger')).toHaveAccessibleName('Model: Claude Fixture')
     const composer = page.getByRole('combobox', { name: 'Message OMP' })

@@ -21,6 +21,7 @@ export function useTranscriptScroll(messages: TranscriptMessage[], active = true
   const [announcement, setAnnouncement] = useState('')
   const [awayFromBottom, setAwayFromBottom] = useState(false)
   const [hasNewContent, setHasNewContent] = useState(false)
+  const [scrolled, setScrolled] = useState(false)
   const streaming = messages.some((message) => message.streaming)
   const followKeyRef = useRef(followKey)
   if (followKeyRef.current !== followKey) {
@@ -37,6 +38,7 @@ export function useTranscriptScroll(messages: TranscriptMessage[], active = true
     setWindowEnd(undefined)
     setAwayFromBottom(false)
     setHasNewContent(false)
+    setScrolled(false)
   }
   const end = Math.min(messages.length, windowEnd ?? messages.length)
   const visibleMessages = useMemo(() => messages.slice(Math.max(0, end - visibleLimit), end), [messages, visibleLimit, end])
@@ -44,7 +46,12 @@ export function useTranscriptScroll(messages: TranscriptMessage[], active = true
   const hiddenAfter = messages.length - end
 
   useLayoutEffect(() => {
-    if (active && scrollRef.current) scrollRef.current.scrollTop = pinnedToBottomRef.current ? scrollRef.current.scrollHeight : lastScrollTopRef.current
+    if (active && scrollRef.current) {
+      scrollRef.current.scrollTop = pinnedToBottomRef.current ? scrollRef.current.scrollHeight : lastScrollTopRef.current
+      // Mirrors updatePinnedState: the top fade (see base.css) is a class
+      // toggle, never a scroll()-driven animation on the scroller itself.
+      setScrolled(scrollRef.current.scrollTop > 8)
+    }
   }, [active, windowEnd])
 
   useEffect(() => {
@@ -85,6 +92,7 @@ export function useTranscriptScroll(messages: TranscriptMessage[], active = true
     if (movedUp && !shrank) manualScrollUntilRef.current = performance.now() + 150
     lastScrollTopRef.current = scroller.scrollTop
     lastScrollHeightRef.current = scroller.scrollHeight
+    setScrolled(scroller.scrollTop > 8)
     // Content growth alone never fires scroll events — scrollTop stays parked
     // while scrollHeight rises — so any observed move is user-driven.
     const atBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 40
@@ -133,8 +141,17 @@ export function useTranscriptScroll(messages: TranscriptMessage[], active = true
     }
     const observer = new ResizeObserver(() => {
       // Growth during the smooth ride yields to the ride instead of snapping.
-      if (pinnedToBottomRef.current && performance.now() >= manualScrollUntilRef.current && performance.now() >= smoothScrollUntilRef.current) scroller.scrollTo?.({ top: scroller.scrollHeight, behavior: 'auto' })
-      else if (!pinnedToBottomRef.current && windowEnd === undefined && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 40) {
+      if (pinnedToBottomRef.current && performance.now() >= manualScrollUntilRef.current && performance.now() >= smoothScrollUntilRef.current) {
+        // The compositor can already have moved the scroller for a wheel
+        // gesture while this callback waits behind a busy main thread — the
+        // wheel event that clears the pin has not run yet. A follower parked
+        // at the tail never sits below its last observed scrollTop, so a
+        // lower position means the reader moved: hold the snap and let the
+        // pending input resolve the pin instead of dragging the first
+        // gesture back to the bottom.
+        if (scroller.scrollTop >= lastScrollTopRef.current - 1) scroller.scrollTo?.({ top: scroller.scrollHeight, behavior: 'auto' })
+        else manualScrollUntilRef.current = performance.now() + 150
+      } else if (!pinnedToBottomRef.current && windowEnd === undefined && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 40) {
         // Self-heal any stuck "away" state whose layout already proves the
         // bottom is visible: content shrinking back under the parked scroll
         // position fires no scroll events, so without this the jump button
@@ -179,5 +196,5 @@ export function useTranscriptScroll(messages: TranscriptMessage[], active = true
     }
   }
 
-  return { announcement, awayFromBottom, hasNewContent, hiddenCount, hiddenAfter, scrollRef, scrollToBottom, showEarlier, showNewer, revealIndex, updatePinnedState, visibleMessages }
+  return { announcement, awayFromBottom, hasNewContent, hiddenCount, hiddenAfter, scrollRef, scrollToBottom, scrolled, showEarlier, showNewer, revealIndex, updatePinnedState, visibleMessages }
 }
