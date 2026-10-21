@@ -53,6 +53,7 @@ import {
   type PrimeModelDescriptor,
   type PrimeProviderDescriptor,
   type ProjectRecord,
+  type PromptDeliveryIntent,
   type PromptImage,
   type QueuedPrompt,
   type ScheduleTiming,
@@ -653,9 +654,11 @@ export default function App() {
   // ride yet, so the command is consumed with a hint instead of leaking into
   // the conversation as a stray prompt.
   const sideChatIntercept = activeSideChat?.supported !== false
-  const sendVisiblePrompt = useCallback((prompt: string, images: PromptImage[] = []) => {
+  const sendVisiblePrompt = useCallback((prompt: string, images: PromptImage[] = [], intent: PromptDeliveryIntent = 'queue') => {
     const trimmed = prompt.trim()
-    if (sideChatIntercept && /^\/btw(?:\s|$)/.test(trimmed)) {
+    // A queue-flush rides the steer channel straight to the turn; only a
+    // visible composer submission may be a /btw side question.
+    if (intent !== 'steer' && sideChatIntercept && /^\/btw(?:\s|$)/.test(trimmed)) {
       if (!sideChatSessionId) {
         // No runtime to ride yet — surface the hint inside the conversation;
         // the first real message covers it (effect below).
@@ -668,8 +671,8 @@ export default function App() {
       return Promise.resolve()
     }
     // Any real prompt (slash command or message) covers the hint.
-    setBtwHint(false)
-    return sendPrompt(prompt, images)
+    if (intent !== 'steer') setBtwHint(false)
+    return sendPrompt(prompt, images, intent)
   }, [sideChatIntercept, sideChatSessionId, askSideQuestion, sendPrompt])
   const openTerminalLink = useCallback(
     (url: string, external: boolean) => {
