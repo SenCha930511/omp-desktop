@@ -2,7 +2,7 @@ import { appendFileSync, closeSync, createReadStream, mkdirSync, mkdtempSync, op
 import { stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SessionService } from '../../electron/main/sessions'
 import { METADATA_VERIFY_TAIL_BYTES } from '../../electron/main/sessions/metadata'
 import {
@@ -185,6 +185,31 @@ describe('OMP metadata reader', () => {
 })
 
 describe('OMP catalog discovery', () => {
+  it('notifies and surfaces a fresh title for an in-place title-slot rewrite', async () => {
+    // The harness auto-names sessions by rewriting the first 256 bytes in
+    // place; the live sidebar depends on that landing through the watcher and
+    // invalidating the cached metadata.
+    const { root, project, service } = setup()
+    mkdirSync(join(root, '-bucket'))
+    const file = join(root, '-bucket', NAME_A)
+    writeOmpSession(file, { cwd: project, title: 'Before rename' })
+    expect((await service.list(undefined, true))[0]?.title).toBe('Before rename')
+
+    const reshoots: string[] = []
+    const unsubscribe = service.onDidChange((event) => { if (event.filePath) reshoots.push(event.filePath) })
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 150))
+      rewriteTitleSlot(file, 'Renamed by harness')
+      const canonical = realpathSync(file)
+      await vi.waitFor(() => expect(reshoots).toContain(canonical), { timeout: 10_000, interval: 50 })
+      const current = (await service.list(undefined, true)).map((record) => record.title)
+      expect(current).toContain('Renamed by harness')
+    } finally {
+      unsubscribe()
+    }
+  })
+
+
   it('recurses exactly one bucket level and ignores root files, deep files, and hidden names', async () => {
     const { root, project, service } = setup()
     mkdirSync(join(root, '-bucket'))
