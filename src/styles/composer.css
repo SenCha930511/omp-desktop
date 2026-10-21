@@ -115,7 +115,7 @@
 .permissions-chip { height: 26px; display: inline-flex; align-items: center; gap: 4px; padding: 0 8px; border: 1px solid transparent; border-radius: 999px; color: var(--text-secondary); background: transparent; font-size: 11px; font-weight: 520; transition: color 130ms var(--ease-out), background 130ms var(--ease-out), border-color 130ms var(--ease-out); }
 .worktree-picker, .model-picker { position: relative; min-width: 0; flex: 0 1 auto; }
 .worktree-picker__trigger, .model-picker__trigger { max-width: 150px; cursor: pointer; }
-.worktree-picker__trigger:hover:not(:disabled), .worktree-picker__trigger[aria-expanded="true"], .model-picker__trigger:hover:not(:disabled), .model-picker__trigger[aria-expanded="true"] { color: var(--text); background: var(--surface-hover); }
+.worktree-picker__trigger:hover:not(:disabled), .worktree-picker__trigger[aria-expanded="true"], .model-picker__trigger:hover:not(:disabled), .model-picker__trigger[aria-expanded="true"], .project-picker__trigger:hover:not(:disabled), .project-picker__trigger[aria-expanded="true"] { color: var(--text); background: var(--surface-hover); }
 .worktree-picker__trigger:disabled, .model-picker__trigger:disabled { opacity: .65; cursor: default; }
 .worktree-picker__label, .model-picker__trigger > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .model-picker__trigger > svg { flex: 0 0 auto; }
