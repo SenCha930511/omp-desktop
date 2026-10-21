@@ -1,5 +1,5 @@
 import { ChevronDown, LoaderCircle } from 'lucide-react'
-import { useMemo } from 'react'
+import { useMemo, useRef } from 'react'
 import { createAssistantTurnCoalescer } from '@/lib/assistant-turns'
 import { HARNESS_SHORT_NAMES } from '@/lib/harness'
 import { useI18n } from '@/lib/i18n'
@@ -45,13 +45,13 @@ interface TranscriptProps {
   onRestorePrompt?(prompt: string): void
 }
 
-function ActiveAssistantMessage({ message, harness, showReasoning, showTools }: { message: TranscriptMessage; harness: HarnessId; showReasoning: boolean; showTools: boolean }) {
+function ActiveAssistantMessage({ message, harness, showReasoning, showTools, entering = false }: { message: TranscriptMessage; harness: HarnessId; showReasoning: boolean; showTools: boolean; entering?: boolean }) {
   const { t } = useI18n()
   const visibleActivity = message.parts.some(
     (part) => (part.type === 'thinking' && showReasoning) || ((part.type === 'toolCall' || part.type === 'toolResult') && showTools) || part.type === 'agentMessage',
   )
   return (
-    <article className="message message--assistant">
+    <article className={`message message--assistant${entering ? ' message--enter' : ''}`}>
       <div className="message__content">
         {visibleActivity ? (
           <WorkDisclosure message={message} parts={message.parts} showReasoning={showReasoning} showTools={showTools} running />
@@ -95,6 +95,18 @@ export function Transcript({
   const { announcement, awayFromBottom, hiddenCount, hiddenAfter, scrollRef, scrollToBottom, showEarlier, showNewer, revealIndex, updatePinnedState, visibleMessages } = useTranscriptScroll(groupedMessages, visible, followKey)
   const search = useTranscriptSearch(groupedMessages, scrollRef, revealIndex, visible)
   const recovery = useMemo(() => failedTurn(messages), [messages])
+  // One-shot entrance tracking: messages present when the transcript settles
+  // (history load, session switch) render without animation; only messages
+  // appended afterwards get the entrance class. Reset per followed session.
+  const entranceRef = useRef<{ key: string | undefined; hydrated: boolean; initial: Set<string> }>({ key: followKey, hydrated: false, initial: new Set() })
+  if (entranceRef.current.key !== followKey) {
+    entranceRef.current = { key: followKey, hydrated: false, initial: new Set() }
+  }
+  if (!entranceRef.current.hydrated && !loading) {
+    entranceRef.current.hydrated = true
+    entranceRef.current.initial = new Set(visibleMessages.map((message) => message.id))
+  }
+  const entering = (id: string) => entranceRef.current.hydrated && !entranceRef.current.initial.has(id)
   const activeAssistantId = useMemo(() => (active && groupedMessages.at(-1)?.role === 'assistant' ? groupedMessages.at(-1)?.id : undefined), [active, groupedMessages])
   const transcriptClasses = [
     'transcript',
@@ -154,12 +166,12 @@ export function Transcript({
               {message.kind === 'steer-read-marker' ? (
                 <SteerReadMarker message={message} />
               ) : message.role === 'user' ? (
-                <UserMessage message={message} onOpenSessionReference={onOpenSessionReference} />
+                <UserMessage message={message} entering={entering(message.id)} onOpenSessionReference={onOpenSessionReference} />
               ) : message.role === 'assistant' ? (
                 message.streaming || message.id === activeAssistantId ? (
-                  <ActiveAssistantMessage message={message} harness={harness} showReasoning={showReasoning || search.matchId === message.id} showTools={showTools || search.matchId === message.id} />
+                  <ActiveAssistantMessage message={message} harness={harness} entering={entering(message.id)} showReasoning={showReasoning || search.matchId === message.id} showTools={showTools || search.matchId === message.id} />
                 ) : (
-                  <AssistantMessage message={message} harness={harness} showReasoning={showReasoning || search.matchId === message.id} showTools={showTools || search.matchId === message.id} />
+                  <AssistantMessage message={message} harness={harness} entering={entering(message.id)} showReasoning={showReasoning || search.matchId === message.id} showTools={showTools || search.matchId === message.id} />
                 )
               ) : message.role === 'agent' ? (
                 <AgentMessage message={message} />

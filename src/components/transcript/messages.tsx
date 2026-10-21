@@ -137,7 +137,7 @@ function MessageActions({ message, text: suppliedText }: { message: TranscriptMe
 }
 
 export const AssistantMessage = memo(
-  function AssistantMessage({ message, harness = 'omp', showReasoning, showTools }: { message: TranscriptMessage; harness?: HarnessId; showReasoning: boolean; showTools: boolean }) {
+  function AssistantMessage({ message, harness = 'omp', showReasoning, showTools, entering = false }: { message: TranscriptMessage; harness?: HarnessId; showReasoning: boolean; showTools: boolean; entering?: boolean }) {
     const { t } = useI18n()
     const isActivity = (part: MessagePart) => part.type === 'thinking' || part.type === 'toolCall' || part.type === 'toolResult' || part.type === 'agentMessage' || part.type === 'compaction'
     const firstActivity = message.parts.findIndex(isActivity)
@@ -160,7 +160,7 @@ export const AssistantMessage = memo(
     const copyableNarrative = hasVisibleActivity ? [...before, ...after] : [...before, ...hiddenMiddleNarrative, ...after]
     const copyableText = copyableNarrative.flatMap((part) => (part.type === 'text' ? [part.text] : [])).join('\n')
     return (
-      <article className="message message--assistant">
+      <article className={`message message--assistant${entering ? ' message--enter' : ''}`}>
         <div className="message__content">
           {renderNarrative(before, 'before', message.streaming)}
           {hasVisibleActivity ? (
@@ -179,7 +179,7 @@ export const AssistantMessage = memo(
       </article>
     )
   },
-  (previous, next) => previous.message === next.message && previous.harness === next.harness && previous.showReasoning === next.showReasoning && previous.showTools === next.showTools,
+  (previous, next) => previous.message === next.message && previous.harness === next.harness && previous.showReasoning === next.showReasoning && previous.showTools === next.showTools && previous.entering === next.entering,
 )
 
 function SessionReferenceText({ text, references, onOpen }: { text: string; references: RoutedSessionReference[]; onOpen?(sessionId: string, harness: HarnessId): void }) {
@@ -275,7 +275,7 @@ function UserText({ text, onOpenSessionReference }: { text: string; onOpenSessio
   )
 }
 
-export const UserMessage = memo(function UserMessage({ message, onOpenSessionReference }: { message: TranscriptMessage; onOpenSessionReference?(sessionId: string, harness: HarnessId): void }) {
+export const UserMessage = memo(function UserMessage({ message, entering = false, onOpenSessionReference }: { message: TranscriptMessage; entering?: boolean; onOpenSessionReference?(sessionId: string, harness: HarnessId): void }) {
   const { t } = useI18n()
   const copyableText = message.parts
     .filter((part) => part.type === 'text')
@@ -283,7 +283,7 @@ export const UserMessage = memo(function UserMessage({ message, onOpenSessionRef
     .filter(Boolean)
     .join('\n')
   return (
-    <article className="message message--user">
+    <article className={`message message--user${entering ? ' message--enter' : ''}`}>
       <div className="user-bubble">
         {message.parts.map((part, index) =>
           part.type === 'text' ? (
