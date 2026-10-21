@@ -169,6 +169,10 @@
 .fast-mode-toggle:hover:not(:disabled) { color: var(--text); background: var(--surface-hover); }
 .fast-mode-toggle.is-active { color: var(--prime); border-color: color-mix(in srgb, var(--prime) 38%, var(--border)); background: color-mix(in srgb, var(--prime) 11%, var(--surface-subtle)); }
 .fast-mode-toggle:disabled { opacity: .5; cursor: not-allowed; }
+.approval-mode-toggle { height: 26px; display: inline-flex; align-items: center; gap: 4px; padding: 0 8px; border: 1px solid transparent; border-radius: 999px; color: var(--text-secondary); background: transparent; font-size: 11px; font-weight: 520; cursor: pointer; transition: color 130ms var(--ease-out), background 130ms var(--ease-out), border-color 130ms var(--ease-out); }
+.approval-mode-toggle:hover { color: var(--text); background: var(--surface-hover); }
+.approval-mode-toggle.is-yolo { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 38%, var(--border)); background: color-mix(in srgb, var(--warning) 11%, var(--surface-subtle)); }
+.approval-mode-toggle.is-yolo:hover { color: var(--warning); background: color-mix(in srgb, var(--warning) 16%, var(--surface-subtle)); }
 .send-button { width: 30px; height: 30px; display: grid; place-items: center; flex: 0 0 auto; padding: 0; border-radius: 50%; color: var(--canvas); background: var(--text); transition: transform 110ms var(--ease-out), opacity 130ms var(--ease-out), background 130ms var(--ease-out); }
 .send-button:hover { opacity: .88; }
 .send-button:active:not(:disabled) { transform: scale(.95); }

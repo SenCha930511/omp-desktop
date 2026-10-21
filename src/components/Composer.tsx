@@ -1,4 +1,4 @@
-import { ArrowUp, AtSign, ChevronDown, Clock3, Command, Edit3, Gauge, ImageIcon, LoaderCircle, MessageCirclePlus, Mic, Paperclip, Plus, Square, SquareTerminal, Trash2, X, Zap } from 'lucide-react'
+import { ArrowUp, AtSign, ChevronDown, Clock3, Command, Edit3, Gauge, ImageIcon, LoaderCircle, MessageCirclePlus, Mic, Paperclip, Plus, Shield, ShieldAlert, ShieldCheck, ShieldQuestionMark, Square, SquareTerminal, Trash2, X, Zap } from 'lucide-react'
 import type { CSSProperties } from 'react'
 import { memo, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useComposerImages } from '@/hooks/useComposerImages'
@@ -19,6 +19,7 @@ import type {
   CheckoutCatalog,
   DesktopApi,
   MessageEnterAction,
+  OmpApprovalMode,
   PrimeContextUsage,
   PrimeModelDescriptor,
   PrimeProviderDescriptor,
@@ -60,6 +61,9 @@ interface ComposerProps {
   fast: boolean
   fastSupported: boolean
   fastAvailable: boolean
+  /** App-level OMP approval mode shown as a compact pill; click opens the Agent settings. */
+  approvalMode?: OmpApprovalMode
+  onApprovalModeClick?(): void
   /** Active harness agent name for tooltips ("OMP"). */
   agentName?: string
   /** Active harness short name for inline copy ("OMP"). */
@@ -127,6 +131,13 @@ const reasoningLabelKeys = {
   max: 'composer.reasoning.max',
 } as const satisfies Record<PrimeEffortSelector, MessageKey>
 
+const approvalModeMeta = {
+  inherit: { icon: Shield, labelKey: 'composer.approval.inherit', settingsKey: 'agent.approval.inherit', yolo: false },
+  'always-ask': { icon: ShieldQuestionMark, labelKey: 'composer.approval.alwaysAsk', settingsKey: 'agent.approval.alwaysAsk', yolo: false },
+  write: { icon: ShieldCheck, labelKey: 'composer.approval.write', settingsKey: 'agent.approval.write', yolo: false },
+  yolo: { icon: ShieldAlert, labelKey: 'composer.approval.yolo', settingsKey: 'agent.approval.yolo', yolo: true },
+} as const satisfies Record<OmpApprovalMode, { icon: typeof Shield; labelKey: MessageKey; settingsKey: MessageKey; yolo: boolean }>
+
 const MAX_IMAGE_PROMPT_BYTES = 2 * 1024 * 1024
 
 const EMPTY_ANNOTATIONS: BrowserAnnotation[] = []
@@ -150,6 +161,8 @@ export const Composer = memo(function Composer({
   fast,
   fastSupported,
   fastAvailable,
+  approvalMode = 'inherit',
+  onApprovalModeClick,
   agentName = 'OMP',
   shortName = 'OMP',
 
@@ -530,6 +543,10 @@ export const Composer = memo(function Composer({
     }
   }
 
+  const approvalMeta = approvalModeMeta[approvalMode]
+  const ApprovalIcon = approvalMeta.icon
+  const approvalTitle = t('composer.approval.title', { mode: t(approvalMeta.settingsKey) })
+
   return (
     <div className="composer-wrap">
       {queuedMessages.length || harnessQueuedMessageCount ? (
@@ -864,6 +881,15 @@ export const Composer = memo(function Composer({
                 </option>
               ))}
             </SelectControl>
+            <button
+              type="button"
+              className={`approval-mode-toggle ${approvalMeta.yolo ? 'is-yolo' : ''}`}
+              aria-label={approvalTitle}
+              title={approvalTitle}
+              onClick={() => onApprovalModeClick?.()}
+            >
+              <ApprovalIcon size={12} /> <span className="approval-mode-toggle__label">{t(approvalMeta.labelKey)}</span>
+            </button>
             {fastSupported ? (
               <button
                 type="button"

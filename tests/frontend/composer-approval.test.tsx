@@ -1,0 +1,84 @@
+// @vitest-environment jsdom
+
+import { act } from 'react'
+import { createRoot, type Root } from 'react-dom/client'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { Composer } from '../../src/components/Composer'
+import type { OmpApprovalMode } from '../../src/types/api'
+
+globalThis.IS_REACT_ACT_ENVIRONMENT = true
+
+function props(overrides: Record<string, unknown> = {}) {
+  return {
+    busy: false,
+    model: '',
+    effort: 'medium' as const,
+    modelsByProvider: new Map(),
+    providers: [],
+    reasoningLevels: ['medium' as const],
+    fast: false,
+    fastSupported: false,
+    fastAvailable: false,
+    imageInputSupported: true,
+    skills: [],
+    onModelChange: vi.fn(),
+    onEffortChange: vi.fn(),
+    onFastChange: vi.fn(),
+    onSend: vi.fn(),
+    onStop: vi.fn(),
+    ...overrides,
+  }
+}
+
+describe('composer approval mode pill', () => {
+  let root: Root
+  let container: HTMLDivElement
+
+  beforeEach(() => {
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+  })
+
+  afterEach(() => {
+    act(() => root.unmount())
+    container.remove()
+    window.sessionStorage.clear()
+  })
+
+  const pill = () => container.querySelector<HTMLButtonElement>('button.approval-mode-toggle')
+
+  it.each<[OmpApprovalMode, string]>([
+    ['inherit', 'Inherit'],
+    ['always-ask', 'Ask'],
+    ['write', 'Write'],
+    ['yolo', 'YOLO'],
+  ])('renders the %s label', (mode, label) => {
+    act(() => root.render(<Composer {...props({ approvalMode: mode })} />))
+
+    expect(pill()?.textContent).toContain(label)
+  })
+
+  it('defaults to inherit when approvalMode is omitted', () => {
+    act(() => root.render(<Composer {...props()} />))
+
+    expect(pill()?.textContent).toContain('Inherit')
+    expect(pill()?.classList.contains('is-yolo')).toBe(false)
+  })
+
+  it('flags yolo with the least-safe styling and full settings tooltip', () => {
+    act(() => root.render(<Composer {...props({ approvalMode: 'yolo' })} />))
+
+    expect(pill()?.classList.contains('is-yolo')).toBe(true)
+    expect(pill()?.getAttribute('title')).toBe('Approval mode: YOLO (never prompt) — opens Agent settings')
+  })
+
+  it('fires onApprovalModeClick when clicked', () => {
+    const onApprovalModeClick = vi.fn()
+    act(() => root.render(<Composer {...props({ approvalMode: 'write', onApprovalModeClick })} />))
+
+    act(() => pill()?.click())
+
+    expect(onApprovalModeClick).toHaveBeenCalledTimes(1)
+  })
+})
