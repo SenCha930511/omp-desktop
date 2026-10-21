@@ -43,23 +43,32 @@ describe('sidebar session ordering', () => {
     expect(sessionsByProject.get('project')?.map((item) => item.id)).toEqual(['newer', 'older'])
   })
 
-  it('pins the session in use ahead of more recent peers', () => {
+  it('keeps the session in use in its message order instead of jumping to the top', () => {
     const sessions = [session('older', '2026-01-02T00:00:00.000Z'), session('newer', '2026-01-03T00:00:00.000Z'), session('in-use', '2026-01-01T00:00:00.000Z')]
-    const { sessionsByProject } = indexSidebarSessions([project], sessions, undefined, 'in-use')
-    expect(sessionsByProject.get('project')?.map((item) => item.id)).toEqual(['in-use', 'newer', 'older'])
+    const { sessionsByProject } = indexSidebarSessions([project], sessions)
+    expect(sessionsByProject.get('project')?.map((item) => item.id)).toEqual(['newer', 'older', 'in-use'])
   })
 
-  it('moves the clicked session to the top of its project', async () => {
+  it('leaves the clicked session in place until the sessions data refreshes', async () => {
     const sessions = [session('older', '2026-01-02T00:00:00.000Z'), session('newer', '2026-01-03T00:00:00.000Z'), session('in-use', '2026-01-01T00:00:00.000Z')]
-    await act(async () => {
+    const renderSidebar = (activeSessionId?: string) => act(async () => {
       root.render(
         <Sidebar
-          projects={[project]} sessions={sessions} activeView="session" activeSessionId="in-use" projectSortMode="recent"
+          projects={[project]} sessions={sessions} activeView="session" activeSessionId={activeSessionId} projectSortMode="recent"
           onSelectProject={noop} onSelectSession={noop} onNavigate={noop} onNewSession={noop} onAddProject={noop} onRemoveProject={noop}
           onClose={noop} onOpenPalette={noop} onRenameSession={async () => undefined} onArchiveSession={async () => undefined}
         />,
       )
     })
-    expect([...container.querySelectorAll<HTMLElement>('.session-row__title')].map((row) => row.textContent)).toEqual(['in-use', 'newer', 'older'])
+    const rowTitles = () => [...container.querySelectorAll<HTMLElement>('.session-row__title')].map((row) => row.textContent)
+
+    await renderSidebar()
+    expect(rowTitles()).toEqual(['newer', 'older', 'in-use'])
+
+    // Selecting a session re-renders with the new activeSessionId; rows must
+    // stay put — resorting happens on the next sessions data refresh, not on
+    // navigation.
+    await renderSidebar('in-use')
+    expect(rowTitles()).toEqual(['newer', 'older', 'in-use'])
   })
 })

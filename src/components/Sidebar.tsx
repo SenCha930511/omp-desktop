@@ -76,7 +76,6 @@ export function indexSidebarSessions(
   projects: ProjectRecord[],
   sessions: SessionRecord[],
   stats?: SidebarIndexStats,
-  activeSessionId?: string,
 ): { activeSessions: SessionRecord[]; sessionsByProject: Map<string, SessionRecord[]> } {
   const activeSessions: SessionRecord[] = []
   const owners = new Map<string, string[]>()
@@ -98,17 +97,13 @@ export function indexSidebarSessions(
     const difference = Date.parse(right.lastUserMessageAt ?? right.createdAt) - Date.parse(left.lastUserMessageAt ?? left.createdAt)
     return difference || right.createdAt.localeCompare(left.createdAt) || left.filePath.localeCompare(right.filePath)
   }
-  const compareVisible = (left: SessionRecord, right: SessionRecord) => {
-    // The session the user is on ("in use") leads its group; the rest follows
-    // most-recent-message order.
-    if (activeSessionId) {
-      if (left.id === activeSessionId && right.id !== activeSessionId) return -1
-      if (right.id === activeSessionId && left.id !== activeSessionId) return 1
-    }
-    return compareByLastUserMessage(left, right)
-  }
+  // Rows never jump when clicked: selecting a session leaves ordering
+  // untouched, so re-sorts happen only on the refresh that publishes new
+  // message timestamps — not on mere navigation. Deliberately no "active
+  // first" override here; earlier behavior re-ordered the list under the
+  // user's cursor on every click.
   activeSessions.sort(compareByLastUserMessage)
-  for (const projectSessions of sessionsByProject.values()) projectSessions.sort(compareVisible)
+  for (const projectSessions of sessionsByProject.values()) projectSessions.sort(compareByLastUserMessage)
   return { activeSessions, sessionsByProject }
 }
 
@@ -235,7 +230,9 @@ function SidebarView({
   const [removeTarget, setRemoveTarget] = useState<ProjectRecord | null>(null)
   const [confirmUpdate, setConfirmUpdate] = useState(false)
   const [updateErrorOpen, setUpdateErrorOpen] = useState(false)
-  const { activeSessions, sessionsByProject } = useMemo(() => indexSidebarSessions(projects, sessions, undefined, activeSessionId), [projects, sessions, activeSessionId])
+  // activeSessionId is deliberately absent from the memo input: selection
+  // must not re-index (and thereby re-sort) the rows.
+  const { activeSessions, sessionsByProject } = useMemo(() => indexSidebarSessions(projects, sessions, undefined), [projects, sessions])
   // Draft state: a project is active but no session has been created yet. The
   // placeholder row stands in until the first prompt adopts a real session.
   const draftProjectId = activeProjectId && !activeSessionId ? activeProjectId : undefined
