@@ -120,7 +120,12 @@ export function useTranscriptScroll(messages: TranscriptMessage[], active = true
     if (!active || !scroller || !content) return
     const stopFollowing = (event: Event) => {
       const target = event.target
-      if ((event instanceof WheelEvent && event.deltaY < 0) || (target instanceof Element && target.closest('summary,button[aria-expanded]'))) {
+      // The wheel gate demands actual upward travel: an upward flick with the
+      // scroller pinned at its top (or content too short to scroll at all)
+      // can never fire scroll events, yet it used to flag awayFromBottom —
+      // and with nothing to scroll, nothing ever cleared it, leaving the jump
+      // button stuck over a transcript already at its bottom.
+      if ((event instanceof WheelEvent && event.deltaY < 0 && scroller.scrollTop > 1) || (target instanceof Element && target.closest('summary,button[aria-expanded]'))) {
         pinnedToBottomRef.current = false
         manualScrollUntilRef.current = performance.now() + 150
         if (event instanceof WheelEvent) setAwayFromBottom(true)
@@ -129,12 +134,21 @@ export function useTranscriptScroll(messages: TranscriptMessage[], active = true
     const observer = new ResizeObserver(() => {
       // Growth during the smooth ride yields to the ride instead of snapping.
       if (pinnedToBottomRef.current && performance.now() >= manualScrollUntilRef.current && performance.now() >= smoothScrollUntilRef.current) scroller.scrollTo?.({ top: scroller.scrollHeight, behavior: 'auto' })
+      else if (!pinnedToBottomRef.current && windowEnd === undefined && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 40) {
+        // Self-heal any stuck "away" state whose layout already proves the
+        // bottom is visible: content shrinking back under the parked scroll
+        // position fires no scroll events, so without this the jump button
+        // lingered over a live transcript that had caught up with the reader.
+        pinnedToBottomRef.current = true
+        setAwayFromBottom(false)
+        setHasNewContent(false)
+      }
     })
     observer.observe(content)
     scroller.addEventListener('wheel', stopFollowing, { passive: true })
     scroller.addEventListener('click', stopFollowing, true)
     return () => { observer.disconnect(); scroller.removeEventListener('wheel', stopFollowing); scroller.removeEventListener('click', stopFollowing, true) }
-  }, [active])
+  }, [active, windowEnd])
 
   const scrollToBottom = () => {
     if (windowEnd !== undefined) { setWindowEnd(undefined); setVisibleLimit(250) }

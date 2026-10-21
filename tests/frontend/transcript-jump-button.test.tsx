@@ -22,9 +22,11 @@ const messages: TranscriptMessage[] = [
 let container: HTMLDivElement
 let root: Root
 let scroller: HTMLDivElement
+let resizeCallbacks: ResizeObserverCallback[]
 
 beforeEach(() => {
-  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
+  resizeCallbacks = []
+  vi.stubGlobal('ResizeObserver', class { constructor(callback: ResizeObserverCallback) { resizeCallbacks.push(callback) } observe() {} disconnect() {} })
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 1 })
   vi.stubGlobal('cancelAnimationFrame', vi.fn())
   container = document.createElement('div')
@@ -87,6 +89,45 @@ describe('transcript jump-to-bottom button', () => {
     const button = jumpButton()
     expect(button).not.toBeNull()
     expect(button?.getAttribute('aria-label')).toBe('Scroll to the latest message')
+  })
+
+  it('ignores an upward wheel flick when the transcript fits without scrolling', () => {
+    // Content shorter than the viewport can never scroll up; flagging away
+    // here used to stick the button on a transcript pinned at its bottom.
+    fakeScrollMetrics(400, 400, 0)
+
+    act(() => scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: -120 })))
+
+    expect(jumpButton()).toBeNull()
+  })
+
+  it('ignores an upward wheel flick while the scroller is at its top', () => {
+    fakeScrollMetrics(1000, 400, 0)
+
+    act(() => scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: -120 })))
+
+    expect(jumpButton()).toBeNull()
+  })
+
+  it('unpins on an upward wheel when upward travel exists', () => {
+    fakeScrollMetrics(1000, 400, 600)
+
+    act(() => scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: -120 })))
+
+    expect(jumpButton()).not.toBeNull()
+  })
+
+  it('self-heals a stuck jump button when a resize lands the viewport at the bottom', () => {
+    fakeScrollMetrics(1000, 400, 200)
+    act(() => scroller.dispatchEvent(new Event('scroll')))
+    expect(jumpButton()).not.toBeNull()
+
+    // Content shrank back underneath the parked scroll position: no scroll
+    // events fire for that, only the layout observer sees the new bottom.
+    fakeScrollMetrics(600, 400, 200)
+    act(() => resizeCallbacks[resizeCallbacks.length - 1]([], {} as ResizeObserver))
+
+    expect(jumpButton()).toBeNull()
   })
 
   it('scrolls back to the latest message and hides itself on click', () => {
