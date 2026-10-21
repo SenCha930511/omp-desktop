@@ -22,10 +22,10 @@
    Animate the content holder so row spacing stays put mid-animation. */
 @keyframes transcript-user-enter { 0% { opacity: 0; transform: scale(0.92) translateY(6px); } 100% { opacity: 1; transform: none; } }
 @keyframes transcript-assistant-enter { 0% { opacity: 0; transform: translateY(10px); } 100% { opacity: 1; transform: none; } }
-.message--user.message--enter .user-bubble { transform-origin: bottom right; animation: transcript-user-enter 0.4s cubic-bezier(0.34, 1.3, 0.64, 1) both; }
+.message--user.message--enter .user-bubble { transform-origin: bottom right; animation: transcript-user-enter 0.4s cubic-bezier(0.34, 1.3, 0.64, 1) both, user-bubble-collapse-fade linear both; animation-timeline: auto, scroll(self block); }
 .message--assistant.message--enter .message__content { animation: transcript-assistant-enter 0.45s cubic-bezier(0.34, 1.3, 0.64, 1) both; }
 @media (prefers-reduced-motion: reduce) {
-  .message--user.message--enter .user-bubble,
+  .message--user.message--enter .user-bubble { animation: user-bubble-collapse-fade linear both; animation-timeline: scroll(self block); }
   .message--assistant.message--enter .message__content { animation: none; }
 }
 .message__steer-state { margin-top: 6px; color: var(--text-tertiary); font-size: 11px; }
@@ -36,6 +36,17 @@
 /* User turns are compact right-hugging bubbles with a soft tail corner;
    assistant prose uses the shared reading column, uncontained. */
 .user-bubble { max-width: min(100%, 640px); padding: 9px 14px; border-radius: 18px 18px 5px 18px; background: var(--surface-subtle); color: var(--text); font-size: 13px; line-height: 1.58; overflow-wrap: anywhere; }
+/* The collapse fade rides the same scroll-timeline trick as the transcript
+   fades: when the 280px preview doesn't actually clip, the timeline stays
+   inactive and the registered initial value (0px) leaves the mask fully
+   opaque, so short-but-long-by-characters bubbles never dim visible text. */
+.user-bubble.is-collapsed { max-height: 280px; overflow: hidden; -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - var(--scroll-fade-bottom)), transparent); mask-image: linear-gradient(to bottom, #000 calc(100% - var(--scroll-fade-bottom)), transparent); animation: user-bubble-collapse-fade linear both; animation-timeline: scroll(self block); }
+@keyframes user-bubble-collapse-fade { 0% { --scroll-fade-bottom: 3rem; } 100% { --scroll-fade-bottom: 0px; } }
+.user-bubble__toggle { min-height: 22px; display: inline-flex; align-items: center; gap: 4px; margin-top: 4px; padding: 0 8px; border: 1px solid var(--border); border-radius: 999px; color: var(--text-secondary); background: var(--surface-raised); font-size: 11px; font-weight: 540; cursor: pointer; transition: color 130ms ease-out, background 130ms ease-out, border-color 130ms ease-out; }
+.user-bubble__toggle:hover { color: var(--text); background: var(--surface-hover); border-color: var(--border-strong); }
+.user-bubble__toggle::after { content: attr(data-label); }
+.user-bubble__toggle-icon { transition: transform 180ms cubic-bezier(.19, 1, .22, 1); }
+.user-bubble__toggle[aria-expanded="true"] .user-bubble__toggle-icon { transform: rotate(180deg); }
 .user-annotations { margin-top: 6px; }
 .user-annotations > summary { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border: 1px solid color-mix(in srgb, var(--annotation) 35%, var(--border)); border-radius: 15px; border-bottom-right-radius: 5px; color: var(--annotation); background: color-mix(in srgb, var(--annotation) 8%, transparent); cursor: pointer; font-size: 11px; font-weight: 600; list-style: none; user-select: none; }
 .user-annotations > summary::-webkit-details-marker { display: none; }
@@ -63,6 +74,17 @@
 .prose code { padding: 1px 5px; border: 1px solid var(--border); border-radius: 5px; direction: ltr; unicode-bidi: isolate; background: var(--surface-subtle); font-size: .88em; }
 .prose pre { max-width: 100%; padding: 14px 18px; overflow: auto; border: 1px solid var(--border); border-radius: 14px; direction: ltr; unicode-bidi: isolate; background: var(--surface-subtle); font-size: 12.5px; line-height: 1.6; text-align: left; }
 .prose pre code { padding: 0; border: 0; background: transparent; font-size: inherit; white-space: pre; overflow-wrap: normal; }
+.prose svg { vertical-align: -0.125em; }
+.markdown-code-block { margin: 0 0 14px; overflow: hidden; border: 1px solid var(--border); border-radius: 12px; direction: ltr; unicode-bidi: isolate; background: var(--surface-subtle); }
+.prose > .markdown-code-block:last-child { margin-bottom: 0; }
+.markdown-code-block__header { min-height: 34px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 10px 0 14px; border-bottom: 1px solid var(--border); color: var(--text-tertiary); background: color-mix(in srgb, var(--surface-raised) 65%, var(--surface-subtle)); font-size: 11px; }
+.markdown-code-block__lang { color: var(--text-tertiary); font: 540 11px/1 "SFMono-Regular", Menlo, monospace; letter-spacing: .01em; text-transform: lowercase; user-select: none; }
+.markdown-code-block__lang::before { content: attr(data-lang); }
+.markdown-code-block__copy { min-width: 24px; min-height: 24px; display: inline-flex; align-items: center; justify-content: center; gap: 4px; margin-left: auto; padding: 0 6px; border: 0; border-radius: 6px; color: var(--text-tertiary); background: transparent; font-size: 11px; cursor: pointer; transition: color 130ms ease-out, background 130ms ease-out; }
+.markdown-code-block__copy:hover { color: var(--text-secondary); background: var(--surface-hover); }
+.markdown-code-block__copy.is-copied { color: var(--success); }
+.markdown-code-block__copy > svg { vertical-align: -0.125em; }
+.prose .markdown-code-block > pre { margin: 0; border: 0; border-radius: 0; background: transparent; }
 .prose a > bdi { unicode-bidi: isolate; }
 /* Tables: horizontal hairlines + zebra rows instead of a full grid. */
 .prose table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; }
@@ -90,6 +112,17 @@
 .live-elapsed { font-variant-numeric: tabular-nums; opacity: 0.78; }
 .work-timeline { display: flex; flex-direction: column; gap: 1px; padding: 4px 0 1px; animation: timeline-expand 200ms var(--ease-out); }
 @keyframes timeline-expand { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: translateY(0); } }
+.accordion-grid { display: grid; grid-template-rows: 0fr; transition: grid-template-rows 200ms cubic-bezier(.19, 1, .22, 1), opacity 160ms ease-out; }
+.accordion-grid.is-open { grid-template-rows: 1fr; }
+/* The ramp animates only user-initiated opens (.is-animated). Remounts render
+   already-open grids — agent reselects, session switches — and an animated
+   height there shifts layout under restored scroll offsets. */
+.accordion-grid.is-open.is-animated { animation: accordion-grid-in 200ms cubic-bezier(.19, 1, .22, 1); }
+.accordion-grid__inner { min-width: 0; min-height: 0; overflow: hidden; }
+@keyframes accordion-grid-in { from { grid-template-rows: 0fr; opacity: 0; } to { grid-template-rows: 1fr; opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .accordion-grid, .accordion-grid.is-open { transition: none; animation: none; }
+}
 .work-disclosure.is-running .work-timeline { padding: 0 0 8px; }
 .work-disclosure.is-running .activity-line--reasoning { color: var(--text-tertiary); font-size: 12.5px; line-height: 1.55; }
 .activity-line { position: relative; min-width: 0; color: var(--text-secondary); font-size: 11.5px; line-height: 1.38; }

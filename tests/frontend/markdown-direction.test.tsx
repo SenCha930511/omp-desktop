@@ -21,7 +21,7 @@ describe('Markdown text direction', () => {
 
     expect(html).toContain('<p dir="auto">مسیر <code dir="ltr">src/App.tsx</code>')
     expect(html).toContain('<bdi>https://example.com</bdi>')
-    expect(html).toContain('<pre dir="ltr"><code class="language-ts" dir="ltr">const answer = true')
+    expect(html).toContain('<pre dir="ltr"><code class="language-ts" dir="ltr">const answer = <span class="syntax-keyword">true</span>')
   })
 
   it('keeps code-first paragraphs auto-directed so the LTR code does not decide the base direction', () => {

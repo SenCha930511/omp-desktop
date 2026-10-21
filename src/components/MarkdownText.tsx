@@ -1,9 +1,12 @@
-import { type ComponentPropsWithoutRef, type MouseEvent, memo, useEffect, useMemo, useRef, useState } from 'react'
+import { Check, Copy } from 'lucide-react'
+import { type ComponentPropsWithoutRef, Fragment, isValidElement, type MouseEvent, memo, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import type { Components, ExtraProps } from 'react-markdown'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { writeClipboardText } from '@/lib/clipboard'
 import { openExternalUrl } from '@/lib/desktop-actions'
 import { useI18n } from '@/lib/i18n'
+import { tokenizeSyntax } from './transcript/syntax'
 
 interface MarkdownTextProps {
   text: string
@@ -52,6 +55,73 @@ function MarkdownImage({ alt }: ComponentPropsWithoutRef<'img'> & ExtraProps) {
   return <span className="markdown-image-placeholder">{t('transcript.markdown.image', { label: alt || t('transcript.markdown.imageFallback') })}</span>
 }
 
+export const CODE_BLOCK_COPY_RESET_MS = 2_500
+
+function extractCodeText(node: ReactNode): string {
+  if (typeof node === 'string' || typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map(extractCodeText).join('')
+  if (isValidElement<{ children?: ReactNode }>(node)) return extractCodeText(node.props.children)
+  return ''
+}
+
+function MarkdownCodeBlock({ node: _node, children, ...props }: ComponentPropsWithoutRef<'pre'> & ExtraProps) {
+  const { t } = useI18n()
+  const [copied, setCopied] = useState(false)
+  const resetTimerRef = useRef<number | undefined>(undefined)
+
+  useEffect(() => () => window.clearTimeout(resetTimerRef.current), [])
+
+  const codeElement = isValidElement<ComponentPropsWithoutRef<'code'> & ExtraProps>(children) ? children : null
+  const codeClassName = codeElement?.props.className
+  const languageMatch = typeof codeClassName === 'string' ? /language-([a-z0-9_+-]+)/i.exec(codeClassName) : null
+  const language = languageMatch?.[1]?.toLowerCase() ?? 'text'
+  const rawCode = extractCodeText(codeElement ? codeElement.props.children : children)
+  const codeText = rawCode.replace(/\n$/, '')
+  const lines = useMemo(() => codeText.split('\n'), [codeText])
+  const copyLabel = t(copied ? 'transcript.copied.label' : 'transcript.copy.label')
+
+  const handleCopy = () => {
+    void writeClipboardText(codeText)
+      .then(() => {
+        setCopied(true)
+        window.clearTimeout(resetTimerRef.current)
+        resetTimerRef.current = window.setTimeout(() => setCopied(false), CODE_BLOCK_COPY_RESET_MS)
+      })
+      .catch(() => {
+        setCopied(false)
+      })
+  }
+
+  return (
+    <div className="markdown-code-block" dir="ltr">
+      <div className="markdown-code-block__header">
+        <span className="markdown-code-block__lang" data-lang={language} />
+        <button type="button" className={`markdown-code-block__copy${copied ? ' is-copied' : ''}`} aria-label={copyLabel} title={copyLabel} onClick={handleCopy}>
+          {copied ? <Check size={12} aria-hidden="true" /> : <Copy size={12} aria-hidden="true" />}
+        </button>
+      </div>
+      <pre {...props} dir="ltr">
+        <code className={codeClassName} dir="ltr">
+          {lines.map((line, lineIndex) => (
+            <Fragment key={`${lineIndex}-${line.slice(0, 12)}`}>
+              {tokenizeSyntax(line).map((token, tokenIndex) =>
+                token.kind === 'plain' ? (
+                  <Fragment key={`${tokenIndex}-${token.text.slice(0, 8)}`}>{token.text}</Fragment>
+                ) : (
+                  <span className={`syntax-${token.kind}`} key={`${tokenIndex}-${token.text.slice(0, 8)}`}>
+                    {token.text}
+                  </span>
+                ),
+              )}
+              {lineIndex < lines.length - 1 ? '\n' : null}
+            </Fragment>
+          ))}
+        </code>
+      </pre>
+    </div>
+  )
+}
+
 const markdownPlugins = [remarkGfm]
 
 /**
@@ -77,11 +147,7 @@ const markdownComponents: Components = {
   li: ({ node: _node, ...props }) => <li {...props} dir="auto" />,
   ol: ({ node: _node, ...props }) => <ol {...props} dir="auto" />,
   p: ({ node: _node, ...props }) => <p {...props} dir="auto" />,
-  pre: ({ node: _node, children, ...props }) => (
-    <pre {...props} dir="ltr">
-      {children}
-    </pre>
-  ),
+  pre: MarkdownCodeBlock,
   td: ({ node: _node, ...props }) => <td {...props} dir="auto" />,
   th: ({ node: _node, ...props }) => <th {...props} dir="auto" />,
   ul: ({ node: _node, ...props }) => <ul {...props} dir="auto" />,

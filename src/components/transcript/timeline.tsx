@@ -393,6 +393,10 @@ export function WorkDisclosure({
   // visible without opening the dropdown — and the row folds back into the
   // compact "worked" summary the moment the turn completes.
   const [manualOpen, setOpen] = useState(running || defaultExpanded)
+  // The entrance ramp plays only for user-initiated opens. A remount with the
+  // disclosure already open (agent reselect, session switch) must stay static:
+  // the height ramp shifts layout under a restored scroll offset.
+  const userToggledRef = useRef(false)
   const reveal = useContext(SearchRevealContext)
   const open = manualOpen || reveal
   useEffect(() => setOpen(running || defaultExpanded), [running, defaultExpanded])
@@ -403,14 +407,20 @@ export function WorkDisclosure({
   const duration = formatWorkedDuration(Math.max(0, completedAt - startedAt))
   return (
     <section className={`work-disclosure ${running ? 'is-running' : ''}`} aria-label={t('transcript.work.aria')}>
-      <button type="button" className="work-disclosure__button" onClick={() => setOpen((value) => !value)} aria-expanded={open}>
+      <button type="button" className="work-disclosure__button" onClick={() => { userToggledRef.current = true; setOpen((value) => !value) }} aria-expanded={open}>
         {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
         {running ? <span role="status"><span className="shine-sweep">{status === 'Thinking' ? t('transcript.workStatus.thinking') : t('transcript.workStatus.working')}</span></span> : <span>{t('transcript.work.workedFor', { duration })}</span>}
         {toolCount > 0 && <span className="work-disclosure__count">{t('transcript.work.tools', { count: toolCount })}</span>}
         {running && <LiveElapsed since={message.startedAt ?? message.timestamp} />}
         {running && !open && <LoaderCircle size={12} className="spin" />}
       </button>
-      {open ? <WorkTimeline parts={parts} showReasoning={showReasoning} showTools={showTools} streaming={running} /> : null}
+      {open ? (
+        <div className={`accordion-grid is-open${userToggledRef.current ? ' is-animated' : ''}`}>
+          <div className="accordion-grid__inner">
+            <WorkTimeline parts={parts} showReasoning={showReasoning} showTools={showTools} streaming={running} />
+          </div>
+        </div>
+      ) : null}
     </section>
   )
 }

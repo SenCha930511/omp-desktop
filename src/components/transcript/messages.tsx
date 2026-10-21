@@ -275,16 +275,24 @@ function UserText({ text, onOpenSessionReference }: { text: string; onOpenSessio
   )
 }
 
+export const USER_BUBBLE_COLLAPSE_CHAR_THRESHOLD = 360
+export const USER_BUBBLE_COLLAPSE_LINE_THRESHOLD = 10
+
 export const UserMessage = memo(function UserMessage({ message, entering = false, onOpenSessionReference }: { message: TranscriptMessage; entering?: boolean; onOpenSessionReference?(sessionId: string, harness: HarnessId): void }) {
   const { t } = useI18n()
+  const reveal = useContext(SearchRevealContext)
+  const [expanded, setExpanded] = useState(false)
   const copyableText = message.parts
     .filter((part) => part.type === 'text')
     .map((part) => visibleUserText(part.text))
     .filter(Boolean)
     .join('\n')
+  const isCollapsible = copyableText.length > USER_BUBBLE_COLLAPSE_CHAR_THRESHOLD || copyableText.split('\n').length > USER_BUBBLE_COLLAPSE_LINE_THRESHOLD
+  const isCollapsed = isCollapsible && !expanded && !reveal
+  const toggleLabel = t(expanded ? 'transcript.user.showLess' : 'transcript.user.showMore')
   return (
     <article className={`message message--user${entering ? ' message--enter' : ''}`}>
-      <div className="user-bubble">
+      <div className={`user-bubble${isCollapsed ? ' is-collapsed' : ''}`}>
         {message.parts.map((part, index) =>
           part.type === 'text' ? (
             <UserText key={index} text={part.text} onOpenSessionReference={onOpenSessionReference} />
@@ -293,6 +301,11 @@ export const UserMessage = memo(function UserMessage({ message, entering = false
           ) : null,
         )}
       </div>
+      {isCollapsible ? (
+        <button type="button" className="user-bubble__toggle" aria-expanded={!isCollapsed} aria-label={toggleLabel} data-label={toggleLabel} onClick={() => setExpanded((value) => !value)}>
+          <ChevronDown className="user-bubble__toggle-icon" size={12} aria-hidden="true" />
+        </button>
+      ) : null}
       {message.steerState ? (
         <div className={`message__steer-state is-${message.steerState}`} role="status">
           {message.steerState === 'accepted' ? t('transcript.steer.accepted') : t('transcript.steer.read')}
@@ -334,6 +347,9 @@ export const ActivityMessage = memo(function ActivityMessage({ message, harness 
 export const AgentMessage = memo(function AgentMessage({ message }: { message: TranscriptMessage }) {
   const { t } = useI18n()
   const [manualOpen, setOpen] = useState(false)
+  // Same rule as WorkDisclosure: only user-initiated opens animate, so a
+  // remount-open message never shifts layout under restored scroll offsets.
+  const userToggledRef = useRef(false)
   const reveal = useContext(SearchRevealContext)
   const open = manualOpen || reveal
   const contentId = useId()
@@ -341,15 +357,19 @@ export const AgentMessage = memo(function AgentMessage({ message }: { message: T
   const label = message.agentName ? t('transcript.agent.summaryNamed', { name: message.agentName }) : t('transcript.agent.summary')
   return (
     <article className={`message message--agent ${open ? 'is-open' : ''}`}>
-      <button type="button" className="agent-message__summary" aria-expanded={open} aria-controls={contentId} aria-label={label} onClick={() => setOpen((value) => !value)}>
+      <button type="button" className="agent-message__summary" aria-expanded={open} aria-controls={contentId} aria-label={label} onClick={() => { userToggledRef.current = true; setOpen((value) => !value) }}>
         <span className="agent-message__label">{t('transcript.agent.summary')}</span>
         {message.agentName ? <span className="agent-message__name">{message.agentName}</span> : null}
         {open ? <ChevronDown className="agent-message__chevron" size={13} /> : <ChevronRight className="agent-message__chevron" size={13} />}
       </button>
       {open ? (
-        <div className="agent-message__content" id={contentId}>
-          <MarkdownText text={boundText(text, 40_000, t('transcript.agent.truncated'))} />
-          <MessageActions message={message} />
+        <div className={`accordion-grid is-open${userToggledRef.current ? ' is-animated' : ''}`}>
+          <div className="accordion-grid__inner">
+            <div className="agent-message__content" id={contentId}>
+              <MarkdownText text={boundText(text, 40_000, t('transcript.agent.truncated'))} />
+              <MessageActions message={message} />
+            </div>
+          </div>
         </div>
       ) : null}
     </article>
