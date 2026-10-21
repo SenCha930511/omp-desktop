@@ -339,6 +339,5 @@ describe('sidebar session notifications', () => {
     const signature = sessionAttentionSignature(failedSession)!
     await act(async () => { root.render(<Sidebar {...props} clearedAttention={{ [failedSession.id]: signature }} />) })
     expect(container.querySelector('.session-row-wrap')?.classList.contains('has-attention')).toBe(false)
-    expect(container.querySelector('.session-status-mark--failed')?.getAttribute('title')).toBe('Failed — notification cleared')
   })
 })

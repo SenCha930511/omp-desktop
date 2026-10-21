@@ -187,8 +187,12 @@
 .message:hover .message-actions, .message:focus-within .message-actions { opacity: 1; }
 .message-actions button, .message-actions span { min-height: 23px; display: inline-flex; align-items: center; gap: 4px; padding: 0 6px; border-radius: 5px; color: var(--text-tertiary); background: transparent; font-size: 10.5px; }
 .message-actions button:hover { color: var(--text-secondary); background: var(--surface-hover); }
+/* Copied feedback stays a text tint — no filled chip behind it. */
+.message-actions button.is-copied, .activity-tool__copy.is-copied { color: var(--success); }
 .message-actions span { margin-left: auto; }
 .message--user .message-actions { justify-content: flex-end; }
+/* Pull the padded chip back so its icon starts on the prose/chevron column. */
+.message--assistant .message-actions { margin-left: -6px; }
 .message--agent { margin: 7px 0 20px; overflow: hidden; border: 1px solid color-mix(in srgb, var(--prime) 22%, var(--border)); border-radius: 10px; background: color-mix(in srgb, var(--prime-soft) 76%, var(--canvas)); }
 .session-reference { display: inline; margin: 0; padding: 0; border: 0; border-radius: 0; color: var(--prime); background: transparent; font: inherit; letter-spacing: inherit; line-height: inherit; text-decoration: none; overflow-wrap: inherit; cursor: pointer; }
 .session-reference:hover, .session-reference:focus-visible { color: var(--prime); text-decoration: underline; text-underline-offset: 2px; }

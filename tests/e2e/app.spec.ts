@@ -1470,14 +1470,9 @@ test.describe('OMP Desktop desktop smoke', () => {
     expect(attentionColor.length).toBeGreaterThanOrEqual(3)
     expect(attentionColor[2]).toBeGreaterThan(attentionColor[1])
 
-    const failureMark = primaryRow.locator('.session-status-mark--failed')
-    const activeFailureColor = await failureMark.locator('> span').evaluate((node) => getComputedStyle(node).backgroundColor)
-
     await primaryRow.locator('.session-row').click()
     await expect(primaryRow).not.toHaveClass(/has-attention/)
     await expect(primaryRow).toHaveClass(/session-row-wrap--failed/)
-    await expect(failureMark).toHaveAttribute('title', 'Failed — notification cleared')
-    await expect.poll(() => failureMark.locator('> span').evaluate((node) => getComputedStyle(node).backgroundColor)).not.toBe(activeFailureColor)
     await expect(activityCount).toHaveCount(0)
     appendFileSync(primaryFile, `${JSON.stringify({
       type: 'message', id: 'primary-new-user', parentId: 'primary-background-assistant', timestamp: '2028-01-01T00:00:00.000Z',

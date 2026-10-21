@@ -2,7 +2,6 @@ import {
   Bell,
   CalendarClock,
   Check,
-  CheckCircle2,
   ChevronDown,
   ChevronsDownUp,
   ChevronsUpDown,
@@ -14,7 +13,6 @@ import {
   FolderPlus,
   ListFilter,
   LoaderCircle,
-  MessageCircleQuestion,
   MoreHorizontal,
   NotebookPen,
   PackageOpen,
@@ -27,7 +25,6 @@ import {
 } from 'lucide-react'
 import { memo, useEffect, useMemo, useState } from 'react'
 import { sessionAttentionSignature, signatureCleared } from '@/app/session-attention'
-import { formatRelative } from '@/lib/data'
 import { HARNESS_PRODUCT_NAMES } from '@/lib/harness'
 import { type MessageKey, useI18n } from '@/lib/i18n'
 import { shortcutLabel } from '@/lib/platform-shortcuts'
@@ -66,15 +63,6 @@ export interface SidebarProps {
   onArchiveSession(session: SessionRecord): Promise<void>
   overlay?: boolean
   platform?: NodeJS.Platform
-}
-
-const statusLabelKeys: Record<SessionRecord['status'], MessageKey> = {
-  idle: 'sidebar.status.idle',
-  running: 'sidebar.status.running',
-  waiting: 'sidebar.status.waiting',
-  complete: 'sidebar.status.complete',
-  failed: 'sidebar.status.failed',
-  unknown: 'sidebar.status.unknown',
 }
 
 export const SIDEBAR_SESSION_LIMIT = 7
@@ -126,34 +114,6 @@ export function indexSidebarSessions(
 
 export function boundedSidebarSessions(sessions: SessionRecord[]): SessionRecord[] {
   return sessions.slice(0, SIDEBAR_SESSION_LIMIT)
-}
-
-function SessionStatusMark({ status, attention }: { status: SessionRecord['status']; attention: boolean }) {
-  const { t } = useI18n()
-  const title = status === 'failed' && !attention ? t('sidebar.status.failedCleared') : t(statusLabelKeys[status])
-  if (status === 'running')
-    return (
-      <span className="session-status-mark session-status-mark--running" title={t(statusLabelKeys[status])}>
-        <LoaderCircle className="spin" size={13} />
-      </span>
-    )
-  if (status === 'waiting')
-    return (
-      <span className="session-status-mark session-status-mark--waiting" title={t(statusLabelKeys[status])}>
-        <MessageCircleQuestion size={12} />
-      </span>
-    )
-  if (status === 'complete')
-    return (
-      <span className="session-status-mark session-status-mark--complete" title={t(statusLabelKeys[status])}>
-        <CheckCircle2 size={12} />
-      </span>
-    )
-  return (
-    <span className={`session-status-mark session-status-mark--${status}`} title={title}>
-      <span />
-    </span>
-  )
 }
 
 type Translator = (key: MessageKey, values?: Record<string, string | number>) => string
@@ -568,7 +528,6 @@ function SidebarView({
                           onSelectDraftSession(project)
                         }}
                       >
-                        <NotebookPen size={12} aria-hidden="true" />
                         <span className="session-row__text">
                           <span className="session-row__title">{t('sidebar.untitledSession')}</span>
                         </span>
@@ -604,19 +563,10 @@ function SidebarView({
                           setSessionMenu(session.id)
                         }}
                       >
-                        <SessionStatusMark status={session.status} attention={needsAttention(session)} />
                         <span className="session-row__text">
                           <span className="session-row__title">{session.title}</span>
-                          <span className="session-row__meta">
-                            {session.status === 'running'
-                              ? t('sidebar.sessionWorking')
-                              : session.status === 'waiting'
-                                ? t('sidebar.needsAttention')
-                                : session.status === 'complete'
-                                  ? t('sidebar.sessionFinished')
-                                  : formatRelative(session.updatedAt)}
-                          </span>
                         </span>
+                        {session.status === 'running' ? <span className="session-row__spinner" title={t('sidebar.sessionWorking')}><LoaderCircle className="spin" size={13} /></span> : null}
                       </button>
                       <IconButton
                         size="small"

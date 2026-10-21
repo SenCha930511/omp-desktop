@@ -1,5 +1,5 @@
 import { Check, ChevronDown, ChevronRight, CircleAlert, Copy, FileCode2, GitFork, Globe2, Layers3, LoaderCircle, MessageCircle, MessageCircleQuestion, TerminalSquare, Wrench } from 'lucide-react'
-import { type ReactNode, useContext, useEffect, useRef, useState } from 'react'
+import { type ReactNode, memo, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { writeClipboardText } from '@/lib/clipboard'
 import { type MessageKey, useI18n } from '@/lib/i18n'
 import { boundText } from '@/lib/render-bounds'
@@ -155,7 +155,7 @@ export function LiveElapsed({ since }: { since?: string | number }) {
   )
 }
 
-function ToolPart({ part, next, streaming }: { part: Extract<MessagePart, { type: 'toolCall' }>; next?: MessagePart; streaming: boolean }) {
+const ToolPart = memo(function ToolPart({ part, next, streaming }: { part: Extract<MessagePart, { type: 'toolCall' }>; next?: MessagePart; streaming: boolean }) {
   const { t } = useI18n()
   const [manualOpen, setOpen] = useState(false)
   const reveal = useContext(SearchRevealContext)
@@ -166,10 +166,13 @@ function ToolPart({ part, next, streaming }: { part: Extract<MessagePart, { type
   const failed = result?.isError
   const finished = result && !result.streaming
   const kind = classifyTool(part.name)
-  const args = serialize(part.args, true)
   const output = result?.text ?? ''
-  const visibleOutput = boundText(`${args}${args && output ? '\n\n' : ''}${output}`, 200_000, t('transcript.tool.outputTruncated'))
-  const canExpand = Boolean(visibleOutput)
+  const visibleOutput = useMemo(() => {
+    if (!open) return ''
+    const args = serialize(part.args, true)
+    return boundText(`${args}${args && output ? '\n\n' : ''}${output}`, 200_000, t('transcript.tool.outputTruncated'))
+  }, [open, part.args, output, t])
+  const canExpand = Boolean(output || (part.args !== undefined && part.args !== ''))
   const state = failed ? 'error' : finished ? 'done' : !streaming ? 'unknown' : kind === 'question' ? 'waiting' : 'running'
   const preview = toolPreview(part)
   useEffect(
@@ -220,7 +223,7 @@ function ToolPart({ part, next, streaming }: { part: Extract<MessagePart, { type
       {open && visibleOutput ? (
         <div className="activity-tool__details">
           <div className="activity-tool__details-toolbar">
-            <button type="button" className="activity-tool__copy" aria-label={copied ? t('transcript.tool.copiedContents') : t('transcript.tool.copyContents')} onClick={() => void copyContents()}>
+            <button type="button" className={`activity-tool__copy${copied ? ' is-copied' : ''}`} aria-label={copied ? t('transcript.tool.copiedContents') : t('transcript.tool.copyContents')} onClick={() => void copyContents()}>
               {copied ? <Check size={12} /> : <Copy size={12} />} {copied ? t('transcript.copied.label') : t('transcript.copy.label')}
             </button>
           </div>
@@ -231,7 +234,7 @@ function ToolPart({ part, next, streaming }: { part: Extract<MessagePart, { type
       ) : null}
     </div>
   )
-}
+})
 
 function StandaloneToolResult({ part }: { part: Extract<MessagePart, { type: 'toolResult' }> }) {
   return (

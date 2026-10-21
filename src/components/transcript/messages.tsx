@@ -129,7 +129,7 @@ function MessageActions({ message, text: suppliedText }: { message: TranscriptMe
 
   return (
     <div className="message-actions">
-      <button type="button" disabled={!text} aria-label={copied ? t(copyKeys.copied) : t(copyKeys.copy)} onClick={() => void copyMessage()}>
+      <button type="button" className={copied ? 'is-copied' : undefined} disabled={!text} aria-label={copied ? t(copyKeys.copied) : t(copyKeys.copy)} onClick={() => void copyMessage()}>
         {copied ? <Check size={12} /> : <Copy size={12} />} {copied ? t('transcript.copied.label') : t('transcript.copy.label')}
       </button>
     </div>
