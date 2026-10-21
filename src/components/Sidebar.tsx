@@ -438,7 +438,9 @@ function SidebarView({
           return (
             <div className="project-group" key={project.id}>
               <div
-                className={`project-row ${activeProjectId === project.id && activeView === 'session' && draftProjectId !== project.id ? 'is-selected' : ''}`}
+                // Selection belongs to the session row while the project is
+                // expanded; a collapsed project row carries it for both.
+                className={`project-row ${activeProjectId === project.id && activeView === 'session' && draftProjectId !== project.id && isCollapsed ? 'is-selected' : ''}`}
                 onContextMenu={(event) => {
                   event.preventDefault()
                   setProjectMenu(project.id)

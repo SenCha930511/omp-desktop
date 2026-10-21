@@ -97,11 +97,13 @@ describe('sidebar draft session placeholder', () => {
     expect([...container.querySelectorAll<HTMLElement>('.session-row__title')].map((row) => row.textContent)).toEqual(['Untitled session', 'one'])
   })
 
-  it('shows no placeholder and keeps the project selected once a real session is active', async () => {
+  it('shows no placeholder once a real session is active, and the session row owns the selection', async () => {
     await renderSidebar({ sessions: [session('one')], activeProjectId: 'project', activeSessionId: 'one' })
 
     expect(container.querySelector('.session-row-wrap.is-placeholder')).toBeNull()
-    expect(container.querySelector('.project-row')?.classList.contains('is-selected')).toBe(true)
+    // The expanded project row stays plain; selection lives on its session row only.
+    expect(container.querySelector('.project-row')?.classList.contains('is-selected')).toBe(false)
+    expect(container.querySelector('.session-row-wrap.is-selected')?.querySelector('.session-row__title')?.textContent).toBe('one')
   })
 
   it('keeps the placeholder visible but unselected outside the session view', async () => {

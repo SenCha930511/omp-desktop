@@ -43,11 +43,11 @@ async function press(element: Element) {
   })
 }
 
-async function renderSidebar(projects: ProjectRecord[], sessions: SessionRecord[]) {
+async function renderSidebar(projects: ProjectRecord[], sessions: SessionRecord[], activeIds: { activeProjectId?: string; activeSessionId?: string } = {}) {
   await act(async () => {
     root.render(
       <Sidebar
-        projects={projects} sessions={sessions} activeView="session" projectSortMode="recent"
+        projects={projects} sessions={sessions} activeView="session" projectSortMode="recent" activeProjectId={activeIds.activeProjectId} activeSessionId={activeIds.activeSessionId}
         onSelectProject={noop} onSelectSession={noop} onNavigate={noop} onNewSession={noop} onAddProject={noop} onRemoveProject={noop}
         onClose={noop} onOpenPalette={noop} onRenameSession={async () => undefined} onArchiveSession={async () => undefined}
       />,
@@ -101,5 +101,21 @@ describe('sidebar expand and collapse all projects', () => {
     await press(expandAllButton()!)
     expect(container.querySelector('.session-row__spinner')).not.toBeNull()
     expect(container.querySelector('.project-working')).toBeNull()
+  })
+
+  it('moves the selected fill from the session row to the collapsed project row', async () => {
+    await renderSidebar([project], [session], { activeProjectId: project.id, activeSessionId: session.id })
+
+    // Expanded: the session row owns the selection; the folder row stays plain.
+    expect(container.querySelector('.project-row.is-selected')).toBeNull()
+    expect(container.querySelector('.session-row-wrap.is-selected')).not.toBeNull()
+
+    // Collapsed: the folder row carries the selection instead, or the active
+    // project would be invisible entirely.
+    await press(collapseAllButton()!)
+    expect(container.querySelector('.project-row.is-selected')).not.toBeNull()
+
+    await press(expandAllButton()!)
+    expect(container.querySelector('.project-row.is-selected')).toBeNull()
   })
 })
