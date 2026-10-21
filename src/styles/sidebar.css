@@ -39,7 +39,7 @@
 .project-row__menu button:hover, .project-row__menu button:focus-visible { color: var(--danger); background: var(--danger-soft); }
 .session-list { padding-left: 20px; margin-top: 1px; }
 .session-row-wrap { position: relative; border-radius: 7px; }
-.session-row-wrap:hover:not(.is-selected), .session-row-wrap:focus-within:not(.is-selected) { background: var(--surface-hover); }
+.session-row-wrap:hover:not(.is-selected)::before, .session-row-wrap:focus-within:not(.is-selected)::before { content: ''; position: absolute; inset: 0 0 0 -20px; z-index: -1; border-radius: 7px; background: var(--surface-hover); }
 /* Attention (completed/updated work in an inactive row) used to paint a
    filled prime background across the whole row. Removed per request: the row
    looks like any other; the attention state survives only in the session
