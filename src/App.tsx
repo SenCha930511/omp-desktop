@@ -1215,9 +1215,8 @@ export default function App() {
                         fastSupported={provider.selectedModel?.fastModeSupported ?? false}
                         fastAvailable={workspace.runtime?.fastModeAvailable !== false}
                         approvalMode={settingsState.settings.ompApprovalMode}
-                        onApprovalModeClick={() => {
-                          setSettingsSectionRequest((current) => ({ section: 'agent', id: current.id + 1 }))
-                          setView('settings')
+                        onApprovalModeChange={(mode) => {
+                          void settingsState.updateSettings({ ompApprovalMode: mode })
                         }}
                         checkoutCatalog={checkoutCatalog}
                         checkoutLabel={git.branch ?? activeProject?.gitBranch ?? activeProject?.name}

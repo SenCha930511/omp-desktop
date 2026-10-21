@@ -1,4 +1,4 @@
-import { ArrowUp, AtSign, ChevronDown, Clock3, Command, Edit3, Gauge, ImageIcon, LoaderCircle, MessageCirclePlus, Mic, Paperclip, Plus, Shield, ShieldAlert, ShieldCheck, ShieldQuestionMark, Square, SquareTerminal, Trash2, X, Zap } from 'lucide-react'
+import { ArrowUp, AtSign, Check, ChevronDown, Clock3, Command, Edit3, Gauge, ImageIcon, LoaderCircle, MessageCirclePlus, Mic, Paperclip, Plus, Shield, ShieldAlert, ShieldCheck, ShieldQuestionMark, Square, SquareTerminal, Trash2, X, Zap } from 'lucide-react'
 import type { CSSProperties } from 'react'
 import { memo, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useComposerImages } from '@/hooks/useComposerImages'
@@ -62,9 +62,9 @@ interface ComposerProps {
   fast: boolean
   fastSupported: boolean
   fastAvailable: boolean
-  /** App-level OMP approval mode shown as a compact pill; click opens the Agent settings. */
+  /** App-level OMP approval mode shown as a compact pill with an inline mode menu. */
   approvalMode?: OmpApprovalMode
-  onApprovalModeClick?(): void
+  onApprovalModeChange?(mode: OmpApprovalMode): void
   /** Active harness agent name for tooltips ("OMP"). */
   agentName?: string
   /** Active harness short name for inline copy ("OMP"). */
@@ -163,7 +163,7 @@ export const Composer = memo(function Composer({
   fastSupported,
   fastAvailable,
   approvalMode = 'inherit',
-  onApprovalModeClick,
+  onApprovalModeChange,
   agentName = 'OMP',
   shortName = 'OMP',
 
@@ -297,6 +297,26 @@ export const Composer = memo(function Composer({
       document.removeEventListener('keydown', onEscape)
     }
   }, [menu])
+
+  const [approvalMenuOpen, setApprovalMenuOpen] = useState(false)
+  const approvalMenuRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!approvalMenuOpen) return
+    const close = (event: MouseEvent) => {
+      const target = event.target
+      if (!(target instanceof Node) || approvalMenuRef.current?.contains(target)) return
+      setApprovalMenuOpen(false)
+    }
+    const onEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !isImeComposingOrGuarded(event, composingRef.current, lastCompositionEndAtRef.current)) setApprovalMenuOpen(false)
+    }
+    document.addEventListener('mousedown', close)
+    document.addEventListener('keydown', onEscape)
+    return () => {
+      document.removeEventListener('mousedown', close)
+      document.removeEventListener('keydown', onEscape)
+    }
+  }, [approvalMenuOpen])
 
   // Ctrl/Cmd+Enter in the annotation popover bumps sendSignal to submit the
   // draft (with the just-saved annotation) without switching focus here.
@@ -897,15 +917,44 @@ export const Composer = memo(function Composer({
                 </option>
               ))}
             </SelectControl>
-            <button
-              type="button"
-              className={`approval-mode-toggle ${approvalMeta.yolo ? 'is-yolo' : ''}`}
-              aria-label={approvalTitle}
-              title={approvalTitle}
-              onClick={() => onApprovalModeClick?.()}
-            >
-              <ApprovalIcon size={12} /> <span className="approval-mode-toggle__label">{t(approvalMeta.labelKey)}</span>
-            </button>
+            <div className="approval-mode" ref={approvalMenuRef}>
+              <button
+                type="button"
+                className={`approval-mode-toggle ${approvalMeta.yolo ? 'is-yolo' : ''}`}
+                aria-label={approvalTitle}
+                title={approvalTitle}
+                aria-haspopup="menu"
+                aria-expanded={approvalMenuOpen}
+                onClick={() => setApprovalMenuOpen((open) => !open)}
+              >
+                <ApprovalIcon size={12} /> <span className="approval-mode-toggle__label">{t(approvalMeta.labelKey)}</span>
+              </button>
+              {approvalMenuOpen ? (
+                <div className="approval-mode__menu" role="menu" aria-label={t('composer.approval.menu')}>
+                  {(Object.keys(approvalModeMeta) as OmpApprovalMode[]).map((mode) => {
+                    const meta = approvalModeMeta[mode]
+                    const ModeIcon = meta.icon
+                    return (
+                      <button
+                        type="button"
+                        key={mode}
+                        role="menuitemradio"
+                        aria-checked={mode === approvalMode}
+                        className={`approval-mode__option ${mode === approvalMode ? 'is-active' : ''}`}
+                        onClick={() => {
+                          setApprovalMenuOpen(false)
+                          onApprovalModeChange?.(mode)
+                        }}
+                      >
+                        <ModeIcon size={13} />
+                        <span>{t(meta.labelKey)}</span>
+                        {mode === approvalMode ? <Check size={13} className="approval-mode__check" /> : null}
+                      </button>
+                    )
+                  })}
+                </div>
+              ) : null}
+            </div>
             {fastSupported ? (
               <button
                 type="button"

@@ -70,15 +70,24 @@ describe('composer approval mode pill', () => {
     act(() => root.render(<Composer {...props({ approvalMode: 'yolo' })} />))
 
     expect(pill()?.classList.contains('is-yolo')).toBe(true)
-    expect(pill()?.getAttribute('title')).toBe('Approval mode: YOLO (never prompt) — opens Agent settings')
+    expect(pill()?.getAttribute('title')).toBe('Approval mode: YOLO (never prompt)')
   })
 
-  it('fires onApprovalModeClick when clicked', () => {
-    const onApprovalModeClick = vi.fn()
-    act(() => root.render(<Composer {...props({ approvalMode: 'write', onApprovalModeClick })} />))
+  it('opens a mode menu and reports the chosen mode', () => {
+    const onApprovalModeChange = vi.fn()
+    act(() => root.render(<Composer {...props({ approvalMode: 'write', onApprovalModeChange })} />))
 
     act(() => pill()?.click())
+    const menu = container.querySelector('.approval-mode__menu')
+    expect(menu).not.toBeNull()
+    const options = Array.from(menu?.querySelectorAll<HTMLButtonElement>('button.approval-mode__option') ?? [])
+    expect(options.map((option) => option.textContent)).toEqual(['Inherit', 'Ask', 'Write', 'YOLO'])
+    expect(options[2].getAttribute('aria-checked')).toBe('true')
 
-    expect(onApprovalModeClick).toHaveBeenCalledTimes(1)
+    act(() => options[3].click())
+
+    expect(onApprovalModeChange).toHaveBeenCalledTimes(1)
+    expect(onApprovalModeChange).toHaveBeenCalledWith('yolo')
+    expect(container.querySelector('.approval-mode__menu')).toBeNull()
   })
 })

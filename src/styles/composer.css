@@ -191,3 +191,8 @@
 .composer-menu button > span { min-width: 0; display: flex; flex-direction: column; }
 .composer-menu strong { color: var(--text); font-size: 12px; font-weight: 540; }
 .composer-menu small { overflow: hidden; color: var(--text-tertiary); font-size: 10.5px; white-space: nowrap; text-overflow: ellipsis; }
+.approval-mode { position: relative; }
+.approval-mode__menu { position: absolute; z-index: 70; left: 0; bottom: calc(100% + 7px); min-width: 176px; padding: 6px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-raised); box-shadow: var(--shadow-popover); }
+.approval-mode__option { width: 100%; display: flex; align-items: center; gap: 7px; padding: 6px 7px; border-radius: 7px; color: var(--text-secondary); background: transparent; font-size: 11.5px; font-weight: 540; text-align: left; }
+.approval-mode__option:hover, .approval-mode__option.is-active { color: var(--text); background: var(--surface-hover); }
+.approval-mode__check { margin-left: auto; color: var(--accent); }

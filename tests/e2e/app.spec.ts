@@ -794,6 +794,49 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(transcript).toHaveClass(/is-scrolled/)
   })
 
+  test('opens the reasoning effort picker from anywhere on its chip', async () => {
+    // The native select shrinks to a sliver beside its icon and chevron
+    // (field-sizing: content); clicks on the rest of the chip must still
+    // open the picker instead of hitting dead space.
+    const effort = page.getByRole('combobox', { name: 'Reasoning effort', exact: true })
+    await expect(effort).toBeVisible()
+    await page.evaluate(() => {
+      const scope = globalThis as { __pickerCalls?: string[] }
+      scope.__pickerCalls = []
+      HTMLSelectElement.prototype.showPicker = function showPickerRecorded(this: HTMLSelectElement) {
+        scope.__pickerCalls?.push(this.getAttribute('aria-label') ?? '')
+      }
+    })
+    // Raw mouse clicks at the chip's icon and chevron — the spots that used
+    // to be dead space outside the native select's own box.
+    const iconBox = await page.locator('.composer-effort__trigger .select-control__icon').boundingBox()
+    if (!iconBox) throw new Error('effort icon is not visible')
+    await page.mouse.click(iconBox.x + iconBox.width / 2, iconBox.y + iconBox.height / 2)
+    await expect.poll(() => page.evaluate(() => (globalThis as { __pickerCalls?: string[] }).__pickerCalls)).toEqual(['Reasoning effort'])
+    // The trailing padding of the chip (the chevron hides in narrow panes)
+    // must open the picker too.
+    const chipBox = await page.locator('.composer-effort__trigger').boundingBox()
+    if (!chipBox) throw new Error('effort chip is not visible')
+    await page.mouse.click(chipBox.x + chipBox.width - 3, chipBox.y + chipBox.height / 2)
+    await expect.poll(() => page.evaluate(() => (globalThis as { __pickerCalls?: string[] }).__pickerCalls)).toEqual(['Reasoning effort', 'Reasoning effort'])
+  })
+
+  test('switches the approval mode from the composer pill', async () => {
+    const pill = page.locator('.approval-mode-toggle')
+    await expect(pill).toBeVisible()
+    await pill.click()
+    const menu = page.locator('.approval-mode__menu')
+    await expect(menu).toBeVisible()
+    await expect(menu.getByRole('menuitemradio')).toHaveCount(4)
+    await menu.getByRole('menuitemradio', { name: /^Ask/ }).click()
+    await expect(page.locator('.approval-mode-toggle__label')).toHaveText('Ask')
+    await expect.poll(() => page.evaluate(async () => (await window.desktop.settings.get()).ompApprovalMode)).toBe('always-ask')
+    await pill.click()
+    await expect(page.locator('.approval-mode__menu').getByRole('menuitemradio', { name: /^Ask/ })).toHaveAttribute('aria-checked', 'true')
+    await page.keyboard.press('Escape')
+    await expect(page.locator('.approval-mode__menu')).toHaveCount(0)
+  })
+
   test('adapts terminal command output, notifications, empty results and failures to the desktop panel', async () => {
     await expect(page.locator('.model-picker__trigger')).toHaveAccessibleName('Model: Claude Fixture')
     const composer = page.getByRole('combobox', { name: 'Message OMP' })
