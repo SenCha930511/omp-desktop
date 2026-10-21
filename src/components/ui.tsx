@@ -33,13 +33,26 @@ interface SelectControlProps extends SelectHTMLAttributes<HTMLSelectElement> {
 }
 
 export function SelectControl({ icon, compact, className = '', label, children, ...props }: SelectControlProps) {
+  const selectRef = useRef<HTMLSelectElement>(null)
   return (
-    <label className={`select-control ${compact ? 'select-control--compact' : ''} ${className}`} title={label}>
+    <label
+      className={`select-control ${compact ? 'select-control--compact' : ''} ${className}`}
+      title={label}
+      onMouseDown={(event) => {
+        // A native select only opens from a direct hit on the control itself,
+        // which shrinks to a sliver beside the icon and chevron; the rest of
+        // the chip was dead space. A label mousedown is a trusted gesture, so
+        // showPicker() opens the dropdown from anywhere on the chip.
+        if (event.button !== 0 || event.target === selectRef.current || selectRef.current?.disabled) return
+        event.preventDefault()
+        selectRef.current?.showPicker()
+      }}
+    >
       <span className="select-control__icon" aria-hidden="true">
         {icon}
       </span>
       <span className="sr-only">{label}</span>
-      <select aria-label={label} {...props}>
+      <select ref={selectRef} aria-label={label} {...props}>
         {children}
       </select>
       <ChevronDown className="select-control__chevron" size={12} aria-hidden="true" />
