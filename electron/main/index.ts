@@ -280,6 +280,17 @@ export function interfaceZoomFactor(): number {
   return (store?.getSettings().interfaceFontScale ?? 110) / 100
 }
 
+export function trafficLightPositionForZoom(scalePercent = 100): { x: number; y: number } {
+  const base = 18
+  const radius = 6
+  // A corrupt scale must never reach setWindowButtonPosition as NaN; fall
+  // back to the unscaled inset instead.
+  const rawZoom = Number.isFinite(scalePercent) ? scalePercent / 100 : 1
+  const zoom = Math.max(0.5, Math.min(2, rawZoom))
+  const coord = Math.max(10, Math.round((base + radius) * zoom - radius))
+  return { x: coord, y: coord }
+}
+
 /**
  * App windows only: embedded browser guests and their views keep their own
  * zoom, so the app scale is applied through the window list rather than to
@@ -290,6 +301,9 @@ function applyInterfaceZoom(scale: number): void {
     if (window.isDestroyed()) continue
     const contents = window.webContents
     if (!contents.isDestroyed()) contents.setZoomFactor(scale / 100)
+    if (process.platform === 'darwin' && typeof window.setWindowButtonPosition === 'function') {
+      window.setWindowButtonPosition(trafficLightPositionForZoom(scale))
+    }
   }
 }
 
@@ -307,10 +321,12 @@ function resolvedWindowTheme(theme: ThemeMode | undefined): ResolvedTheme {
   return 'light'
 }
 
-export function mainWindowChromeOptions(platform: NodeJS.Platform = process.platform, theme: ResolvedTheme = 'light'): BrowserWindowConstructorOptions {
+export function mainWindowChromeOptions(platform: NodeJS.Platform = process.platform, theme: ResolvedTheme = 'light', zoomPercent = 100): BrowserWindowConstructorOptions {
   if (platform === 'darwin') return {
     titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 18, y: 18 },
+    // The inset must track the persisted interface scale from the first
+    // frame; later settings changes go through applyInterfaceZoom instead.
+    trafficLightPosition: trafficLightPositionForZoom(zoomPercent),
     vibrancy: 'sidebar',
     visualEffectState: 'active',
   }
@@ -369,7 +385,7 @@ async function createWindow(): Promise<BrowserWindow | null> {
     show: false,
     backgroundColor: '#f5f5f4',
     icon: appIconPath(),
-    ...mainWindowChromeOptions(process.platform, resolvedWindowTheme(store?.getSettings().theme)),
+    ...mainWindowChromeOptions(process.platform, resolvedWindowTheme(store?.getSettings().theme), Math.round(interfaceZoomFactor() * 100)),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       zoomFactor: interfaceZoomFactor(),

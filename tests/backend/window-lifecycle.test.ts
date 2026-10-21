@@ -20,7 +20,7 @@ const electron = vi.hoisted(() => ({
 
 vi.mock('electron', () => electron)
 
-import { activeShutdownWork, confirmAppClose, hardenRenderer, isMacWindowCloseShortcut, loadInitialRenderer, mainWindowChromeOptions, resolveRendererAssetPath, routeAllWindowsClosed, settleShutdown, shutdownPrompt, startupFailureDialog } from '../../electron/main/index'
+import { activeShutdownWork, confirmAppClose, hardenRenderer, isMacWindowCloseShortcut, loadInitialRenderer, mainWindowChromeOptions, resolveRendererAssetPath, routeAllWindowsClosed, settleShutdown, shutdownPrompt, startupFailureDialog, trafficLightPositionForZoom } from '../../electron/main/index'
 import { StateMigrationError, UnsupportedStateVersionError } from '../../electron/main/store'
 import type { RuntimeInfo } from '../../src/types/api'
 import type { BrowserWindow } from 'electron'
@@ -64,6 +64,23 @@ describe('application window lifecycle', () => {
       titleBarStyle: 'hiddenInset',
       trafficLightPosition: { x: 18, y: 18 },
     })
+    expect(mainWindowChromeOptions('darwin', 'light', 110)).toMatchObject({
+      titleBarStyle: 'hiddenInset',
+      trafficLightPosition: { x: 20, y: 20 },
+    })
+  })
+
+  it('tracks the scaled titlebar inset for traffic lights across the zoom range', () => {
+    expect(trafficLightPositionForZoom()).toEqual({ x: 18, y: 18 })
+    expect(trafficLightPositionForZoom(105)).toEqual({ x: 19, y: 19 })
+    expect(trafficLightPositionForZoom(110)).toEqual({ x: 20, y: 20 })
+    expect(trafficLightPositionForZoom(115)).toEqual({ x: 22, y: 22 })
+    expect(trafficLightPositionForZoom(125)).toEqual({ x: 24, y: 24 })
+    expect(trafficLightPositionForZoom(200)).toEqual({ x: 42, y: 42 })
+    expect(trafficLightPositionForZoom(400)).toEqual({ x: 42, y: 42 })
+    expect(trafficLightPositionForZoom(50)).toEqual({ x: 10, y: 10 })
+    expect(trafficLightPositionForZoom(10)).toEqual({ x: 10, y: 10 })
+    expect(trafficLightPositionForZoom(Number.NaN)).toEqual({ x: 18, y: 18 })
   })
 
   it('recognizes only an unmodified macOS Command-Q keydown as a window close', () => {

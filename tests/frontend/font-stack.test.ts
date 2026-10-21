@@ -36,4 +36,42 @@ describe('Vazirmatn font stack', () => {
     expect(rendererConfig).not.toMatch(/\boutDir\s*:/)
     expect(packageJson.build.files).toContain('out/**/*')
   })
+
+  it('defines 5-tier motion duration tokens, easing curves, and reduced-motion overrides', () => {
+    expect(root).toMatch(/--duration-fast:\s*60ms;/)
+    expect(root).toMatch(/--duration-snap:\s*120ms;/)
+    expect(root).toMatch(/--duration-base:\s*200ms;/)
+    expect(root).toMatch(/--duration-sheet:\s*300ms;/)
+    expect(root).toMatch(/--duration-slow:\s*450ms;/)
+    expect(root).toMatch(/--ease-swift:\s*cubic-bezier\(\.16,\s*1,\s*\.3,\s*1\);/)
+    expect(root).toMatch(/--ease-expand:\s*cubic-bezier\(\.19,\s*1,\s*\.22,\s*1\);/)
+
+    const reduceMotionClass = css.match(/:root\.reduce-motion\s*\{([\s\S]*?)\}/)?.[1] ?? ''
+    for (const token of ['--duration-fast', '--duration-snap', '--duration-base', '--duration-sheet', '--duration-slow']) {
+      expect(reduceMotionClass).toMatch(new RegExp(`${token}:\\s*\\.001ms;`))
+    }
+
+    const reduceMotionMedia = css.match(/@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{\s*:root\s*\{([\s\S]*?)\}\s*\}/)?.[1] ?? ''
+    for (const token of ['--duration-fast', '--duration-snap', '--duration-base', '--duration-sheet', '--duration-slow']) {
+      expect(reduceMotionMedia).toMatch(new RegExp(`${token}:\\s*\\.001ms;`))
+    }
+  })
+
+  it('defines light and dark font-weight de-dilation tokens and dark-mode smoothing/popover tokens', () => {
+    expect(root).toMatch(/--font-weight-normal:\s*400;/)
+    expect(root).toMatch(/--font-weight-medium:\s*520;/)
+    expect(root).toMatch(/--font-weight-semibold:\s*600;/)
+
+    const darkRoot = css.match(/:root\[data-theme=["']dark["']\]\s*\{([\s\S]*?)\}/)?.[1] ?? ''
+    expect(darkRoot).toMatch(/--font-weight-normal:\s*370;/)
+    expect(darkRoot).toMatch(/--font-weight-medium:\s*480;/)
+    expect(darkRoot).toMatch(/--font-weight-semibold:\s*560;/)
+    expect(darkRoot).toMatch(/-webkit-font-smoothing:\s*antialiased;/)
+    expect(darkRoot).toMatch(/-moz-osx-font-smoothing:\s*grayscale;/)
+    expect(darkRoot).toMatch(/--shadow-popover:\s*0 12px 32px rgba\(0,\s*0,\s*0,\s*\.38\),\s*inset 0 0 0 \.5px rgba\(255,\s*255,\s*255,\s*\.08\);/)
+  })
+
+  it('aligns inline Lucide icons optically on the -0.125em baseline', () => {
+    expect(css).toMatch(/:where\(p,\s*li,\s*small,\s*label,\s*\.inline-icon\)\s*>\s*svg\.lucide\s*\{\s*vertical-align:\s*-0\.125em;\s*\}/)
+  })
 })
