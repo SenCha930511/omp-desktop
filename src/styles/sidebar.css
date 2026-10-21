@@ -39,7 +39,7 @@
 .project-row__menu button:hover, .project-row__menu button:focus-visible { color: var(--danger); background: var(--danger-soft); }
 .session-list { padding-left: 20px; margin-top: 1px; }
 .session-row-wrap { position: relative; border-radius: 7px; }
-.session-row-wrap:hover, .session-row-wrap:focus-within { background: var(--surface-hover); }
+.session-row-wrap:hover:not(.is-selected), .session-row-wrap:focus-within:not(.is-selected) { background: var(--surface-hover); }
 /* Attention (completed/updated work in an inactive row) used to paint a
    filled prime background across the whole row. Removed per request: the row
    looks like any other; the attention state survives only in the session
@@ -47,7 +47,11 @@
 /* Selected session reads the Claude way: a soft fill with strong-weight
    foreground text and no outline ring. Keyboard focus keeps the global
    button:focus-visible outline from base.css. */
-.session-row-wrap.is-selected { color: var(--text); background: var(--surface-selected); }
+/* The .session-list indent shortens child rows next to the project header;
+   paint the selected fill across the full content width so both rows read as
+   the same-size highlight. */
+.session-row-wrap.is-selected { color: var(--text); }
+.session-row-wrap.is-selected::before { content: ''; position: absolute; inset: 0 0 0 -20px; z-index: -1; border-radius: 7px; background: var(--surface-selected); }
 .session-row-wrap.is-selected .session-row__title { font-weight: 560; }
 /* The draft placeholder has no session behind it: keep it visually tentative
    (italic, muted until selected) with a single discard action. */
