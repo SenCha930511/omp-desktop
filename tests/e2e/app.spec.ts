@@ -1160,6 +1160,9 @@ test.describe('OMP Desktop desktop smoke', () => {
     await page.locator('.session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
     const dial = page.locator('.context-usage-dial')
     await expect(dial).toBeVisible()
+    // The dial toggles the context popover; the cursor must say so instead
+    // of macOS's cursor:help question mark.
+    expect(await dial.evaluate((node) => getComputedStyle(node).cursor)).toBe('pointer')
     await expect(page.locator('.model-picker__trigger')).toHaveAccessibleName('Model: Claude Fixture')
     const composer = page.getByRole('combobox', { name: 'Message OMP' })
     await composer.fill('Refresh context usage')
