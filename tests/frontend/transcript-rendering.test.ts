@@ -470,7 +470,6 @@ describe('transcript rendering', () => {
     }])
     expect(html).toContain('compaction-divider')
     expect(html).toContain('Context compacted')
-    expect(html).toContain('overflow recovery')
     expect(html).toContain('99,175 tokens before')
     // Claude-Code style: a centered divider in the flow — no card chrome, no
     // expansion affordance, no details panel (the condensed summary used to

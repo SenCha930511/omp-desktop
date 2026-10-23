@@ -1,7 +1,7 @@
 import { Check, ChevronDown, ChevronRight, CircleAlert, Copy, FileCode2, GitFork, Globe2, LoaderCircle, MessageCircle, MessageCircleQuestion, Sparkles, TerminalSquare, Wrench } from 'lucide-react'
 import { type ReactNode, memo, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { writeClipboardText } from '@/lib/clipboard'
-import { type MessageKey, useI18n } from '@/lib/i18n'
+import { useI18n } from '@/lib/i18n'
 import { boundText } from '@/lib/render-bounds'
 import type { MessagePart, TranscriptMessage } from '@/types/api'
 import { MarkdownText } from '../MarkdownText'
@@ -9,13 +9,6 @@ import { ReasoningDisclosure, ReasoningExpandedContext } from '../ReasoningDiscl
 import { SyntaxText } from './syntax'
 import { SearchRevealContext } from '../TranscriptSearch'
 
-const COMPACTION_REASON_KEYS = {
-  threshold: 'transcript.compaction.reason.threshold',
-  overflow: 'transcript.compaction.reason.overflow',
-  requested: 'transcript.compaction.reason.requested',
-  manual: 'transcript.compaction.reason.manual',
-  context: 'transcript.compaction.reason.context',
-} as const satisfies Record<string, MessageKey>
 
 function timestamp(value?: string | number): number | undefined {
   if (value === undefined) return undefined
@@ -273,14 +266,13 @@ function AgentActivityPart({ part }: { part: Extract<MessagePart, { type: 'agent
 function CompactionPart({ part }: { part: Extract<MessagePart, { type: 'compaction' }> }) {
   const { t } = useI18n()
   // Claude-Code style: compaction is a quiet centered divider line in the
-  // conversation flow — icon, label, reason — never a card or a bottom chip.
+  // conversation flow — icon, label, token delta — never a card or a chip.
   const label =
     part.status === 'running'
       ? t('transcript.compaction.running')
       : part.status === 'done'
         ? part.outcome === 'skipped' ? t('transcript.compaction.skipped') : t('transcript.compaction.done')
         : part.status === 'cancelled' ? t('transcript.compaction.cancelled') : t('transcript.compaction.failed')
-  const reason = t(part.reason ? COMPACTION_REASON_KEYS[part.reason] : COMPACTION_REASON_KEYS.context)
   const tokenLabel = part.tokensBefore === undefined
     ? ''
     : part.tokensAfter !== undefined
@@ -295,7 +287,7 @@ function CompactionPart({ part }: { part: Extract<MessagePart, { type: 'compacti
       <span className="compaction-divider__rule" aria-hidden="true" />
       <span className="compaction-divider__label">
         {part.status === 'running' ? <LoaderCircle className="spin" size={11} /> : <Sparkles size={11} />}
-        {label} · {reason}{tokenLabel ? ` · ${tokenLabel}` : ''}
+        {label}{tokenLabel ? ` · ${tokenLabel}` : ''}
       </span>
       <span className="compaction-divider__rule" aria-hidden="true" />
     </div>

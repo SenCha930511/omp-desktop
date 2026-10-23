@@ -35,13 +35,12 @@ function renderParts(parts: MessagePart[]): void {
 }
 
 describe('compaction divider', () => {
-  it('renders a quiet centered divider with label, reason and tokens', () => {
+  it('renders a quiet centered divider with label and tokens', () => {
     renderParts([{ type: 'compaction', status: 'running', reason: 'threshold', tokensBefore: 99_175 }])
 
     const divider = container.querySelector('.compaction-divider.is-running')
     expect(divider).not.toBeNull()
     expect(divider?.textContent).toContain('Compacting context')
-    expect(divider?.textContent).toContain('automatic threshold')
     expect(divider?.textContent).toContain('99,175 tokens before')
     expect(divider?.querySelectorAll('.compaction-divider__rule')).toHaveLength(2)
     expect(divider?.querySelector('.spin')).not.toBeNull()
@@ -53,7 +52,6 @@ describe('compaction divider', () => {
     const divider = container.querySelector('.compaction-divider.is-done')
     expect(divider).not.toBeNull()
     expect(divider?.textContent).toContain('Context compaction skipped')
-    expect(divider?.textContent).toContain('overflow recovery')
     expect(divider?.querySelector('.spin')).toBeNull()
   })
 
