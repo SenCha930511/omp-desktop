@@ -811,7 +811,8 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(activeAgent.locator('.subagents__heading')).toContainText('Fixture review failed')
     await roster.getByRole('button', { name: /Task · Waiting for input/ }).click()
     await expect(activeAgent.locator('.subagents__details')).toHaveJSProperty('open', true)
-    await expect(activeAgent.locator('.work-disclosure__button')).toHaveAttribute('aria-expanded', 'true')
+    // A running (waiting) disclosure has no collapse control — it stays open.
+    await expect(activeAgent.locator('.work-timeline')).toBeVisible()
     await expect.poll(() => activeAgent.locator('.subagents__messages').evaluate((element) => element.scrollTop)).toBeCloseTo(previousTop, 0)
     await expect(activeAgent.getByRole('button', { name: /Jump to/ })).toBeVisible()
     await page.getByRole('button', { name: 'Conversation', exact: true }).click()
@@ -2534,11 +2535,11 @@ test.describe('OMP Desktop desktop smoke', () => {
     const dialog = page.getByRole('dialog', { name: 'Answer 2 questions' })
     await expect(dialog).toBeVisible()
     await expect(page.locator('.subagents__toolbar > .execution-status .execution-status__phase')).toHaveText('Waiting for input')
-    const workStatus = page.locator('.work-disclosure__button [role="status"]')
-    await expect(workStatus).toHaveAttribute('role', 'status')
+    const workStatus = page.locator('.work-disclosure__button[role="status"]')
     await expect(workStatus).toContainText('Working')
-    // While the turn streams, the work disclosure stays open at top level.
-    await expect(page.locator('.work-disclosure__button')).toHaveAttribute('aria-expanded', 'true')
+    // While the turn streams, the work disclosure stays open at top level:
+    // the header is a status line, not a toggle.
+    await expect(page.locator('.work-timeline')).toBeVisible()
     // The thinking row is visible but its content stays in the collapsed dropdown.
     await expect(page.locator('.activity-line--reasoning')).toHaveCount(1)
     await expect(page.locator('.work-disclosure__button')).toHaveCount(1)

@@ -190,9 +190,9 @@ const ToolPart = memo(function ToolPart({ part, next, streaming }: { part: Extra
     <div className={`activity-line activity-line--tool activity-line--${kind} is-${state}`}>
       <button type="button" className="activity-tool__summary" disabled={!canExpand} onClick={() => setOpen((value) => !value)} aria-expanded={canExpand ? open : undefined}>
         <span className="activity-line__icon">{toolIcon(kind)}</span>
-        <span className="activity-line__kind">{kind === 'question' ? t('transcript.tool.questionKind') : part.name}</span>
+        <span className={`activity-line__kind${state === 'running' ? ' shine-sweep' : ''}`}>{kind === 'question' ? t('transcript.tool.questionKind') : part.name}</span>
         {preview ? (
-          <code className="activity-tool__preview">
+          <code className={`activity-tool__preview${state === 'running' && !open ? ' shine-sweep' : ''}`}>
             <SyntaxText text={preview} />
           </code>
         ) : null}
@@ -367,17 +367,19 @@ export function WorkDisclosure({
   const { t } = useI18n()
   const expandThinking = useContext(ReasoningExpandedContext)
   const defaultExpanded = expandThinking && showReasoning && parts.some((part) => part.type === 'thinking')
-  // While the turn streams, notes and tool calls stay first-class content —
-  // visible without opening the dropdown — and the row folds back into the
-  // compact "worked" summary the moment the turn completes.
-  const [manualOpen, setOpen] = useState(running || defaultExpanded)
+  // Running work is always expanded: the live tool timeline is the turn's
+  // main content, so there is no collapse control while it streams. When the
+  // turn completes the disclosure folds back to the compact "worked" summary
+  // — only the final output stays visible around it — and remains
+  // expandable for review.
+  const [manualOpen, setOpen] = useState(defaultExpanded)
   // The entrance ramp plays only for user-initiated opens. A remount with the
   // disclosure already open (agent reselect, session switch) must stay static:
   // the height ramp shifts layout under a restored scroll offset.
   const userToggledRef = useRef(false)
   const reveal = useContext(SearchRevealContext)
-  const open = manualOpen || reveal
-  useEffect(() => setOpen(running || defaultExpanded), [running, defaultExpanded])
+  const open = running || manualOpen || reveal
+  useEffect(() => { if (!running) setOpen(defaultExpanded) }, [running, defaultExpanded])
   const status = liveWorkStatus(message.parts, showReasoning, showTools)
   const toolCount = parts.filter((part) => part.type === 'toolCall').length
   const startedAt = timestamp(message.startedAt ?? message.timestamp) ?? 0
@@ -385,27 +387,20 @@ export function WorkDisclosure({
   const duration = formatWorkedDuration(Math.max(0, completedAt - startedAt))
   return (
     <section className={`work-disclosure ${running ? 'is-running' : ''}`} aria-label={t('transcript.work.aria')}>
-      <button type="button" className="work-disclosure__button" onClick={() => { userToggledRef.current = true; setOpen((value) => !value) }} aria-expanded={open}>
-        {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-        {running ? <span role="status"><span className="shine-sweep">{status === 'Thinking' ? t('transcript.workStatus.thinking') : t('transcript.workStatus.working')}</span></span> : <span>{t('transcript.work.workedFor', { duration })}</span>}
-        {toolCount > 0 && <span className="work-disclosure__count">{t('transcript.work.tools', { count: toolCount })}</span>}
-        {running && <LiveElapsed since={message.startedAt ?? message.timestamp} />}
-        {running && !open && <LoaderCircle size={12} className="spin" />}
-      </button>
-      {running && !open ? (
-        <div className="work-disclosure__notes">
-          {parts.map((part, index) =>
-            // Same stray-glyph filter as WorkTimeline: a lone "·" or "…"
-            // between tool calls is not narration. Hoisted only while a
-            // running row is collapsed — open rows render notes inside.
-            part.type === 'text' && /[\p{L}\p{N}]/u.test(part.text) ? (
-              <div className="activity-line activity-line--note" key={partKey(part, index)}>
-                <MarkdownText text={part.text} streaming />
-              </div>
-            ) : null,
-          )}
+      {running ? (
+        <div className="work-disclosure__button" role="status">
+          <span className="shine-sweep">{status === 'Thinking' ? t('transcript.workStatus.thinking') : t('transcript.workStatus.working')}</span>
+          {toolCount > 0 && <span className="work-disclosure__count">{t('transcript.work.tools', { count: toolCount })}</span>}
+          <LiveElapsed since={message.startedAt ?? message.timestamp} />
+          <LoaderCircle size={12} className="spin" />
         </div>
-      ) : null}
+      ) : (
+        <button type="button" className="work-disclosure__button" onClick={() => { userToggledRef.current = true; setOpen((value) => !value) }} aria-expanded={open}>
+          {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+          <span>{t('transcript.work.workedFor', { duration })}</span>
+          {toolCount > 0 && <span className="work-disclosure__count">{t('transcript.work.tools', { count: toolCount })}</span>}
+        </button>
+      )}
       {open ? (
         <div className={`accordion-grid is-open${userToggledRef.current ? ' is-animated' : ''}`}>
           <div className="accordion-grid__inner">

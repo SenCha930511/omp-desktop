@@ -171,7 +171,7 @@ export const AssistantMessage = memo(
           {renderNarrativeWithActivity(after, 'after', showReasoning, showTools, message.streaming)}
           {message.streaming && !hasVisibleActivity ? (
             <div className="streaming-state" aria-live="polite">
-              <ThinkingDots /> {t('transcript.workStatus.thinking')}
+              <ThinkingDots /> <span className="shine-sweep">{t('transcript.workStatus.thinking')}</span>
             </div>
           ) : null}
           {!message.streaming ? <MessageActions message={message} text={copyableText} /> : null}

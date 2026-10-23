@@ -115,7 +115,7 @@
 .work-disclosure__button > span + span::before { content: '·'; margin-right: 8px; color: var(--text-tertiary); }
 .work-disclosure__button:hover { color: var(--text); }
 .work-disclosure__live { min-width: 0; }
-.work-disclosure__status { min-height: 20px; display: flex; align-items: center; gap: 6px; margin: 0 0 4px 24px; color: var(--text-tertiary); font-size: 11px; font-weight: 500; }
+.work-disclosure__status { min-height: 20px; display: flex; align-items: center; gap: 6px; margin: 0 0 4px 24px; color: var(--text-tertiary); font-size: 12px; font-weight: 500; }
 .work-disclosure__status .thinking-dots { min-width: 29px; }
 /* Live elapsed clock on running work rows: tabular digits keep the 1-second
    updates from shifting the adjacent dots around. */
@@ -145,7 +145,9 @@
 .activity-line__icon { width: 16px; height: 16px; display: inline-grid; place-items: center; flex: 0 0 auto; color: var(--text-tertiary); }
 .activity-line__kind { flex: 0 0 auto; color: var(--text-secondary); font-weight: 540; white-space: nowrap; }
 .activity-line--tool, .activity-line--agent { border-radius: 8px; }
-.activity-line--tool:hover, .activity-line--agent:hover { background: color-mix(in srgb, var(--surface-subtle) 72%, transparent); }
+.activity-line--tool:hover, .activity-line--agent:hover { color: var(--text); }
+.activity-line--tool:hover .activity-line__kind, .activity-line--agent:hover .activity-line__kind { color: var(--text); }
+.activity-line--tool:hover .activity-line__icon, .activity-line--agent:hover .activity-line__icon { color: var(--text-secondary); }
 /* Top-docked transcript HUD: the todo plan floats at the top of the pane,
    above the scrolling conversation, spanning the full column width. */
 .transcript-hud { position: absolute; top: 12px; left: 14px; right: 14px; z-index: 8; display: flex; flex-direction: column; gap: 6px; }
@@ -175,7 +177,7 @@
 .todo-hud__phase-name { margin-bottom: 3px; color: var(--text-secondary); font-size: 10.5px; font-weight: 600; letter-spacing: 0.02em; }
 .todo-hud__task { display: flex; align-items: baseline; gap: 7px; padding: 2px 0; color: var(--text); font-size: 12px; line-height: 1.45; }
 .todo-hud__marker { flex: 0 0 auto; display: inline-grid; place-items: center; width: 13px; height: 13px; position: relative; top: 1px; color: var(--text-secondary); }
-.todo-hud__task.is-completed .todo-hud__marker { color: var(--success); }
+.todo-hud__task.is-completed .todo-hud__marker { color: var(--prime); }
 .todo-hud__task.is-completed .todo-hud__content { color: var(--text-tertiary); text-decoration: line-through; text-decoration-color: var(--text-tertiary); }
 .todo-hud__task.is-in_progress .todo-hud__content { color: var(--text-primary); font-weight: 540; }
 .todo-hud__pulse { width: 7px; height: 7px; border-radius: 999px; background: var(--prime); animation: todo-pulse 2.4s ease-in-out infinite; }
@@ -190,6 +192,9 @@
 .activity-tool__summary { width: 100%; min-height: 20px; display: flex; align-items: center; gap: 8px; padding: 1px 0; color: inherit; background: transparent; text-align: left; }
 .activity-tool__summary:disabled { opacity: 1; pointer-events: none; }
 .activity-tool__preview { min-width: 0; flex: 0 1 auto; max-width: 72ch; overflow: hidden; color: var(--text-tertiary); background: transparent; border: 0; padding: 0; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; }
+/* While a call runs, the preview line rides the header's shine: syntax tokens
+   go transparent so the gradient light passes over the whole line uniformly. */
+.activity-tool__preview.shine-sweep, .activity-tool__preview.shine-sweep * { color: transparent; -webkit-text-fill-color: transparent; }
 .activity-tool__summary .activity-tool__preview::before { content: '·'; margin-right: 8px; color: var(--text-tertiary); }
 .activity-tool__state { margin-left: auto; display: inline-flex; align-items: center; gap: 3px; color: var(--text-tertiary); font-size: 10px; white-space: nowrap; }
 .activity-line.is-done .activity-tool__state { color: var(--success); }
@@ -248,7 +253,9 @@
 .diff-count { padding: 1px 5px; border-radius: 4px; font: 10.5px/1.5 "SFMono-Regular", Menlo, monospace; }
 .diff-count--add { color: var(--success); background: var(--diff-add); }
 .diff-count--remove { color: var(--danger); background: var(--diff-remove); }
-.streaming-state { display: flex; align-items: center; gap: 7px; margin-top: 10px; color: var(--text-tertiary); font-size: 11.5px; }
+.streaming-state { display: flex; align-items: center; gap: 8px; margin-top: 10px; color: var(--text-tertiary); font-size: 12px; font-weight: 500; }
+/* Same "label · 12s" shape as the work-disclosure header row. */
+.streaming-state .shine-sweep + .live-elapsed::before { content: '·'; margin-right: 8px; color: var(--text-tertiary); }
 /* CLI-style shine sweep on live status words: a light band glides across the
    text on a slow beat so long runs read as moving, never hung. */
 .shine-sweep { background: linear-gradient(90deg, var(--text-tertiary) 42%, color-mix(in srgb, var(--text) 65%, #ffffff) 50%, var(--text-tertiary) 58%); background-size: 240% 100%; -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; color: transparent; animation: shine-sweep 2.2s linear infinite; }
