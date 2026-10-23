@@ -408,6 +408,25 @@ export class AgentRpcManager {
     return response.success === true
   }
 
+  /** Retarget a runtime parked on a session file that a listed successor
+   * superseded. The desktop's lineage scan sees the roll even when the
+   * runtime cannot (its commands fail on another process's session lock):
+   * republish the state so bound workspaces follow the successor, then stop
+   * the stale transport — the next prompt spawns fresh against the successor
+   * instead of forking the predecessor. */
+  async rebindSupersededSession(filePath: string, successorPath: string): Promise<void> {
+    const wanted = canonicalSessionPath(filePath)
+    const runtime = [...this.runtimes.values()].find((candidate) => {
+      const path = candidate.snapshot().sessionFile
+      return path !== undefined && canonicalSessionPath(path) === wanted
+    })
+    if (!runtime) return
+    const snapshot = runtime.snapshot()
+    if (snapshot.isStreaming || snapshot.isCompacting) return
+    runtime.adoptSessionFile(successorPath)
+    await runtime.stop().catch(() => undefined)
+  }
+
   async stopAll(): Promise<void> {
     this.beginShutdown()
     const runtimes = [...this.runtimes.values()]

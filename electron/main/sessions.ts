@@ -69,16 +69,16 @@ function branchSessionFileName(id: string): string {
  * 2. Repeated rollovers of the same source (several runtimes resuming one
  *    session, each rolling it forward) leave sibling files that all name the
  *    same `parentSession`. Among such siblings only the newest survives;
- *    sessions with a live runtime attached are never hidden.
+ *    only files a runtime is actively writing are shielded from hiding.
  */
-export function supersededSessionPaths(sessions: readonly SessionMetadata[], alivePaths?: ReadonlySet<string>): Map<string, Set<string>> {
+export function supersededSessionPaths(sessions: readonly SessionMetadata[], activelyWrittenPaths?: ReadonlySet<string>): Map<string, Set<string>> {
   const byId = new Map<string, SessionMetadata>()
   const byPath = new Map<string, SessionMetadata>()
   for (const session of sessions) {
     byId.set(session.id, session)
     byPath.set(resolve(session.filePath), session)
   }
-  const hideable = (session: SessionMetadata): boolean => !alivePaths?.has(resolve(session.filePath))
+  const hideable = (session: SessionMetadata): boolean => !activelyWrittenPaths?.has(resolve(session.filePath))
   const mark = (predecessor: SessionMetadata, successor: SessionMetadata, superseded: Map<string, Set<string>>): void => {
     const predecessorPath = resolve(predecessor.filePath)
     if (predecessorPath === resolve(successor.filePath) || !hideable(predecessor)) return
@@ -167,6 +167,7 @@ export class SessionService {
   private readonly recursiveWatch: boolean
   private runtimeForSession: (filePath: string) => RuntimeSessionState | undefined = () => undefined
   private listRuntimeSessions: (() => readonly RuntimeSessionSnapshot[]) | null = null
+  private adoptSupersededRuntime: ((filePath: string, successorPath: string) => void) | null = null
   private stopRuntimeForSession: (filePath: string) => Promise<void> = async () => undefined
   private renameRuntimeSession: (filePath: string, title: string) => Promise<boolean> = async () => false
   private readonly catalog: SessionMetadataCatalog
@@ -228,11 +229,14 @@ export class SessionService {
     all?(): readonly RuntimeSessionSnapshot[]
     stop(filePath: string): Promise<void>
     rename(filePath: string, title: string): Promise<boolean>
+    /** Retarget a runtime parked on a superseded file to the surviving row; fire-and-forget. */
+    adoptSuperseded?(filePath: string, successorPath: string): void
   }): void {
     this.runtimeForSession = hooks.get
     this.listRuntimeSessions = hooks.all ?? null
     this.stopRuntimeForSession = hooks.stop
     this.renameRuntimeSession = hooks.rename
+    this.adoptSupersededRuntime = hooks.adoptSuperseded ?? null
   }
 
   onDidChange(listener: (event: SessionChangeEvent) => void): () => void {
@@ -266,13 +270,33 @@ export class SessionService {
     // stays pinned.
     // One runtime snapshot per list call; each session then resolves in O(1).
     const runtimeBySession = this.snapshotRuntimeSessions()
-    const supersededBy = supersededSessionPaths(sessions, new Set(runtimeBySession?.keys() ?? []))
+    // Only a runtime actively writing its file shields a superseded
+    // predecessor from hiding: the session lock is exclusive, so a roll
+    // observed here happened in another process and any parked runtime on
+    // the old file is stranded — it cannot append and its commands fail on
+    // the lock. Retarget such runtimes to the surviving row so one logical
+    // conversation stays one sidebar row and the open workspace follows.
+    const activelyWrittenPaths = new Set<string>()
+    for (const runtime of runtimeBySession?.values() ?? []) {
+      if ((runtime.isStreaming || runtime.isCompacting) && runtime.sessionFile) activelyWrittenPaths.add(resolve(runtime.sessionFile))
+    }
+    const supersededBy = supersededSessionPaths(sessions, activelyWrittenPaths)
     const predecessorsOf = new Map<string, Set<string>>()
     for (const [predecessorPath, successorPaths] of supersededBy) {
       for (const successorPath of successorPaths) {
         const predecessors = predecessorsOf.get(successorPath) ?? new Set<string>()
         predecessors.add(predecessorPath)
         predecessorsOf.set(successorPath, predecessors)
+      }
+    }
+    if (this.adoptSupersededRuntime && runtimeBySession) {
+      for (const predecessorPath of supersededBy.keys()) {
+        const runtime = runtimeBySession.get(predecessorPath)
+        if (!runtime || runtime.isStreaming || runtime.isCompacting) continue
+        const survivor = [...predecessorsOf.entries()].find(([successorPath, predecessors]) => (
+          predecessors.has(predecessorPath) && !supersededBy.has(successorPath)
+        ))?.[0]
+        if (survivor) this.adoptSupersededRuntime(predecessorPath, survivor)
       }
     }
     const archived = new Set(this.store.getArchivedSessions().map((path) => resolve(path)))
@@ -296,9 +320,9 @@ export class SessionService {
     return records.sort((a, b) => Date.parse(b.lastUserMessageAt ?? b.createdAt) - Date.parse(a.lastUserMessageAt ?? a.createdAt) || comparePaths(a.filePath, b.filePath))
   }
 
-  private snapshotRuntimeSessions(): Map<string, RuntimeSessionState> | null {
+  private snapshotRuntimeSessions(): Map<string, RuntimeSessionSnapshot> | null {
     if (!this.listRuntimeSessions) return null
-    const bySession = new Map<string, RuntimeSessionState>()
+    const bySession = new Map<string, RuntimeSessionSnapshot>()
     for (const runtime of this.listRuntimeSessions()) {
       if (!runtime.sessionFile) continue
       const key = resolve(runtime.sessionFile)

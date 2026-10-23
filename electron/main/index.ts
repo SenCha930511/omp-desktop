@@ -635,6 +635,7 @@ async function bootstrap(): Promise<void> {
     all: () => agents?.list() ?? [],
     stop: async (path) => { await agents?.stopForSession(path) },
     rename: async (path, title) => agents?.renameForSession(path, title) ?? false,
+    adoptSuperseded: (path, successorPath) => { void agents?.rebindSupersededSession(path, successorPath) },
   })
   terminals = new TerminalService(
     (cwd) => projects.authorizeCwd(cwd),

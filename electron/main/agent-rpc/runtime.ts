@@ -308,6 +308,19 @@ export class RpcRuntime {
     return snapshot
   }
 
+  /** Adopt a successor session file discovered by the desktop's lineage
+   * scan. A runtime parked on a file another OMP process rolled forward
+   * cannot learn the new path through get_state (its commands fail on the
+   * session lock), so the caller supplies it; this retargets the bookkeeping
+   * and republishes the state so bound workspaces follow the roll. The
+   * caller owns stopping the stale transport. */
+  adoptSessionFile(filePath: string): void {
+    const canonical = canonicalSessionPath(filePath)
+    if (!canonical || canonical === this.info.sessionFile) return
+    this.info.sessionFile = canonical
+    this.emit({ type: 'runtime_state', state: this.snapshot() })
+  }
+
   stop(): Promise<boolean> {
     if (!this.stopPromise) {
       // Stop accepting partial frames before the abort round-trip: the child

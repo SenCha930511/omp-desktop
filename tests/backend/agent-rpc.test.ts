@@ -153,6 +153,48 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     }
   })
 
+  it('retargets a parked runtime to the superseding session file and stops the stale transport', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-rpc-rebind-'))
+    dirs.push(cwd)
+    const parentFile = join(cwd, '2026-08-07T00-00-00-000Z_01aaaaaa-0000-7000-8000-000000000001.jsonl')
+    const successorFile = join(cwd, '2026-08-07T00-02-00-000Z_01bbbbbb-0000-7000-8000-000000000002.jsonl')
+    writeFileSync(parentFile, `${JSON.stringify({ type: 'session', id: 'parent-session', cwd, timestamp: '2026-08-07T00:00:00.000Z' })}\n`)
+    writeFileSync(successorFile, `${JSON.stringify({ type: 'session', version: 3, id: 'successor-session', timestamp: '2026-08-07T00:02:00.000Z', cwd, parentSession: 'parent-session' })}\n`)
+    const executable = join(cwd, 'parked-agent.cjs')
+    writeFileSync(executable, `#!/usr/bin/env node
+const readline = require('node:readline')
+const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
+const parentFile = ${JSON.stringify(parentFile)}
+readline.createInterface({ input: process.stdin }).on('line', (line) => {
+  const command = JSON.parse(line)
+  if (command.type === 'negotiate_protocol') {
+    send({ id: command.id, type: 'response', command: command.type, success: true, data: { protocolVersion: 2 } })
+  } else if (command.type === 'get_state') {
+    // The runtime never learns about the roll — exactly like a runtime whose
+    // commands fail on another process's session lock.
+    send({ id: command.id, type: 'response', command: command.type, success: true, data: { sessionId: 'parked', sessionFile: parentFile, isStreaming: false, isCompacting: false } })
+  }
+})
+`)
+    chmodSync(executable, 0o755)
+    const manager = new AgentRpcManager(executable, async (dir) => dir, async (path) => path, undefined, () => new Set(), OMP_RPC_ADAPTER)
+    managers.push(manager)
+    const envelopes: Array<{ runtimeId: string; event: Record<string, unknown> }> = []
+    manager.setEventSink((envelope) => envelopes.push(envelope as { runtimeId: string; event: Record<string, unknown> }))
+    const runtime = await manager.start({ cwd, sessionPath: parentFile })
+    await manager.rebindSupersededSession(parentFile, successorFile)
+    // The runtime republished its state on the successor path so bound
+    // workspaces follow the roll ...
+    const state = envelopes.map((envelope) => envelope.event).find((event) => event.type === 'runtime_state')
+    expect(state).toMatchObject({ type: 'runtime_state', state: { sessionFile: realpathSync(successorFile) } })
+    // ... and the stale transport is gone: the next prompt spawns fresh
+    // against the successor instead of forking the predecessor.
+    await waitUntil(() => manager.list().length === 0, 5_000)
+    expect(manager.getForSession(realpathSync(successorFile))).toBeUndefined()
+    expect(manager.getForSession(realpathSync(parentFile))).toBeUndefined()
+    void runtime
+  })
+
   it('stays silent when the compact command fails or the session has no record', async () => {
     const reader = vi.fn(async () => undefined)
     const manager = new AgentRpcManager(null, async (cwd) => cwd, async (path) => path, undefined, () => new Set(), OMP_RPC_ADAPTER, undefined, undefined, reader)

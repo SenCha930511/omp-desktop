@@ -480,6 +480,52 @@ describe('compact rollover lineage', () => {
     expect(records.map((record) => record.id)).toEqual(['roll-three'])
   })
 
+  it('retargets an idle runtime parked on a rolled file instead of shielding it', async () => {
+    const { root, project, service } = setup()
+    mkdirSync(join(root, '-bucket'))
+    const parentFile = join(root, '-bucket', NAME_A)
+    const successorFile = join(root, '-bucket', NAME_B)
+    writeOmpSession(parentFile, { id: 'parent-session', cwd: project })
+    writeOmpSession(successorFile, { id: 'successor-session', cwd: project, timestamp: '2026-08-09T10:00:00.000Z', header: { parentSession: 'parent-session' } })
+    const adopted: Array<[string, string]> = []
+    const parkedFile = await service.requireSessionPath(parentFile)
+    service.bindRuntimeHooks({
+      get: () => undefined,
+      all: () => [{ runtimeId: 'rt-rolled', sessionFile: parkedFile, isStreaming: false, isCompacting: false }],
+      stop: async () => undefined,
+      rename: async () => false,
+      adoptSuperseded: (oldPath, newPath) => { adopted.push([oldPath, newPath]) },
+    })
+
+    const records = await service.list()
+    // The parked runtime no longer shields the predecessor: the roll happened
+    // in another process, so the runtime is retargeted to the survivor.
+    expect(records.map((record) => record.id)).toEqual(['successor-session'])
+    expect(adopted).toEqual([[parkedFile, await service.requireSessionPath(successorFile)]])
+  })
+
+  it('shields a predecessor only while its runtime is actively writing it', async () => {
+    const { root, project, service } = setup()
+    mkdirSync(join(root, '-bucket'))
+    const parentFile = join(root, '-bucket', NAME_A)
+    const successorFile = join(root, '-bucket', NAME_B)
+    writeOmpSession(parentFile, { id: 'parent-session', cwd: project })
+    writeOmpSession(successorFile, { id: 'successor-session', cwd: project, timestamp: '2026-08-09T10:00:00.000Z', header: { parentSession: 'parent-session' } })
+    const adopted: Array<[string, string]> = []
+    const liveFile = await service.requireSessionPath(parentFile)
+    service.bindRuntimeHooks({
+      get: () => undefined,
+      all: () => [{ runtimeId: 'rt-live', sessionFile: liveFile, isStreaming: true, isCompacting: false }],
+      stop: async () => undefined,
+      rename: async () => false,
+      adoptSuperseded: (oldPath, newPath) => { adopted.push([oldPath, newPath]) },
+    })
+
+    const ids = (await service.list()).map((record) => record.id).sort()
+    expect(ids).toEqual(['parent-session', 'successor-session'])
+    expect(adopted).toEqual([])
+  })
+
   it('keeps an unreferenced older session and ignores same-time or self references', async () => {
     const { root, project, service } = setup()
     mkdirSync(join(root, '-bucket'))
