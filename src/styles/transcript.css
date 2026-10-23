@@ -214,7 +214,7 @@
 .streaming-state { display: flex; align-items: center; gap: 7px; margin-top: 10px; color: var(--text-tertiary); font-size: 11.5px; }
 /* CLI-style shine sweep on live status words: a light band glides across the
    text on a slow beat so long runs read as moving, never hung. */
-.shine-sweep { background: linear-gradient(90deg, var(--text-tertiary) 42%, color-mix(in srgb, var(--text) 65%, #ffffff) 50%, var(--text-tertiary) 58%); background-size: 240% 100%; -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; color: transparent; animation: shine-sweep 3.2s linear infinite; }
+.shine-sweep { background: linear-gradient(90deg, var(--text-tertiary) 42%, color-mix(in srgb, var(--text) 65%, #ffffff) 50%, var(--text-tertiary) 58%); background-size: 240% 100%; -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; color: transparent; animation: shine-sweep 2.2s linear infinite; }
 @keyframes shine-sweep { 0% { background-position: 120% 0; } 100% { background-position: -20% 0; } }
 @media (prefers-reduced-motion: reduce) {
   .shine-sweep { animation: none; background: none; -webkit-text-fill-color: currentColor; color: currentColor; }
