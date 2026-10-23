@@ -51,6 +51,17 @@
 .session-row-wrap.is-selected { color: var(--text); }
 .session-row-wrap.is-selected::before { content: ''; position: absolute; inset: 0 0 0 -20px; z-index: -1; border-radius: 7px; background: var(--surface-selected); }
 .session-row-wrap.is-selected .session-row__title { font-weight: 560; }
+/* Keyboard focus must wrap the same shape the hover/selected fills paint.
+   The fills outdent 20px into the .session-list indent, but the focusable
+   .session-row button is only as wide as the row content — the base
+   button:focus-visible ring would read as a smaller box than the highlight.
+   Suppress it and ring the wrap at the fill's exact inset instead. */
+.session-row:focus-visible { outline: none; }
+.session-row-wrap:has(.session-row:focus-visible)::after { content: ''; position: absolute; inset: 0 0 0 -20px; z-index: -1; border-radius: 7px; box-shadow: 0 0 0 2px var(--focus); }
+/* Project rows have the same mismatch: the focusable .project-row__main
+   button excludes the collapse chevron and row padding. */
+.project-row__main:focus-visible { outline: none; }
+.project-row:has(.project-row__main:focus-visible)::after { content: ''; position: absolute; inset: 0; z-index: -1; border-radius: 7px; box-shadow: 0 0 0 2px var(--focus); }
 /* The draft placeholder has no session behind it: keep it visually tentative
    (italic, muted until selected) with a single discard action. */
 .session-row-wrap.is-placeholder > .session-row { align-items: center; }

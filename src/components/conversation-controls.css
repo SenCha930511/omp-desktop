@@ -2,6 +2,13 @@
 .conversation-search-trigger { position: absolute; z-index: 11; top: 12px; right: 28px; display: grid; place-items: center; width: var(--conversation-control-height); height: var(--conversation-control-height); border: var(--border-hairline) solid transparent; border-radius: var(--conversation-control-radius); background: color-mix(in srgb, var(--canvas) 78%, transparent); backdrop-filter: blur(10px); color: var(--text-tertiary); cursor: pointer; transition: background 140ms var(--ease-out), color 140ms var(--ease-out), border-color 140ms var(--ease-out), transform 100ms var(--ease-out); }
 .conversation-search-trigger:hover { background: var(--surface-hover); border-color: var(--border); color: var(--text); }
 .conversation-search-trigger:active { transform: scale(.94); }
+/* The main conversation docks its search trigger into the subagents toolbar
+   via a portal (the clipping pane cannot host negative-offset children).
+   Inside the toolbar the trigger behaves like a regular toolbar button;
+   subagent transcripts keep the floating in-pane position. */
+.subagents__search-slot { display: grid; place-items: center; }
+.subagents__search-slot .conversation-search-trigger { position: static; border-radius: 6px; background: transparent; backdrop-filter: none; }
+.subagents.has-selection .subagents__search-slot { display: none; }
 .conversation-search { position: absolute; z-index: 12; top: 10px; right: 24px; display: flex; align-items: center; gap: 5px; max-width: calc(100% - 48px); min-height: 36px; padding: 4px 6px 4px 10px; border: var(--border-hairline) solid var(--border); border-radius: 12px; background: color-mix(in srgb, var(--surface-raised) 88%, transparent); backdrop-filter: blur(18px) saturate(1.2); box-shadow: var(--shadow-composer); font-size: var(--conversation-control-font); color: var(--text-secondary); animation: search-bar-enter 160ms var(--ease-out); transition: border-color 160ms var(--ease-out), box-shadow 160ms var(--ease-out), background 160ms var(--ease-out); }
 @keyframes search-bar-enter { from { opacity: 0; transform: translateY(-4px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
 .conversation-search:hover { border-color: var(--border-strong); box-shadow: var(--shadow-composer-hover); }

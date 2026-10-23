@@ -1,4 +1,5 @@
 import { ArrowDown, ArrowUp, ChevronDown, Search, X } from 'lucide-react'
+import { createPortal } from 'react-dom'
 import { createContext, useEffect, useId, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { isOverlayOpen } from '@/lib/app-shortcuts'
 import { useI18n } from '@/lib/i18n'
@@ -96,10 +97,22 @@ export function useTranscriptSearch(messages: TranscriptMessage[], root: RefObje
     move: (direction: number) => setIndex((current) => (current + direction + Math.max(1, results.length)) % Math.max(1, results.length)) }
 }
 
-export function TranscriptSearchBar({ state }: { state: ReturnType<typeof useTranscriptSearch> }) {
+export function TranscriptSearchBar({ state, dockToToolbar = false }: { state: ReturnType<typeof useTranscriptSearch>; dockToToolbar?: boolean }) {
   const { t } = useI18n()
   const id = useId()
-  if (!state.open) return <button type="button" className="conversation-search-trigger" onClick={state.show} aria-label={t('conversation.search.open')} title={t('conversation.search.open')}><Search size={15} /></button>
+  // The main conversation docks its trigger into the subagents toolbar. The
+  // slot lives outside this transcript (and outside the clipping pane), so it
+  // is resolved through the DOM and re-resolved on every render — workspace
+  // switches remount the shell around the transcript, replacing the node.
+  const [slot, setSlot] = useState<HTMLElement | null>(null)
+  useEffect(() => {
+    if (!dockToToolbar) return
+    setSlot(document.querySelector<HTMLElement>('.subagents__search-slot'))
+  })
+  if (!state.open) {
+    const trigger = <button type="button" className="conversation-search-trigger" onClick={state.show} aria-label={t('conversation.search.open')} title={t('conversation.search.open')}><Search size={15} /></button>
+    return dockToToolbar && slot ? createPortal(trigger, slot) : trigger
+  }
   const hasMatches = state.total > 0
   return <section className={`conversation-search ${hasMatches ? 'has-matches' : ''}`} aria-label={t('conversation.search.open')} onKeyDown={(event) => {
     if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); state.close() }

@@ -121,7 +121,7 @@ export function Transcript({
 
   return (
     <>
-      <TranscriptSearchBar state={search} />
+      <TranscriptSearchBar state={search} dockToToolbar />
       <div ref={scrollRef} tabIndex={-1} className={transcriptClasses} aria-busy={loading} onScroll={updatePinnedState}>
         <div className="sr-only" role="status" aria-live="polite">
           {announcement}

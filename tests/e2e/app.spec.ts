@@ -2302,6 +2302,20 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(page.locator('.todo-hud__task.is-in_progress')).toContainText('task2')
     await expect(page.locator('.todo-hud__task.is-pending')).toContainText('task3')
 
+    // The search trigger docks into the subagents toolbar row (right of the
+    // roster), and the plan card spans the conversation column.
+    const trigger = page.locator('.subagents__search-slot .conversation-search-trigger')
+    const triggerBox = await trigger.boundingBox()
+    const toolbarBox = await page.locator('.subagents__toolbar').boundingBox()
+    expect(triggerBox).not.toBeNull()
+    expect(toolbarBox).not.toBeNull()
+    expect(triggerBox!.y).toBeGreaterThanOrEqual(toolbarBox!.y)
+    expect(triggerBox!.y + triggerBox!.height).toBeLessThanOrEqual(toolbarBox!.y + toolbarBox!.height)
+    await expect(page.locator('.conversation-pane > .conversation-search-trigger')).toHaveCount(0)
+    const pane = await page.locator('.conversation-pane').boundingBox()
+    const hud = await page.locator('.transcript-hud').boundingBox()
+    expect(hud!.x + hud!.width).toBeGreaterThan(pane!.x + pane!.width - 20)
+
     await bar.click()
     await expect(bar).toHaveAttribute('aria-expanded', 'false')
     await expect(page.locator('.todo-hud__task')).toHaveCount(0)

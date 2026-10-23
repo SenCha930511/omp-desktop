@@ -82,6 +82,7 @@ export function SubagentsPanel({ state, connected, showReasoning = true, showToo
       <button className="subagents__roster-toggle" type="button" aria-expanded={pinned || open} aria-label={t('agents.rosterAria', { running, total: state.agents.length })} onClick={() => pinned ? closeRoster() : setOpen(!open)}>
         <Users size={14} /><span>{t('agents.title')}</span><span className="subagents__count">{state.agents.length}</span><ChevronDown size={12} />
       </button>
+      <div className="subagents__search-slot" />
     </div>
     {open && !pinned && roster}
     {error && (open || pinned || selected) && <p className="subagents__error" role="alert">{error}</p>}
