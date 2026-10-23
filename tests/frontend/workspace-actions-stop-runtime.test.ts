@@ -262,6 +262,7 @@ describe('idle prompt streaming behavior', () => {
       },
       queuePrompt: vi.fn(),
       removeQueuedPrompt: vi.fn(),
+      retractQueuedPrompt: vi.fn(),
       markQueuedPromptFlushFailed: vi.fn(),
     }
     const actions = createWorkspaceActions(() => ({
@@ -332,6 +333,7 @@ describe('idle prompt streaming behavior', () => {
       },
       queuePrompt: vi.fn(),
       removeQueuedPrompt: vi.fn(),
+      retractQueuedPrompt: vi.fn(),
       markQueuedPromptFlushFailed: vi.fn(() => { flushFailed = true }),
     }
     const actions = createWorkspaceActions(() => ({

@@ -6,8 +6,10 @@
  */
 export {
   applyPrimeEvent,
+  createQueuedMessageEvent,
   createSteerAcceptedEvent,
   createSteerPickupEvent,
+  createSteerRetractEvent,
   createPrimeEventBuffer,
   replayPrimeEvents,
   type PrimeEventBuffer,

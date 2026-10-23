@@ -39,6 +39,8 @@ function effectiveToolId(id: string | undefined, name: string): string {
 const EMPTY_TURN_FALLBACK = 'Completed without a text response.'
 const LOCAL_STEER_PICKUP = Symbol('omp-desktop-steer-pickup')
 const LOCAL_STEER_ACCEPTED = Symbol('omp-desktop-steer-accepted')
+const LOCAL_QUEUED_MESSAGE = Symbol('omp-desktop-queued-message')
+const LOCAL_STEER_RETRACT = Symbol('omp-desktop-steer-retract')
 
 /** Renderer-only event: fixes an admitted steer in history at response time. */
 export function createSteerAcceptedEvent(prompt: QueuedPrompt): Record<string, unknown> {
@@ -48,6 +50,16 @@ export function createSteerAcceptedEvent(prompt: QueuedPrompt): Record<string, u
 /** Renderer-only event: the symbol prevents an agent frame from spoofing a local pickup. */
 export function createSteerPickupEvent(prompts: QueuedPrompt[]): Record<string, unknown> {
   return { type: 'omp_desktop_steer_pickup', prompts, [LOCAL_STEER_PICKUP]: true }
+}
+
+/** Renderer-only event: a queued or steering prompt renders its user row immediately. */
+export function createQueuedMessageEvent(prompt: QueuedPrompt): Record<string, unknown> {
+  return { type: 'omp_desktop_queued_message', prompt, [LOCAL_QUEUED_MESSAGE]: true }
+}
+
+/** Renderer-only event: drops a queued prompt's optimistic row when it is removed or flushed. */
+export function createSteerRetractEvent(prompt: Pick<QueuedPrompt, 'id'>): Record<string, unknown> {
+  return { type: 'omp_desktop_steer_retract', prompt, [LOCAL_STEER_RETRACT]: true }
 }
 
 export function replayPrimeEvents(
@@ -198,29 +210,53 @@ export function replayPrimeEvents(
     scanStreaming()
   }
 
-  const steerMessage = (value: unknown, state: 'accepted' | 'read'): TranscriptMessage | undefined => {
+  const steerMessage = (value: unknown, state: 'accepted' | 'read' | undefined): TranscriptMessage | undefined => {
     const prompt = record(value)
     const id = string(prompt?.id)
     const text = string(prompt?.text)
     if (!id || !text) return undefined
     const timestamp = typeof prompt?.timestamp === 'number' && Number.isFinite(prompt.timestamp) ? prompt.timestamp : Date.now()
     const parts = Array.isArray(prompt?.parts) ? prompt.parts as MessagePart[] : [{ type: 'text' as const, text }]
-    return { id: `user-${id}`, role: 'user', steerState: state, timestamp, parts }
+    return { id: `user-${id}`, role: 'user', ...(state ? { steerState: state } : {}), timestamp, parts }
   }
 
   for (const raw of events) {
     if (stats) stats.eventScans += 1
     const type = string(raw.type) ?? string(raw.event)
     if (!type) continue
+    if (type === 'omp_desktop_queued_message' && (raw as Record<PropertyKey, unknown>)[LOCAL_QUEUED_MESSAGE] === true) {
+      // A queued or steering prompt shows its user row the moment it is
+      // submitted; the accepted/pickup events later reconcile the same row
+      // by id, and delivery itself is unchanged.
+      const queuedRow = steerMessage(raw.prompt, undefined)
+      if (!queuedRow || next.some((message) => message.id === queuedRow.id)) continue
+      finalizeStreaming(Date.now(), false)
+      copyTranscript()
+      next.push(queuedRow)
+      continue
+    }
+    if (type === 'omp_desktop_steer_retract' && (raw as Record<PropertyKey, unknown>)[LOCAL_STEER_RETRACT] === true) {
+      const id = string(record(raw.prompt)?.id)
+      if (!id) continue
+      const index = next.findIndex((message) => message.id === `user-${id}`)
+      if (index < 0) continue
+      copyTranscript()
+      next.splice(index, 1)
+      continue
+    }
     if (type === 'omp_desktop_steer_accepted' && (raw as Record<PropertyKey, unknown>)[LOCAL_STEER_ACCEPTED] === true) {
       const accepted = steerMessage(raw.prompt, 'accepted')
-      if (!accepted || next.some((message) => message.id === accepted.id)) continue
+      if (!accepted) continue
       // Freeze the output already visible when the RPC response confirms
       // admission. Later deltas open a new assistant segment below this row,
       // so the steer cannot ride the live bottom edge as output grows.
       finalizeStreaming(Date.now(), false)
       copyTranscript()
-      next.push(accepted)
+      // The row usually already rendered at submit time; admission upgrades
+      // it to the accepted state instead of appending a duplicate.
+      const existingIndex = next.findIndex((message) => message.id === accepted.id)
+      if (existingIndex >= 0) draftMessage(existingIndex).steerState = 'accepted'
+      else next.push(accepted)
       continue
     }
     if (type === 'omp_desktop_steer_pickup' && (raw as Record<PropertyKey, unknown>)[LOCAL_STEER_PICKUP] === true) {

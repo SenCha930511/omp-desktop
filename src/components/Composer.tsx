@@ -1,4 +1,4 @@
-import { ArrowUp, AtSign, Check, ChevronDown, Clock3, Command, Edit3, ImageIcon, LoaderCircle, MessageCirclePlus, Mic, Paperclip, Plus, Shield, ShieldAlert, ShieldCheck, ShieldQuestionMark, Square, SquareTerminal, Trash2, X, Zap } from 'lucide-react'
+import { ArrowUp, AtSign, Check, ChevronDown, Clock3, Command, Edit3, ImageIcon, LoaderCircle, MessageCirclePlus, Mic, Paperclip, Plus, RotateCcw, Shield, ShieldAlert, ShieldCheck, ShieldQuestionMark, Square, SquareTerminal, Trash2, X, Zap } from 'lucide-react'
 import type { CSSProperties } from 'react'
 import { memo, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useComposerImages } from '@/hooks/useComposerImages'
@@ -116,6 +116,9 @@ interface ComposerProps {
   onAddProjectFolder?(): void
   onSend(prompt: string, images: PromptImage[], intent: PromptDeliveryIntent): Promise<void> | void
   onStop(): Promise<void> | void
+  /** True right after the user stopped the turn: the send button becomes a retry affordance until the draft has content. */
+  retryStoppedTurn?: boolean
+  onRetryStoppedTurn?(): void
   onRemoveAnnotation?(id: string): void
   /** Called after a send that included the annotations, and by the attachment's remove control. */
   onClearAnnotations?(): void
@@ -190,6 +193,8 @@ export const Composer = memo(function Composer({
   onExecuteCheckout,
   onSend,
   onStop,
+  retryStoppedTurn,
+  onRetryStoppedTurn,
   onRemoveAnnotation = noop,
   onClearAnnotations = noop,
   onClearTerminalSelection = noop,
@@ -1097,6 +1102,13 @@ export const Composer = memo(function Composer({
                   <Square size={10} fill="currentColor" aria-hidden="true" />
                 </button>
               )
+            ) : retryStoppedTurn && !value.trim() && images.length === 0 && unsupportedFiles.length === 0 && annotations.length === 0 && !terminalSelection?.text ? (
+              // A user stop leaves the turn recoverable: the empty composer
+              // shows a retry affordance in the send slot — the same
+              // always-available shape the stop button uses while streaming.
+              <button type="button" className="send-button send-button--retry" aria-label={t('composer.retry')} title={t('composer.retry')} onClick={() => onRetryStoppedTurn?.()}>
+                <RotateCcw size={14} />
+              </button>
             ) : (
               <button
                 type="button"

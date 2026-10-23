@@ -173,8 +173,65 @@ describe('prompt admission versus background transcript reads', () => {
     expect(latest.messages).toMatchObject([
       { id: 'assistant-live', role: 'assistant', streaming: false },
       { role: 'user', steerState: 'read', timestamp: 2, parts: [{ type: 'text', text: 'change direction' }] },
+      { role: 'user', parts: [{ type: 'text', text: 'do this next turn' }] },
       { role: 'system', kind: 'steer-read-marker', parts: [{ type: 'text', text: 'Steer read here' }] },
     ])
+  })
+
+  it('renders a queued prompt row immediately and upgrades it when the steer is admitted', () => {
+    let flushFrame: FrameRequestCallback | undefined
+    vi.stubGlobal('requestAnimationFrame', vi.fn((callback: FrameRequestCallback) => { flushFrame = callback; return 1 }))
+    vi.stubGlobal('cancelAnimationFrame', vi.fn())
+    act(() => { root.render(createElement(Probe, { bridge: null })) })
+    let steerId = ''
+    act(() => {
+      steerId = latest.queuePrompt('steer this', 'steer', [{ type: 'text', text: 'steer this' }], 5)
+      flushFrame?.(1)
+    })
+    // The row renders the moment the prompt is submitted — no delivery wait.
+    expect(latest.messages).toMatchObject([{ id: `user-${steerId}`, role: 'user', parts: [{ type: 'text', text: 'steer this' }] }])
+
+    act(() => {
+      latest.acceptSteer(steerId)
+      flushFrame?.(2)
+    })
+    expect(latest.messages).toMatchObject([{ id: `user-${steerId}`, role: 'user', steerState: 'accepted' }])
+
+    act(() => {
+      latest.retractQueuedPrompt(steerId)
+      flushFrame?.(3)
+    })
+    expect(latest.messages).toEqual([])
+  })
+
+  it('keeps a harness-retained steer pending instead of dropping it silently', () => {
+    let flushFrame: FrameRequestCallback | undefined
+    vi.stubGlobal('requestAnimationFrame', vi.fn((callback: FrameRequestCallback) => { flushFrame = callback; return 1 }))
+    vi.stubGlobal('cancelAnimationFrame', vi.fn())
+    act(() => { root.render(createElement(Probe, { bridge: null })) })
+    act(() => {
+      latest.queuePrompt('steer this', 'steer', [{ type: 'text', text: 'steer this' }], 2)
+      flushFrame?.(1)
+    })
+    act(() => { latest.reconcileQueuedPrompts({ queuedCount: 0, steering: ['steer this'], followUps: [] }) })
+
+    // The steer left the steering list with no active turn, but omp now holds
+    // it for the next turn: the queue entry and optimistic row survive.
+    act(() => {
+      latest.reconcileQueuedPrompts({ queuedCount: 1, steering: [], followUps: [] })
+      flushFrame?.(2)
+    })
+    expect(latest.pendingQueuedPrompts.map((prompt) => prompt.text)).toEqual(['steer this'])
+    expect(latest.messages).toMatchObject([{ role: 'user', parts: [{ type: 'text', text: 'steer this' }] }])
+
+    // The harness delivers it (count normalizes): the row hands off to the
+    // real events.
+    act(() => {
+      latest.reconcileQueuedPrompts({ queuedCount: 0, steering: [], followUps: [] })
+      flushFrame?.(3)
+    })
+    expect(latest.pendingQueuedPrompts).toEqual([])
+    expect(latest.messages).toEqual([])
   })
 
   it('removes a cancelled steer without promoting it into transcript history', () => {

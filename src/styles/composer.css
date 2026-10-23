@@ -179,6 +179,8 @@
 .send-button:active:not(:disabled) { transform: scale(.95); }
 .send-button:disabled { color: var(--text-tertiary); background: var(--surface-selected); opacity: 1; }
 .send-button--stop { color: white; background: var(--danger); }
+/* Post-stop retry mirrors the stop control's always-affordant styling. */
+.send-button--retry { color: var(--canvas); background: var(--prime); }
 .send-button--stop svg { width: 10px; height: 10px; fill: currentColor; stroke: none; }
 .composer-note { margin: 0; padding: 5px 0 0; color: var(--text-tertiary); background: var(--canvas); box-shadow: 0 13px 0 var(--canvas); font-size: 9.5px; text-align: center; }
 .composer-menu { position: absolute; z-index: 50; left: 7px; bottom: 47px; width: min(360px, calc(100% - 14px)); max-height: 260px; padding: 5px; overflow: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-raised); box-shadow: var(--shadow-popover); }

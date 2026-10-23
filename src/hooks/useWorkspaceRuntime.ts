@@ -15,7 +15,7 @@ import {
 import { runTranscriptRead } from '@/app/transcript-load'
 import { reconcileTranscripts } from '@/app/transcript-reconcile'
 import type { WorkspaceSnapshot } from '@/app/workspace'
-import { createPrimeEventBuffer, createSteerAcceptedEvent, createSteerPickupEvent, replayPrimeEvents } from '@/lib/events'
+import { createPrimeEventBuffer, createQueuedMessageEvent, createSteerAcceptedEvent, createSteerPickupEvent, createSteerRetractEvent, replayPrimeEvents } from '@/lib/events'
 import type { PrimeEventBuffer } from '@/lib/events'
 import { findRuntimeForWorkspace, workspaceCwd } from '@/lib/workspace'
 import { readPendingQueues, savePendingQueues } from '@/lib/queued-prompt-storage'
@@ -79,6 +79,8 @@ export function useWorkspaceRuntime({
   const pendingQueuedPromptsRef = useRef<QueuedPrompt[]>(pendingQueuedPrompts)
   const queuedPromptsByOwnerRef = useRef<Map<string, QueuedPrompt[]>>(restoredQueues)
   const observedSteerIdsRef = useRef<Set<string>>(new Set())
+  /** Steers omp took from its steering list but still holds for the next turn. */
+  const harnessHeldSteerIdsRef = useRef<Set<string>>(new Set())
   const activeQueuedPromptOwnerRef = useRef<string | undefined>(queuedPromptOwner(initialProject, initialSession, undefined, 0))
   const [activeProjectId, setActiveProjectId] = useState(initialProject?.id)
   const [activeSessionId, setActiveSessionId] = useState(initialSession?.id)
@@ -237,6 +239,25 @@ export function useWorkspaceRuntime({
     setActiveSessionId(session.id)
   }, [])
 
+  // A compact rolls the harness session file forward; adopt the successor
+  // record the same way — identity only, the rolled file carries the history.
+  const adoptRolledSession = useCallback((successor: SessionRecord) => {
+    const current = workspaceRef.current
+    workspaceRef.current = {
+      ...current,
+      session: successor,
+      sessionFile: successor.filePath,
+      cwd: workspaceCwd(current.project, successor),
+    }
+    // The rolled file carries the same history: an identity-only rebind, no
+    // transcript reset — the live event stream keeps flowing under the
+    // runtime that performed the roll.
+    lastTranscriptReadWorkspaceRef.current = { generation: current.generation, sessionFile: successor.filePath }
+    adoptionPendingCatalogRef.current = successor.id
+    setActiveSessionId(successor.id)
+  }, [])
+
+
   const reconcileRuntime = useCallback(async (generation: number) => {
     if (!bridge) return
     const selected = workspaceRef.current
@@ -244,11 +265,27 @@ export function useWorkspaceRuntime({
     try {
       const runtimes = (await bridge.agent.list()).filter((candidate) => candidate.harness === harnessRef.current)
       if (workspaceRef.current.generation !== generation) return
-      attachRuntime(findRuntimeForWorkspace(runtimes, selected.cwd, selected.sessionFile), generation)
+      let match = findRuntimeForWorkspace(runtimes, selected.cwd, selected.sessionFile)
+      if (!match) {
+        // A compact rolls the harness session file forward: the runtime we
+        // own now reports the successor path. Follow the roll instead of
+        // detaching — the successor record appears in the catalog as the
+        // sessions sync catches up.
+        const owned = runtimes.find((candidate) => candidate.runtimeId === runtimeOwnerRef.current?.runtimeId)
+        const successor = owned?.sessionFile && owned.sessionFile !== selected.sessionFile
+          ? sessionsRef.current.find((session) => session.harness === harnessRef.current && session.filePath === owned.sessionFile)
+          : undefined
+        if (successor) {
+          adoptRolledSession(successor)
+          match = owned
+        }
+      }
+      attachRuntime(match, generation)
     } catch (error) {
       if (workspaceRef.current.generation === generation) reportError(error)
     }
-  }, [attachRuntime, bridge, reportError])
+  }, [adoptRolledSession, attachRuntime, bridge, reportError])
+
 
   const startTranscriptRead = useCallback((
     selected: WorkspaceSnapshot,
@@ -442,8 +479,12 @@ export function useWorkspaceRuntime({
     if (owner) queuedPromptsByOwnerRef.current.set(owner, next)
     savePendingQueues(queuedPromptsByOwnerRef.current)
     setPendingQueuedPrompts(next)
+    // The submitted message renders in the transcript immediately; delivery
+    // still follows the queue/steer logic and reconciles this row by id.
+    // Slash commands keep their command-chip flow and never get a row here.
+    if (!/^\/\S+/.test(text.trim())) queueAgentEvent(createQueuedMessageEvent(queued))
     return queued.id
-  }, [])
+  }, [queueAgentEvent])
   const removeQueuedPrompt = useCallback((id: string) => {
     observedSteerIdsRef.current.delete(id)
     const current = pendingQueuedPromptsRef.current
@@ -513,11 +554,19 @@ export function useWorkspaceRuntime({
   const clearQueuedPrompts = useCallback(() => {
     const owner = activeQueuedPromptOwnerRef.current
     if (owner) queuedPromptsByOwnerRef.current.delete(owner)
-    for (const prompt of pendingQueuedPromptsRef.current) observedSteerIdsRef.current.delete(prompt.id)
+    for (const prompt of pendingQueuedPromptsRef.current) {
+      observedSteerIdsRef.current.delete(prompt.id)
+      queueAgentEvent(createSteerRetractEvent({ id: prompt.id }))
+    }
     pendingQueuedPromptsRef.current = []
     setPendingQueuedPrompts([])
     savePendingQueues(queuedPromptsByOwnerRef.current)
-  }, [])
+  }, [queueAgentEvent])
+  /** Drops a queued prompt's optimistic transcript row (deletion, failure, or flush hand-off). */
+  const retractQueuedPrompt = useCallback((id: string) => {
+    queueAgentEvent(createSteerRetractEvent({ id }))
+  }, [queueAgentEvent])
+
   const acceptSteer = useCallback((id: string) => {
     const prompt = pendingQueuedPromptsRef.current.find((candidate) => candidate.id === id && candidate.intent === 'steer')
     if (prompt) queueAgentEvent(createSteerAcceptedEvent(prompt))
@@ -544,21 +593,43 @@ export function useWorkspaceRuntime({
     const settled = localSteers.filter((prompt) => (
       !stillQueued.has(prompt.id) && observedSteerIdsRef.current.has(prompt.id)
     ))
-    if (!settled.length) return
+    // Steers the harness already picked up from its steering list but still
+    // holds for the next turn: the queued count exceeding the desktop's own
+    // queue rows means omp retained them. They keep their optimistic row and
+    // queue entry — display-only, omp owns delivery — until the count shows
+    // the harness delivered them.
+    const queueIntentCount = pendingQueuedPromptsRef.current.filter((prompt) => prompt.intent === 'queue').length
+    const retainedByHarness = snapshot.queuedCount > queueIntentCount
+    for (const prompt of settled) {
+      if (retainedByHarness) harnessHeldSteerIdsRef.current.add(prompt.id)
+      else harnessHeldSteerIdsRef.current.delete(prompt.id)
+    }
+    const deliveredByHarness = snapshot.queuedCount <= queueIntentCount
+      ? [...harnessHeldSteerIdsRef.current].filter((id) => (
+        pendingQueuedPromptsRef.current.some((prompt) => prompt.id === id) && !stillQueued.has(id)
+      ))
+      : []
+    for (const id of deliveredByHarness) harnessHeldSteerIdsRef.current.delete(id)
+    if (!settled.length && !deliveredByHarness.length) return
 
     // A disappearing preview is a pickup only when the scheduler exposes an
     // active turn. Queue clearing/abort removes the pending row too, but must
     // not inject the cancelled message into transcript history.
-    const pickedUp = snapshot.active?.kind === 'turn' ? settled : []
-    const settledIds = new Set(settled.map((prompt) => prompt.id))
-    const next = pendingQueuedPromptsRef.current.filter((prompt) => !settledIds.has(prompt.id))
+    const pickedUp = snapshot.active?.kind === 'turn' ? settled.filter((prompt) => !harnessHeldSteerIdsRef.current.has(prompt.id)) : []
+    const removedIds = new Set([...settled.filter((prompt) => !harnessHeldSteerIdsRef.current.has(prompt.id) && !pickedUp.includes(prompt)).map((prompt) => prompt.id), ...deliveredByHarness])
+    // A steer that disappeared without an active turn was cancelled: its
+    // optimistic row must go with its queue entry. A harness-delivered steer
+    // retracts its row too — the harness events render the durable one.
+    for (const id of removedIds) queueAgentEvent(createSteerRetractEvent({ id }))
+    const next = pendingQueuedPromptsRef.current.filter((prompt) => !removedIds.has(prompt.id) && !pickedUp.some((picked) => picked.id === prompt.id))
     pendingQueuedPromptsRef.current = next
     const owner = activeQueuedPromptOwnerRef.current
     if (owner) {
       if (next.length) queuedPromptsByOwnerRef.current.set(owner, next)
       else queuedPromptsByOwnerRef.current.delete(owner)
     }
-    for (const prompt of settled) observedSteerIdsRef.current.delete(prompt.id)
+    for (const prompt of pickedUp) observedSteerIdsRef.current.delete(prompt.id)
+    for (const id of removedIds) observedSteerIdsRef.current.delete(id)
     setPendingQueuedPrompts(next)
 
     // Keep the pickup boundary in the same ordered event buffer as preceding
@@ -577,11 +648,27 @@ export function useWorkspaceRuntime({
   }, [reconcileQueuedPrompts])
 
   const activeSession = sessions.find((session) => session.id === activeSessionId)
+  const sessionsRef = useRef(sessions)
+  sessionsRef.current = sessions
   const locallyOwnedActiveSession = Boolean(
     activeSession?.filePath && runtime?.sessionFile === activeSession.filePath,
   )
   const externalSessionUpdatedAt = locallyOwnedActiveSession ? undefined : activeSession?.updatedAt
   const externalSessionSyncRevision = locallyOwnedActiveSession ? undefined : activeSession?.syncRevision
+  const attachedRuntimeSessionFile = runtime?.sessionFile
+  const attachedRuntimeId = runtime?.runtimeId
+  useEffect(() => {
+    // Follow a compact rollover live: the attached runtime's sessionFile
+    // moves to the successor path (observed through runtime_state pushes and
+    // runtime re-attach). The catalog row for the successor arrives with the
+    // next sessions sync — the effect retries as `sessions` updates.
+    if (!bridge || !attachedRuntimeSessionFile || !attachedRuntimeId) return
+    if (runtimeOwnerRef.current?.runtimeId !== attachedRuntimeId) return
+    const selected = workspaceRef.current
+    if (!selected.sessionFile || attachedRuntimeSessionFile === selected.sessionFile) return
+    const successor = sessions.find((session) => session.harness === harnessRef.current && session.filePath === attachedRuntimeSessionFile)
+    if (successor) adoptRolledSession(successor)
+  }, [adoptRolledSession, attachedRuntimeId, attachedRuntimeSessionFile, bridge, sessions])
 
   useEffect(() => {
     if (!bridge || !activeSession?.filePath) {
@@ -662,6 +749,7 @@ export function useWorkspaceRuntime({
     clearQueuedPromptFlushFailures,
     clearQueuedPrompts,
     acceptSteer,
+    retractQueuedPrompt,
     reconcileQueuedPrompts,
     acknowledgeSteer,
     activeProjectId,

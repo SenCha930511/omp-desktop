@@ -437,7 +437,9 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
       }
       if (intent === 'steer') {
         const sentAt = Date.now()
-        const pendingSteerId = workspace.queuePrompt(prompt, intent, [{ type: 'text', text: prompt }, ...images], sentAt)
+        // A queue-flushed steer keeps its original prompt id: the optimistic
+        // row rendered at submit time is the row this steer reconciles into.
+        const pendingSteerId = queuedFlushPromptId ?? workspace.queuePrompt(prompt, intent, [{ type: 'text', text: prompt }, ...images], sentAt)
         if (currentWorkspace.sessionFile) {
           const sentAtIso = new Date(sentAt).toISOString()
           setSessions((items) => items.map((session) => session.filePath === currentWorkspace.sessionFile ? { ...session, lastUserMessageAt: sentAtIso } : session))
@@ -450,6 +452,7 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
           return
         } catch (error) {
           workspace.removeQueuedPrompt(pendingSteerId)
+          workspace.retractQueuedPrompt(pendingSteerId)
           if (workspace.workspaceRef.current.generation === currentWorkspace.generation) {
             // Keep a durable failure row: a toast alone is easy to miss, and a
             // silently vanishing steer reads as "sent but ignored".
@@ -465,6 +468,9 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     }
     const admittedSubmission = await submissionAdmissionRef.current.run(async () => {
       setSubmitting(true)
+      // The queued prompt's optimistic row hands off to the real turn: the
+      // harness events render the durable row as the prompt is delivered.
+      if (queuedFlushPromptId) workspace.retractQueuedPrompt(queuedFlushPromptId)
       const admitted = workspace.workspaceRef.current
       const generation = admitted.generation
       let startedPrompt = false

@@ -68,7 +68,7 @@ describe('transcript per-message boundary', () => {
         onSuggestion={vi.fn()}
       />)
     })
-    expect(container.textContent).toContain('Accepted — waiting for the next safe steering point')
+    expect(container.textContent).toContain('Steered')
   })
 
   it('keeps healthy messages visible when one row fails to render', async () => {

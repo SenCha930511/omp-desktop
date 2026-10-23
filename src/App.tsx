@@ -370,7 +370,7 @@ export default function App() {
     if (base.some((command: SlashCommand) => command.name === 'btw')) return base
     return [...base, { name: 'btw', description: 'Open side questions', source: 'builtin' }]
   }, [workspace.runtime?.availableCommands, sideChatSupported])
-  const sideChatVisible = view === 'session' && sideChatSupported && sideChatOpen && !layout.inspectorSuppressed
+  const sideChatVisible = view === 'session' && sideChatOpen && !layout.inspectorSuppressed
   const extension = useExtensionUi({
     bridge,
     activeRuntimeId: workspace.runtime?.runtimeId,
@@ -663,17 +663,20 @@ export default function App() {
   // Intercept /btw before it ever reaches the harness: bare opens the dock,
   // `/btw <question>` opens it and fires the question as a new topic. The
   // intercept also runs while the support probe is still resolving — the
-  // probe only hides the button, not the command — so a fast `/btw` right
-  // after the first prompt never falls through to the transcript as a
-  // silent dead end. In a fresh, never-sent session there is no runtime to
-  // ride yet, so the command is consumed with a hint instead of leaking into
-  // the conversation as a stray prompt.
-  const sideChatIntercept = activeSideChat?.supported !== false
+  // probe only hides the button, not the command — and regardless of the
+  // composer's delivery intent: with messageEnterAction 'steer' a plain
+  // Enter produces a steer, which would otherwise ride the steer channel
+  // into the harness's turn queue instead of opening the dock. A /btw typed
+  // in the composer always means the side chat. In a fresh, never-sent
+  // session there is no runtime to ride yet, so the command is consumed
+  // with a hint instead of leaking into the conversation as a stray prompt.
+  // The intercept no longer depends on the support probe: a once-failed probe
+  // would otherwise strand /btw into the harness queue. An unsupported harness
+  // surfaces through the ask error instead.
+  const sideChatIntercept = true
   const sendVisiblePrompt = useCallback((prompt: string, images: PromptImage[] = [], intent: PromptDeliveryIntent = 'queue') => {
     const trimmed = prompt.trim()
-    // A queue-flush rides the steer channel straight to the turn; only a
-    // visible composer submission may be a /btw side question.
-    if (intent !== 'steer' && sideChatIntercept && /^\/btw(?:\s|$)/.test(trimmed)) {
+    if (sideChatIntercept && /^\/btw(?:\s|$)/.test(trimmed)) {
       if (!sideChatSessionId) {
         // No runtime to ride yet — surface the hint inside the conversation;
         // the first real message covers it (effect below).
@@ -820,7 +823,7 @@ export default function App() {
   const sendQueuedMessage = useStableCallback(async (message: QueuedPrompt) => {
     workspace.updateQueuedPromptDelivery(message.id, true)
     try {
-      await sendPrompt(message.text, [], 'steer')
+      await sendPrompt(message.text, [], 'steer', message.id)
       workspace.removeQueuedPrompt(message.id)
     } catch (error) {
       workspace.markQueuedPromptFlushFailed(message.id)
@@ -983,6 +986,14 @@ export default function App() {
 
   const harnessQueuedMessageCount = workspace.runtime?.sessionActions?.queuedCount ?? 0
   const busy = Boolean(workspace.runtime?.isStreaming || workspace.runtime?.isCompacting || harnessQueuedMessageCount > 0 || workspace.messages.some((message) => message.streaming))
+  // The user stopped the current turn and the transcript tail is that
+  // cancelled assistant row: the composer's send slot becomes a retry button
+  // until a new draft arrives (mirroring how the stop button owns the slot
+  // while the model streams).
+  const stoppedTurnRetryAvailable = !busy && (() => {
+    const lastAssistant = [...workspace.messages].reverse().find((message) => message.role === 'assistant')
+    return lastAssistant?.outcome === 'cancelled'
+  })()
   const execution = conversationExecution({ runtime: workspace.runtime, messages: workspace.messages,
     submitting: submitting && submissionGenerationRef.current === workspace.workspaceGeneration,
     waiting: Boolean(extension.extensionUi && extension.extensionUi.runtimeId === workspace.runtime?.runtimeId), sessionStatus: activeSession?.status })
@@ -1295,6 +1306,8 @@ export default function App() {
                         onFastChange={provider.changeFast}
                         onSend={sendVisiblePrompt}
                         onStop={stopRuntime}
+                        retryStoppedTurn={stoppedTurnRetryAvailable}
+                        onRetryStoppedTurn={() => { void sendPrompt('/retry') }}
                         onRemoveAnnotation={browserAnnotations.remove}
                         onClearAnnotations={browserAnnotations.clear}
                         onClearTerminalSelection={clearTerminalSelection}
