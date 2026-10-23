@@ -3,6 +3,11 @@ import { type ComponentPropsWithoutRef, Fragment, isValidElement, type MouseEven
 import type { Components, ExtraProps } from 'react-markdown'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import remarkMath from 'remark-math'
+import rehypeKatex from 'rehype-katex'
+// KaTeX ships its own stylesheet and fonts; the bundler emits both, and the
+// omp-desktop:// protocol already serves .woff2 with the right MIME type.
+import 'katex/dist/katex.min.css'
 import { writeClipboardText } from '@/lib/clipboard'
 import { openExternalUrl } from '@/lib/desktop-actions'
 import { useI18n } from '@/lib/i18n'
@@ -122,7 +127,10 @@ function MarkdownCodeBlock({ node: _node, children, ...props }: ComponentPropsWi
   )
 }
 
-const markdownPlugins = [remarkGfm]
+const markdownPlugins = [remarkGfm, remarkMath]
+/** Theme-matched KaTeX rendering: errors reuse the danger color, and unusual
+ *  Unicode input stays silent instead of spamming the console. */
+const katexOptions = { errorColor: 'var(--danger)', strict: false } as const
 
 /**
  * Each block resolves its own base direction from its first strong character.
@@ -216,7 +224,7 @@ export const MarkdownText = memo(function MarkdownText({ text, streaming = false
   // jump onto separate lines while tokens are still arriving.
   const markdown = useMemo(
     () => (
-      <ReactMarkdown remarkPlugins={markdownPlugins} skipHtml components={markdownComponents}>
+      <ReactMarkdown remarkPlugins={markdownPlugins} rehypePlugins={[[rehypeKatex, katexOptions]]} skipHtml components={markdownComponents}>
         {parsedText}
       </ReactMarkdown>
     ),

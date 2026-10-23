@@ -1187,6 +1187,29 @@ test.describe('OMP Desktop desktop smoke', () => {
     expect(Math.abs(offset.y)).toBeLessThanOrEqual(0.5)
   })
 
+  test('renders LaTeX math in transcript messages', async () => {
+    await page.locator('.session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
+    const timestamp = new Date().toISOString()
+    appendFileSync(fixtureSessionFile, `${[
+      JSON.stringify({ type: 'message', id: 'math-user', parentId: 'fixture-goal-summary', timestamp, message: { role: 'user', content: 'Derive the identity.', timestamp } }),
+      JSON.stringify({
+        type: 'message', id: 'math-assistant', parentId: 'math-user', timestamp, message: { role: 'assistant', content: [
+          { type: 'text', text: 'Euler: $e^{i\\pi} + 1 = 0$\n\n$$\n\\int_0^1 x^2\\,dx = \\frac{1}{3}\n$$' },
+        ], timestamp },
+      }),
+    ].join('\n')}\n`)
+    const reply = page.locator('.message--assistant').filter({ hasText: 'Euler' })
+    await expect(reply).toHaveCount(1)
+    await expect(reply.locator('.katex')).toHaveCount(2)
+    await expect(reply.locator('.katex-display')).toHaveCount(1)
+    // KaTeX's stylesheet and fonts must actually load through omp-desktop://.
+    const loadedKatexFonts = await page.evaluate(async () => {
+      await document.fonts.ready
+      return [...document.fonts].filter((font) => font.family.startsWith('KaTeX') && font.status === 'loaded').map((font) => font.family)
+    })
+    expect(loadedKatexFonts.length).toBeGreaterThan(0)
+  })
+
   test('reassembles base64 rpc_chunk frames into a transcript message', async () => {
     await page.locator('.session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
     await expect(page.locator('.model-picker__trigger')).toHaveAccessibleName('Model: Claude Fixture')
