@@ -2,7 +2,7 @@ import { ArrowUp, ChevronDown, CirclePlus, Plus, Square, X } from 'lucide-react'
 import { memo, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { isTopicRunning, type SideQuestionSessionState } from '@/hooks/useSideQuestions'
 import { useI18n } from '@/lib/i18n'
-import { isImeComposingOrGuarded } from '@/lib/message-shortcuts'
+import { isImeComposing, isImeComposingOrGuarded } from '@/lib/message-shortcuts'
 import type { SideQuestionTopic, SideQuestionTurn } from '@/types/api'
 import { MarkdownText } from './MarkdownText'
 import { IconButton } from './ui'
@@ -94,7 +94,12 @@ export const SideChatPanel = memo(function SideChatPanel({ state, hasSession, on
   }
 
   const onComposerKey = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (isImeComposingOrGuarded(event.nativeEvent, composingRef.current, lastCompositionEndAtRef.current)) return
+    if (isImeComposingOrGuarded(event.nativeEvent, composingRef.current, lastCompositionEndAtRef.current)) {
+      // Swallowed Enter must not fall through to the textarea's newline
+      // default; live composition keys still belong to the IME.
+      if (event.key === 'Enter' && !isImeComposing(event.nativeEvent, composingRef.current)) event.preventDefault()
+      return
+    }
     if (event.key !== 'Enter' || event.shiftKey) return
     event.preventDefault()
     submit()

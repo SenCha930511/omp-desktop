@@ -17,7 +17,22 @@ export function messageActionForKey(event: MessageShortcutEvent, enterAction: Me
   return enterAction
 }
 
-export const IME_POST_COMPOSITION_GUARD_MS = 500
+/** True while the keystroke belongs to an active IME composition: the IME
+ *  owns the key, so callers must leave its default action untouched. */
+export function isImeComposing(event: ImeGuardEvent, composingRefValue: boolean): boolean {
+  return composingRefValue || event.isComposing === true || event.keyCode === 229
+}
+
+/** Window after compositionEnd in which a plain Enter still counts as the
+ *  composition's own commit key. Some IME stacks (Chromium on macOS with
+ *  Zhuyin/Pinyin among them) end the composition and only then report the
+ *  commit Enter as a regular keydown — compositionEnd and that keydown
+ *  dispatch from the same native keystroke, microseconds apart. A deliberate
+ *  follow-up Enter to send arrives no sooner than a fast double press
+ *  (~100ms), so 50ms separates the two and keeps send-after-commit instant;
+ *  the old 500ms window swallowed those sends and let the textarea's default
+ *  insert a newline instead, reading as "Enter stopped sending". */
+export const IME_POST_COMPOSITION_GUARD_MS = 50
 
 export interface ImeGuardEvent {
   key: string
@@ -27,7 +42,7 @@ export interface ImeGuardEvent {
 }
 
 export function isImeComposingOrGuarded(event: ImeGuardEvent, composingRefValue: boolean, lastCompositionEndAt: number | null): boolean {
-  if (composingRefValue || event.isComposing === true || event.keyCode === 229) return true
+  if (isImeComposing(event, composingRefValue)) return true
   if (
     (event.key === 'Enter' || event.key === 'Escape') &&
     lastCompositionEndAt !== null &&

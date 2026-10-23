@@ -66,14 +66,16 @@ describe('isImeComposingOrGuarded', () => {
     expect(isImeComposingOrGuarded({ key: 'Enter', isComposing: false, keyCode: 13 }, false, null)).toBe(false)
   })
 
-  it('guards Enter and Escape within 500ms after compositionEnd and allows after 500ms', () => {
-    expect(IME_POST_COMPOSITION_GUARD_MS).toBe(500)
+  it('guards Enter and Escape only within the misordered-commit window and allows a follow-up press', () => {
+    expect(IME_POST_COMPOSITION_GUARD_MS).toBe(50)
+    // The misordered commit Enter dispatches microseconds after compositionEnd.
     expect(isImeComposingOrGuarded({ key: 'Enter', timeStamp: 1000 }, false, 1000)).toBe(true)
-    expect(isImeComposingOrGuarded({ key: 'Enter', timeStamp: 1499 }, false, 1000)).toBe(true)
-    expect(isImeComposingOrGuarded({ key: 'Escape', timeStamp: 1250 }, false, 1000)).toBe(true)
-    expect(isImeComposingOrGuarded({ key: 'Enter', timeStamp: 1500 }, false, 1000)).toBe(false)
-    expect(isImeComposingOrGuarded({ key: 'Escape', timeStamp: 1650 }, false, 1000)).toBe(false)
-    expect(isImeComposingOrGuarded({ key: 'a', timeStamp: 1100 }, false, 1000)).toBe(false)
+    expect(isImeComposingOrGuarded({ key: 'Enter', timeStamp: 1049 }, false, 1000)).toBe(true)
+    expect(isImeComposingOrGuarded({ key: 'Escape', timeStamp: 1025 }, false, 1000)).toBe(true)
+    // A deliberate follow-up Enter — even a fast double press (~100ms) — sends.
+    expect(isImeComposingOrGuarded({ key: 'Enter', timeStamp: 1050 }, false, 1000)).toBe(false)
+    expect(isImeComposingOrGuarded({ key: 'Escape', timeStamp: 1060 }, false, 1000)).toBe(false)
+    expect(isImeComposingOrGuarded({ key: 'a', timeStamp: 1010 }, false, 1000)).toBe(false)
   })
 })
 
@@ -138,7 +140,7 @@ describe('Composer and SideChatPanel IME guard & attachment rendering', () => {
     vi.unstubAllGlobals()
   })
 
-  it('blocks post-composition Enter and Escape within 500ms in Composer and sends after 500ms', () => {
+  it('swallows the misordered commit Enter in Composer and sends a follow-up press', () => {
     const onSend = vi.fn(async () => undefined)
     act(() => {
       root.render(
@@ -175,23 +177,26 @@ describe('Composer and SideChatPanel IME guard & attachment rendering', () => {
       textarea.dispatchEvent(withTimeStamp(new CompositionEvent('compositionend', { bubbles: true }), 1200))
     })
 
-    // Enter at +150ms (< 500ms) after compositionend must be ignored
+    // The misordered commit Enter — a plain keydown microseconds after
+    // compositionEnd — must be swallowed, and preventDefault stops the
+    // textarea from inserting the newline that read as "Enter stopped sending".
+    const commitEnter = withTimeStamp(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }), 1205)
     act(() => {
-      vi.advanceTimersByTime(150)
-      textarea.dispatchEvent(withTimeStamp(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }), 1350))
+      textarea.dispatchEvent(commitEnter)
     })
     expect(onSend).not.toHaveBeenCalled()
+    expect(commitEnter.defaultPrevented).toBe(true)
 
-    // Enter at +500ms (>= 500ms) after compositionend submits normally
+    // A deliberate follow-up Enter (+150ms, a fast double press) submits.
     act(() => {
-      vi.advanceTimersByTime(350)
-      textarea.dispatchEvent(withTimeStamp(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }), 1700))
+      vi.advanceTimersByTime(145)
+      textarea.dispatchEvent(withTimeStamp(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }), 1350))
     })
     expect(onSend).toHaveBeenCalledTimes(1)
     expect(onSend).toHaveBeenCalledWith('你好世界', [], 'queue')
   })
 
-  it('blocks post-composition Enter and keyCode 229 in SideChatPanel within 500ms and sends after 500ms', () => {
+  it('swallows the misordered commit Enter and keyCode 229 in SideChatPanel and sends a follow-up press', () => {
     const onAsk = vi.fn()
     const state: SideQuestionSessionState = {
       supported: true,
@@ -228,19 +233,22 @@ describe('Composer and SideChatPanel IME guard & attachment rendering', () => {
     })
     expect(onAsk).not.toHaveBeenCalled()
 
-    // Post-composition Enter within 500ms must be ignored
+    // The misordered commit Enter microseconds after compositionEnd is
+    // swallowed — and preventDefault stops the side input from inserting a
+    // newline in its place.
+    const commitEnter = withTimeStamp(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }), 2205)
     act(() => {
       textarea.dispatchEvent(withTimeStamp(new CompositionEvent('compositionstart', { bubbles: true }), 2100))
       textarea.dispatchEvent(withTimeStamp(new CompositionEvent('compositionend', { bubbles: true }), 2200))
-      vi.advanceTimersByTime(200)
-      textarea.dispatchEvent(withTimeStamp(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }), 2400))
+      textarea.dispatchEvent(commitEnter)
     })
     expect(onAsk).not.toHaveBeenCalled()
+    expect(commitEnter.defaultPrevented).toBe(true)
 
-    // Enter after 500ms submits the side question
+    // A deliberate follow-up Enter (+200ms) submits the side question
     act(() => {
-      vi.advanceTimersByTime(350)
-      textarea.dispatchEvent(withTimeStamp(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }), 2750))
+      vi.advanceTimersByTime(195)
+      textarea.dispatchEvent(withTimeStamp(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }), 2400))
     })
     expect(onAsk).toHaveBeenCalledTimes(1)
     expect(onAsk).toHaveBeenCalledWith('請問這段程式碼的作用？', undefined)

@@ -90,11 +90,12 @@ it('does not accept commands or close the command menu during IME composition', 
   expect(container.querySelector('[role="listbox"]')).not.toBeNull()
   expect(textarea.value).toBe('/')
   // Composition has ended; the shared IME guard still swallows the leaked
-  // commit keys inside its window, then normal Escape handling resumes.
+  // commit keys microseconds after compositionEnd, then normal Escape
+  // handling resumes for deliberate presses.
   act(() => textarea.dispatchEvent(withTimeStamp(new CompositionEvent('compositionend', { bubbles: true }), 1000)))
-  act(() => textarea.dispatchEvent(withTimeStamp(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }), 1200)))
+  act(() => textarea.dispatchEvent(withTimeStamp(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }), 1005)))
   expect(container.querySelector('[role="listbox"]')).not.toBeNull()
-  act(() => textarea.dispatchEvent(withTimeStamp(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }), 1600)))
+  act(() => textarea.dispatchEvent(withTimeStamp(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }), 1200)))
   expect(container.querySelector('[role="listbox"]')).toBeNull()
 })
 

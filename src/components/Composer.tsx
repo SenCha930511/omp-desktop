@@ -8,7 +8,7 @@ import { appendCapabilityRouting } from '@/lib/capability-mentions'
 import { clearComposerDraft, readComposerDraft, saveComposerDraft, takeComposerDraft } from '@/lib/composer-draft'
 import { contextDialLabel, formatSessionCost, PRICING_UNAVAILABLE } from '@/lib/format-cost'
 import { type MessageKey, useI18n } from '@/lib/i18n'
-import { isImeComposingOrGuarded, messageActionForKey, splitAttachmentFileName } from '@/lib/message-shortcuts'
+import { isImeComposing, isImeComposingOrGuarded, messageActionForKey, splitAttachmentFileName } from '@/lib/message-shortcuts'
 import { appendSessionRouting, findSessionMentions } from '@/lib/session-mentions'
 import { appendTerminalContextToPrompt } from '@/lib/terminal-context'
 import { INITIAL_SLASH_COMMANDS, slashSuggestions, type SlashCommand } from '@/lib/slash-commands'
@@ -669,7 +669,14 @@ export const Composer = memo(function Composer({
               lastCompositionEndAtRef.current = event.nativeEvent.timeStamp
             }}
             onKeyDown={(event) => {
-              if (isImeComposingOrGuarded(event.nativeEvent, composingRef.current, lastCompositionEndAtRef.current)) return
+              if (isImeComposingOrGuarded(event.nativeEvent, composingRef.current, lastCompositionEndAtRef.current)) {
+                // A swallowed Enter must die here: without preventDefault the
+                // textarea's default inserts a newline, which reads to the
+                // reader as "Enter stopped sending". Live composition keys
+                // still belong to the IME, so their default stays untouched.
+                if (event.key === 'Enter' && !isImeComposing(event.nativeEvent, composingRef.current)) event.preventDefault()
+                return
+              }
               if (event.key === 'Backspace') acceptedMentionRef.current = null
               if (menu && suggestions.length && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
                 event.preventDefault()
