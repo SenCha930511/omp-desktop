@@ -91,7 +91,7 @@ export function useTranscriptSearch(messages: TranscriptMessage[], root: RefObje
     }
   }, [active, matchId, messages, query, root])
   return { open, query, scope, index: results.length ? index % results.length : 0, total: results.length, matchId, inputRef,
-    show: () => { if (document.activeElement instanceof HTMLElement) previousFocus.current = document.activeElement; setOpen(true) },
+    show: () => { if (document.activeElement instanceof HTMLElement) previousFocus.current = document.activeElement; setOpen(true); inputRef.current?.focus() },
     close: () => { setOpen(false); if (previousFocus.current?.isConnected) previousFocus.current.focus(); else root.current?.focus() },
     changeQuery: (value: string) => { setQuery(value); setIndex(0) }, changeScope: (value: SearchScope) => { setScope(value); setIndex(0) },
     move: (direction: number) => setIndex((current) => (current + direction + Math.max(1, results.length)) % Math.max(1, results.length)) }
@@ -109,12 +109,15 @@ export function TranscriptSearchBar({ state, dockToToolbar = false }: { state: R
     if (!dockToToolbar) return
     setSlot(document.querySelector<HTMLElement>('.subagents__search-slot'))
   })
-  if (!state.open) {
-    const trigger = <button type="button" className="conversation-search-trigger" onClick={state.show} aria-label={t('conversation.search.open')} title={t('conversation.search.open')}><Search size={15} /></button>
-    return dockToToolbar && slot ? createPortal(trigger, slot) : trigger
-  }
+  const trigger = <button type="button" className="conversation-search-trigger" onClick={state.show} aria-label={t('conversation.search.open')} title={t('conversation.search.open')}><Search size={15} /></button>
+  // The docked trigger stays in the toolbar while the bar is open — clicking
+  // it again refocuses the query input instead of the button vanishing.
+  // Undocked (subagent) transcripts keep the old swap: the bar opens in the
+  // trigger's place.
+  const docked = dockToToolbar && slot ? createPortal(trigger, slot) : null
+  if (!state.open) return docked ?? trigger
   const hasMatches = state.total > 0
-  return <section className={`conversation-search ${hasMatches ? 'has-matches' : ''}`} aria-label={t('conversation.search.open')} onKeyDown={(event) => {
+  return <>{docked}<section className={`conversation-search ${hasMatches ? 'has-matches' : ''}`} aria-label={t('conversation.search.open')} onKeyDown={(event) => {
     if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); state.close() }
     if (event.key === 'Enter' && event.target === state.inputRef.current) { event.preventDefault(); state.move(event.shiftKey ? -1 : 1) }
   }}>
@@ -134,5 +137,5 @@ export function TranscriptSearchBar({ state, dockToToolbar = false }: { state: R
       <button type="button" disabled={!state.total} aria-label={t('conversation.search.next')} title={t('conversation.search.next')} onClick={() => state.move(1)}><ArrowDown size={13} /></button>
       <button type="button" className="conversation-search__close" aria-label={t('conversation.search.close')} title={t('conversation.search.close')} onClick={state.close}><X size={13} /></button>
     </div>
-  </section>
+  </section></>
 }

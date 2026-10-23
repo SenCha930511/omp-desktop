@@ -930,6 +930,8 @@ test.describe('OMP Desktop desktop smoke', () => {
   test('searches collapsed content and old history and records conversation performance', async () => {
     const search = page.getByRole('textbox', { name: 'Find in conversation', exact: true })
     await page.keyboard.press('Meta+f')
+    // The docked trigger stays in the toolbar while the bar is open.
+    await expect(page.locator('.subagents__search-slot .conversation-search-trigger')).toBeVisible()
     await search.fill('readable agent response')
     await expect(page.locator('.agent-message__summary')).toHaveAttribute('aria-expanded', 'true')
     await expect(page.locator('.agent-message__content')).toContainText('Fixture review complete')
