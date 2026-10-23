@@ -5,6 +5,11 @@ import type { TranscriptMessage } from '@/types/api'
 /** Grace window for the jump button's smooth ride; matches the snappiest browsers need. */
 const SMOOTH_SCROLL_GUARD_MS = 750
 
+/** How long an expanding disclosure holds following: the accordion animates
+ *  for 200ms, and trackpad momentum decaying from the fling that preceded the
+ *  click must not read as a deliberate scroll while it still runs. */
+const EXPAND_HOLD_MS = 250
+
 export function useTranscriptScroll(messages: TranscriptMessage[], active = true, followKey?: string | null) {
   const { t } = useI18n()
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -16,6 +21,10 @@ export function useTranscriptScroll(messages: TranscriptMessage[], active = true
   const lastScrollHeightRef = useRef(0)
   const manualScrollUntilRef = useRef(0)
   const smoothScrollUntilRef = useRef(0)
+  /** Set while the reader expanded a work record: the accordion's growth
+   *  must never re-engage the tail snap (see stopFollowing) — following only
+   *  resumes via a deliberate scroll, the jump button, or a session switch. */
+  const readerExpandedRef = useRef(false)
   const [visibleLimit, setVisibleLimit] = useState(250)
   const [windowEnd, setWindowEnd] = useState<number>()
   const [announcement, setAnnouncement] = useState('')
@@ -34,6 +43,7 @@ export function useTranscriptScroll(messages: TranscriptMessage[], active = true
     pinnedToBottomRef.current = true
     lastScrollTopRef.current = 0
     manualScrollUntilRef.current = 0
+    readerExpandedRef.current = false
     setVisibleLimit(250)
     setWindowEnd(undefined)
     setAwayFromBottom(false)
@@ -103,12 +113,17 @@ export function useTranscriptScroll(messages: TranscriptMessage[], active = true
       if (atBottom) smoothScrollUntilRef.current = 0
       else return
     }
+    // A scroll event resolves an expanded work record's hold once the click's
+    // manual window has passed — earlier events are only trackpad momentum
+    // decaying from the fling that carried the cursor to the toggle, never a
+    // fresh reading position.
+    if (readerExpandedRef.current && performance.now() >= manualScrollUntilRef.current) readerExpandedRef.current = false
     if ((movedUp || !atBottom) && !shrank) {
       // An explicit move away (wheel/trackpad up, scrollbar drag, keyboard)
       // breaks following; the jump button brings it back.
       pinnedToBottomRef.current = false
       setAwayFromBottom(true)
-    } else {
+    } else if (!readerExpandedRef.current) {
       // Reaching the bottom — from the jump button or a deliberate scroll
       // down — re-engages following. When a search window masked the tail,
       // it collapses exactly like the button so the live tail shows.
@@ -134,8 +149,19 @@ export function useTranscriptScroll(messages: TranscriptMessage[], active = true
       // and with nothing to scroll, nothing ever cleared it, leaving the jump
       // button stuck over a transcript already at its bottom.
       if ((event instanceof WheelEvent && event.deltaY < 0 && scroller.scrollTop > 1) || (target instanceof Element && target.closest('summary,button[aria-expanded]'))) {
+        // Expanding a work record must not drag the reader to the live tail:
+        // the accordion keeps resizing for ~200ms after the click — past the
+        // manual window — so the observer's near-bottom self-heal re-engaged
+        // following mid-animation and the next frame snapped to the bottom,
+        // burying the text the reader just opened. Expands therefore hold
+        // following until the reader's next deliberate scroll; collapses and
+        // wheel flicks keep the plain timed window so closing a record over
+        // the tail resumes following right away. Capture phase still sees
+        // aria-expanded before React toggles it, so "false" means opening.
+        const expanding = !(event instanceof WheelEvent) && target instanceof Element && !!target.closest('button[aria-expanded="false"]')
+        readerExpandedRef.current = expanding
         pinnedToBottomRef.current = false
-        manualScrollUntilRef.current = performance.now() + 150
+        manualScrollUntilRef.current = performance.now() + (expanding ? EXPAND_HOLD_MS : 150)
         if (event instanceof WheelEvent) setAwayFromBottom(true)
       }
     }
@@ -151,7 +177,7 @@ export function useTranscriptScroll(messages: TranscriptMessage[], active = true
         // gesture back to the bottom.
         if (scroller.scrollTop >= lastScrollTopRef.current - 1) scroller.scrollTo?.({ top: scroller.scrollHeight, behavior: 'auto' })
         else manualScrollUntilRef.current = performance.now() + 150
-      } else if (!pinnedToBottomRef.current && windowEnd === undefined && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 40) {
+      } else if (!pinnedToBottomRef.current && !readerExpandedRef.current && windowEnd === undefined && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 40) {
         // Self-heal any stuck "away" state whose layout already proves the
         // bottom is visible: content shrinking back under the parked scroll
         // position fires no scroll events, so without this the jump button
@@ -177,6 +203,7 @@ export function useTranscriptScroll(messages: TranscriptMessage[], active = true
       scroller.scrollTo({ top: scroller.scrollHeight, behavior: 'smooth' })
     }
     pinnedToBottomRef.current = true
+    readerExpandedRef.current = false
     setHasNewContent(false)
     setAwayFromBottom(false)
   }

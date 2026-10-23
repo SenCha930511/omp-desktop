@@ -239,3 +239,70 @@ describe('transcript jump-to-bottom button', () => {
     expect(jumpButton()).toBeNull()
   })
 })
+
+describe('work-record expansion over the tail', () => {
+  // The accordion's 200ms animation outlives the manual scroll window, so
+  // these cases drive performance.now() directly instead of racing real time.
+  beforeEach(() => { vi.useFakeTimers({ toFake: ['performance'] }) })
+  afterEach(() => { vi.useRealTimers() })
+
+  const agentMessages: TranscriptMessage[] = [
+    ...messages,
+    { id: 'agent-1', role: 'agent', timestamp: 3, agentName: 'Researcher', parts: [{ type: 'text', text: 'Agent findings.' }] },
+  ]
+
+  it('holds the reader in place while an expanded record grows over the tail', () => {
+    const scrollTo = vi.fn()
+    scroller.scrollTo = scrollTo as unknown as typeof scroller.scrollTo
+    act(() => root.render(<Transcript messages={agentMessages} git={git} onOpenChanges={() => undefined} onSuggestion={() => undefined} />))
+    const summary = container.querySelector('.agent-message__summary') as HTMLButtonElement
+    fakeScrollMetrics(1000, 400, 600) // reading at the tail, following engaged
+
+    // Expanding the record: the accordion's early frames still read as "at
+    // the bottom", which is exactly what used to re-engage following.
+    act(() => summary.click())
+    fakeScrollMetrics(1000, 400, 600)
+    act(() => resizeCallbacks[resizeCallbacks.length - 1]([], {} as ResizeObserver))
+    expect(scrollTo).not.toHaveBeenCalled()
+
+    // The animation keeps growing past the manual window; still no yank.
+    vi.advanceTimersByTime(300)
+    fakeScrollMetrics(2400, 400, 600)
+    act(() => resizeCallbacks[resizeCallbacks.length - 1]([], {} as ResizeObserver))
+    expect(scrollTo).not.toHaveBeenCalled()
+
+    // Live output keeps streaming below the record; the reader stays put.
+    act(() => root.render(<Transcript messages={[...agentMessages, { id: 'assistant-2', role: 'assistant', timestamp: 4, streaming: true, parts: [] }]} git={git} onOpenChanges={() => undefined} onSuggestion={() => undefined} />))
+    expect(scrollTo).not.toHaveBeenCalled()
+
+    // A deliberate scroll back to the tail re-engages following.
+    fakeScrollMetrics(2400, 400, 2000)
+    act(() => scroller.dispatchEvent(new Event('scroll')))
+    fakeScrollMetrics(2600, 400, 2000)
+    act(() => resizeCallbacks[resizeCallbacks.length - 1]([], {} as ResizeObserver))
+    expect(scrollTo).toHaveBeenCalledWith({ top: 2600, behavior: 'auto' })
+  })
+
+  it('resumes following once the expanded record collapses back over the tail', () => {
+    const scrollTo = vi.fn()
+    scroller.scrollTo = scrollTo as unknown as typeof scroller.scrollTo
+    act(() => root.render(<Transcript messages={agentMessages} git={git} onOpenChanges={() => undefined} onSuggestion={() => undefined} />))
+    const summary = container.querySelector('.agent-message__summary') as HTMLButtonElement
+    fakeScrollMetrics(1000, 400, 600)
+
+    act(() => summary.click()) // open
+    act(() => summary.click()) // close
+    expect(summary.getAttribute('aria-expanded')).toBe('false')
+
+    // Collapsing shrinks the record away; the tail is visible again and the
+    // near-bottom self-heal re-engages following like any reflow does.
+    fakeScrollMetrics(1000, 400, 600)
+    act(() => resizeCallbacks[resizeCallbacks.length - 1]([], {} as ResizeObserver))
+    expect(scrollTo).not.toHaveBeenCalled()
+
+    vi.advanceTimersByTime(300)
+    fakeScrollMetrics(1400, 400, 600)
+    act(() => resizeCallbacks[resizeCallbacks.length - 1]([], {} as ResizeObserver))
+    expect(scrollTo).toHaveBeenCalledWith({ top: 1400, behavior: 'auto' })
+  })
+})
