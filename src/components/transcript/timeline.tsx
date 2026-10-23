@@ -1,4 +1,4 @@
-import { Check, ChevronDown, ChevronRight, CircleAlert, Copy, FileCode2, GitFork, Globe2, Layers3, LoaderCircle, MessageCircle, MessageCircleQuestion, TerminalSquare, Wrench } from 'lucide-react'
+import { Check, ChevronDown, ChevronRight, CircleAlert, Copy, FileCode2, GitFork, Globe2, LoaderCircle, MessageCircle, MessageCircleQuestion, Sparkles, TerminalSquare, Wrench } from 'lucide-react'
 import { type ReactNode, memo, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { writeClipboardText } from '@/lib/clipboard'
 import { type MessageKey, useI18n } from '@/lib/i18n'
@@ -272,45 +272,24 @@ function AgentActivityPart({ part }: { part: Extract<MessagePart, { type: 'agent
 
 function CompactionPart({ part }: { part: Extract<MessagePart, { type: 'compaction' }> }) {
   const { t } = useI18n()
-  // A static status card: no expansion. The condensed summary adds nothing
-  // the transcript itself does not carry, and the failure state is already
-  // announced by the state chip.
+  // Claude-Code style: compaction is a quiet centered divider line in the
+  // conversation flow — icon, label, reason — never a card or a bottom chip.
   const label =
     part.status === 'running'
       ? t('transcript.compaction.running')
       : part.status === 'done'
-        ? t('transcript.compaction.done')
-        : part.status === 'cancelled'
-          ? t('transcript.compaction.cancelled')
-          : part.outcome === 'skipped'
-            ? t('transcript.compaction.skipped')
-            : t('transcript.compaction.failed')
-  const state =
-    part.status === 'running' ? (
-      <>
-        <LoaderCircle className="spin" size={12} /> {t('transcript.compaction.state.running')}
-      </>
-    ) : part.status === 'done' ? (
-      <>
-        <Check size={12} /> {part.willRetry ? t('transcript.compaction.state.continuing') : t('transcript.compaction.state.done')}
-      </>
-    ) : (
-      <>
-        <CircleAlert size={12} /> {part.status === 'cancelled' ? t('transcript.compaction.state.cancelled') : t('transcript.compaction.state.needsAttention')}
-      </>
-    )
+        ? part.outcome === 'skipped' ? t('transcript.compaction.skipped') : t('transcript.compaction.done')
+        : part.status === 'cancelled' ? t('transcript.compaction.cancelled') : t('transcript.compaction.failed')
+  const reason = t(part.reason ? COMPACTION_REASON_KEYS[part.reason] : COMPACTION_REASON_KEYS.context)
   const tokenLabel = part.tokensBefore === undefined ? '' : t('transcript.compaction.tokensBefore', { count: part.tokensBefore.toLocaleString() })
   return (
-    <div className={`compaction-card is-${part.status}`}>
-      <span className="compaction-card__icon">
-        {part.status === 'running' ? <LoaderCircle className="spin" size={13} /> : part.status === 'done' ? <Layers3 size={13} /> : <CircleAlert size={13} />}
+    <div className={`compaction-divider is-${part.status}`} role="note">
+      <span className="compaction-divider__rule" aria-hidden="true" />
+      <span className="compaction-divider__label">
+        {part.status === 'running' ? <LoaderCircle className="spin" size={11} /> : <Sparkles size={11} />}
+        {label} · {reason}{tokenLabel ? ` · ${tokenLabel}` : ''}
       </span>
-      <span className="compaction-card__title">{label}</span>
-      <span className="compaction-card__meta">
-        <span className="compaction-card__reason">{t(part.reason ? COMPACTION_REASON_KEYS[part.reason] : COMPACTION_REASON_KEYS.context)}</span>
-        {tokenLabel ? <span className="compaction-card__tokens">{tokenLabel}</span> : null}
-      </span>
-      <span className="compaction-card__state">{state}</span>
+      <span className="compaction-divider__rule" aria-hidden="true" />
     </div>
   )
 }

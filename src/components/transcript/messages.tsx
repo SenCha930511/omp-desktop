@@ -1,5 +1,5 @@
-import { Check, ChevronDown, ChevronRight, Copy, ListTodo, Target } from 'lucide-react'
-import { Fragment, memo, type ReactNode, useContext, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { Check, ChevronDown, ChevronRight, Copy, Target } from 'lucide-react'
+import { Fragment, memo, type ReactNode, useContext, useEffect, useId, useRef, useState } from 'react'
 import { splitAnnotationBlock } from '@/lib/browser-annotations'
 import { splitCapabilityRouting } from '@/lib/capability-mentions'
 import { writeClipboardText } from '@/lib/clipboard'
@@ -8,7 +8,6 @@ import { type MessageKey, useI18n } from '@/lib/i18n'
 import { boundText } from '@/lib/render-bounds'
 import { type RoutedSessionReference, routedSessionReferences, splitSessionRouting } from '@/lib/session-mentions'
 import { splitTerminalContextBlock } from '@/lib/terminal-context'
-import { parseTodoToolResult } from '@/lib/todo'
 import type { HarnessId, MessagePart, TranscriptMessage } from '@/types/api'
 import { MarkdownText } from '../MarkdownText'
 import { SearchRevealContext } from '../TranscriptSearch'
@@ -34,46 +33,10 @@ function ImagePart({ part }: { part: Extract<MessagePart, { type: 'image' }> }) 
   return <div className="image-part image-part--unavailable">{t('transcript.image.unavailable')}</div>
 }
 
-export function TodoListCard({ part }: { part: Extract<MessagePart, { type: 'toolResult' }> }) {
-  const { t } = useI18n()
-  const phases = useMemo(() => parseTodoToolResult(part.text), [part.text])
-  if (phases.length === 0) return null
-  const tasks = phases.flatMap((phase) => phase.tasks)
-  const done = tasks.filter((task) => task.status === 'completed').length
-  return (
-    <div className="todo-card" aria-label={t('transcript.todo.aria')}>
-      <div className="todo-card__header">
-        <ListTodo size={13} aria-hidden="true" />
-        <span className="todo-card__title">{t('transcript.todo.title')}</span>
-        <span className="todo-card__progress">{t('transcript.todo.progress', { done, total: tasks.length })}</span>
-      </div>
-      {phases.map((phase) => (
-        <div className="todo-card__phase" key={phase.name}>
-          <div className="todo-card__phase-name">{phase.name}</div>
-          {phase.tasks.map((task) => (
-            <div className={`todo-card__task is-${task.status}`} key={task.content}>
-              <span className="todo-card__marker" aria-hidden="true">
-                {task.status === 'completed' ? <Check size={11} /> : task.status === 'in_progress' ? <span className="todo-card__pulse" /> : <span className="todo-card__ring" />}
-              </span>
-              <span className="todo-card__content">{task.content}</span>
-            </div>
-          ))}
-        </div>
-      ))}
-    </div>
-  )
-}
-
-export function isTodoResult(part: MessagePart): part is Extract<MessagePart, { type: 'toolResult' }> {
-  // card in the narrative flow, never buried in the collapsed work rail.
-  return part.type === 'toolResult' && part.name === 'todo' && parseTodoToolResult(part.text).length > 0
-}
-
 function renderNarrative(parts: MessagePart[], keyPrefix: string, streaming = false) {
   return parts.map((part, index) => {
     if (part.type === 'text') return <MarkdownText key={`${keyPrefix}-${index}`} text={part.text} streaming={streaming} />
     if (part.type === 'image') return <ImagePart key={`${keyPrefix}-${index}`} part={part} />
-    if (isTodoResult(part)) return <TodoListCard key={`${keyPrefix}-${index}`} part={part} />
     return null
   })
 }
@@ -81,7 +44,7 @@ function renderNarrative(parts: MessagePart[], keyPrefix: string, streaming = fa
 function renderNarrativeWithActivity(parts: MessagePart[], keyPrefix: string, showReasoning: boolean, showTools: boolean, streaming = false) {
   const groups: Array<{ activity: boolean; parts: MessagePart[] }> = []
   for (const part of parts) {
-    const activity = part.type !== 'text' && part.type !== 'image' && !isTodoResult(part)
+    const activity = part.type !== 'text' && part.type !== 'image'
     const current = groups.at(-1)
     if (current?.activity === activity) current.parts.push(part)
     else groups.push({ activity, parts: [part] })
@@ -95,10 +58,8 @@ function renderNarrativeWithActivity(parts: MessagePart[], keyPrefix: string, sh
   )
 }
 
-function isNarrative(part: MessagePart): boolean {
-  // Todo results render as first-class cards in the narrative flow, so the
-  // slice computation must treat them like narrative when anchoring the tail.
-  return part.type === 'text' || part.type === 'image' || isTodoResult(part)
+function isNarrative(part: MessagePart): part is Extract<MessagePart, { type: 'text' | 'image' }> {
+  return part.type === 'text' || part.type === 'image'
 }
 
 /**
@@ -178,7 +139,7 @@ function MessageActions({ message, text: suppliedText }: { message: TranscriptMe
 export const AssistantMessage = memo(
   function AssistantMessage({ message, showReasoning, showTools, entering = false }: { message: TranscriptMessage; showReasoning: boolean; showTools: boolean; entering?: boolean }) {
     const { t } = useI18n()
-    const isActivity = (part: MessagePart) => part.type === 'thinking' || part.type === 'toolCall' || (part.type === 'toolResult' && !isTodoResult(part)) || part.type === 'agentMessage' || part.type === 'compaction'
+    const isActivity = (part: MessagePart) => part.type === 'thinking' || part.type === 'toolCall' || part.type === 'toolResult' || part.type === 'agentMessage' || part.type === 'compaction'
     const firstActivity = message.parts.findIndex(isActivity)
     let lastActivity = -1
     for (let index = message.parts.length - 1; index >= 0; index -= 1) {
@@ -195,7 +156,7 @@ export const AssistantMessage = memo(
     const hasVisibleActivity = work.some(
       (part) => part.type === 'agentMessage' || part.type === 'compaction' || (part.type === 'thinking' && showReasoning) || ((part.type === 'toolCall' || part.type === 'toolResult') && showTools),
     )
-    const hiddenMiddleNarrative = !hasVisibleActivity ? work.filter((part) => part.type === 'text' || part.type === 'image' || isTodoResult(part)) : []
+    const hiddenMiddleNarrative = !hasVisibleActivity ? work.filter((part) => part.type === 'text' || part.type === 'image') : []
     const copyableNarrative = hasVisibleActivity ? [...before, ...after] : [...before, ...hiddenMiddleNarrative, ...after]
     const copyableText = copyableNarrative.flatMap((part) => (part.type === 'text' ? [part.text] : [])).join('\n')
     return (

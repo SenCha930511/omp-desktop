@@ -161,6 +161,23 @@ function createHermeticFixture(): { userData: string; home: string; project: str
       JSON.stringify({ type: 'message', id: 'primary-message', parentId: null, timestamp: '2026-03-15T00:00:01.000Z', message: { role: 'user', content: 'Primary workspace fixture', timestamp: 1773835201000 } }),
     ],
   )
+  const todoSessionPath = writeOmpSession(
+    '2026-03-10T00-00-00-000Z_019fdf24-eeee-7000-8000-000000000005.jsonl',
+    'Todo plan fixture',
+    '2026-03-10T00:00:00.000Z',
+    [
+      JSON.stringify({ type: 'session', version: 3, id: '019fdf24-eeee-7000-8000-000000000005', timestamp: '2026-03-10T00:00:00.000Z', cwd: canonicalSecondary }),
+      JSON.stringify({ type: 'message', id: 'todo-user', parentId: null, timestamp: '2026-03-10T00:00:01.000Z', message: { role: 'user', content: [{ type: 'text', text: 'Plan the fixture work' }], timestamp: 1773571201000 } }),
+      JSON.stringify({ type: 'message', id: 'todo-assistant', parentId: 'todo-user', timestamp: '2026-03-10T00:00:02.000Z', message: { role: 'assistant', content: [
+        { type: 'toolCall', id: 'todo-call', name: 'todo', arguments: { i: 'seed the plan' } },
+      ], timestamp: 1773571202000 } }),
+      JSON.stringify({ type: 'message', id: 'todo-result', parentId: 'todo-assistant', timestamp: '2026-03-10T00:00:02.000Z', message: { role: 'toolResult', toolCallId: 'todo-call', toolName: 'todo', content: [
+        { type: 'text', text: 'Remaining items (2):\n  - task2 [in_progress] (phase A)\n  - task3 [pending] (phase B)\nOverall: 1/3 done, 2 open.\n  phase A:\n    - [X] task1\n    - [ ] task2 (in progress)\n  phase B:\n    - [ ] task3' },
+      ], timestamp: 1773571202000 } }),
+      JSON.stringify({ type: 'compaction', id: 'todo-compaction', parentId: 'todo-result', timestamp: '2026-03-10T00:00:03.000Z', tokensBefore: 99_175, summary: 'Earlier fixture work was summarized.' }),
+      JSON.stringify({ type: 'message', id: 'todo-tail', parentId: 'todo-compaction', timestamp: '2026-03-10T00:00:04.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'Plan is set; starting on task2.' }], timestamp: 1773571204000 } }),
+    ],
+  )
   writeOmpSession(
     '2026-02-01T00-00-00-000Z_019fdf24-dddd-7000-8000-000000000004.jsonl',
     'OMP hermetic fixture',
@@ -2271,6 +2288,32 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(page.getByText(/Envelope metadata|Fixture control envelope/)).toHaveCount(0)
   })
 
+
+  test('docks the todo plan at the top and renders compaction as a divider', async () => {
+    await page.locator('.session-row-wrap').filter({ hasText: 'Todo plan fixture' }).locator('.session-row').click()
+
+    // The plan floats at the top of the conversation pane as an auto-expanded
+    // checklist bar while work remains, Claude-Code style.
+    const bar = page.locator('.todo-hud__bar')
+    await expect(bar).toHaveAttribute('aria-expanded', 'true')
+    await expect(bar).toContainText('1/3')
+    await expect(bar).toContainText('task2')
+    await expect(page.locator('.todo-hud__task.is-completed')).toContainText('task1')
+    await expect(page.locator('.todo-hud__task.is-in_progress')).toContainText('task2')
+    await expect(page.locator('.todo-hud__task.is-pending')).toContainText('task3')
+
+    await bar.click()
+    await expect(bar).toHaveAttribute('aria-expanded', 'false')
+    await expect(page.locator('.todo-hud__task')).toHaveCount(0)
+
+    // Compaction is a quiet centered divider in the conversation flow, never
+    // a card and never part of the bottom bar.
+    const divider = page.locator('.compaction-divider.is-done')
+    await expect(divider).toContainText('Context compacted')
+    await expect(divider).toContainText('99,175 tokens before')
+    await expect(page.locator('.transcript .compaction-card')).toHaveCount(0)
+    await expect(page.locator('.todo-hud .compaction-hud')).toHaveCount(0)
+  })
   test('copies a specific user or agent message from the action directly below it', async () => {
     await page.evaluate(() => {
       const target = window as Window & { __copiedMessage?: string }

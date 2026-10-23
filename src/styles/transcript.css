@@ -146,33 +146,38 @@
 .activity-line__kind { flex: 0 0 auto; color: var(--text-secondary); font-weight: 540; white-space: nowrap; }
 .activity-line--tool, .activity-line--agent { border-radius: 8px; }
 .activity-line--tool:hover, .activity-line--agent:hover { background: color-mix(in srgb, var(--surface-subtle) 72%, transparent); }
-/* Compaction status card: a self-contained padded row — icon, title, reason
-   and token meta (ellipsized), right-aligned state chip. No disclosure. */
-.compaction-card { display: flex; align-items: center; gap: 8px; margin: 5px 0; padding: 7px 10px; overflow: hidden; border: 1px solid color-mix(in srgb, var(--prime) 20%, var(--border)); border-radius: 9px; color: var(--text-secondary); background: color-mix(in srgb, var(--prime-soft) 40%, var(--canvas)); font-size: 11.5px; line-height: 1.38; }
-.compaction-card__icon { width: 16px; height: 16px; display: inline-grid; place-items: center; flex: 0 0 auto; color: var(--text-tertiary); }
-.compaction-card__title { flex: 0 0 auto; color: var(--text-secondary); font-weight: 540; white-space: nowrap; }
-.compaction-card__meta { min-width: 0; flex: 1 1 auto; display: inline-flex; align-items: center; gap: 8px; overflow: hidden; }
-.compaction-card__reason, .compaction-card__tokens { min-width: 0; overflow: hidden; color: var(--text-tertiary); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-.compaction-card__state { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 3px; color: var(--text-tertiary); font-size: 10px; white-space: nowrap; }
-.compaction-card.is-running { border-color: color-mix(in srgb, var(--prime) 45%, var(--border)); }
-.compaction-card.is-done .compaction-card__icon, .compaction-card.is-done .compaction-card__state { color: var(--success); }
-.compaction-card.is-failed .compaction-card__icon, .compaction-card.is-failed .compaction-card__state, .compaction-card.is-cancelled .compaction-card__icon, .compaction-card.is-cancelled .compaction-card__state { color: var(--danger); }
-/* Todo plan card (Claude-style checklist): raised surface, hairline border,
-   clay accent for the in-progress task, struck-through completed content. */
-.todo-card { margin: 6px 0 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-raised); }
-.todo-card__header { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; color: var(--text-secondary); }
-.todo-card__title { font-size: 11.5px; font-weight: 600; }
-.todo-card__progress { margin-left: auto; color: var(--text-tertiary); font-size: 10.5px; font-variant-numeric: tabular-nums; }
-.todo-card__phase + .todo-card__phase { margin-top: 8px; padding-top: 8px; border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
-.todo-card__phase-name { margin-bottom: 3px; color: var(--text-tertiary); font-size: 10.5px; font-weight: 600; letter-spacing: 0.02em; }
-.todo-card__task { display: flex; align-items: baseline; gap: 7px; padding: 2px 0; color: var(--text-secondary); font-size: 12px; line-height: 1.45; }
-.todo-card__marker { flex: 0 0 auto; display: inline-grid; place-items: center; width: 13px; height: 13px; position: relative; top: 1px; color: var(--text-tertiary); }
-.todo-card__task.is-completed .todo-card__marker { color: var(--success); }
-.todo-card__task.is-completed .todo-card__content { color: var(--text-tertiary); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--text-tertiary) 60%, transparent); }
-.todo-card__task.is-in_progress .todo-card__content { color: var(--text-primary); font-weight: 540; }
-.todo-card__pulse { width: 7px; height: 7px; border-radius: 999px; background: var(--prime); animation: todo-pulse 2.4s ease-in-out infinite; }
-.todo-card__ring { width: 7px; height: 7px; box-sizing: border-box; border: 1.5px solid currentColor; border-radius: 999px; opacity: 0.7; }
-@keyframes todo-pulse { 0%, 100% { transform: scale(0.86); filter: brightness(0.96); } 50% { transform: scale(1); filter: brightness(1.06); } }
+/* Top-docked transcript HUD: the todo plan floats under the search trigger,
+   above the scrolling conversation. */
+.transcript-hud { position: absolute; top: 12px; left: 14px; right: 76px; z-index: 8; display: flex; flex-direction: column; gap: 6px; }
+.conversation-pane:has(.transcript-hud) .transcript { padding-top: 96px; scroll-padding-top: 80px; }
+/* Compaction renders Claude-Code style: one quiet centered divider line in
+   the conversation flow. Solid colors only. */
+.compaction-divider { display: flex; align-items: center; gap: 10px; margin: 10px 0; color: var(--text-tertiary); font-size: 10.5px; line-height: 1.4; }
+.compaction-divider__rule { flex: 1 1 auto; height: 1px; background: var(--border); }
+.compaction-divider__rule:last-child { background: var(--border); }
+.compaction-divider__label { flex: 0 1 auto; display: inline-flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.compaction-divider.is-running .compaction-divider__label { color: var(--text-secondary); }
+.compaction-divider.is-done .compaction-divider__label { color: var(--success); }
+.compaction-divider.is-failed .compaction-divider__label, .compaction-divider.is-cancelled .compaction-divider__label { color: var(--danger); }
+.todo-hud { min-width: 0; border: 1px solid var(--border); border-radius: 10px; background: var(--canvas); overflow: hidden; }
+.todo-hud__bar { width: 100%; display: flex; align-items: center; gap: 7px; min-height: 30px; padding: 4px 10px; color: var(--text); font-size: 11.5px; cursor: pointer; }
+.todo-hud__bar:hover { background: var(--surface-subtle); }
+.todo-hud__title { flex: 0 0 auto; font-weight: 600; }
+.todo-hud__progress { flex: 0 0 auto; color: var(--text-secondary); font-size: 10.5px; font-variant-numeric: tabular-nums; }
+.todo-hud__current { min-width: 0; flex: 1 1 auto; overflow: hidden; color: var(--prime); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.todo-hud__bar .lucide-chevron-down { flex: 0 0 auto; margin-left: auto; color: var(--text-secondary); transition: transform 160ms var(--ease-out); }
+.todo-hud__bar .lucide-chevron-down.is-expanded { transform: rotate(180deg); }
+.todo-hud__panel { padding: 6px 12px 10px; border-top: 1px solid var(--border); }
+.todo-hud__phase + .todo-hud__phase { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+.todo-hud__phase-name { margin-bottom: 3px; color: var(--text-secondary); font-size: 10.5px; font-weight: 600; letter-spacing: 0.02em; }
+.todo-hud__task { display: flex; align-items: baseline; gap: 7px; padding: 2px 0; color: var(--text); font-size: 12px; line-height: 1.45; }
+.todo-hud__marker { flex: 0 0 auto; display: inline-grid; place-items: center; width: 13px; height: 13px; position: relative; top: 1px; color: var(--text-secondary); }
+.todo-hud__task.is-completed .todo-hud__marker { color: var(--success); }
+.todo-hud__task.is-completed .todo-hud__content { color: var(--text-tertiary); text-decoration: line-through; text-decoration-color: var(--text-tertiary); }
+.todo-hud__task.is-in_progress .todo-hud__content { color: var(--text-primary); font-weight: 540; }
+.todo-hud__pulse { width: 7px; height: 7px; border-radius: 999px; background: var(--prime); animation: todo-pulse 2.4s ease-in-out infinite; }
+.todo-hud__ring { width: 7px; height: 7px; box-sizing: border-box; border: 1.5px solid currentColor; border-radius: 999px; }
+@keyframes todo-pulse { 0%, 100% { transform: scale(0.86); } 50% { transform: scale(1); } }
 .activity-agent__name { min-width: 0; flex: 1; overflow: hidden; color: var(--prime); font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
 .activity-agent__details { margin: 0 5px 5px 26px; padding: 7px 9px; border-left: 2px solid color-mix(in srgb, var(--prime) 45%, var(--border)); color: var(--text-secondary); animation: timeline-expand 180ms var(--ease-out); }
 .activity-agent__details .prose { margin: 0; font-size: 11.5px; line-height: 1.5; }
