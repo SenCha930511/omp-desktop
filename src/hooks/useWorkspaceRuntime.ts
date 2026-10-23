@@ -132,6 +132,16 @@ export function useWorkspaceRuntime({
     }
   }, [])
 
+  /** Reader-facing row events (the optimistic row, its retraction) apply
+   * directly instead of through the event queue: they are click feedback, so
+   * neither an in-flight authoritative read (a rolled 20k-line transcript can
+   * read for seconds) nor a stalled animation frame may park them. Removal
+   * and insertion target their own row, so later frame flushes cannot be
+   * reordered around them, and transcript reconciliation keeps un-persisted
+   * local rows on merge. */
+  const applyLocalRowEvent = useCallback((event: Record<string, unknown>) => {
+    setMessages((current) => replayPrimeEvents(current, [event]))
+  }, [])
   const flushAgentEventsChunked = useCallback(() => {
     if (chunkedFlushTimerRef.current !== null) return
     if (agentEventFrameRef.current !== null) {
@@ -482,9 +492,15 @@ export function useWorkspaceRuntime({
     // The submitted message renders in the transcript immediately; delivery
     // still follows the queue/steer logic and reconciles this row by id.
     // Slash commands keep their command-chip flow and never get a row here.
-    if (!/^\/\S+/.test(text.trim())) queueAgentEvent(createQueuedMessageEvent(queued))
+    // The row is reader feedback tied to the click, not harness state: it
+    // bypasses the event queue so neither an in-flight authoritative read
+    // (a rolled 20k-line transcript can read for seconds) nor a stalled
+    // animation frame can park it. Tool events target their own message ids,
+    // so a directly applied row cannot be jumped by later frame flushes, and
+    // transcript reconciliation keeps un-persisted local rows on merge.
+    if (!/^\/\S+/.test(text.trim())) applyLocalRowEvent(createQueuedMessageEvent(queued))
     return queued.id
-  }, [queueAgentEvent])
+  }, [applyLocalRowEvent])
   const removeQueuedPrompt = useCallback((id: string) => {
     observedSteerIdsRef.current.delete(id)
     const current = pendingQueuedPromptsRef.current
@@ -556,16 +572,16 @@ export function useWorkspaceRuntime({
     if (owner) queuedPromptsByOwnerRef.current.delete(owner)
     for (const prompt of pendingQueuedPromptsRef.current) {
       observedSteerIdsRef.current.delete(prompt.id)
-      queueAgentEvent(createSteerRetractEvent({ id: prompt.id }))
+      applyLocalRowEvent(createSteerRetractEvent({ id: prompt.id }))
     }
     pendingQueuedPromptsRef.current = []
     setPendingQueuedPrompts([])
     savePendingQueues(queuedPromptsByOwnerRef.current)
-  }, [queueAgentEvent])
+  }, [applyLocalRowEvent])
   /** Drops a queued prompt's optimistic transcript row (deletion, failure, or flush hand-off). */
   const retractQueuedPrompt = useCallback((id: string) => {
-    queueAgentEvent(createSteerRetractEvent({ id }))
-  }, [queueAgentEvent])
+    applyLocalRowEvent(createSteerRetractEvent({ id }))
+  }, [applyLocalRowEvent])
 
   const acceptSteer = useCallback((id: string) => {
     const prompt = pendingQueuedPromptsRef.current.find((candidate) => candidate.id === id && candidate.intent === 'steer')
@@ -620,7 +636,7 @@ export function useWorkspaceRuntime({
     // A steer that disappeared without an active turn was cancelled: its
     // optimistic row must go with its queue entry. A harness-delivered steer
     // retracts its row too — the harness events render the durable one.
-    for (const id of removedIds) queueAgentEvent(createSteerRetractEvent({ id }))
+    for (const id of removedIds) applyLocalRowEvent(createSteerRetractEvent({ id }))
     const next = pendingQueuedPromptsRef.current.filter((prompt) => !removedIds.has(prompt.id) && !pickedUp.some((picked) => picked.id === prompt.id))
     pendingQueuedPromptsRef.current = next
     const owner = activeQueuedPromptOwnerRef.current
@@ -636,7 +652,7 @@ export function useWorkspaceRuntime({
     // tool output. Directly mutating messages here would let an unflushed tool
     // event jump below the newly inserted user row.
     if (pickedUp.length) queueAgentEvent(createSteerPickupEvent(pickedUp))
-  }, [queueAgentEvent])
+  }, [applyLocalRowEvent, queueAgentEvent])
 
   const acknowledgeSteer = useCallback((id: string, snapshot: SessionActionSnapshot) => {
     if (!pendingQueuedPromptsRef.current.some((prompt) => prompt.id === id && prompt.intent === 'steer')) return

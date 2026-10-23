@@ -269,6 +269,23 @@ describe('prompt admission versus background transcript reads', () => {
     ])
   })
 
+  it('renders the optimistic row immediately while an authoritative read is still pending', async () => {
+    // A rolled transcript read can hold the frame queue for seconds; the
+    // reader's own submitted row must not wait behind it.
+    const read = vi.fn(() => new Promise<TranscriptMessage[]>(() => {}))
+    const bridge = {
+      sessions: { read },
+      agent: { list: vi.fn(async () => []) },
+    } as unknown as DesktopApi
+
+    await act(async () => { root.render(createElement(Probe, { bridge })) })
+    await flush()
+    expect(read).toHaveBeenCalledTimes(1)
+
+    act(() => { latest.queuePrompt('steer this', 'steer', [{ type: 'text', text: 'steer this' }], 2) })
+    expect(latest.messages).toMatchObject([{ role: 'user', parts: [{ type: 'text', text: 'steer this' }] }])
+  })
+
   it('keeps the optimistic user message when a pending background read resolves after the prompt', async () => {
     let resolveRead!: (value: TranscriptMessage[]) => void
     const read = vi.fn(() => new Promise<TranscriptMessage[]>((resolve) => { resolveRead = resolve }))
