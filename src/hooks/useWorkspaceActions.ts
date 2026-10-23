@@ -460,6 +460,12 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
           pendingAssistantAppended = true
           workspace.setMessages((items) => [...items, { id: pendingAssistantId, role: 'assistant', timestamp: sentAt, startedAt: sentAt, streaming: true, parts: [] }])
         }
+        const retractPendingTurn = () => {
+          // The queue/steer branches represent this prompt with their own rows;
+          // drop the optimistic ones. An assistant row that already carries
+          // parts holds streamed content from the running turn and survives.
+          workspace.setMessages((items) => items.filter((item) => item.id !== userMessage.id && (item.id !== pendingAssistantId || item.parts.length > 0)))
+        }
         if (!bridge) {
           appendUserMessage()
           const assistantId = `assistant-${Date.now()}`
@@ -471,7 +477,16 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
         // A fresh conversation has no history or delivery queue to reconcile.
         // Show the admitted turn before permission checks and runtime startup;
         // the same placeholder receives real events after the harness starts.
-        if (!admitted.sessionFile && !slashCommand && !compactCommand) {
+        // An existing session earns the same optimistic rows when every
+        // renderer signal says this prompt opens a new turn — otherwise the
+        // transcript stays blank through runtime startup and session indexing.
+        // When agent.list() disagrees (the session was busy after all), the
+        // queue and follow-up branches retract the rows.
+        const sessionCatalogRow = admitted.sessionFile ? sessions.find((session) => session.filePath === admitted.sessionFile) : undefined
+        const opensNewTurn = !slashCommand && !compactCommand && !queuedFlushPromptId
+          && !getDeps().workspace.runtime?.isStreaming
+          && (!admitted.sessionFile || sessionCatalogRow?.status !== 'running')
+        if (opensNewTurn) {
           appendUserMessage()
           appendPendingAssistant()
         }
@@ -494,6 +509,9 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
           }
         }
         if ((intent === 'queue' || compactCommand) && images.length === 0 && (activeRuntime?.isStreaming || selectedSession?.status === 'running')) {
+          // agent.list() disagreed with the optimistic append: the queue row
+          // replaces the optimistic turn rows.
+          retractPendingTurn()
           if (!queuedFlushPromptId) queuedPromptId = workspace.queuePrompt(prompt, compactCommand ? 'queue' : intent)
           if (compactCommand && intent === 'steer') setToast('Compaction will run when the current turn finishes.')
           return
@@ -542,6 +560,8 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
         } else if (activeRuntime.isStreaming) {
           // Follow-ups are daemon-owned. Steers get a renderer-only pending
           // row so pickup can move them into history without redelivery.
+          // The running turn owns the transcript: hand our optimistic rows back.
+          retractPendingTurn()
           if (intent === 'steer') queuedPromptId = workspace.queuePrompt(prompt, intent, userMessage.parts, sentAt)
           const response = await bridge.agent.command(activeRuntime.runtimeId, { type: intent === 'steer' ? 'steer' : 'follow_up', message: prompt, ...(images.length ? { images } : {}) })
           const actions = parseSessionActionSnapshot(response.sessionActions)

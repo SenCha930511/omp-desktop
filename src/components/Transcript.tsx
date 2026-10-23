@@ -45,7 +45,7 @@ interface TranscriptProps {
   onRestorePrompt?(prompt: string): void
 }
 
-function ActiveAssistantMessage({ message, harness, showReasoning, showTools, entering = false }: { message: TranscriptMessage; harness: HarnessId; showReasoning: boolean; showTools: boolean; entering?: boolean }) {
+function ActiveAssistantMessage({ message, showReasoning, showTools, entering = false }: { message: TranscriptMessage; showReasoning: boolean; showTools: boolean; entering?: boolean }) {
   const { t } = useI18n()
   const visibleActivity = message.parts.some(
     (part) => (part.type === 'thinking' && showReasoning) || ((part.type === 'toolCall' || part.type === 'toolResult') && showTools) || part.type === 'agentMessage',
@@ -59,7 +59,7 @@ function ActiveAssistantMessage({ message, harness, showReasoning, showTools, en
           <>
             {message.parts.map((part, index) => (part.type === 'text' ? <MarkdownText key={index} text={part.text} streaming /> : null))}
             <div className="streaming-state" aria-live="polite">
-              <ThinkingDots /> <span className="shine-sweep">{t('transcript.working', { harness: HARNESS_SHORT_NAMES[harness] })}</span> <LiveElapsed since={message.startedAt ?? message.timestamp} />
+              <ThinkingDots /> <span className="shine-sweep">{t('transcript.workStatus.thinking')}</span> <LiveElapsed since={message.startedAt ?? message.timestamp} />
             </div>
           </>
         )}
@@ -170,9 +170,9 @@ export function Transcript({
                 <UserMessage message={message} entering={entering(message.id)} onOpenSessionReference={onOpenSessionReference} />
               ) : message.role === 'assistant' ? (
                 message.streaming || message.id === activeAssistantId ? (
-                  <ActiveAssistantMessage message={message} harness={harness} entering={entering(message.id)} showReasoning={showReasoning || search.matchId === message.id} showTools={showTools || search.matchId === message.id} />
+                  <ActiveAssistantMessage message={message} entering={entering(message.id)} showReasoning={showReasoning || search.matchId === message.id} showTools={showTools || search.matchId === message.id} />
                 ) : (
-                  <AssistantMessage message={message} harness={harness} entering={entering(message.id)} showReasoning={showReasoning || search.matchId === message.id} showTools={showTools || search.matchId === message.id} />
+                  <AssistantMessage message={message} entering={entering(message.id)} showReasoning={showReasoning || search.matchId === message.id} showTools={showTools || search.matchId === message.id} />
                 )
               ) : message.role === 'agent' ? (
                 <AgentMessage message={message} />
@@ -191,7 +191,7 @@ export function Transcript({
           {active && !activeAssistantId ? (
             <article className="message message--assistant transcript-active-placeholder" aria-live="polite">
               <div className="streaming-state">
-                <ThinkingDots /> <span className="shine-sweep">{t('transcript.working', { harness: HARNESS_SHORT_NAMES[harness] })}</span>
+                <ThinkingDots /> <span className="shine-sweep">{t('transcript.workStatus.thinking')}</span>
               </div>
             </article>
           ) : null}

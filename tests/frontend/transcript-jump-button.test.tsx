@@ -54,11 +54,11 @@ function jumpButton(): HTMLButtonElement | null {
 }
 
 describe('transcript jump-to-bottom button', () => {
-  it('shows the live working word with the shine treatment while streaming', () => {
+  it('shows the live thinking label with the shine treatment while streaming', () => {
     act(() => root.render(<Transcript messages={[...messages, { id: 'assistant-2', role: 'assistant', timestamp: 3, streaming: true, parts: [] }]} git={git} active onOpenChanges={() => undefined} onSuggestion={() => undefined} />))
     const word = container.querySelector('.streaming-state .shine-sweep')
     expect(word).not.toBeNull()
-    expect(word?.textContent).toContain('working')
+    expect(word?.textContent).toContain('Thinking')
   })
 
 

@@ -137,7 +137,7 @@ function MessageActions({ message, text: suppliedText }: { message: TranscriptMe
 }
 
 export const AssistantMessage = memo(
-  function AssistantMessage({ message, harness = 'omp', showReasoning, showTools, entering = false }: { message: TranscriptMessage; harness?: HarnessId; showReasoning: boolean; showTools: boolean; entering?: boolean }) {
+  function AssistantMessage({ message, showReasoning, showTools, entering = false }: { message: TranscriptMessage; showReasoning: boolean; showTools: boolean; entering?: boolean }) {
     const { t } = useI18n()
     const isActivity = (part: MessagePart) => part.type === 'thinking' || part.type === 'toolCall' || part.type === 'toolResult' || part.type === 'agentMessage' || part.type === 'compaction'
     const firstActivity = message.parts.findIndex(isActivity)
@@ -171,7 +171,7 @@ export const AssistantMessage = memo(
           {renderNarrativeWithActivity(after, 'after', showReasoning, showTools, message.streaming)}
           {message.streaming && !hasVisibleActivity ? (
             <div className="streaming-state" aria-live="polite">
-              <ThinkingDots /> {t('transcript.working', { harness: HARNESS_SHORT_NAMES[harness] })}
+              <ThinkingDots /> {t('transcript.workStatus.thinking')}
             </div>
           ) : null}
           {!message.streaming ? <MessageActions message={message} text={copyableText} /> : null}
@@ -179,7 +179,7 @@ export const AssistantMessage = memo(
       </article>
     )
   },
-  (previous, next) => previous.message === next.message && previous.harness === next.harness && previous.showReasoning === next.showReasoning && previous.showTools === next.showTools && previous.entering === next.entering,
+  (previous, next) => previous.message === next.message && previous.showReasoning === next.showReasoning && previous.showTools === next.showTools && previous.entering === next.entering,
 )
 
 function SessionReferenceText({ text, references, onOpen }: { text: string; references: RoutedSessionReference[]; onOpen?(sessionId: string, harness: HarnessId): void }) {

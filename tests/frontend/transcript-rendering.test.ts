@@ -245,7 +245,7 @@ describe('transcript rendering', () => {
     expect(html).toContain('Worked for 1s')
     expect(html).not.toContain('Prior completed reasoning.')
     expect(html).toContain('transcript-active-placeholder')
-    expect(html).toContain('OMP is working')
+    expect(html).toContain('Thinking')
   })
 
   it('keeps an accepted omp steer in history without duplicating the working indicator', () => {
@@ -266,7 +266,7 @@ describe('transcript rendering', () => {
 
     expect(html).toContain('Current response')
     expect(html).toContain('Pick this up')
-    expect(html.match(new RegExp(`${shortName} is working`, 'g'))).toHaveLength(1)
+    expect(html.match(/Thinking/g)).toHaveLength(1)
     expect(html).not.toContain('transcript-active-placeholder')
   })
 
