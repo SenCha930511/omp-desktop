@@ -1,5 +1,7 @@
 import { createReadStream } from 'node:fs'
-import { stat } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import type { MessagePart, TranscriptMessage } from '../../../src/types/api'
 import { SESSION_FILE_RECORD_LIMIT_BYTES } from '../jsonl-limits'
 import { strictJsonLines } from '../jsonl'
@@ -223,11 +225,52 @@ const primeTranscriptDialect: TranscriptDialect = {
 
 export type TranscriptFileReader = (filePath: string, isStreaming: boolean) => Promise<TranscriptMessage[]>
 
-export function createTranscriptReader(dialect: TranscriptDialect = primeTranscriptDialect): TranscriptFileReader {
-  return (filePath, isStreaming) => readTranscriptWithDialect(dialect, filePath, isStreaming)
+/** OMP externalizes image payloads into a global content-addressed blob store
+ * (`<agentDir>/blobs/<sha256>`); session entries carry `blob:sha256:<hash>`
+ * references instead of inline base64. Resolution happens after the parse so
+ * duplicate references dedupe to one read and the bounding pass below still
+ * sees final base64 sizes. */
+export function defaultOmpBlobsRoot(): string {
+  return join(homedir(), '.omp', 'agent', 'blobs')
 }
 
-async function readTranscriptWithDialect(dialect: TranscriptDialect, filePath: string, isStreaming: boolean): Promise<TranscriptMessage[]> {
+const BLOB_REFERENCE = /^blob:sha256:([0-9a-f]{64})$/
+
+async function resolveImageBlobReferences(transcript: TranscriptMessage[], blobsRoot: string): Promise<void> {
+  const pending = new Map<string, Promise<string | null>>()
+  const readBlob = (hash: string): Promise<string | null> => readFile(join(blobsRoot, hash))
+    .then((buffer) => {
+      const maxBytes = Math.floor(MAX_PART_IMAGE_CHARS * 3 / 4)
+      return buffer.subarray(0, Math.min(buffer.length, maxBytes)).toString('base64')
+    })
+    .catch(() => null)
+  for (const message of transcript) {
+    for (const part of message.parts) {
+      if (part.type !== 'image' || !part.data) continue
+      const hash = BLOB_REFERENCE.exec(part.data)?.[1]
+      if (!hash) continue
+      let read = pending.get(hash)
+      if (!read) {
+        read = readBlob(hash)
+        pending.set(hash, read)
+      }
+      const data = await read
+      if (data === null || !data.length) {
+        part.data = undefined
+        part.dataTruncated = true
+      } else {
+        part.data = data
+        part.dataTruncated = data.length >= MAX_PART_IMAGE_CHARS || undefined
+      }
+    }
+  }
+}
+
+export function createTranscriptReader(dialect: TranscriptDialect = primeTranscriptDialect, blobsRoot: string = defaultOmpBlobsRoot()): TranscriptFileReader {
+  return (filePath, isStreaming) => readTranscriptWithDialect(dialect, filePath, isStreaming, blobsRoot)
+}
+
+async function readTranscriptWithDialect(dialect: TranscriptDialect, filePath: string, isStreaming: boolean, blobsRoot: string): Promise<TranscriptMessage[]> {
   if ((await stat(filePath)).size > 256 * 1024 * 1024) throw new Error('Session transcript is too large to display')
   const entries = new Map<string, { id: string; parentId: string | null; entry: JsonRecord; bytes: number }>()
   // A light id→parentId edge map covers every record, so the parent-chain walk
@@ -455,7 +498,7 @@ async function readTranscriptWithDialect(dialect: TranscriptDialect, filePath: s
     transcript.push(item)
     activeAssistant = undefined
   }
-  if (isStreaming && activeAssistant) { activeAssistant.streaming = true; activeAssistant.completedAt = undefined }
+  await resolveImageBlobReferences(transcript, blobsRoot)
   return boundedTranscript(transcript)
 }
 

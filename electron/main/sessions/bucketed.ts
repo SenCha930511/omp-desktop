@@ -94,6 +94,10 @@ export interface BucketedMetadataAccumulator {
   thinkingLevel?: string
   /** Harness-reported session title; falls back to the first user prompt. */
   displayName?: string
+  /** Session-id or absolute path of the session this file rolled/forked from. */
+  parentSession?: string
+  /** Absolute paths of prior locations of this session (moves, rollovers). */
+  previousSessionFiles: string[]
   firstUser: string
   preview: string
   lastRole?: string
@@ -115,6 +119,7 @@ function createBucketedAccumulator(filePath: string, fileStat: Stats): BucketedM
     createdAt: nameTimestamp !== undefined ? new Date(nameTimestamp).toISOString() : fileStat.birthtime.toISOString(),
     updatedAt: fileStat.mtime.toISOString(),
     sawRecordTimestamp: false,
+    previousSessionFiles: [],
     firstUser: '',
     preview: '',
     records: 0,
@@ -138,6 +143,8 @@ function bucketedMetadataFromAccumulator(state: BucketedMetadataAccumulator, fil
     pinned: false,
     unread: false,
     preview: compactText(state.preview || state.firstUser),
+    parentSession: state.parentSession,
+    previousSessionFiles: state.previousSessionFiles.length ? [...state.previousSessionFiles] : undefined,
   }
 }
 
@@ -170,6 +177,19 @@ export function createBucketedMetadataParser(ingestRecord: BucketedRecordIngest)
         if (typeof value.id === 'string') state.id = value.id
         if (typeof value.cwd === 'string') state.projectPath = value.cwd
         state.createdAt = validTimestamp(value.timestamp, state.createdAt)
+        // Lineage: a compact rolls the session forward to a successor file
+        // whose header names the predecessor (id or absolute path) and the
+        // prior locations it carried over.
+        if (typeof value.parentSession === 'string' && value.parentSession.length > 0 && value.parentSession.length <= 4_096) {
+          state.parentSession = value.parentSession
+        }
+        if (Array.isArray(value.previousSessionFiles)) {
+          for (const raw of value.previousSessionFiles) {
+            if (typeof raw !== 'string' || !raw || raw.length > 4_096) continue
+            if (state.previousSessionFiles.length >= 32) break
+            if (!state.previousSessionFiles.includes(raw)) state.previousSessionFiles.push(raw)
+          }
+        }
       } else if (value.type === 'thinking_level_change' && (value.configured === 'auto' || typeof value.thinkingLevel === 'string')) state.thinkingLevel = value.configured === 'auto' ? 'auto' : value.thinkingLevel as string
       else if (value.type === 'message') ingestMessageActivity(state, value)
       else ingestRecord(state, value)
@@ -184,7 +204,7 @@ export function createBucketedMetadataParser(ingestRecord: BucketedRecordIngest)
  * addition to the shared `message`, `compaction`, and displayed
  * `custom_message` types.
  */
-export function createBranchSummaryTranscriptReader(): TranscriptFileReader {
+export function createBranchSummaryTranscriptReader(blobsRoot?: string): TranscriptFileReader {
   return createTranscriptReader({
     isRenderable: (entry) => entry.type === 'message' || entry.type === 'compaction' || entry.type === 'branch_summary'
       || (entry.type === 'custom_message' && entry.display === true)
@@ -214,5 +234,5 @@ export function createBranchSummaryTranscriptReader(): TranscriptFileReader {
         parts: [{ type: 'text', text: boundedString(text, MAX_PART_TEXT_CHARS) }],
       }
     },
-  })
+  }, blobsRoot)
 }

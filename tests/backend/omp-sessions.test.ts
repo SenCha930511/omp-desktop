@@ -14,6 +14,7 @@ import {
   writeOmpTitleSlot,
 } from '../../electron/main/sessions/omp'
 import { JsonStateStore } from '../../electron/main/store'
+import { createBranchSummaryTranscriptReader } from '../../electron/main/sessions/bucketed'
 
 const dirs: string[] = []
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true, maxRetries: 5 }) })
@@ -35,13 +36,14 @@ function writeOmpSession(file: string, options: {
   title?: string
   timestamp?: string
   entries?: string[]
+  header?: Record<string, unknown>
 } = {}): void {
   const timestamp = options.timestamp ?? '2026-08-08T02:12:49.414Z'
   const slot = titleSlot(options.title ?? '', timestamp)
   expect(Buffer.byteLength(`${slot}\n`, 'utf8')).toBe(OMP_TITLE_SLOT_BYTES)
   writeFileSync(file, [
     slot,
-    JSON.stringify({ type: 'session', version: 3, id: options.id ?? '019fdf24-f686-7000-86fd-e1eaf84626c6', timestamp, cwd: options.cwd ?? '/tmp' }),
+    JSON.stringify({ type: 'session', version: 3, id: options.id ?? '019fdf24-f686-7000-86fd-e1eaf84626c6', timestamp, cwd: options.cwd ?? '/tmp', ...options.header }),
     ...options.entries ?? [],
     '',
   ].join('\n'))
@@ -443,5 +445,101 @@ describe('OMP session branching and pinning', () => {
     expect(await pinnedOf('session-b')).toBe(true)
 
     expect(new JsonStateStore(statePath).snapshot().pinnedSessions).toEqual([realpathSync(fileB)])
+  })
+})
+
+describe('compact rollover lineage', () => {
+  it('hides a predecessor superseded by a newer roll successor and inherits its pinned flag', async () => {
+    const { root, project, service } = setup()
+    mkdirSync(join(root, '-bucket'))
+    const parentFile = join(root, '-bucket', NAME_A)
+    const successorFile = join(root, '-bucket', NAME_B)
+    writeOmpSession(parentFile, { id: 'parent-session', cwd: project })
+    writeOmpSession(successorFile, { id: 'successor-session', cwd: project, timestamp: '2026-08-09T10:00:00.000Z', header: { parentSession: 'parent-session' } })
+    await service.setPinned(parentFile, true)
+
+    const records = await service.list()
+    expect(records.map((record) => record.id)).toEqual(['successor-session'])
+    // The pinned flag transfers to the successor so a pinned rolled session
+    // stays pinned.
+    expect(records[0]?.pinned).toBe(true)
+  })
+
+  it('collapses repeated roll siblings of one source to the newest row', async () => {
+    const { root, project, service } = setup()
+    mkdirSync(join(root, '-bucket'))
+    writeOmpSession(join(root, '-bucket', NAME_A), { id: 'source-session', cwd: project })
+    // Several runtimes resumed the same source and each rolled it forward:
+    // the sibling files all name the same parentSession.
+    writeOmpSession(join(root, '-bucket', `2026-08-09T10:00:00.000Z_${'0'.repeat(8)}-0000-7000-8000-0000000000b1.jsonl`), { id: 'roll-one', cwd: project, timestamp: '2026-08-09T10:00:00.000Z', header: { parentSession: 'source-session' } })
+    writeOmpSession(join(root, '-bucket', `2026-08-09T11:00:00.000Z_${'0'.repeat(8)}-0000-7000-8000-0000000000b2.jsonl`), { id: 'roll-two', cwd: project, timestamp: '2026-08-09T11:00:00.000Z', header: { parentSession: 'source-session' } })
+    writeOmpSession(join(root, '-bucket', `2026-08-09T12:00:00.000Z_${'0'.repeat(8)}-0000-7000-8000-0000000000b3.jsonl`), { id: 'roll-three', cwd: project, timestamp: '2026-08-09T12:00:00.000Z', header: { parentSession: 'source-session' } })
+
+    const records = await service.list()
+    // One logical conversation: the newest roll is the live leaf.
+    expect(records.map((record) => record.id)).toEqual(['roll-three'])
+  })
+
+  it('keeps an unreferenced older session and ignores same-time or self references', async () => {
+    const { root, project, service } = setup()
+    mkdirSync(join(root, '-bucket'))
+    writeOmpSession(join(root, '-bucket', NAME_A), { id: 'plain-old', cwd: project })
+    // Same timestamp name as the parent: not strictly newer, so no supersession.
+    writeOmpSession(join(root, '-bucket', `2026-08-08T02-12-49-414Z_${'0'.repeat(8)}-0000-7000-8000-0000000000aa.jsonl`), {
+      id: 'same-time', cwd: project, header: { parentSession: 'plain-old' },
+    })
+    writeOmpSession(join(root, '-bucket', NAME_C), { id: 'self-ref', cwd: project, header: { parentSession: 'self-ref' } })
+
+    const ids = (await service.list()).map((record) => record.id).sort()
+    expect(ids).toEqual(['plain-old', 'same-time', 'self-ref'])
+  })
+})
+
+describe('OMP image blob references', () => {
+  it('resolves blob:sha256 image data from the blob store into inline parts', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-omp-blobs-')); dirs.push(dir)
+    const root = join(dir, 'sessions'); mkdirSync(root)
+    const project = join(dir, 'project'); mkdirSync(project)
+    const blobs = join(dir, 'blobs'); mkdirSync(blobs)
+    const hash = 'a'.repeat(64)
+    const pngHeader = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4])
+    writeFileSync(join(blobs, hash), pngHeader)
+    mkdirSync(join(root, '-bucket'))
+    const file = join(root, '-bucket', NAME_A)
+    writeOmpSession(file, {
+      id: 'blob-session',
+      cwd: project,
+      entries: [ompEntry('message', 'm1', null, { message: { role: 'user', timestamp: 1_700_000_000_000, content: [
+        { type: 'text', text: 'Look at this' },
+        { type: 'image', mimeType: 'image/png', data: `blob:sha256:${hash}` },
+      ] } }, '2026-08-08T02:13:01.000Z')],
+    })
+    const store = new JsonStateStore(join(dir, 'state.json'))
+    const service = new SessionService(store, null, undefined, {
+      ...ompSessionServiceOptions(root),
+      transcriptReader: createBranchSummaryTranscriptReader(blobs),
+    })
+
+    const messages = await service.read(realpathSync(file))
+    const image = messages.flatMap((message) => message.parts).find((part) => part.type === 'image')
+    expect(image).toMatchObject({ type: 'image', mimeType: 'image/png', data: pngHeader.toString('base64'), dataTruncated: undefined })
+  })
+
+  it('marks a missing blob as unavailable instead of failing the transcript read', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-omp-blobs-missing-')); dirs.push(dir)
+    const root = join(dir, 'sessions'); mkdirSync(join(root, '-bucket'), { recursive: true })
+    const blobs = join(dir, 'blobs'); mkdirSync(blobs)
+    const file = join(root, '-bucket', NAME_A)
+    writeOmpSession(file, {
+      id: 'blob-session',
+      entries: [ompEntry('message', 'm1', null, { message: { role: 'user', timestamp: 1_700_000_000_000, content: [
+        { type: 'image', mimeType: 'image/png', data: `blob:sha256:${'b'.repeat(64)}` },
+      ] } }, '2026-08-08T02:13:01.000Z')],
+    })
+    const reader = createBranchSummaryTranscriptReader(blobs)
+
+    const messages = await reader(realpathSync(file), false)
+    const image = messages.flatMap((message) => message.parts).find((part) => part.type === 'image')
+    expect(image).toMatchObject({ type: 'image', dataTruncated: true })
   })
 })

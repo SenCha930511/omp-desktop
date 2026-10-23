@@ -56,6 +56,69 @@ function branchSessionFileName(id: string): string {
 }
 
 /**
+ * Predecessor session paths superseded by a listed successor, keyed by the
+ * predecessor's resolved file path. Two lineage rules fold one logical
+ * conversation into a single row, mirroring what the harness's own GC
+ * eventually deletes:
+ *
+ * 1. A successor references its predecessor through the header lineage omp
+ *    writes on a compact rollover — `parentSession` (historically a session
+ *    id or an absolute path) and `previousSessionFiles` (absolute paths).
+ *    Only a strictly newer successor supersedes: rolls and forks always move
+ *    forward in time.
+ * 2. Repeated rollovers of the same source (several runtimes resuming one
+ *    session, each rolling it forward) leave sibling files that all name the
+ *    same `parentSession`. Among such siblings only the newest survives;
+ *    sessions with a live runtime attached are never hidden.
+ */
+export function supersededSessionPaths(sessions: readonly SessionMetadata[], alivePaths?: ReadonlySet<string>): Map<string, Set<string>> {
+  const byId = new Map<string, SessionMetadata>()
+  const byPath = new Map<string, SessionMetadata>()
+  for (const session of sessions) {
+    byId.set(session.id, session)
+    byPath.set(resolve(session.filePath), session)
+  }
+  const hideable = (session: SessionMetadata): boolean => !alivePaths?.has(resolve(session.filePath))
+  const mark = (predecessor: SessionMetadata, successor: SessionMetadata, superseded: Map<string, Set<string>>): void => {
+    const predecessorPath = resolve(predecessor.filePath)
+    if (predecessorPath === resolve(successor.filePath) || !hideable(predecessor)) return
+    const successors = superseded.get(predecessorPath) ?? new Set<string>()
+    successors.add(resolve(successor.filePath))
+    superseded.set(predecessorPath, successors)
+  }
+  const superseded = new Map<string, Set<string>>()
+  for (const successor of sessions) {
+    const createdAt = Date.parse(successor.createdAt)
+    const references = new Set<string>([successor.parentSession, ...(successor.previousSessionFiles ?? [])].filter((value): value is string => typeof value === 'string'))
+    for (const reference of references) {
+      const predecessor = byId.get(reference) ?? byPath.get(resolve(reference))
+      if (!predecessor || predecessor === successor) continue
+      const predecessorCreated = Date.parse(predecessor.createdAt)
+      if (!Number.isFinite(createdAt) || !Number.isFinite(predecessorCreated) || predecessorCreated >= createdAt) continue
+      mark(predecessor, successor, superseded)
+    }
+  }
+  // Sibling collapse: group by the shared parentSession reference and keep
+  // only the newest member (plus anything a live runtime is writing).
+  const siblingsByParent = new Map<string, SessionMetadata[]>()
+  for (const session of sessions) {
+    if (!session.parentSession) continue
+    const group = siblingsByParent.get(session.parentSession) ?? []
+    group.push(session)
+    siblingsByParent.set(session.parentSession, group)
+  }
+  for (const group of siblingsByParent.values()) {
+    if (group.length < 2) continue
+    const ranked = [...group].sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))
+    const survivor = ranked.find((candidate) => !hideable(candidate)) ?? ranked[0]!
+    for (const sibling of ranked) {
+      if (sibling !== survivor) mark(sibling, survivor, superseded)
+    }
+  }
+  return superseded
+}
+
+/**
  * Rewrites a session identity header line (`{"type":"session",...}`) to the
  * branched session id. Returns null for every other line so a fork copies the
  * source byte-for-byte except for its session identity.
@@ -194,21 +257,41 @@ export class SessionService {
     // Force advances the scan revision while retaining metadata-level caches.
     if (force) this.catalog.invalidateLiveCatalog()
     const sessions = await this.catalog.all()
-    const archived = new Set(this.store.getArchivedSessions().map((path) => resolve(path)))
-    const pinned = new Set(this.store.getPinnedSessions().map((path) => resolve(path)))
+    // A compact rolls a session forward (experimental-context rollover):
+    // the successor file's header names its predecessor, and the harness's
+    // own GC eventually deletes the stale file. Until then both would list
+    // as duplicate conversations — hide predecessors that a listed successor
+    // references, mirroring the harness's single-session view. Display flags
+    // (pinned/archived) transfer to the successor so a pinned rolled session
+    // stays pinned.
     // One runtime snapshot per list call; each session then resolves in O(1).
     const runtimeBySession = this.snapshotRuntimeSessions()
+    const supersededBy = supersededSessionPaths(sessions, new Set(runtimeBySession?.keys() ?? []))
+    const predecessorsOf = new Map<string, Set<string>>()
+    for (const [predecessorPath, successorPaths] of supersededBy) {
+      for (const successorPath of successorPaths) {
+        const predecessors = predecessorsOf.get(successorPath) ?? new Set<string>()
+        predecessors.add(predecessorPath)
+        predecessorsOf.set(successorPath, predecessors)
+      }
+    }
+    const archived = new Set(this.store.getArchivedSessions().map((path) => resolve(path)))
+    const pinned = new Set(this.store.getPinnedSessions().map((path) => resolve(path)))
     const records: SessionRecord[] = []
     for (const original of sessions) {
+      const filePath = resolve(original.filePath)
+      if (supersededBy.has(filePath)) continue
       const metadata = { ...original }
-      const isArchived = archived.has(resolve(metadata.filePath))
+      const predecessors = predecessorsOf.get(filePath)
+      const isArchived = archived.has(filePath) || Boolean(predecessors && [...predecessors].some((path) => archived.has(path)))
+      const isPinned = pinned.has(filePath) || Boolean(predecessors && [...predecessors].some((path) => pinned.has(path)))
       if ((isArchived && !includeArchived) || (project && resolve(metadata.projectPath) !== project)) continue
       const runtime = runtimeBySession
-        ? runtimeBySession.get(resolve(metadata.filePath))
+        ? runtimeBySession.get(filePath)
         : this.runtimeForSession(metadata.filePath)
       if (runtime) metadata.status = runtime.isStreaming || runtime.isCompacting ? 'running' : 'idle'
-      const { sessionName: _sessionName, ...record } = metadata
-      records.push({ ...record, harness: this.harness, archived: isArchived, pinned: pinned.has(resolve(metadata.filePath)) })
+      const { sessionName: _sessionName, parentSession: _parentSession, previousSessionFiles: _previousSessionFiles, ...record } = metadata
+      records.push({ ...record, harness: this.harness, archived: isArchived, pinned: isPinned })
     }
     return records.sort((a, b) => Date.parse(b.lastUserMessageAt ?? b.createdAt) - Date.parse(a.lastUserMessageAt ?? a.createdAt) || comparePaths(a.filePath, b.filePath))
   }

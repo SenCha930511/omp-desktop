@@ -295,6 +295,19 @@ export class RpcRuntime {
     return response
   }
 
+  /** Refresh harness state (get_state) and publish the snapshot. Called after
+   * commands that can move the session file — a compact rolls the session
+   * forward to a successor file (experimental-context rollover), and both the
+   * manager's compaction-record read and the renderer's session binding must
+   * follow the new path instead of stranding on the pre-roll file. */
+  async refreshState(): Promise<RuntimeInfo> {
+    const state = await this.request({ type: 'get_state' }, 60_000)
+    this.updateFromState(state.data)
+    const snapshot = this.snapshot()
+    this.emit({ type: 'runtime_state', state: snapshot })
+    return snapshot
+  }
+
   stop(): Promise<boolean> {
     if (!this.stopPromise) {
       // Stop accepting partial frames before the abort round-trip: the child

@@ -290,10 +290,13 @@ export class AgentRpcManager {
     const response = await runtime.command(translated)
     if (command.type === 'compact' && isRecord(response) && response.success === true) {
       // The harness compact command writes the session file but emits no
-      // lifecycle events over RPC. Read the fresh compaction record back and
-      // synthesize the compaction_end so the live transcript renders the
-      // divider immediately instead of after a session re-entry. The
-      // renderer dedupes against the disk-loaded record.
+      // lifecycle events over RPC. A compact can also roll the session file
+      // forward (experimental-context rollover): refresh state first so the
+      // runtime points at the successor file, then read the fresh compaction
+      // record back and synthesize the compaction_end so the live transcript
+      // renders the divider immediately instead of after a session re-entry.
+      // The renderer dedupes against the disk-loaded record.
+      try { await runtime.refreshState() } catch { /* the snapshot keeps the pre-compact path */ }
       const sessionFile = runtime.snapshot().sessionFile
       if (sessionFile) {
         const record = await this.manualCompactionReader(sessionFile).catch(() => undefined)

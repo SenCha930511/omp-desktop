@@ -1,6 +1,6 @@
 import type { ChildProcessWithoutNullStreams } from 'node:child_process'
 import { EventEmitter } from 'node:events'
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
@@ -87,6 +87,67 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
         willRetry: false,
         result: { tokensBefore: 35_743, tokensAfter: 21_259, summary: 'Summarized.', firstKeptEntryId: 'kept-1' },
       })
+    } finally {
+      await manager.stop(runtime.runtimeId)
+    }
+  })
+
+  it('follows a compact rollover to the successor session file', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-rpc-compact-roll-'))
+    dirs.push(cwd)
+    const parentFile = join(cwd, '2026-08-07T00-00-00-000Z_01aaaaaa-0000-7000-8000-000000000001.jsonl')
+    const successorFile = join(cwd, '2026-08-07T00-02-00-000Z_01bbbbbb-0000-7000-8000-000000000002.jsonl')
+    writeFileSync(parentFile, `${JSON.stringify({ type: 'session', id: 'parent-session', cwd, timestamp: '2026-08-07T00:00:00.000Z' })}\n`)
+    const executable = join(cwd, 'roll-agent.cjs')
+    writeFileSync(executable, `#!/usr/bin/env node
+const fs = require('node:fs')
+const readline = require('node:readline')
+const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
+const cwdPath = ${JSON.stringify(cwd)}
+const parentFile = ${JSON.stringify(parentFile)}
+const successorFile = ${JSON.stringify(successorFile)}
+// Exactly like the real harness's experimental-context rollover: a compact
+// writes a NEW successor session file whose header names the predecessor,
+// keeps writing there, and reports the successor path from get_state.
+let currentFile = parentFile
+readline.createInterface({ input: process.stdin }).on('line', (line) => {
+  const command = JSON.parse(line)
+  if (command.type === 'negotiate_protocol') {
+    send({ id: command.id, type: 'response', command: command.type, success: true, data: { protocolVersion: 2 } })
+  } else if (command.type === 'get_state') {
+    send({ id: command.id, type: 'response', command: command.type, success: true, data: { sessionId: 'rolled', sessionFile: currentFile, isStreaming: false, isCompacting: false } })
+  } else if (command.type === 'compact') {
+    fs.writeFileSync(successorFile, [
+      JSON.stringify({ type: 'session', version: 3, id: 'successor-session', timestamp: '2026-08-07T00:02:00.000Z', cwd: cwdPath, parentSession: 'parent-session' }),
+      JSON.stringify({ type: 'compaction', id: 'roll-compact', parentId: null, timestamp: '2026-08-07T00:02:00.000Z', tokensBefore: 446_219, tokensAfter: 41_224, summary: 'Rolled.', firstKeptEntryId: 'kept-1' }),
+      '',
+    ].join('\\n'))
+    currentFile = successorFile
+    send({ id: command.id, type: 'response', command: command.type, success: true, data: { details: { kind: 'experimental-context-rollover', version: 1 } } })
+  }
+})
+`)
+    chmodSync(executable, 0o755)
+    const manager = new AgentRpcManager(executable, async (dir) => dir, async (path) => path, undefined, () => new Set(), OMP_RPC_ADAPTER)
+    managers.push(manager)
+    const envelopes: Array<{ runtimeId: string; event: Record<string, unknown> }> = []
+    manager.setEventSink((envelope) => envelopes.push(envelope as { runtimeId: string; event: Record<string, unknown> }))
+    const runtime = await manager.start({ cwd, sessionPath: parentFile })
+    try {
+      await manager.command(runtime.runtimeId, { type: 'compact' })
+      // The synthesized divider reads the compaction record from the rolled
+      // successor file, not the stale pre-compact path.
+      const synthetic = envelopes.map((envelope) => envelope.event).find((event) => event.type === 'compaction_end')
+      expect(synthetic).toMatchObject({
+        type: 'compaction_end',
+        reason: 'manual',
+        result: { tokensBefore: 446_219, tokensAfter: 41_224, summary: 'Rolled.', firstKeptEntryId: 'kept-1' },
+      })
+      // The runtime rebinds to the successor path and the pushed runtime_state
+      // carries it so the renderer can follow the roll.
+      expect(manager.list()[0]?.sessionFile).toBe(realpathSync(successorFile))
+      const state = envelopes.map((envelope) => envelope.event).find((event) => event.type === 'runtime_state')
+      expect(state).toMatchObject({ type: 'runtime_state', state: { sessionFile: realpathSync(successorFile) } })
     } finally {
       await manager.stop(runtime.runtimeId)
     }
