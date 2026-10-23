@@ -325,24 +325,6 @@ describe('Composer image ingestion', () => {
     expect(container.querySelector('[role="status"]')?.textContent).toContain('8 files attached')
   })
 
-  it('accounts for newly attached bytes when restoring a failed send', async () => {
-    let rejectSend!: (reason: Error) => void
-    renderComposer(vi.fn(() => new Promise<void>((_resolve, reject) => { rejectSend = reject })))
-    await pickFiles([sizedPng('submitted-large.png', 700_000)])
-
-    act(() => { (container.querySelector('button[aria-label="Send message"]') as HTMLButtonElement).click() })
-    await pickFiles([sizedPng('new-large.png', 700_000)])
-    await act(async () => {
-      rejectSend(new Error('rejected'))
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-
-    expect(container.querySelectorAll('.composer-attachment')).toHaveLength(1)
-    expect(container.textContent).toContain('new-large.png')
-    expect(container.textContent).not.toContain('submitted-large.png')
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain('1 submitted image could not be restored because the attachment limits are full')
-  })
 
   it('opens a general file picker from the add menu and attaches its selection', async () => {
     renderComposer()
@@ -415,7 +397,7 @@ describe('Composer image ingestion', () => {
     expect(onSend).not.toHaveBeenCalled()
   })
 
-  it('shares count and byte limits across picker, paste, and drop', async () => {
+  it('shares the count limit across picker, paste, and drop and no longer caps image bytes', async () => {
     renderComposer()
     await pickFiles(Array.from({ length: 4 }, () => pastedPng()))
     await dropFiles(Array.from({ length: 5 }, () => pastedPng()))
@@ -427,8 +409,8 @@ describe('Composer image ingestion', () => {
     const largeImage = () => sizedPng('large.png', 700_000)
     await paste(largeImage())
     await pickFiles([largeImage()])
-    expect(container.querySelectorAll('.composer-attachment')).toHaveLength(1)
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain('too large')
+    expect(container.querySelectorAll('.composer-attachment')).toHaveLength(2)
+    expect(container.querySelector('[role="alert"]')).toBeNull()
   })
 
   it('keeps files removable when the current model cannot send them', async () => {

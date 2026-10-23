@@ -129,8 +129,6 @@ const approvalModeMeta = {
   yolo: { icon: ShieldAlert, labelKey: 'composer.approval.yolo', settingsKey: 'agent.approval.yolo', yolo: true },
 } as const satisfies Record<OmpApprovalMode, { icon: typeof Shield; labelKey: MessageKey; settingsKey: MessageKey; yolo: boolean }>
 
-const MAX_IMAGE_PROMPT_BYTES = 2 * 1024 * 1024
-
 const EMPTY_ANNOTATIONS: BrowserAnnotation[] = []
 const noop = () => undefined
 
@@ -377,11 +375,6 @@ export const Composer = memo(function Composer({
     )
     const promptWithAnnotations = appendAnnotationsToPrompt(promptWithCapabilities, currentAnnotations)
     const promptWithContext = isSlashCommand ? prompt : appendTerminalContextToPrompt(promptWithAnnotations, currentTerminalContext)
-    const frame = `${JSON.stringify({ type: intent === 'steer' ? 'steer' : 'follow_up', message: promptWithContext, ...(submittedImages.length ? { images: submittedImages } : {}), id: '00000000-0000-0000-0000-000000000000' })}\n`
-    if (new TextEncoder().encode(frame).byteLength > MAX_IMAGE_PROMPT_BYTES) {
-      setAttachmentError(t('composer.error.tooLarge'))
-      return
-    }
     submittingRef.current = true
     const submittedValue = draftValue
     const submittedComposerImages = currentImages

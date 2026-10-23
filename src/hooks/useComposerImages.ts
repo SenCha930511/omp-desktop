@@ -4,7 +4,6 @@ import type { PromptImage } from '@/types/api'
 
 const supportedImageTypes = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp'])
 export const MAX_COMPOSER_FILE_COUNT = 8
-export const MAX_COMPOSER_IMAGE_SOURCE_BYTES = 1_350_000
 
 export interface ComposerImage extends PromptImage {
   id: string
@@ -45,7 +44,6 @@ export function useComposerImages({ shortName }: UseComposerImagesOptions) {
   const pendingBatchesRef = useRef(0)
   const errorRevisionRef = useRef(0)
   const reservedCountRef = useRef(0)
-  const reservedBytesRef = useRef(0)
   const dragDepthRef = useRef(0)
   const mountedRef = useRef(true)
 
@@ -85,15 +83,8 @@ export function useComposerImages({ shortName }: UseComposerImagesOptions) {
     }
     if (imageFiles.length === 0) return
 
-    const sourceBytes = imageFiles.reduce((sum, file) => sum + file.size, 0)
-    const currentBytes = imagesRef.current.reduce((sum, image) => sum + image.size, 0)
-    if (currentBytes + reservedBytesRef.current + sourceBytes > MAX_COMPOSER_IMAGE_SOURCE_BYTES) {
-      updateError('These images are too large to send. Attach smaller images (about 1.3 MB total).')
-      return
-    }
 
     reservedCountRef.current += imageFiles.length
-    reservedBytesRef.current += sourceBytes
     pendingBatchesRef.current += 1
     setProcessing(true)
     try {
@@ -114,7 +105,6 @@ export function useComposerImages({ shortName }: UseComposerImagesOptions) {
       if (mountedRef.current) updateError(`${shortName} could not read the image.`)
     } finally {
       reservedCountRef.current -= imageFiles.length
-      reservedBytesRef.current -= sourceBytes
       pendingBatchesRef.current -= 1
       if (mountedRef.current && pendingBatchesRef.current === 0) setProcessing(false)
     }
@@ -141,19 +131,17 @@ export function useComposerImages({ shortName }: UseComposerImagesOptions) {
     const current = imagesRef.current
     const currentIds = new Set(current.map((image) => image.id))
     let count = current.length + unsupportedFilesRef.current.length + reservedCountRef.current
-    let bytes = current.reduce((sum, image) => sum + image.size, 0) + reservedBytesRef.current
     const accepted: ComposerImage[] = []
     let omitted = 0
     for (const image of restored) {
       if (currentIds.has(image.id)) continue
-      if (count >= MAX_COMPOSER_FILE_COUNT || bytes + image.size > MAX_COMPOSER_IMAGE_SOURCE_BYTES) {
+      if (count >= MAX_COMPOSER_FILE_COUNT) {
         omitted += 1
         continue
       }
       accepted.push(image)
       currentIds.add(image.id)
       count += 1
-      bytes += image.size
     }
     if (accepted.length > 0) {
       const next = [...accepted, ...current]
