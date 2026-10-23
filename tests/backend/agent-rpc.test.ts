@@ -1273,3 +1273,29 @@ rl.on('line', (line) => {
     }
   })
 })
+
+describe('agent RPC duplicate session starts', () => {
+  it('reuses the resident runtime for a live session instead of forking it', async () => {
+    const fake = fakeAgent("{ id: command.id, type: 'response', command: 'prompt', success: true }")
+    const manager = managerFor(fake.executable)
+    const sessionPath = join(fake.cwd, 'session.jsonl')
+    writeFileSync(sessionPath, '')
+
+    const first = await manager.start({ cwd: fake.cwd, sessionPath })
+
+    // A view switch drops the renderer's runtime binding while the child is
+    // still handshaking (its authoritative session file is not reported yet);
+    // the next start for the same session must reuse the resident child, not
+    // spawn a second writer that forks the conversation.
+    const second = await manager.start({ cwd: fake.cwd, sessionPath })
+
+    expect(second.runtimeId).toBe(first.runtimeId)
+    expect(manager.list()).toHaveLength(1)
+    // A session without a resident runtime still starts a fresh child.
+    const third = await manager.start({ cwd: fake.cwd, sessionPath: join(fake.cwd, 'other.jsonl') })
+    expect(third.runtimeId).not.toBe(first.runtimeId)
+    // Starting the second session retires the now-idle first child (warm
+    // replacement), so exactly one resident child remains.
+    expect(manager.list().map((runtime) => runtime.runtimeId)).toEqual([third.runtimeId])
+  })
+})

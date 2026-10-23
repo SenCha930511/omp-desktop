@@ -7,7 +7,7 @@ import type { GitStatus, HarnessId, TranscriptMessage } from '@/types/api'
 import { ChangesCard } from './ChangesCard'
 import { ErrorBoundary } from './ErrorBoundary'
 import { MarkdownText } from './MarkdownText'
-import { ActivityMessage, AgentMessage, AssistantMessage, GoalMessage, SteerReadMarker, UserMessage } from './transcript/messages'
+import { ActivityMessage, AgentMessage, AssistantMessage, GoalMessage, isTodoResult, SteerReadMarker, TodoListCard, UserMessage } from './transcript/messages'
 import { useTranscriptScroll } from './transcript/scroll'
 import { OmpMark } from './ui'
 import { LiveElapsed, ThinkingDots, WorkDisclosure } from './transcript/timeline'
@@ -47,22 +47,27 @@ interface TranscriptProps {
 
 function ActiveAssistantMessage({ message, showReasoning, showTools, entering = false }: { message: TranscriptMessage; showReasoning: boolean; showTools: boolean; entering?: boolean }) {
   const { t } = useI18n()
-  const visibleActivity = message.parts.some(
+  // Todo cards stay outside the work fold even while streaming: the live plan
+  // is first-class content, same as the settled transcript renders it.
+  const todoParts = message.parts.filter(isTodoResult)
+  const activityParts = todoParts.length ? message.parts.filter((part) => !isTodoResult(part)) : message.parts
+  const visibleActivity = activityParts.some(
     (part) => (part.type === 'thinking' && showReasoning) || ((part.type === 'toolCall' || part.type === 'toolResult') && showTools) || part.type === 'agentMessage',
   )
   return (
     <article className={`message message--assistant${entering ? ' message--enter' : ''}`}>
       <div className="message__content">
         {visibleActivity ? (
-          <WorkDisclosure message={message} parts={message.parts} showReasoning={showReasoning} showTools={showTools} running />
+          <WorkDisclosure message={message} parts={activityParts} showReasoning={showReasoning} showTools={showTools} running />
         ) : (
           <>
-            {message.parts.map((part, index) => (part.type === 'text' ? <MarkdownText key={index} text={part.text} streaming /> : null))}
+            {activityParts.map((part, index) => (part.type === 'text' ? <MarkdownText key={index} text={part.text} streaming /> : null))}
             <div className="streaming-state" aria-live="polite">
               <ThinkingDots /> <span className="shine-sweep">{t('transcript.workStatus.thinking')}</span> <LiveElapsed since={message.startedAt ?? message.timestamp} />
             </div>
           </>
         )}
+        {todoParts.map((part, index) => <TodoListCard key={`todo-${index}`} part={part} />)}
       </div>
     </article>
   )

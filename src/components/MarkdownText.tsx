@@ -10,6 +10,7 @@ import type { PluggableList } from 'unified'
 // omp-desktop:// protocol already serves .woff2 with the right MIME type.
 import 'katex/dist/katex.min.css'
 import { writeClipboardText } from '@/lib/clipboard'
+import { rehypeKatexCjkClass } from '@/lib/katex-cjk'
 import { openExternalUrl } from '@/lib/desktop-actions'
 import { useI18n } from '@/lib/i18n'
 import { tokenizeSyntax } from './transcript/syntax'
@@ -225,7 +226,7 @@ export const MarkdownText = memo(function MarkdownText({ text, streaming = false
   // jump onto separate lines while tokens are still arriving.
   const markdown = useMemo(
     () => (
-      <ReactMarkdown remarkPlugins={markdownPlugins} rehypePlugins={[[rehypeKatex, katexOptions]]} skipHtml components={markdownComponents}>
+      <ReactMarkdown remarkPlugins={markdownPlugins} rehypePlugins={[[rehypeKatex, katexOptions], rehypeKatexCjkClass]} skipHtml components={markdownComponents}>
         {parsedText}
       </ReactMarkdown>
     ),

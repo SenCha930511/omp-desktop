@@ -34,7 +34,7 @@ const session = (id: string, projectPath: string, filePath: string): SessionReco
   depth: 0,
 })
 
-const runtime = (runtimeId: string, cwd: string, sessionFile: string, isStreaming = false): RuntimeInfo => ({
+const runtime = (runtimeId: string, cwd: string, sessionFile: string | undefined, isStreaming = false): RuntimeInfo => ({
   runtimeId,
   harness: 'omp',
   cwd,
@@ -90,6 +90,19 @@ describe('workspace and runtime ownership', () => {
 
     expect(findRuntimeForWorkspace(runtimes, '/project-b', '/sessions/b.jsonl')?.runtimeId).toBe('owned')
     expect(findRuntimeForWorkspace(runtimes, '/project-b', '/sessions/missing.jsonl')).toBeUndefined()
+  })
+
+  it('reattaches a runtime whose session file matches even after the workspace cwd drifts', () => {
+    // View switches resolve the workspace cwd from project folders; a symlink
+    // or folder edit can make that drift from the runtime's authorized cwd.
+    // The session file is the owning key — losing it forked the session.
+    const runtimes = [runtime('streaming', '/private/tmp', '/sessions/live.jsonl')]
+
+    expect(findRuntimeForWorkspace(runtimes, '/tmp', '/sessions/live.jsonl')?.runtimeId).toBe('streaming')
+    // A runtime without a session file yet still needs both keys to match.
+    const starting = runtime('starting', '/project-b', undefined)
+    expect(findRuntimeForWorkspace([starting], '/project-b', '/sessions/b.jsonl')).toBeUndefined()
+    expect(findRuntimeForWorkspace([starting], '/project-c', undefined)).toBeUndefined()
   })
 })
 

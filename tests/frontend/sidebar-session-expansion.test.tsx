@@ -4,7 +4,7 @@ import './jsdom-storage'
 import { act, type ComponentProps } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { SIDEBAR_SESSION_LIMIT, Sidebar } from '../../src/components/Sidebar'
+import { SIDEBAR_SESSION_LIMIT, Sidebar, resetSidebarExpansionForTests } from '../../src/components/Sidebar'
 import type { ProjectRecord, SessionRecord } from '../../src/types/api'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
@@ -41,10 +41,12 @@ let container: HTMLDivElement
 let root: Root
 
 beforeEach(() => {
+  resetSidebarExpansionForTests()
   container = document.createElement('div')
   document.body.append(container)
   root = createRoot(container)
 })
+
 
 afterEach(async () => {
   await act(async () => root.unmount())
@@ -139,5 +141,26 @@ describe('sidebar session expansion', () => {
     await searchFor('session s-8')
     expect(rowTitles()).toEqual(['Session s-8'])
     expect(toggle()).toBeNull()
+  })
+
+  it('keeps the expanded choice across sidebar remounts', async () => {
+    await renderSidebar({})
+    await act(async () => {
+      toggle()?.click()
+    })
+    expect(rowTitles()).toHaveLength(sessions.length)
+
+    // A view switch remounts the sidebar: the choice must survive it, or the
+    // list collapses back to the preview and rows read as missing again.
+    await act(async () => {
+      root.unmount()
+    })
+    container.remove()
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await renderSidebar({})
+    expect(rowTitles()).toHaveLength(sessions.length)
+    expect(toggle()?.getAttribute('aria-expanded')).toBe('true')
   })
 })

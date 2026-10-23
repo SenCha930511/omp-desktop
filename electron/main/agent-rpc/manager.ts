@@ -28,6 +28,8 @@ export class AgentRpcManager {
   private readonly startingRuntimes = new Set<string>()
   private readonly retiringRuntimes = new Set<string>()
   private readonly runtimeEnvironmentRevisions = new Map<string, number>()
+  /** Requested resume path per runtime id, valid until the handshake reports the authoritative session file. */
+  private readonly startSessionPathById = new Map<string, string>()
   private runtimeEnvironmentRevision = 0
   private disabledModels: () => ReadonlySet<string> = () => new Set()
   private eventSink: (envelope: PrimeEventEnvelope) => void = () => undefined
@@ -110,6 +112,15 @@ export class AgentRpcManager {
     const sessionPath = options.sessionPath === undefined
       ? undefined
       : await this.validateSessionPath(requireString(options.sessionPath, 'sessionPath', { max: 4096 }))
+    if (sessionPath !== undefined) {
+      // A live child already owns this session file. Resuming would fork the
+      // file (OMP resume writes a continuation jsonl with a fresh id) and
+      // double-stream one conversation, which is exactly how a view switch
+      // mid-turn used to spawn "new" duplicate sessions. Reuse the resident
+      // runtime instead; stopping it goes through stop/retire as usual.
+      const existing = this.getForSession(sessionPath)
+      if (existing && !this.retiringRuntimes.has(existing.runtimeId)) return existing
+    }
     let selectedModel: PrimeModelDescriptor | undefined
     let modelId: string | undefined
     if (options.model !== undefined) {
@@ -170,7 +181,7 @@ export class AgentRpcManager {
             this.startingRuntimes.delete(closed.runtimeId)
             this.runtimes.delete(closed.runtimeId)
             this.retiringRuntimes.delete(closed.runtimeId)
-            this.runtimeEnvironmentRevisions.delete(closed.runtimeId)
+            this.startSessionPathById.delete(closed.runtimeId)
             this.idleSince.delete(closed.runtimeId)
             this.scheduleIdleRetirement()
             notifyRuntimeEnd(closed.snapshot())
@@ -182,6 +193,7 @@ export class AgentRpcManager {
         // Record the environment generation before admission resolves so a
         // concurrent settings refresh cannot mistake this child for a new one.
         this.runtimeEnvironmentRevisions.set(created.runtimeId, runtimeEnvironmentRevision)
+        if (sessionPath !== undefined) this.startSessionPathById.set(created.runtimeId, canonicalSessionPath(sessionPath))
         return created
       })
       if (runtimeEnvironmentRevision < this.runtimeEnvironmentRevision) void this.retireWhenIdle(runtime)
@@ -200,6 +212,7 @@ export class AgentRpcManager {
         this.startingRuntimes.delete(runtime.runtimeId)
         this.runtimes.delete(runtime.runtimeId)
         this.runtimeEnvironmentRevisions.delete(runtime.runtimeId)
+        this.startSessionPathById.delete(runtime.runtimeId)
         await runtime.stop().catch(() => false)
       }
       // Admission/constructor failures have no close event; failed handshakes
@@ -337,7 +350,13 @@ export class AgentRpcManager {
 
   getForSession(filePath: string): RuntimeInfo | undefined {
     const wanted = canonicalSessionPath(filePath)
-    return this.list().find((runtime) => runtime.sessionFile && canonicalSessionPath(runtime.sessionFile) === wanted)
+    return this.list().find((runtime) => {
+      const sessionFile = runtime.sessionFile
+      if (sessionFile !== undefined && canonicalSessionPath(sessionFile) === wanted) return true
+      // Before the handshake reports the authoritative file, a starting child
+      // is known by the resume path it was spawned with.
+      return this.startSessionPathById.get(runtime.runtimeId) === wanted
+    })
   }
 
   async stopForSession(filePath: string): Promise<void> {

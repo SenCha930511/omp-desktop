@@ -117,7 +117,13 @@ export function runtimeMatchesWorkspace(runtime: RuntimeInfo, cwd: string, sessi
 
 export function findRuntimeForWorkspace(runtimes: RuntimeInfo[], cwd?: string, sessionFile?: string): RuntimeInfo | undefined {
   if (!cwd || !sessionFile) return undefined
+  // Exact cwd agreement wins, but a live runtime owns its session file
+  // outright: when the workspace's folder resolution drifts from the
+  // runtime's authorized cwd (symlink, folder edit, view switch), the file
+  // alone must still reattach the streaming turn — otherwise the next send
+  // forked the session into a duplicate.
   return runtimes.find((runtime) => runtimeMatchesWorkspace(runtime, cwd, sessionFile))
+    ?? runtimes.find((runtime) => runtime.sessionFile !== undefined && runtime.sessionFile === sessionFile)
 }
 
 export function selectStartupWorkspace(
