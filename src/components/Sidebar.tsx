@@ -229,6 +229,10 @@ function SidebarView({
   const [archiveTarget, setArchiveTarget] = useState<SessionRecord | null>(null)
   const [removeTarget, setRemoveTarget] = useState<ProjectRecord | null>(null)
   const [confirmUpdate, setConfirmUpdate] = useState(false)
+  // Projects can hold far more sessions than the collapsed preview shows;
+  // expansion is per project and survives refreshes within the session.
+  // Search bypasses the cap entirely so any matching row stays reachable.
+  const [expandedProjects, setExpandedProjects] = useState<ReadonlySet<string>>(() => new Set())
   const [updateErrorOpen, setUpdateErrorOpen] = useState(false)
   // activeSessionId is deliberately absent from the memo input: selection
   // must not re-index (and thereby re-sort) the rows.
@@ -435,6 +439,7 @@ function SidebarView({
           )
           const isCollapsed = collapsed[project.id] ?? false
           const running = projectSessions.some((session) => session.status === 'running')
+          const sessionRows = normalized || expandedProjects.has(project.id) ? projectSessions : boundedSidebarSessions(projectSessions)
           return (
             <div className="project-group" key={project.id}>
               <div
@@ -544,7 +549,7 @@ function SidebarView({
                       </IconButton>
                     </div>
                   ) : null}
-                  {boundedSidebarSessions(projectSessions).map((session) => (
+                  {sessionRows.map((session) => (
                     <div
                       key={session.id}
                       className={`session-row-wrap session-row-wrap--${session.status} ${needsAttention(session) ? 'has-attention' : ''} ${activeSessionId === session.id && activeView === 'session' ? 'is-selected' : ''}`}
@@ -612,6 +617,24 @@ function SidebarView({
                       ) : null}
                     </div>
                   ))}
+                  {projectSessions.length > SIDEBAR_SESSION_LIMIT && !normalized ? (
+                    <button
+                      type="button"
+                      className="session-row session-row--expand"
+                      aria-expanded={expandedProjects.has(project.id)}
+                      onClick={() =>
+                        setExpandedProjects((current) => {
+                          const next = new Set(current)
+                          if (next.has(project.id)) next.delete(project.id)
+                          else next.add(project.id)
+                          return next
+                        })
+                      }
+                    >
+                      <ChevronDown size={12} className={expandedProjects.has(project.id) ? 'is-expanded' : undefined} />
+                      {expandedProjects.has(project.id) ? t('sidebar.showLessSessions') : t('sidebar.showAllSessions', { count: projectSessions.length })}
+                    </button>
+                  ) : null}
                   {projectSessions.length === 0 && draftProjectId !== project.id ? (
                     <button
                       type="button"

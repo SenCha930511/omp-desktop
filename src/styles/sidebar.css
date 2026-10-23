@@ -80,6 +80,11 @@
 .session-row__title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); font-size: 13px; }
 .session-row__spinner { align-self: center; margin-left: auto; flex: 0 0 auto; color: var(--text-tertiary); }
 .session-row--empty { min-height: 30px; align-items: center; color: var(--text-tertiary); font-size: 11.5px; }
+/* Show-all toggle: a quiet affordance that stays out of the row hover pad. */
+.session-row--expand { min-height: 30px; align-items: center; gap: 5px; color: var(--text-tertiary); font-size: 11.5px; }
+.session-row--expand:hover { color: var(--text-secondary); }
+.session-row--expand svg { flex: 0 0 auto; transition: transform 140ms var(--ease-out); }
+.session-row--expand svg.is-expanded { transform: rotate(180deg); }
 .project-working { width: 16px; height: 16px; display: inline-grid; place-items: center; flex: 0 0 auto; border-radius: 50%; color: var(--prime); background: color-mix(in srgb, var(--prime) 13%, transparent); animation: status-halo-breathe 2.4s ease-in-out infinite; }
 @keyframes status-halo-breathe {
   0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--prime) 24%, transparent); }
