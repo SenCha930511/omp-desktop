@@ -66,7 +66,15 @@ export function useTranscriptScroll(messages: TranscriptMessage[], active = true
 
   useEffect(() => {
     const firstLoadedTranscript = previousCountRef.current === 0 && messages.length > 0
-    if (!pinnedToBottomRef.current && messages.length > 0 && previousMessagesRef.current !== messages) setHasNewContent(true)
+    // A reader message landing at the tail — a send, a steer, or a queued
+    // follow-up flushing now that the agent finished. Sending expresses
+    // intent to watch the reply, even from deep in scrolled-up history, so
+    // the view re-anchors to the live tail instead of parking on stale
+    // context until the jump button is noticed. Batches can already carry
+    // the first streaming assistant turn behind the user message, so every
+    // appended message counts, not just the last.
+    const sentByReader = previousCountRef.current > 0 && messages.length > previousCountRef.current && messages.slice(previousCountRef.current).some((message) => message.role === 'user')
+    if (!pinnedToBottomRef.current && !sentByReader && messages.length > 0 && previousMessagesRef.current !== messages) setHasNewContent(true)
     previousMessagesRef.current = messages
     const scroller = scrollRef.current
     let frame: number | undefined
@@ -75,6 +83,22 @@ export function useTranscriptScroll(messages: TranscriptMessage[], active = true
         if (active && scroller && pinnedToBottomRef.current && performance.now() >= manualScrollUntilRef.current && performance.now() >= smoothScrollUntilRef.current) scroller.scrollTo?.({ top: scroller.scrollHeight, behavior: 'auto' })
       })
       pinnedToBottomRef.current = true
+    } else if (sentByReader) {
+      // No manual/smooth guards here: a send is a keyboard or button action,
+      // never a scroll gesture, so nothing user-driven can be mid-flight.
+      // Collapsing a masked search window re-keys the layout effect below,
+      // which snaps the scroller; the rAF covers the already-live-tail case.
+      pinnedToBottomRef.current = true
+      readerExpandedRef.current = false
+      setAwayFromBottom(false)
+      setHasNewContent(false)
+      if (windowEnd !== undefined) {
+        setWindowEnd(undefined)
+        setVisibleLimit(250)
+      }
+      frame = requestAnimationFrame(() => {
+        if (active && scroller) scroller.scrollTo?.({ top: scroller.scrollHeight, behavior: 'auto' })
+      })
     } else if (streaming && pinnedToBottomRef.current) {
       frame = requestAnimationFrame(() => {
         if (active && scroller && pinnedToBottomRef.current && performance.now() >= manualScrollUntilRef.current && performance.now() >= smoothScrollUntilRef.current) scroller.scrollTo?.({ top: scroller.scrollHeight, behavior: 'auto' })
@@ -87,7 +111,7 @@ export function useTranscriptScroll(messages: TranscriptMessage[], active = true
     return () => {
       if (frame !== undefined) cancelAnimationFrame(frame)
     }
-  }, [messages, streaming, t, active])
+  }, [messages, streaming, t, active, windowEnd])
 
   const updatePinnedState = () => {
     if (!active) return

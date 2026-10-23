@@ -1123,6 +1123,35 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(page.locator('.message--activity').filter({ hasText: 'Cannot send prompt' })).toHaveCount(0)
   })
 
+  test('re-anchors the transcript to the sent message after scrolling up', async () => {
+    await page.locator('.session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
+    await expect(page.locator('.model-picker__trigger')).toHaveAccessibleName('Model: Claude Fixture')
+    // Grow the transcript past the viewport so the scroller can park away
+    // from the tail, the way a reader catching up on history does.
+    const timestamp = new Date().toISOString()
+    appendFileSync(fixtureSessionFile, `${Array.from({ length: 120 }, (_, index) => JSON.stringify({
+      type: 'message', id: `send-scroll-history-${index}`, parentId: index ? `send-scroll-history-${index - 1}` : 'fixture-goal-summary', timestamp,
+      message: { role: index % 2 ? 'assistant' : 'user', timestamp, content: [{ type: 'text', text: `Send-scroll history ${index}` }] },
+    })).join('\n')}\n`)
+    const scroller = page.locator('.transcript')
+    await expect(scroller.locator('.message', { hasText: 'Send-scroll history 119' })).toBeVisible()
+    await expect.poll(() => scroller.evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight)).toBeLessThan(40)
+
+    await scroller.evaluate((element) => { element.scrollTop = 0; element.dispatchEvent(new Event('scroll')) })
+    await expect(page.locator('.transcript__jump-to-bottom')).toBeVisible()
+
+    const composer = page.getByRole('combobox', { name: 'Message OMP' })
+    await composer.fill('barrier follow-up')
+    await composer.press('Enter')
+    // The fixture appends the user message plus its reply to the live session
+    // file; the send itself must drag the parked view back to the tail so the
+    // reader sees both their message and the model output.
+    await expect(page.locator('.message--user').filter({ hasText: 'barrier follow-up' })).toBeVisible()
+    await expect(page.locator('.message--assistant').filter({ hasText: 'The barrier follow-up was accepted.' })).toBeVisible()
+    await expect.poll(() => scroller.evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight)).toBeLessThan(40)
+    await expect(page.locator('.transcript__jump-to-bottom')).toHaveCount(0)
+  })
+
   test('switches model presets from the model picker', async () => {
     await page.locator('.session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
     await expect(page.locator('.model-picker__trigger')).toHaveAccessibleName('Model: Claude Fixture')
