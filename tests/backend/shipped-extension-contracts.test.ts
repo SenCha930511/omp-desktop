@@ -72,9 +72,16 @@ async function loadExtension(injection: ExtensionInjection, configured: boolean)
   vi.resetModules()
   vi.unstubAllEnvs()
   const variables = brokerVariables[injection.capability]
-  if (configured && variables) {
-    vi.stubEnv(variables[0], 'http://127.0.0.1:1/')
-    vi.stubEnv(variables[1], 'inert-test-token')
+  if (variables) {
+    if (configured) {
+      vi.stubEnv(variables[0], 'http://127.0.0.1:1/')
+      vi.stubEnv(variables[1], 'inert-test-token')
+    } else {
+      // A running desktop instance exports its broker variables into the
+      // user's shells; the unconfigured case must not inherit them.
+      vi.stubEnv(variables[0], '')
+      vi.stubEnv(variables[1], '')
+    }
   }
   // The extension filename is manifest data, so the specifier is genuinely runtime-selected.
   const url = pathToFileURL(join(process.cwd(), 'assets', 'extensions', injection.filename)).href
