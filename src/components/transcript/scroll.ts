@@ -187,6 +187,30 @@ export function useTranscriptScroll(messages: TranscriptMessage[], active = true
         pinnedToBottomRef.current = false
         manualScrollUntilRef.current = performance.now() + (expanding ? EXPAND_HOLD_MS : 150)
         if (event instanceof WheelEvent) setAwayFromBottom(true)
+        if (expanding && target instanceof Element) {
+          // An expanded disclosure must not open under the composer: once
+          // the accordion settles, pan the transcript by the overshoot so
+          // the whole section — header, thinking rows, and tool output — is
+          // readable. Sections taller than the viewport clamp at the tail;
+          // the sticky status row keeps their title in view while scrolling.
+          const section = target.closest('.activity-line') ?? target.closest('.work-disclosure')
+          if (section) {
+            window.setTimeout(() => {
+              const rect = section.getBoundingClientRect()
+              const scrollerRect = scroller.getBoundingClientRect()
+              const reserved = parseFloat(getComputedStyle(scroller).paddingBottom) || 0
+              const visibleBottom = scrollerRect.bottom - reserved
+              const overshoot = rect.bottom - visibleBottom
+              if (overshoot <= 0) return
+              const maxScroll = scroller.scrollHeight - scroller.clientHeight
+              const next = Math.min(scroller.scrollTop + overshoot, maxScroll)
+              if (next <= scroller.scrollTop) return
+              smoothScrollUntilRef.current = performance.now() + SMOOTH_SCROLL_GUARD_MS
+              manualScrollUntilRef.current = performance.now() + SMOOTH_SCROLL_GUARD_MS
+              scroller.scrollTo?.({ top: next, behavior: 'smooth' })
+            }, EXPAND_HOLD_MS)
+          }
+        }
       }
     }
     const observer = new ResizeObserver(() => {

@@ -107,7 +107,12 @@
 .markdown-link-unsupported { color: var(--text-secondary); text-decoration: underline dotted; text-underline-offset: 2px; cursor: help; }
 .work-disclosure { margin: 8px 0 3px; }
 .work-disclosure.is-running { margin-top: 0; padding: 0 0 4px; }
-.work-disclosure__button { width: fit-content; max-width: 100%; min-height: 26px; display: flex; align-items: center; gap: 8px; padding: 3px 0; color: var(--text-tertiary); background: transparent; text-align: left; font-size: 12px; font-weight: 500; }
+/* A work section taller than the viewport pins its status row — elapsed time
+   and tool count stay readable while the reader scrolls through a long live
+   session. Sticky offsets sit inside the scroller's top padding (48px, 96px
+   once the todo hud reserves its zone), so -40px docks the row at the
+   viewport edge without the hud and just under it when one is present. */
+.work-disclosure__button { width: 100%; min-height: 26px; display: flex; align-items: center; gap: 8px; padding: 3px 0; color: var(--text-tertiary); background: var(--canvas); text-align: left; font-size: 12px; font-weight: 500; position: sticky; top: -40px; z-index: 3; }
 .work-disclosure__button > svg { width: 16px; flex: 0 0 16px; }
 /* Header labels stay whole: CJK text has one-character min-content, so any
    shrinking collapses "工作中" into a vertical stack. */
