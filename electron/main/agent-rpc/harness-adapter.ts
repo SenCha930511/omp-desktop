@@ -1,5 +1,5 @@
 import type { HarnessId, PrimeContextUsage, SessionActionSnapshot, SessionUsage, SessionUsageTokens } from '../../../src/types/api'
-import { MAX_QUEUED_ACTIONS } from '../../../src/lib/session-actions'
+import { MAX_QUEUED_ACTIONS, parseSessionActionSnapshot } from '../../../src/lib/session-actions'
 import { extensionInjections } from '../extension-manifest'
 import { HARNESSES } from '../harness'
 import { isRecord } from '../validation'
@@ -191,7 +191,18 @@ export const OMP_RPC_ADAPTER: HarnessRpcAdapter = {
     const usage = parseContextUsage(data.contextUsage)
     if (usage) reading.contextUsage = usage
     if (Number.isSafeInteger(data.queuedMessageCount) && Number(data.queuedMessageCount) >= 0 && Number(data.queuedMessageCount) <= MAX_QUEUED_ACTIONS) {
-      reading.sessionActions = {
+      // get_state also names the held messages (queuedMessages.steering /
+      // followUp previews). Keep them: the queue banner shows what omp is
+      // holding, and a count-only reading here would wipe previews the
+      // session_action_update events already delivered.
+      const held = isRecord(data.queuedMessages) ? data.queuedMessages : {}
+      const steering = Array.isArray(held.steering) ? held.steering : []
+      const followUps = Array.isArray(held.followUp) ? held.followUp : []
+      reading.sessionActions = parseSessionActionSnapshot({
+        queuedCount: Number(data.queuedMessageCount),
+        steering,
+        followUps,
+      }) ?? {
         queuedCount: Number(data.queuedMessageCount),
         steering: [],
         followUps: [],

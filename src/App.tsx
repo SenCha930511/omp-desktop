@@ -984,7 +984,9 @@ export default function App() {
     return () => window.removeEventListener('keydown', onAppKeyDown)
   }, [onAppKeyDown])
 
-  const harnessQueuedMessageCount = workspace.runtime?.sessionActions?.queuedCount ?? 0
+  const harnessSessionActions = workspace.runtime?.sessionActions
+  const harnessQueuedMessageCount = harnessSessionActions?.queuedCount ?? 0
+  const harnessQueuedPreviews = useMemo(() => [...(harnessSessionActions?.steering ?? []), ...(harnessSessionActions?.followUps ?? [])], [harnessSessionActions])
   const busy = Boolean(workspace.runtime?.isStreaming || workspace.runtime?.isCompacting || harnessQueuedMessageCount > 0 || workspace.messages.some((message) => message.streaming))
   // The user stopped the current turn and the transcript tail is that
   // cancelled assistant row: the composer's send slot becomes a retry button
@@ -1295,6 +1297,7 @@ export default function App() {
                         getTerminalContext={getTerminalContext}
                         queuedMessages={queuedMessages}
                         harnessQueuedMessageCount={harnessQueuedMessageCount}
+                        harnessQueuedPreviews={harnessQueuedPreviews}
                         onDeleteQueuedMessage={removeQueuedMessage}
                         onSendQueuedMessage={sendQueuedMessage}
                         onEditQueuedMessage={(message) => workspace.editQueuedPrompt(message.id, message.text)}

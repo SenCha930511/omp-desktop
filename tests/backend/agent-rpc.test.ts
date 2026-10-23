@@ -45,6 +45,25 @@ describe('OMP RPC adapter event normalization', () => {
   })
 })
 
+describe('OMP RPC adapter state reading', () => {
+  it('keeps held-message previews from get_state queuedMessages', () => {
+    const reading = OMP_RPC_ADAPTER.readState({
+      queuedMessageCount: 2,
+      queuedMessages: { steering: ['steer preview'], followUp: ['next round note'] },
+    })
+    expect(reading.sessionActions).toEqual({
+      queuedCount: 2,
+      steering: ['steer preview'],
+      followUps: ['next round note'],
+    })
+  })
+
+  it('falls back to a count-only snapshot when previews are absent or malformed', () => {
+    expect(OMP_RPC_ADAPTER.readState({ queuedMessageCount: 1 })?.sessionActions).toEqual({ queuedCount: 1, steering: [], followUps: [] })
+    expect(OMP_RPC_ADAPTER.readState({ queuedMessageCount: 1, queuedMessages: { steering: 'nope' } })?.sessionActions).toEqual({ queuedCount: 1, steering: [], followUps: [] })
+  })
+})
+
 describe('manual compact synthesis', () => {
   it('reads the compaction record after a successful compact command and emits a compaction end event', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-rpc-manual-compact-'))

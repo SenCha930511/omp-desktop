@@ -113,7 +113,10 @@
    once the todo hud reserves its zone), so -40px docks the row at the
    viewport edge without the hud and just under it when one is present. */
 .work-disclosure__button { width: 100%; min-height: 26px; display: flex; align-items: center; gap: 8px; padding: 3px 0; color: var(--text-tertiary); background: var(--canvas); text-align: left; font-size: 12px; font-weight: 500; position: sticky; top: -40px; z-index: 3; }
-.work-disclosure__button > svg { width: 16px; flex: 0 0 16px; }
+/* The status header rides above its rows: a hairline rule separates it from
+   the timeline and marks the pinned row's edge while content scrolls
+   beneath the sticky header. Collapsed sections keep a plain summary. */
+.work-disclosure:has(.work-timeline) .work-disclosure__button { border-bottom: 1px solid var(--border); padding-bottom: 5px; }
 /* Header labels stay whole: CJK text has one-character min-content, so any
    shrinking collapses "工作中" into a vertical stack. */
 .work-disclosure__button > span { flex: 0 0 auto; white-space: nowrap; }
@@ -276,7 +279,6 @@
 .thinking-dots > span:nth-child(3) { animation-delay: 280ms; }
 @keyframes thinking-dot { 0%, 62%, 100% { transform: translateY(1px) scale(.72); opacity: .3; } 31% { transform: translateY(-4px) scale(1); opacity: 1; box-shadow: 0 4px 8px color-mix(in srgb, var(--prime) 24%, transparent); } }
 .message-actions { min-height: 24px; display: flex; align-items: center; gap: 5px; margin-top: 3px; opacity: 0; transition: opacity 130ms ease-out; }
-.message--assistant:last-of-type .message-actions { opacity: 1; }
 .message:hover .message-actions, .message:focus-within .message-actions { opacity: 1; }
 .message-actions button, .message-actions span { min-height: 23px; display: inline-flex; align-items: center; gap: 4px; padding: 0 6px; border-radius: 5px; color: var(--text-tertiary); background: transparent; font-size: 10.5px; }
 .message-actions button:hover { color: var(--text-secondary); background: var(--surface-hover); }

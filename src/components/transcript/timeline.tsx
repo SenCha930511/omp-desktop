@@ -103,13 +103,15 @@ function plainPreview(text: string, running: boolean): string {
   return line.replace(/(\*\*|__|~~|`+)|(?<=\s)[#>*_]+/g, '').replace(/\s+/g, ' ').trim()
 }
 
-function ReasoningPart({ part, streaming = false }: { part: Extract<MessagePart, { type: 'thinking' }>; streaming?: boolean }) {
+function ReasoningPart({ part, live = false }: { part: Extract<MessagePart, { type: 'thinking' }>; live?: boolean }) {
   const { t } = useI18n()
   // dsh keeps the reasoning header ("思考 · first line") attached even while a
   // section renders expanded content; the body indents under that title.
+  // `live` marks the row the agent is writing right now: only it sweeps and
+  // ticks its preview along the tail — earlier rows stay settled.
   return (
-    <ReasoningDisclosure className="activity-line activity-line--reasoning activity-reasoning" preview={boundText(plainPreview(part.text, streaming), 180, '…')} streaming={streaming}>
-      <MarkdownText text={boundText(part.text, 40_000, t('transcript.reasoning.truncated'))} streaming={streaming} />
+    <ReasoningDisclosure className="activity-line activity-line--reasoning activity-reasoning" preview={boundText(plainPreview(part.text, live), 180, '…')} streaming={live}>
+      <MarkdownText text={boundText(part.text, 40_000, t('transcript.reasoning.truncated'))} streaming={live} />
     </ReasoningDisclosure>
   )
 }
@@ -148,7 +150,7 @@ export function LiveElapsed({ since }: { since?: string | number }) {
   )
 }
 
-const ToolPart = memo(function ToolPart({ part, next, streaming }: { part: Extract<MessagePart, { type: 'toolCall' }>; next?: MessagePart; streaming: boolean }) {
+const ToolPart = memo(function ToolPart({ part, next, streaming, live }: { part: Extract<MessagePart, { type: 'toolCall' }>; next?: MessagePart; streaming: boolean; live?: boolean }) {
   const { t } = useI18n()
   const [manualOpen, setOpen] = useState(false)
   const reveal = useContext(SearchRevealContext)
@@ -190,9 +192,9 @@ const ToolPart = memo(function ToolPart({ part, next, streaming }: { part: Extra
     <div className={`activity-line activity-line--tool activity-line--${kind} is-${state}`}>
       <button type="button" className="activity-tool__summary" disabled={!canExpand} onClick={() => setOpen((value) => !value)} aria-expanded={canExpand ? open : undefined}>
         <span className="activity-line__icon">{toolIcon(kind)}</span>
-        <span className={`activity-line__kind${state === 'running' ? ' shine-sweep' : ''}`}>{kind === 'question' ? t('transcript.tool.questionKind') : part.name}</span>
+        <span className={`activity-line__kind${state === 'running' && live ? ' shine-sweep' : ''}`}>{kind === 'question' ? t('transcript.tool.questionKind') : part.name}</span>
         {preview ? (
-          <code className={`activity-tool__preview${state === 'running' && !open ? ' shine-sweep' : ''}`}>
+          <code className={`activity-tool__preview${state === 'running' && !open && live ? ' shine-sweep' : ''}`}>
             <SyntaxText text={preview} />
           </code>
         ) : null}
@@ -307,18 +309,28 @@ function partKey(part: MessagePart, index: number): string {
 
 export function WorkTimeline({ parts, showReasoning, showTools, streaming = false }: { parts: MessagePart[]; showReasoning: boolean; showTools: boolean; streaming?: boolean }) {
   const pairedResults = new Set<number>()
+  // A running section marked every pending row live, so backgrounded
+  // commands (results minutes away) and earlier thinking rows all swept in
+  // unison. Only the newest rendered thinking/tool row — the one the agent
+  // is actually working on — may shine; earlier rows stay settled.
+  let lastLiveIndex = -1
+  for (let index = 0; index < parts.length; index += 1) {
+    const part = parts[index]
+    if ((part.type === 'thinking' && showReasoning) || (part.type === 'toolCall' && showTools)) lastLiveIndex = index
+  }
   return (
     <div className="work-timeline">
       {parts.map((part, index) => {
         const key = partKey(part, index)
+        const live = streaming && index === lastLiveIndex
         if (part.type === 'toolResult' && pairedResults.has(index)) return null
         if (part.type === 'compaction') return <CompactionPart key={key} part={part} />
-        if (part.type === 'thinking') return showReasoning ? <ReasoningPart key={key} part={part} streaming={streaming} /> : null
+        if (part.type === 'thinking') return showReasoning ? <ReasoningPart key={key} part={part} live={live} /> : null
         if (part.type === 'toolCall') {
           if (!showTools) return null
           const next = parts[index + 1]
           if (next?.type === 'toolResult') pairedResults.add(index + 1)
-          return <ToolPart key={key} part={part} next={next} streaming={streaming} />
+          return <ToolPart key={key} part={part} next={next} streaming={streaming} live={live} />
         }
         if (part.type === 'toolResult') return showTools ? <StandaloneToolResult key={key} part={part} /> : null
         if (part.type === 'agentMessage') return <AgentActivityPart key={key} part={part} />

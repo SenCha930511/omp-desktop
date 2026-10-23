@@ -92,6 +92,8 @@ interface ComposerProps {
   queuedMessages?: QueuedPrompt[]
   /** Messages held inside the harness when it exposes only a count, not previews. */
   harnessQueuedMessageCount?: number
+  /** Harness-held message previews (steers and follow-ups omp has admitted). */
+  harnessQueuedPreviews?: string[]
   onDeleteQueuedMessage?(message: QueuedPrompt): void
   onEditQueuedMessage?(message: QueuedPrompt): void
   onSendQueuedMessage?(message: QueuedPrompt): Promise<void>
@@ -174,6 +176,7 @@ export const Composer = memo(function Composer({
   getTerminalContext,
   queuedMessages = [],
   harnessQueuedMessageCount = 0,
+  harnessQueuedPreviews = [],
   onDeleteQueuedMessage,
   onEditQueuedMessage,
   onSendQueuedMessage,
@@ -633,9 +636,18 @@ export const Composer = memo(function Composer({
               </div>
             ))}
             {harnessQueuedMessageCount ? (
-              <div className="composer-queue__item composer-queue__item--harness">
-                <span className="composer-queue__text">{t('composer.queue.harnessHeld', { name: agentName, count: harnessQueuedMessageCount })}</span>
-              </div>
+              <>
+                {harnessQueuedPreviews.slice(0, harnessQueuedMessageCount).map((preview, index) => (
+                  <div className="composer-queue__item composer-queue__item--harness" key={`${index}-${preview}`}>
+                    <span className="composer-queue__text">{preview}</span>
+                  </div>
+                ))}
+                {harnessQueuedMessageCount > harnessQueuedPreviews.length ? (
+                  <div className="composer-queue__item composer-queue__item--harness">
+                    <span className="composer-queue__text">{t('composer.queue.harnessHeld', { name: agentName, count: harnessQueuedMessageCount - harnessQueuedPreviews.length })}</span>
+                  </div>
+                ) : null}
+              </>
             ) : null}
           </div>
         </section>

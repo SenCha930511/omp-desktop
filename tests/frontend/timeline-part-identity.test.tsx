@@ -117,4 +117,43 @@ describe('timeline part identity', () => {
     expect(finished[0].parts[0].partId).toBe(ids[0])
     expect(finished[0].parts[1].partId).toBe(ids[1])
   })
+
+  it('shines only the newest thinking row while a section runs', () => {
+    act(() => {
+      root.render(createElement(WorkTimeline, {
+        parts: [
+          { type: 'thinking', text: 'Earlier reasoning line.' },
+          { type: 'toolCall', id: 'tool-1', name: 'Bash', args: { command: 'sleep 300' } },
+          { type: 'thinking', text: 'Current reasoning line.' },
+        ],
+        showReasoning: true,
+        showTools: true,
+        streaming: true,
+      }))
+    })
+
+    // The backgrounded command (result minutes away) stays a plain running
+    // row; only the thinking row the agent is writing right now sweeps.
+    const rowsWithSweep = [...container.querySelectorAll('.activity-line')].filter((row) => row.querySelector('.shine-sweep'))
+    expect(rowsWithSweep).toHaveLength(1)
+    expect(rowsWithSweep[0].classList.contains('activity-line--reasoning')).toBe(true)
+  })
+
+  it('shines only the newest tool row while a section runs', () => {
+    act(() => {
+      root.render(createElement(WorkTimeline, {
+        parts: [
+          { type: 'thinking', text: 'Earlier reasoning line.' },
+          { type: 'toolCall', id: 'tool-1', name: 'Bash', args: { command: 'grep -rn shine src/' } },
+        ],
+        showReasoning: true,
+        showTools: true,
+        streaming: true,
+      }))
+    })
+
+    const rowsWithSweep = [...container.querySelectorAll('.activity-line')].filter((row) => row.querySelector('.shine-sweep'))
+    expect(rowsWithSweep).toHaveLength(1)
+    expect(rowsWithSweep[0].classList.contains('activity-line--tool')).toBe(true)
+  })
 })

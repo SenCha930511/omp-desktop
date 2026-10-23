@@ -140,6 +140,42 @@ describe('composer queue tray', () => {
     expect(tray?.textContent).toContain('OMP is holding 2 messages for the next turn.')
   })
 
+  it('lists each message the harness holds when previews are available', () => {
+    act(() => root.render(<Composer
+      busy
+      submitting={false}
+      loading={false}
+      disabled={false}
+      model="auto"
+      effort="medium"
+      modelsByProvider={new Map()}
+      providers={[]}
+      reasoningLevels={['medium']}
+      fast={false}
+      fastSupported={false}
+      fastAvailable={false}
+      agentName="OMP"
+      imageInputSupported={true}
+      skills={[]}
+      harnessQueuedMessageCount={3}
+      harnessQueuedPreviews={['tighten the login flow', 'add a regression test']}
+      onModelChange={vi.fn()}
+      onEffortChange={vi.fn()}
+      onFastChange={vi.fn()}
+      onSend={vi.fn()}
+      onStop={vi.fn()}
+    />))
+
+    const tray = container.querySelector('.composer-queue')
+    const held = [...(tray?.querySelectorAll('.composer-queue__item--harness') ?? [])]
+    expect(held).toHaveLength(3)
+    expect(held[0]?.textContent).toContain('tighten the login flow')
+    expect(held[1]?.textContent).toContain('add a regression test')
+    // Previews beyond the known count stay hidden; a shortfall keeps the
+    // count-only line for the rest.
+    expect(held[2]?.textContent).toContain('OMP is holding 1 message for the next turn.')
+  })
+
   it('replaces the stop button with the queue-send while a draft exists', () => {
     const onSend = vi.fn()
     const onStop = vi.fn()
