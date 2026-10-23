@@ -149,6 +149,7 @@ export default function App() {
   const turnBaselineRef = useRef<GitFileChange[] | null>(null)
   const turnInFlightRef = useRef(false)
   const turnResultPendingRef = useRef(false)
+  const turnOwnerRef = useRef('')
   const submissionAdmissionRef = useRef(createSingleFlightAdmission())
   const queuedFlushRef = useRef(false)
   const checkoutRequestRef = useRef(0)
@@ -417,18 +418,6 @@ export default function App() {
       setSettingsSectionRequest((current) => (current.section === 'general' ? current : { section: 'general', id: current.id + 1 }))
     }
   }, [view])
-
-  const undoChanges = useCallback(async () => {
-    const files = turnChanges ?? []
-    if (!bridge || !activeCwd || !files.length) return
-    const paths = files.map((file) => file.path)
-    const restored = await bridge.git.restore(activeCwd, paths)
-    setToast(restored ? t('changes.card.undone') : t('changes.error.restore', { count: paths.length }))
-    if (restored) {
-      setTurnChanges([])
-      void refreshGit()
-    }
-  }, [bridge, activeCwd, turnChanges, refreshGit, t])
 
 
   useAgentEvents({
@@ -828,6 +817,18 @@ export default function App() {
   )
   const getTerminalContext = useStableCallback(() => (activeTerminalSession ? terminalDrawerRefs.current.get(activeTerminalSession.id)?.readSelectionContext() : undefined))
   const removeQueuedMessage = useStableCallback((message: QueuedPrompt) => workspace.removeQueuedPrompt(message.id))
+  const sendQueuedMessage = useStableCallback(async (message: QueuedPrompt) => {
+    workspace.updateQueuedPromptDelivery(message.id, true)
+    try {
+      await sendPrompt(message.text, [], 'steer')
+      workspace.removeQueuedPrompt(message.id)
+    } catch (error) {
+      workspace.markQueuedPromptFlushFailed(message.id)
+      throw error
+    } finally {
+      workspace.updateQueuedPromptDelivery(message.id, false)
+    }
+  })
   const clearTerminalSelection = useStableCallback(() => {
     if (activeTerminalSession) terminalDrawerRefs.current.get(activeTerminalSession.id)?.clearSelection()
   })
@@ -985,12 +986,18 @@ export default function App() {
   const execution = conversationExecution({ runtime: workspace.runtime, messages: workspace.messages,
     submitting: submitting && submissionGenerationRef.current === workspace.workspaceGeneration,
     waiting: Boolean(extension.extensionUi && extension.extensionUi.runtimeId === workspace.runtime?.runtimeId), sessionStatus: activeSession?.status })
-  /* The changes card reports only what a completed turn introduced: the dirty
-     set captured when the turn began is the baseline, and per-file deltas are
-     recomputed on every status refresh until the next turn starts. A fresh
-     window that has not finished a turn shows no card even when the working
-     tree carries older edits. */
+  /* Compare owned status snapshots. A turn already running when a workspace
+     opens has no trustworthy baseline, so it cannot produce a changes card. */
   useEffect(() => {
+    const owner = JSON.stringify([activeCwd, workspace.activeSessionId, workspace.workspaceGeneration])
+    if (turnOwnerRef.current !== owner) {
+      turnOwnerRef.current = owner
+      turnBaselineRef.current = null
+      turnInFlightRef.current = busy
+      turnResultPendingRef.current = false
+      setTurnChanges(null)
+      return
+    }
     if (busy) {
       if (!turnInFlightRef.current) {
         turnInFlightRef.current = true
@@ -1006,7 +1013,7 @@ export default function App() {
     }
     if (!turnResultPendingRef.current || !turnBaselineRef.current) return
     setTurnChanges(turnFileDeltas(git.files, turnBaselineRef.current))
-  }, [busy, git.files, refreshGit])
+  }, [busy, git.files, refreshGit, activeCwd, workspace.activeSessionId, workspace.workspaceGeneration])
 
   const turnGit = useMemo(() => ({ ...git, files: turnChanges ?? [] }), [git, turnChanges])
   const externalSessionRunning = Boolean(activeSession?.status === 'running' && workspace.runtime?.sessionFile !== activeSession.filePath)
@@ -1014,9 +1021,9 @@ export default function App() {
   useEffect(() => {
     if (!bridge || busy || externalSessionRunning || submitting || queuedFlushRef.current || queuedMessages.length === 0) return
     const next = queuedMessages[0]
-    if (next.flushAttemptFailed) return
+    if (next.flushAttemptFailed || next.recovered || next.deliveryPending) return
     queuedFlushRef.current = true
-    void sendPrompt(next.text, [], 'queue', next.id).finally(() => {
+    void sendPrompt(next.text, [], 'queue', next.id).catch(() => undefined).finally(() => {
       queuedFlushRef.current = false
     })
   }, [bridge, busy, externalSessionRunning, queuedMessages, sendPrompt, submitting])
@@ -1208,9 +1215,6 @@ export default function App() {
                         suggestionsDisabled={!activeProject || workspace.loadingSession || submitting}
                         showChangesCard={Boolean(turnChanges?.length && settingsState.settings.showFileChangesPopup && !changesCardDismissed)}
                         onDismissChanges={() => setChangesCardDismissed(true)}
-                        onUndoChanges={() => {
-                          void undoChanges()
-                        }}
                         queuedMessageCount={queuedMessages.length + harnessQueuedMessageCount}
                         onOpenSessionReference={(sessionId, harness) => {
                           const session = sessions.find((candidate) => candidate.id === sessionId && candidate.harness === harness && !candidate.archived && candidate.depth === 0)
@@ -1281,7 +1285,8 @@ export default function App() {
                         queuedMessages={queuedMessages}
                         harnessQueuedMessageCount={harnessQueuedMessageCount}
                         onDeleteQueuedMessage={removeQueuedMessage}
-                        onEditQueuedMessage={removeQueuedMessage}
+                        onSendQueuedMessage={sendQueuedMessage}
+                        onEditQueuedMessage={(message) => workspace.editQueuedPrompt(message.id, message.text)}
                         sendSignal={browserAnnotations.sendSignal}
                         restoreRequest={restorePrompt?.owner === workspace.workspaceGeneration ? restorePrompt : undefined}
                         onRestoreHandled={() => setRestorePrompt(undefined)}

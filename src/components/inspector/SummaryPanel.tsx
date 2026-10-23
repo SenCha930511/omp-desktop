@@ -32,6 +32,7 @@ export function summarizeTranscript(messages: TranscriptMessage[]): TranscriptSu
   }
   let lastText: string | undefined
   for (let index = messages.length - 1; index >= 0 && lastText === undefined; index -= 1) {
+    if (messages[index].role !== 'assistant') continue
     const parts = messages[index].parts
     for (let cursor = parts.length - 1; cursor >= 0; cursor -= 1) {
       const part = parts[cursor]
@@ -58,7 +59,7 @@ export const SummaryPanel = memo(function SummaryPanel({ agentName = 'OMP', shor
           {runtime?.isCompacting ? t('inspector.state.compacting') : active ? t('inspector.state.working', { name: shortName }) : t('inspector.state.ready')}
         </span>
         <h2>{runtime?.isCompacting ? t('inspector.title.compacting') : active ? t('inspector.title.working') : t('inspector.title.overview')}</h2>
-        <MarkdownText text={lastText !== undefined ? lastText.slice(0, 220) : t('inspector.summary.empty')} />
+        {lastText !== undefined ? <><h3>{t('inspector.summary.latestReply')}</h3><MarkdownText text={lastText.length > 220 ? `${lastText.slice(0, 220)}…` : lastText} /></> : <MarkdownText text={t('inspector.summary.empty')} />}
       </section>
       <section className="summary-section">
         <h3>{t('inspector.summary.workspace')}</h3>

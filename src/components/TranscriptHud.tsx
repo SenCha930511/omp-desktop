@@ -3,6 +3,7 @@ import { memo, useMemo, useState } from 'react'
 import { useI18n } from '@/lib/i18n'
 import { parseTodoToolResult, type TodoPhase } from '@/lib/todo'
 import type { TranscriptMessage } from '@/types/api'
+import './transcript-hud.css'
 
 
 /** Latest todo state across the whole transcript: the plan shown in the HUD. */
@@ -27,18 +28,9 @@ function TodoHud({ phases }: { phases: TodoPhase[] }) {
   const tasks = useMemo(() => phases.flatMap((phase) => phase.tasks), [phases])
   const done = tasks.filter((task) => task.status === 'completed').length
   const current = tasks.find((task) => task.status === 'in_progress')
-  // Claude Code logic: the list auto-expands while work remains (any task
-  // pending or in progress) and collapses to the quiet bar once everything
-  // completes. A user toggle overrides the automatic state until the agent
-  // publishes a fresh list, which re-arms the automatic behavior.
+  // The plan starts collapsed; the user expands it on demand. Agent updates
+  // must not reopen a plan the user deliberately collapsed.
   const [manualOpen, setManualOpen] = useState<boolean | null>(null)
-  const fingerprint = useMemo(() => JSON.stringify(phases), [phases])
-  const [seenFingerprint, setSeenFingerprint] = useState(fingerprint)
-  if (seenFingerprint !== fingerprint) {
-    setSeenFingerprint(fingerprint)
-    setManualOpen(null)
-  }
-  const allDone = tasks.length > 0 && done === tasks.length
   const open = manualOpen ?? false
   return (
     <div className={`todo-hud${open ? ' is-open' : ''}`}>

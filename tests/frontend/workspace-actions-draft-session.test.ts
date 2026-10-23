@@ -147,7 +147,7 @@ describe('discardDraftSession', () => {
 })
 
 describe('draft session adoption on first prompt', () => {
-  function promptFixture({ sessionFile, catalog }: { sessionFile: string | undefined; catalog: SessionRecord[] }) {
+  function promptFixture({ sessionFile, catalog, provider = { model: 'auto', effort: 'medium', fast: false } }: { sessionFile: string | undefined; catalog: SessionRecord[]; provider?: { model: string; effort: string; fast: boolean; resolveSelection?(): Promise<{ model: string; effort: string; fast: boolean }> } }) {
     const workspaceRef = {
       current: {
         generation: 1,
@@ -194,7 +194,7 @@ describe('draft session adoption on first prompt', () => {
             adoptSessionId,
           },
           settingsState: { settings: { activeHarness: 'omp', locale: 'en' } },
-          provider: { model: 'auto', effort: 'medium', fast: false },
+          provider,
           submissionAdmissionRef: { current: createSingleFlightAdmission() },
           initialized: true,
           layout: {},
@@ -225,6 +225,14 @@ describe('draft session adoption on first prompt', () => {
 
     expect(bridge.agent.start).toHaveBeenCalledWith(expect.objectContaining({ sessionPath: undefined }))
     expect(adoptSessionId).toHaveBeenCalledWith(expect.objectContaining({ filePath: session().filePath }))
+  })
+
+  it('waits for initial model resolution before starting a draft runtime', async () => {
+    const resolveSelection = vi.fn(async () => ({ model: 'fixture/ready-model', effort: 'auto', fast: false }))
+    const { actions, bridge } = promptFixture({ sessionFile: undefined, catalog: [session()], provider: { model: '', effort: 'medium', fast: false, resolveSelection } })
+    await actions.sendPrompt('first prompt before models finish loading')
+    expect(resolveSelection).toHaveBeenCalledOnce()
+    expect(bridge.agent.start).toHaveBeenCalledWith(expect.objectContaining({ model: 'fixture/ready-model', thinking: 'auto' }))
   })
 
   it('does not adopt when a real session was already active', async () => {

@@ -91,12 +91,14 @@ describe('ModelPicker presets', () => {
     return { onSwitchPreset, onSavePreset }
   }
 
-  it('lists presets above the models with their default role and level summary', async () => {
+  it('lists models before presets and counts presets separately', async () => {
     await renderPresetPicker()
     await openPicker()
     const group = container.querySelector('.model-picker__group--presets')
     expect(group?.querySelector('.model-picker__group-heading')?.textContent).toContain('Model presets')
-    expect(optionLabels().slice(0, 2)).toEqual(['fast-cell', 'plan-deck'])
+    expect(optionLabels().slice(-2)).toEqual(['fast-cell', 'plan-deck'])
+    expect(optionLabels()[0]).toBe('GPT-5.6 Sol')
+    expect(group?.querySelector('.model-picker__group-heading')?.textContent).toContain('2 presets')
     const first = group?.querySelectorAll('.model-picker__option--preset small')[0]
     expect(first?.textContent).toBe('openai/gpt-5.6-sol:low · auto')
   })
@@ -111,9 +113,7 @@ describe('ModelPicker presets', () => {
     root = createRoot(container)
     await act(async () => root.render(<ModelPicker value="openai/gpt-5.6-sol" modelsByProvider={modelsByProvider} providers={providers} onChange={vi.fn()} presets={presets} onSwitchPreset={onSwitchPreset} />))
     await openPicker()
-    // Home lands on the first preset row deterministically regardless of the
-    // preselected model's position in the ring.
-    await act(async () => container.querySelector<HTMLInputElement>('input[aria-label="Search models"]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true })))
+    await setSearch(container.querySelector<HTMLInputElement>('input[aria-label="Search models"]')!, 'fast-cell')
     await act(async () => container.querySelector<HTMLInputElement>('input[aria-label="Search models"]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
     expect(onSwitchPreset).toHaveBeenCalledTimes(2)
     expect(onSwitchPreset).toHaveBeenLastCalledWith(presets[0])
@@ -144,6 +144,12 @@ describe('ModelPicker presets', () => {
     await renderPicker()
     await openPicker()
     expect(container.querySelector('.model-picker__group--presets')).toBeNull()
+  })
+
+  it('does not repeat thinking already specified in the default role', async () => {
+    await act(async () => root.render(<ModelPicker value="openai/gpt-5.6-sol" modelsByProvider={modelsByProvider} providers={providers} onChange={vi.fn()} presets={[{ name: 'automatic', modelRoles: { default: 'openai/gpt-5.6-sol:auto' }, defaultThinkingLevel: 'auto' }]} onSwitchPreset={vi.fn()} />))
+    await openPicker()
+    expect(container.querySelector('.model-picker__option--preset small')?.textContent).toBe('openai/gpt-5.6-sol:auto')
   })
 })
 

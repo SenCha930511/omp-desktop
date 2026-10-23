@@ -5,7 +5,7 @@ import { useComposerImages } from '@/hooks/useComposerImages'
 import { useDictation } from '@/hooks/useDictation'
 import { appendAnnotationsToPrompt } from '@/lib/browser-annotations'
 import { appendCapabilityRouting } from '@/lib/capability-mentions'
-import { clearComposerDraft, readComposerDraft, saveComposerDraft, takeComposerDraft } from '@/lib/composer-draft'
+import { readComposerDraft, saveComposerDraft, takeComposerDraft } from '@/lib/composer-draft'
 import { contextDialLabel, formatSessionCost, PRICING_UNAVAILABLE } from '@/lib/format-cost'
 import { type MessageKey, useI18n } from '@/lib/i18n'
 import { isImeComposing, isImeComposingOrGuarded, messageActionForKey, splitAttachmentFileName } from '@/lib/message-shortcuts'
@@ -42,6 +42,7 @@ import { EffortPicker } from './EffortPicker'
 import { ModelPicker } from './ModelPicker'
 import { ProjectPicker } from './ProjectPicker'
 import { IconButton } from './ui'
+import './composer-queue.css'
 export { splitAttachmentFileName } from '@/lib/message-shortcuts'
 interface ComposerProps {
   availableCommands?: SlashCommand[]
@@ -93,6 +94,7 @@ interface ComposerProps {
   harnessQueuedMessageCount?: number
   onDeleteQueuedMessage?(message: QueuedPrompt): void
   onEditQueuedMessage?(message: QueuedPrompt): void
+  onSendQueuedMessage?(message: QueuedPrompt): Promise<void>
   /** Each bump submits the current draft immediately (Ctrl/Cmd+Enter from the annotation popover). */
   sendSignal?: number
   restoreRequest?: { id: number; text: string }
@@ -171,6 +173,7 @@ export const Composer = memo(function Composer({
   harnessQueuedMessageCount = 0,
   onDeleteQueuedMessage,
   onEditQueuedMessage,
+  onSendQueuedMessage,
   sendSignal = 0,
   restoreRequest,
   onRestoreHandled,
@@ -182,6 +185,7 @@ export const Composer = memo(function Composer({
   checkoutsLoading = false,
   projects,
   activeProjectId,
+  onSelectProject,
   onAddProjectFolder,
   onExecuteCheckout,
   onSend,
@@ -192,7 +196,9 @@ export const Composer = memo(function Composer({
   draftKey,
 }: ComposerProps) {
   const { t } = useI18n()
-  const [value, setValue] = useState(() => (draftKey ? readComposerDraft(draftKey)?.text : undefined) ?? takeComposerDraft())
+  const [value, setValue] = useState(() => draftKey ? readComposerDraft(draftKey)?.text ?? '' : takeComposerDraft())
+  const [queueEdit, setQueueEdit] = useState<{ id: string; text: string } | null>(null)
+  const queuedSendsRef = useRef(new Set<string>())
   useEffect(() => {
     if (!restoreRequest) return
     setValue((current) => current.trim() === restoreRequest.text.trim() ? current : current.trim() ? `${current}\n\n${restoreRequest.text}` : restoreRequest.text)
@@ -379,17 +385,20 @@ export const Composer = memo(function Composer({
     const submittedValue = draftValue
     const submittedComposerImages = currentImages
     setValue('')
+    if (draftKey) saveComposerDraft(draftKey, { text: '', model, effort, fast })
     imageAttachments.clear()
     setAttachmentError('')
     setMenu(null)
     try {
       await onSend(promptWithContext, submittedImages, intent)
-      if (draftKey) clearComposerDraft(draftKey)
       // The annotations were delivered: clear the attachment and page markers.
       if (currentAnnotations.length > 0 && !isSlashCommand) onClearAnnotations()
     } catch {
+      const mergeFailedDraft = (current: string) => current === submittedValue ? current : current ? `${submittedValue}\n\n${current}` : submittedValue
+      const restoredText = mergeFailedDraft(draftKey ? readComposerDraft(draftKey)?.text ?? '' : textareaRef.current?.value ?? '')
+      if (draftKey) saveComposerDraft(draftKey, { text: restoredText, model, effort, fast })
       if (mountedRef.current) {
-        setValue((current) => current || submittedValue)
+        setValue(restoredText)
         const restoration = imageAttachments.restoreWithinLimits(submittedComposerImages)
         if (restoration.omitted > 0) {
           const restoredImages = restoration.restored > 0 ? t('composer.error.restoredAlong', { count: restoration.restored }) : ''
@@ -399,7 +408,7 @@ export const Composer = memo(function Composer({
         } else {
           setAttachmentError(t('composer.error.notSentRestored'))
         }
-      }
+      } else imageAttachments.restoreAfterUnmount(submittedComposerImages)
     } finally {
       submittingRef.current = false
       if (mountedRef.current) textareaRef.current?.focus()
@@ -540,11 +549,18 @@ export const Composer = memo(function Composer({
     }
   }, [contextMenuOpen])
   const sendQueuedMessageImmediately = async (queued: QueuedPrompt) => {
-    onDeleteQueuedMessage?.(queued)
+    if (queuedSendsRef.current.has(queued.id)) return
+    queuedSendsRef.current.add(queued.id)
     try {
-      await onSend(queued.text, [], 'steer')
+      if (onSendQueuedMessage) await onSendQueuedMessage(queued)
+      else {
+        await onSend(queued.text, [], 'steer')
+        onDeleteQueuedMessage?.(queued)
+      }
     } catch {
-      // sendPrompt reports failures itself; there is no composer draft to restore.
+      // Keep the original queue entry available for retry after failed admission.
+    } finally {
+      queuedSendsRef.current.delete(queued.id)
     }
   }
 
@@ -566,13 +582,20 @@ export const Composer = memo(function Composer({
           <div className="composer-queue__list">
             {queuedMessages.map((queued) => (
               <div className="composer-queue__item" key={queued.id}>
-                <span className="composer-queue__text">{queued.text}</span>
+                {queueEdit?.id === queued.id ? (
+                  <div className="composer-queue__text composer-queue__editor">
+                    <textarea aria-label={t('composer.queue.edit')} value={queueEdit.text} onChange={(event) => setQueueEdit({ id: queued.id, text: event.target.value })} />
+                    <button type="button" aria-label={t('draft.save')} disabled={!queueEdit.text.trim()} onClick={() => { onEditQueuedMessage?.({ ...queued, text: queueEdit.text }); setQueueEdit(null) }}><Check size={13} /></button>
+                    <button type="button" aria-label={t('extensionUi.cancel')} onClick={() => setQueueEdit(null)}><X size={13} /></button>
+                  </div>
+                ) : <span className="composer-queue__text">{queued.text}{queued.flushAttemptFailed ? <small role="status">{t('composer.queue.failed')}</small> : null}</span>}
                 <span className="composer-queue__actions">
                   <button
                     type="button"
                     className="composer-queue__action"
                     aria-label={t('composer.queue.sendAria', { message: queued.text })}
                     title={t('composer.queue.send')}
+                    disabled={queued.deliveryPending}
                     onClick={() => {
                       void sendQueuedMessageImmediately(queued)
                     }}
@@ -584,10 +607,9 @@ export const Composer = memo(function Composer({
                     className="composer-queue__action"
                     aria-label={t('composer.queue.editAria', { message: queued.text })}
                     title={t('composer.queue.edit')}
+                    disabled={queued.deliveryPending}
                     onClick={() => {
-                      onEditQueuedMessage?.(queued)
-                      setValue(queued.text)
-                      requestAnimationFrame(() => textareaRef.current?.focus())
+                      setQueueEdit({ id: queued.id, text: queued.text })
                     }}
                   >
                     <Edit3 size={13} />
@@ -597,6 +619,7 @@ export const Composer = memo(function Composer({
                     className="composer-queue__action composer-queue__action--delete"
                     aria-label={t('composer.queue.deleteAria', { message: queued.text })}
                     title={t('composer.queue.delete')}
+                    disabled={queued.deliveryPending}
                     onClick={() => onDeleteQueuedMessage?.(queued)}
                   >
                     <Trash2 size={13} />
@@ -622,6 +645,7 @@ export const Composer = memo(function Composer({
         <div className="composer-input">
           <textarea
             ref={textareaRef}
+            data-draft-scope={draftKey}
             value={value}
             disabled={disabled || loading}
             rows={2}
@@ -950,7 +974,7 @@ export const Composer = memo(function Composer({
               </button>
             ) : null}
             {projects && onAddProjectFolder ? (
-              <ProjectPicker projects={projects} activeProjectId={activeProjectId} onAddFolder={onAddProjectFolder} />
+              <ProjectPicker projects={projects} activeProjectId={activeProjectId} onSelectProject={onSelectProject} onAddFolder={onAddProjectFolder} />
             ) : null}
             {checkoutCatalog && onExecuteCheckout && (checkoutCatalog.checkouts.length > 0 || (checkoutCatalog.strategy ?? 'worktree') === 'branch') ? (
               <CheckoutPicker catalog={checkoutCatalog} fallbackLabel={checkoutLabel} loading={checkoutsLoading} onExecute={onExecuteCheckout} />

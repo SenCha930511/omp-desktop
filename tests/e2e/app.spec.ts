@@ -1238,7 +1238,8 @@ test.describe('OMP Desktop desktop smoke', () => {
     await page.locator('.model-picker__trigger').click()
     const presetsGroup = page.locator('.model-picker__group--presets')
     await expect(presetsGroup).toBeVisible()
-    await expect(presetsGroup.getByRole('option', { name: 'Switch to preset plan-deck' })).toContainText('fixture/claude-fixture:medium · medium')
+    await expect(presetsGroup.getByRole('option', { name: 'Switch to preset plan-deck' })).toContainText('fixture/claude-fixture:medium')
+    await expect(presetsGroup.getByRole('option', { name: 'Switch to preset plan-deck' })).not.toContainText('medium · medium')
     await presetsGroup.getByRole('option', { name: 'Switch to preset fast-cell' }).click()
     // Preset switches run in the background: the harness gets the command, but
     // no command-output panel shows up in the transcript chrome.
@@ -2005,7 +2006,14 @@ test.describe('OMP Desktop desktop smoke', () => {
     const composer = page.getByRole('combobox', { name: 'Message OMP' })
     await composer.fill('Draft placeholder adoption probe')
     await composer.press('Enter')
-    await expect.poll(() => existsSync(join(fixtureRoot, 'prompt-args.json'))).toBe(true)
+    try {
+      await expect.poll(() => existsSync(join(fixtureRoot, 'prompt-args.json'))).toBe(true)
+    } catch (error) {
+      const failed = page.getByRole('button', { name: 'OMP message failed', exact: true })
+      if (await failed.count()) await failed.click()
+      console.info('Adoption failure transcript:', await page.locator('.transcript').innerText())
+      throw error
+    }
 
     // The hermetic daemon reports the fixture session file for fresh starts,
     // so its row replaces the placeholder and keeps the turn that created it.

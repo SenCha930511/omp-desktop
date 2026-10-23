@@ -565,8 +565,11 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
           if (images.length > 0 && selected.sessionFile && selectedSession?.status === 'running') {
             throw new Error('Image attachments cannot be queued while this session is active outside OMP Desktop. Wait for it to finish, then try again.')
           }
-          if (!provider.model) throw new Error(`No model is available for ${HARNESS_AGENT_NAMES[activeHarness]}. Enable or connect a provider, then try again.`)
-          activeRuntime = await bridge.agent.start({ cwd: selected.cwd, sessionPath: selected.sessionFile, model: provider.model, thinking: provider.effort, fast: provider.fast, harness: activeHarness })
+          const latestProvider = getDeps().provider
+          const selection = latestProvider.resolveSelection ? await latestProvider.resolveSelection() : latestProvider
+          if (workspace.workspaceRef.current.generation !== generation) return
+          if (!selection.model) throw new Error(`No model is available for ${HARNESS_AGENT_NAMES[activeHarness]}. Enable or connect a provider, then try again.`)
+          activeRuntime = await bridge.agent.start({ cwd: selected.cwd, sessionPath: selected.sessionFile, model: selection.model, thinking: selection.effort, fast: selection.fast, harness: activeHarness })
           startedRuntime = true
           // The prompt is hereby submitted work: launching survives workspace
           // switches. Earlier builds stopped the just-started runtime when the
@@ -691,6 +694,7 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     const { bridge, workspace, reportError } = getDeps()
     const stoppedRuntime = workspace.runtime
     if (!stoppedRuntime) return
+    workspace.pauseQueuedPrompts?.()
     if (!bridge) { workspace.setMessages((items) => items.map((item) => item.streaming ? { ...item, streaming: false } : item)); workspace.setRuntime(null); return }
     const stoppedRuntimeId = stoppedRuntime.runtimeId
     const stoppedGeneration = workspace.workspaceRef.current.generation

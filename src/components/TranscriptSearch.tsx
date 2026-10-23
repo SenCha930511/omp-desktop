@@ -81,12 +81,23 @@ export function useTranscriptSearch(messages: TranscriptMessage[], root: RefObje
   useEffect(() => {
     if (!active || !matchId || !root.current) return
     let highlight: Highlight | undefined
-    const frame = requestAnimationFrame(() => {
+    let frame: number | undefined
+    const refresh = () => {
+      frame = undefined
       const element = root.current?.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(matchId)}"]`)
       if (element) { highlight = highlightResult(element, query); if (highlight) CSS.highlights.set('conversation-search', highlight) }
-    })
+    }
+    const schedule = () => {
+      if (frame === undefined) frame = requestAnimationFrame(refresh)
+    }
+    // Revealing a virtualized match commits after the search effect. Observe
+    // its mount and disclosure contents instead of assuming one frame suffices.
+    const observer = new MutationObserver(schedule)
+    observer.observe(root.current, { childList: true, characterData: true, subtree: true })
+    schedule()
     return () => {
-      cancelAnimationFrame(frame)
+      observer.disconnect()
+      if (frame !== undefined) cancelAnimationFrame(frame)
       if (highlight && CSS.highlights.get('conversation-search') === highlight) CSS.highlights.delete('conversation-search')
     }
   }, [active, matchId, messages, query, root])

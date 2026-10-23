@@ -20,6 +20,23 @@ const repository = (prefix = 'omp-desktop-git-') => {
 }
 
 describe('GitService', () => {
+  it('identifies same-line-count worktree edits and staged content separately', async () => {
+    const cwd = repository()
+    const service = new GitService(async () => cwd)
+    writeFileSync(join(cwd, 'file.txt'), 'first\n')
+    const first = (await service.status(cwd)).files[0]
+    writeFileSync(join(cwd, 'file.txt'), 'other\n')
+    const other = (await service.status(cwd)).files[0]
+    expect(first.additions).toBe(other.additions)
+    expect(first.contentHash).toBeTruthy()
+    expect(first.contentHash).not.toBe(other.contentHash)
+    git(cwd, 'add', 'file.txt')
+    const staged = (await service.status(cwd)).files[0]
+    writeFileSync(join(cwd, 'file.txt'), 'third\n')
+    const both = (await service.status(cwd)).files
+    expect(both.find((file) => file.staged)?.contentHash).toBe(staged.contentHash)
+    expect(both.find((file) => !file.staged)?.contentHash).not.toBe(other.contentHash)
+  })
   it('lists local branches and switches without consulting remotes', async () => {
     const cwd = repository('omp-desktop-git-branches-')
     git(cwd, 'branch', 'feature/local')

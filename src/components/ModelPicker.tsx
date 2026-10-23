@@ -58,7 +58,7 @@ export const ModelPicker = memo(function ModelPicker({ value, modelsByProvider, 
     return presets.filter((preset) => `${preset.name} ${Object.keys(preset.modelRoles).join(' ')} ${Object.values(preset.modelRoles).join(' ')}`.toLocaleLowerCase().includes(needle))
   }, [presets, providerFilter, query, onSwitchPreset])
   const presetNavKey = (preset: PrimeModelPresetRecord) => `preset:${preset.name}`
-  const navigableKeys = useMemo(() => [...visiblePresets.map(presetNavKey), ...navigableModels.map((model) => model.key)], [visiblePresets, navigableModels])
+  const navigableKeys = useMemo(() => [...navigableModels.map((model) => model.key), ...visiblePresets.map(presetNavKey)], [visiblePresets, navigableModels])
   // The open reset reads the catalog through a ref: a background catalog
   // refresh must not wipe a query the user is still typing.
   const catalogRef = useRef({ groups, selected })
@@ -194,7 +194,7 @@ export const ModelPicker = memo(function ModelPicker({ value, modelsByProvider, 
             />
             <span className="model-picker__count" aria-live="polite">
               <span aria-hidden="true">{resultCount}</span>
-              <span className="sr-only">{t('modelPicker.listed', { count: resultCount })}</span>
+              <span className="sr-only">{t('modelPicker.listed', { count: visibleModels.length })}{visiblePresets.length ? ` · ${t('modelPicker.presetCount', { count: visiblePresets.length })}` : ''}</span>
             </span>
           </div>
           <div className="model-picker__providers" role="group" aria-label={t('modelPicker.filterByProvider')}>
@@ -214,65 +214,6 @@ export const ModelPicker = memo(function ModelPicker({ value, modelsByProvider, 
             ))}
           </div>
           <div className="model-picker__results" id={listId} role="listbox" aria-label={t('modelPicker.models')}>
-            {visiblePresets.length > 0 ? (
-              <div className="model-picker__group model-picker__group--presets" role="group" aria-label={t('modelPicker.presets')}>
-                <div className="model-picker__group-heading">
-                  <span>{t('modelPicker.presets')}</span>
-                  <small>{t('modelPicker.modelCount', { count: visiblePresets.length })}</small>
-                </div>
-                {visiblePresets.map((preset) => {
-                  const isActive = presetNavKey(preset) === activeKey
-                  const roles = Object.keys(preset.modelRoles).length
-                  return (
-                    <button
-                      type="button"
-                      tabIndex={-1}
-                      role="option"
-                      id={`${listId}-${presetNavKey(preset)}`}
-                      key={preset.name}
-                      aria-selected={false}
-                      aria-label={t('modelPicker.presetSwitch', { name: preset.name })}
-                      className={`model-picker__option model-picker__option--preset${isActive ? ' is-active' : ''}`}
-                      onMouseMove={() => setActiveKey(presetNavKey(preset))}
-                      onClick={() => { onSwitchPreset?.(preset); close(true) }}
-                    >
-                      <span className="model-picker__check"><Zap size={13} /></span>
-                      <span className="model-picker__identity">
-                        <strong>{preset.name}</strong>
-                        <small>{preset.modelRoles.default ?? t('modelPicker.presetRoles', { count: roles })}{preset.defaultThinkingLevel ? ` · ${preset.defaultThinkingLevel}` : ''}</small>
-                      </span>
-                    </button>
-                  )
-                })}
-                {onSavePreset ? (
-                  <div className="model-picker__preset-save">
-                    <input
-                      value={saveName}
-                      maxLength={64}
-                      placeholder={t('modelPicker.presetSavePlaceholder')}
-                      aria-label={t('modelPicker.presetSavePlaceholder')}
-                      onChange={(event) => setSaveName(event.target.value)}
-                      onKeyDown={(event) => {
-                        if (event.key !== 'Enter') return
-                        event.preventDefault()
-                        const name = saveName.trim()
-                        if (!name) return
-                        onSavePreset(name)
-                        setSaveName('')
-                      }}
-                    />
-                    <button
-                      type="button"
-                      className="button"
-                      disabled={!saveName.trim()}
-                      onClick={() => { const name = saveName.trim(); if (!name) return; onSavePreset(name); setSaveName('') }}
-                    >
-                      {t('modelPicker.presetSave')}
-                    </button>
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
             {visibleGroups.map(({ provider, models }) => (
               <div className="model-picker__group" role="group" aria-label={provider.name} key={provider.id}>
                 <div className="model-picker__group-heading">
@@ -308,6 +249,65 @@ export const ModelPicker = memo(function ModelPicker({ value, modelsByProvider, 
                 })}
               </div>
             ))}
+            {visiblePresets.length > 0 ? (
+              <div className="model-picker__group model-picker__group--presets" role="group" aria-label={t('modelPicker.presets')}>
+                <div className="model-picker__group-heading">
+                  <span>{t('modelPicker.presets')}</span>
+                  <small>{t('modelPicker.presetCount', { count: visiblePresets.length })}</small>
+                </div>
+                {visiblePresets.map((preset) => {
+                  const isActive = presetNavKey(preset) === activeKey
+                  const roles = Object.keys(preset.modelRoles).length
+                  return (
+                    <button
+                      type="button"
+                      tabIndex={-1}
+                      role="option"
+                      id={`${listId}-${presetNavKey(preset)}`}
+                      key={preset.name}
+                      aria-selected={false}
+                      aria-label={t('modelPicker.presetSwitch', { name: preset.name })}
+                      className={`model-picker__option model-picker__option--preset${isActive ? ' is-active' : ''}`}
+                      onMouseMove={() => setActiveKey(presetNavKey(preset))}
+                      onClick={() => { onSwitchPreset?.(preset); close(true) }}
+                    >
+                      <span className="model-picker__check"><Zap size={13} /></span>
+                      <span className="model-picker__identity">
+                        <strong>{preset.name}</strong>
+                        <small>{preset.modelRoles.default ?? t('modelPicker.presetRoles', { count: roles })}{preset.defaultThinkingLevel && !preset.modelRoles.default?.endsWith(`:${preset.defaultThinkingLevel}`) ? ` · ${preset.defaultThinkingLevel}` : ''}</small>
+                      </span>
+                    </button>
+                  )
+                })}
+                {onSavePreset ? (
+                  <div className="model-picker__preset-save">
+                    <input
+                      value={saveName}
+                      maxLength={64}
+                      placeholder={t('modelPicker.presetSavePlaceholder')}
+                      aria-label={t('modelPicker.presetSavePlaceholder')}
+                      onChange={(event) => setSaveName(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key !== 'Enter') return
+                        event.preventDefault()
+                        const name = saveName.trim()
+                        if (!name) return
+                        onSavePreset(name)
+                        setSaveName('')
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="button"
+                      disabled={!saveName.trim()}
+                      onClick={() => { const name = saveName.trim(); if (!name) return; onSavePreset(name); setSaveName('') }}
+                    >
+                      {t('modelPicker.presetSave')}
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
             {!resultCount ? <div className="model-picker__empty">{query.trim() ? t('modelPicker.emptySearch') : t('modelPicker.emptyProvider')}</div> : null}
           </div>
         </div>

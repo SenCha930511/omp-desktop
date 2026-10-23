@@ -1,0 +1,7 @@
+.composer-queue__editor { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.composer-queue__editor textarea { flex: 1 0 100%; box-sizing: border-box; width: 100%; min-height: 64px; max-height: 180px; resize: vertical; padding: 8px; border: var(--border-hairline) solid var(--border); border-radius: 6px; background: var(--canvas); color: var(--text); font: inherit; }
+.composer-queue__editor textarea:focus-visible { outline: 2px solid var(--prime); outline-offset: 1px; }
+.composer-queue__editor button { display: grid; place-items: center; width: 30px; height: 30px; border: var(--border-hairline) solid var(--border); border-radius: 6px; background: var(--surface-raised); color: var(--text-secondary); cursor: pointer; }
+.composer-queue__editor button:hover { background: var(--surface-hover); color: var(--text); }
+.composer-queue__editor button:disabled { opacity: .45; cursor: default; }
+.composer-queue__text > small { display: block; margin-top: 4px; color: var(--text-secondary); font-size: 11px; white-space: normal; }

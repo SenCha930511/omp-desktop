@@ -20,7 +20,7 @@ describe('composer queue tray', () => {
     container.remove()
   })
 
-  it('shows queued messages with immediate send, edit, and delete actions', () => {
+  it('shows queued messages with acknowledged send and independent editing', async () => {
     const onSend = vi.fn()
     const onEdit = vi.fn()
     const onDelete = vi.fn()
@@ -62,16 +62,52 @@ describe('composer queue tray', () => {
       'Delete queued message',
     ])
 
-    act(() => container.querySelector<HTMLButtonElement>('[aria-label^="Send queued message immediately"]')?.click())
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label^="Send queued message immediately"]')?.click())
     expect(onDelete).toHaveBeenCalledWith(queued)
     expect(onSend).toHaveBeenCalledWith('run tests', [], 'steer')
 
+    onDelete.mockClear()
+    onSend.mockRejectedValueOnce(new Error('offline'))
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label^="Send queued message immediately"]')?.click())
+    expect(onDelete).not.toHaveBeenCalled()
+
+    const composerTextarea = container.querySelector<HTMLTextAreaElement>('.composer textarea')!
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(composerTextarea, 'keep this draft')
+      composerTextarea.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+
     act(() => container.querySelector<HTMLButtonElement>('[aria-label^="Edit queued message"]')?.click())
+    expect(onEdit).not.toHaveBeenCalled()
+    expect(composerTextarea.value).toBe('keep this draft')
+    expect(container.querySelector<HTMLTextAreaElement>('.composer-queue textarea')?.value).toBe('run tests')
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="Save"]')?.click())
     expect(onEdit).toHaveBeenCalledWith(queued)
-    expect(container.querySelector<HTMLTextAreaElement>('textarea')?.value).toBe('run tests')
+    expect(composerTextarea.value).toBe('keep this draft')
 
     act(() => container.querySelector<HTMLButtonElement>('[aria-label^="Delete queued message"]')?.click())
     expect(onDelete).toHaveBeenCalledWith(queued)
+  })
+
+  it('delegates queue admission to the owner and ignores repeated clicks while pending', async () => {
+    let resolveDelivery!: () => void
+    const onSendQueuedMessage = vi.fn(() => new Promise<void>((resolve) => { resolveDelivery = resolve }))
+    const onSend = vi.fn()
+    const onDelete = vi.fn()
+    const queued = { id: 'reserved', text: 'one delivery', intent: 'queue' as const }
+    act(() => root.render(<Composer
+      busy model="auto" effort="medium" modelsByProvider={new Map()} providers={[]} reasoningLevels={['medium']}
+      fast={false} fastSupported={false} fastAvailable={false} imageInputSupported skills={[]}
+      queuedMessages={[queued]} onSendQueuedMessage={onSendQueuedMessage} onDeleteQueuedMessage={onDelete}
+      onModelChange={vi.fn()} onEffortChange={vi.fn()} onFastChange={vi.fn()} onSend={onSend} onStop={vi.fn()}
+    />))
+    const send = container.querySelector<HTMLButtonElement>('[aria-label^="Send queued message immediately"]')!
+    act(() => { send.click(); send.click() })
+    expect(onSendQueuedMessage).toHaveBeenCalledExactlyOnceWith(queued)
+    expect(onSend).not.toHaveBeenCalled()
+    expect(onDelete).not.toHaveBeenCalled()
+    await act(async () => resolveDelivery())
+    expect(onDelete).not.toHaveBeenCalled()
   })
 
   it('shows messages held by a count-only harness queue', () => {

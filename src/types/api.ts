@@ -447,6 +447,8 @@ export type CheckoutChangeResult =
 
 export interface GitFileChange {
   path: string
+  /** Content identity used to detect equal-line-count edits between status snapshots. */
+  contentHash?: string
   status: string
   staged: boolean
   additions: number
@@ -491,6 +493,9 @@ export interface QueuedPrompt {
   parts?: MessagePart[]
   /** The most recent automatic flush attempt failed admission. */
   flushAttemptFailed?: boolean
+  /** Restored after restart; explicit user confirmation is required before delivery. */
+  recovered?: boolean
+  deliveryPending?: boolean
 }
 
 export interface SessionActionSnapshot {

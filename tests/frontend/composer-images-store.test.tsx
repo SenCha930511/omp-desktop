@@ -58,6 +58,18 @@ afterEach(() => {
 })
 
 describe('composer image store across remounts', () => {
+  it('retains failed-send images after the original composer unmounts', async () => {
+    mount('OMP', 'project:failed-send')
+    await act(async () => latest.ingest([pngFile('failed.png')]))
+    const submittedImages = latest.images
+    const restore = latest.restoreAfterUnmount
+    act(() => latest.clear())
+    unmount()
+    restore(submittedImages)
+    mount('OMP', 'project:failed-send')
+    expect(latest.images.map((image) => image.name)).toEqual(['failed.png'])
+  })
+
   it('restores images for the same draft key after a remount', async () => {
     mount('OMP', 'project:alpha')
     await act(async () => {

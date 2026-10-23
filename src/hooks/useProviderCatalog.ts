@@ -63,6 +63,7 @@ export interface ProviderCatalog {
   resolvedAutoEffort: PrimeEffortSelector | undefined
   modelsByProvider: ReadonlyMap<string, PrimeModelDescriptor[]>
   refresh(force?: boolean): Promise<void>
+  resolveSelection?(): Promise<Pick<ProviderCatalog, 'model' | 'effort' | 'fast'>>
   changeModel(modelKey: string): void
   changeEffort(value: PrimeEffortSelector): void
   changeFast(enabled: boolean): void
@@ -348,9 +349,22 @@ export function useProviderCatalog({ bridge, ready = true, harness = 'omp', runt
 
   const resolvedAutoEffort = effort !== 'auto' || runtime?.autoThinkingResolved !== true ? undefined : PRIME_THINKING_LEVELS.find((level) => level === runtime.thinkingLevel)
 
+  const resolveSelection = async () => {
+    const next = catalog ?? (bridge && ready ? await bridge.providers.catalog(false, harness) : null)
+    const selected = next?.models.find((candidate) => candidate.key === modelRef.current && isUsable(candidate)) ?? fallbackModel(next)
+    if (next) setCatalogFor(harness, next)
+    const resolvedModel = selected?.key ?? ''
+    const resolvedEffort = supportsEffort(selected, effortRef.current) ? effortRef.current : selected?.reasoning ? 'auto' : selected?.availableThinkingLevels[0] ?? 'off'
+    const resolvedFast = Boolean(selected?.fastModeSupported && fastRef.current)
+    updateModel(resolvedModel)
+    updateEffort(resolvedEffort)
+    updateFast(resolvedFast)
+    return { model: resolvedModel, effort: resolvedEffort, fast: resolvedFast }
+  }
+
   return {
     model, effort, fast, catalog, selectedModel, reasoningLevels, resolvedAutoEffort, modelsByProvider,
-    refresh, changeModel, changeEffort, changeFast,
+    refresh, resolveSelection, changeModel, changeEffort, changeFast,
     setEnabled, setAllEnabled, setAllDisabled, setModelEnabled,
   }
 }

@@ -25,6 +25,21 @@ afterEach(async () => {
 })
 
 describe('ChangesPanel status states', () => {
+  it('reloads the selected diff after a same-path content update', async () => {
+    const diff = vi.fn(async () => ({ text: 'old content' }))
+    Object.defineProperty(window, 'desktop', { configurable: true, value: { git: { diff } } })
+    const file = { path: 'file.txt', status: 'M', staged: false, additions: 1, deletions: 1 }
+    await act(async () => {
+      root.render(<ChangesPanel cwd="/project" git={{ isRepo: true, files: [{ ...file, contentHash: 'old' }] }} onRefreshGit={vi.fn()} />)
+    })
+    diff.mockResolvedValue({ text: 'new content' })
+    await act(async () => {
+      root.render(<ChangesPanel cwd="/project" git={{ isRepo: true, files: [{ ...file, contentHash: 'new' }] }} onRefreshGit={vi.fn()} />)
+    })
+    expect(diff).toHaveBeenCalledTimes(2)
+    expect(container.textContent).toContain('new content')
+    expect(container.textContent).not.toContain('old content')
+  })
   it('renders the no-repository state without an error banner', async () => {
     await act(async () => {
       root.render(<ChangesPanel cwd="/project" git={{ isRepo: false, files: [], error: 'Not a Git repository' }} onRefreshGit={vi.fn()} />)

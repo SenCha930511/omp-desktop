@@ -18,6 +18,7 @@ import type { WorkspaceSnapshot } from '@/app/workspace'
 import { createPrimeEventBuffer, createSteerAcceptedEvent, createSteerPickupEvent, replayPrimeEvents } from '@/lib/events'
 import type { PrimeEventBuffer } from '@/lib/events'
 import { findRuntimeForWorkspace, workspaceCwd } from '@/lib/workspace'
+import { readPendingQueues, savePendingQueues } from '@/lib/queued-prompt-storage'
 import type { HarnessId, MessagePart, DesktopApi, ProjectRecord, PromptDeliveryIntent, QueuedPrompt, RuntimeInfo, SessionActionSnapshot, SessionRecord, TranscriptMessage } from '@/types/api'
 
 let queuedPromptSequence = 0
@@ -72,9 +73,11 @@ export function useWorkspaceRuntime({
   const [transcriptStore] = useState(() => createTranscriptStore(initialMessages))
   const transcriptSummary = useSyncExternalStore(transcriptStore.subscribeSummary, transcriptStore.getSummary)
   const setMessages = transcriptStore.update
-  const [pendingQueuedPrompts, setPendingQueuedPrompts] = useState<QueuedPrompt[]>([])
-  const pendingQueuedPromptsRef = useRef<QueuedPrompt[]>([])
-  const queuedPromptsByOwnerRef = useRef<Map<string, QueuedPrompt[]>>(new Map())
+  const [restoredQueues] = useState(readPendingQueues)
+  const initialOwner = queuedPromptOwner(initialProject, initialSession, undefined, 0)
+  const [pendingQueuedPrompts, setPendingQueuedPrompts] = useState<QueuedPrompt[]>(() => initialOwner ? restoredQueues.get(initialOwner) ?? [] : [])
+  const pendingQueuedPromptsRef = useRef<QueuedPrompt[]>(pendingQueuedPrompts)
+  const queuedPromptsByOwnerRef = useRef<Map<string, QueuedPrompt[]>>(restoredQueues)
   const observedSteerIdsRef = useRef<Set<string>>(new Set())
   const activeQueuedPromptOwnerRef = useRef<string | undefined>(queuedPromptOwner(initialProject, initialSession, undefined, 0))
   const [activeProjectId, setActiveProjectId] = useState(initialProject?.id)
@@ -437,6 +440,7 @@ export function useWorkspaceRuntime({
     pendingQueuedPromptsRef.current = next
     const owner = activeQueuedPromptOwnerRef.current
     if (owner) queuedPromptsByOwnerRef.current.set(owner, next)
+    savePendingQueues(queuedPromptsByOwnerRef.current)
     setPendingQueuedPrompts(next)
     return queued.id
   }, [])
@@ -452,6 +456,7 @@ export function useWorkspaceRuntime({
         else queuedPromptsByOwnerRef.current.delete(owner)
       }
       setPendingQueuedPrompts(next)
+      savePendingQueues(queuedPromptsByOwnerRef.current)
       return
     }
     for (const [owner, prompts] of queuedPromptsByOwnerRef.current) {
@@ -463,6 +468,7 @@ export function useWorkspaceRuntime({
       // delivery settles; its previous pass may have observed the global
       // single-flight guard while this prompt was being sent.
       setPendingQueuedPrompts([...pendingQueuedPromptsRef.current])
+      savePendingQueues(queuedPromptsByOwnerRef.current)
       return
     }
   }, [])
@@ -485,7 +491,17 @@ export function useWorkspaceRuntime({
       const next = update(prompts)
       if (next !== prompts) queuedPromptsByOwnerRef.current.set(owner, next)
     }
+    savePendingQueues(queuedPromptsByOwnerRef.current)
   }, [])
+  const editQueuedPrompt = useCallback((id: string, text: string) => {
+    updateQueuedPrompts((prompt) => prompt.id === id ? { ...prompt, text, flushAttemptFailed: false, recovered: false } : prompt)
+  }, [updateQueuedPrompts])
+  const updateQueuedPromptDelivery = useCallback((id: string, deliveryPending: boolean) => {
+    updateQueuedPrompts((prompt) => prompt.id === id ? { ...prompt, deliveryPending } : prompt)
+  }, [updateQueuedPrompts])
+  const pauseQueuedPrompts = useCallback(() => {
+    updateQueuedPrompts((prompt) => prompt.intent === 'queue' ? { ...prompt, recovered: true, flushAttemptFailed: true } : prompt)
+  }, [updateQueuedPrompts])
   const markQueuedPromptFlushFailed = useCallback((id: string) => {
     updateQueuedPrompts((prompt) => prompt.id === id && !prompt.flushAttemptFailed
       ? { ...prompt, flushAttemptFailed: true }
@@ -500,6 +516,7 @@ export function useWorkspaceRuntime({
     for (const prompt of pendingQueuedPromptsRef.current) observedSteerIdsRef.current.delete(prompt.id)
     pendingQueuedPromptsRef.current = []
     setPendingQueuedPrompts([])
+    savePendingQueues(queuedPromptsByOwnerRef.current)
   }, [])
   const acceptSteer = useCallback((id: string) => {
     const prompt = pendingQueuedPromptsRef.current.find((candidate) => candidate.id === id && candidate.intent === 'steer')
@@ -628,6 +645,8 @@ export function useWorkspaceRuntime({
     if (chunkedFlushTimerRef.current !== null) window.clearTimeout(chunkedFlushTimerRef.current)
   }, [])
 
+  useEffect(() => { savePendingQueues(queuedPromptsByOwnerRef.current) }, [pendingQueuedPrompts, workspaceGeneration])
+
   return {
     get messages() { return transcriptStore.getSnapshot() },
     transcriptStore,
@@ -636,6 +655,9 @@ export function useWorkspaceRuntime({
     pendingQueuedPrompts,
     queuePrompt,
     removeQueuedPrompt,
+    editQueuedPrompt,
+    updateQueuedPromptDelivery,
+    pauseQueuedPrompts,
     markQueuedPromptFlushFailed,
     clearQueuedPromptFlushFailures,
     clearQueuedPrompts,

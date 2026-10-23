@@ -21,7 +21,11 @@ function emptyDraft(snapshot: ComposerDraftSnapshot): boolean {
 export function saveComposerDraftFromDom(): void {
   try {
     const textarea = document.querySelector<HTMLTextAreaElement>('.composer textarea')
-    if (textarea?.value) window.sessionStorage.setItem(LEGACY_COMPOSER_DRAFT_KEY, textarea.value)
+    if (textarea?.value) {
+      const scope = textarea.dataset.draftScope
+      if (scope) saveComposerDraft(scope, { text: textarea.value })
+      else window.sessionStorage.setItem(LEGACY_COMPOSER_DRAFT_KEY, textarea.value)
+    }
   } catch { /* storage unavailable */ }
 }
 
@@ -37,11 +41,9 @@ export function saveComposerDraft(scope: string, snapshot: ComposerDraftSnapshot
     }
     if (emptyDraft(next)) {
       window.sessionStorage.removeItem(key)
-      window.sessionStorage.removeItem(LEGACY_COMPOSER_DRAFT_KEY)
       return
     }
     window.sessionStorage.setItem(key, JSON.stringify(next))
-    window.sessionStorage.setItem(LEGACY_COMPOSER_DRAFT_KEY, next.text)
   } catch { /* storage unavailable */ }
 }
 
@@ -55,7 +57,11 @@ export function readComposerDraft(scope: string): ComposerDraftSnapshot | null {
       }
     }
     const legacy = window.sessionStorage.getItem(LEGACY_COMPOSER_DRAFT_KEY)
-    return legacy ? { text: legacy } : null
+    if (!legacy) return null
+    // Claim a pre-scoping crash snapshot once, so subsequent sessions stay isolated.
+    window.sessionStorage.setItem(composerDraftStorageKey(scope), JSON.stringify({ text: legacy }))
+    window.sessionStorage.removeItem(LEGACY_COMPOSER_DRAFT_KEY)
+    return { text: legacy }
   } catch {
     return null
   }

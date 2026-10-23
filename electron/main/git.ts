@@ -3,6 +3,7 @@ import { basename, isAbsolute, join, resolve } from 'node:path'
 import type { GitDiff, GitFileChange, GitStatus, GitWorktree, LocalGitBranch, ProcessOutcome } from '../../src/types/api'
 import { restrictedGitEnvironment, runProcess, type ProcessResult } from './process-utils'
 import { errorMessage, requireGitPath, requireString, stripAnsi } from './validation'
+import { gitWorktreeContentHash } from './git-content-hash'
 
 interface Numstat { additions: number; deletions: number }
 interface ParsedNumstat { values: Map<string, Numstat>; truncated: boolean }
@@ -572,7 +573,22 @@ export class GitService {
       ])
       requireProcessSuccess('Git unstaged statistics', unstagedResult)
       requireProcessSuccess('Git staged statistics', stagedResult)
-      return parseStatus(statusResult.stdout, parseNumstat(stagedResult.stdout), parseNumstat(unstagedResult.stdout))
+      const status = parseStatus(statusResult.stdout, parseNumstat(stagedResult.stdout), parseNumstat(unstagedResult.stdout))
+      const indexResult = await runGit(cwd, ['diff', '--cached', '--raw', '-z', '--no-abbrev', '--no-renames', '--no-ext-diff', '--no-textconv', '--ignore-submodules=all'], { timeoutMs: 15_000, maxBytes: GIT_STATUS_OUTPUT_LIMIT }, overrides)
+      requireProcessSuccess('Git index identities', indexResult)
+      const fields = indexResult.stdout.split('\0')
+      const indexHashes = new Map<string, string>()
+      for (let index = 0; index + 1 < fields.length; index += 2) {
+        const metadata = fields[index].split(' ')
+        indexHashes.set(fields[index + 1], `${metadata[1]}:${metadata[3]}`)
+      }
+      // Bound disk concurrency even for repositories with many dirty files.
+      for (let offset = 0; offset < status.files.length; offset += 8) {
+        await Promise.all(status.files.slice(offset, offset + 8).map(async (file) => {
+          file.contentHash = file.staged ? indexHashes.get(file.path) : await gitWorktreeContentHash(join(cwd, file.path))
+        }))
+      }
+      return status
     } catch (error) {
       const message = errorMessage(error).slice(0, GIT_ERROR_LIMIT)
       // Only a genuine "not a repository" detection may claim there is no repo.

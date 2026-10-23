@@ -4,6 +4,7 @@ import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useWorkspaceRuntime } from '../../src/hooks/useWorkspaceRuntime'
+import { ensureLocalStorage } from './storage-fixture'
 import type { HarnessId, DesktopApi, ProjectRecord, SessionRecord, TranscriptMessage } from '../../src/types/api'
 
 const project: ProjectRecord = {
@@ -51,6 +52,8 @@ let container: HTMLDivElement
 let root: Root
 
 beforeEach(() => {
+  ensureLocalStorage()
+  window.localStorage.clear()
   ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
   container = document.createElement('div')
   document.body.appendChild(container)
@@ -58,6 +61,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  window.localStorage.clear()
   act(() => root.unmount())
   container.remove()
   vi.restoreAllMocks()
@@ -67,6 +71,28 @@ afterEach(() => {
 const flush = async () => { await act(async () => { await Promise.resolve() }) }
 
 describe('prompt admission versus background transcript reads', () => {
+  it('restores queued work after remount without automatically redelivering it', () => {
+    act(() => root.render(createElement(Probe, { bridge: null })))
+    act(() => latest.queuePrompt('saved request', 'queue'))
+    act(() => root.unmount())
+    root = createRoot(container)
+    act(() => root.render(createElement(Probe, { bridge: null })))
+    expect(latest.pendingQueuedPrompts).toMatchObject([{ text: 'saved request', recovered: true, flushAttemptFailed: true }])
+    act(() => latest.clearQueuedPromptFlushFailures())
+    expect(latest.pendingQueuedPrompts[0].recovered).toBe(true)
+  })
+
+  it('edits queued work in place and retains a delivery reservation across terminal events', () => {
+    act(() => root.render(createElement(Probe, { bridge: null })))
+    act(() => latest.queuePrompt('before edit', 'queue'))
+    const id = latest.pendingQueuedPrompts[0].id
+    act(() => latest.editQueuedPrompt(id, 'after edit'))
+    act(() => latest.updateQueuedPromptDelivery(id, true))
+    act(() => latest.clearQueuedPromptFlushFailures())
+    expect(latest.pendingQueuedPrompts).toMatchObject([{ id, text: 'after edit', deliveryPending: true }])
+    act(() => latest.removeQueuedPrompt(id))
+    expect(window.localStorage.getItem('omp-desktop.pending-queue.v1')).not.toContain('after edit')
+  })
   it('marks failed queued flushes across the active owner and clears them at a boundary', () => {
     act(() => { root.render(createElement(Probe, { bridge: null })) })
     act(() => { latest.queuePrompt('retry this prompt', 'queue') })

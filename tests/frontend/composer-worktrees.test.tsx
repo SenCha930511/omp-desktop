@@ -4,6 +4,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Composer } from '../../src/components/Composer'
+import { readComposerDraft } from '../../src/lib/composer-draft'
 import type { CheckoutCatalog, GitWorktree } from '../../src/types/api'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
@@ -52,6 +53,49 @@ describe('composer worktree picker', () => {
     act(() => root.unmount())
     container.remove()
     window.sessionStorage.clear()
+  })
+
+  function typePrompt(text: string) {
+    const textarea = container.querySelector<HTMLTextAreaElement>('.composer textarea')!
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, text)
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+  }
+
+  it('preserves the next scoped draft when an earlier admission succeeds', async () => {
+    let resolveSend!: () => void
+    act(() => root.render(<Composer {...props({ draftKey: 'A', onSend: () => new Promise<void>((resolve) => { resolveSend = resolve }) })} />))
+    typePrompt('first')
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!.click())
+    typePrompt('next')
+    await act(async () => resolveSend())
+    expect(readComposerDraft('A')?.text).toBe('next')
+    expect(readComposerDraft('B')).toBeNull()
+  })
+
+  it('restores failed admission into its original scope after switching away', async () => {
+    let rejectSend!: (error: Error) => void
+    act(() => root.render(<Composer {...props({ draftKey: 'A', onSend: () => new Promise<void>((_resolve, reject) => { rejectSend = reject }) })} />))
+    typePrompt('failed prompt')
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!.click())
+    act(() => root.render(<Composer key="B" {...props({ draftKey: 'B' })} />))
+    await act(async () => rejectSend(new Error('offline')))
+    expect(readComposerDraft('A')?.text).toBe('failed prompt')
+    expect(container.querySelector<HTMLTextAreaElement>('.composer textarea')?.value).toBe('')
+    act(() => root.render(<Composer key="A" {...props({ draftKey: 'A' })} />))
+    expect(container.querySelector<HTMLTextAreaElement>('.composer textarea')?.value).toBe('failed prompt')
+  })
+
+  it('merges a failed admission once with the next draft in both storage and UI', async () => {
+    let rejectSend!: (error: Error) => void
+    act(() => root.render(<Composer {...props({ draftKey: 'A', onSend: () => new Promise<void>((_resolve, reject) => { rejectSend = reject }) })} />))
+    typePrompt('failed')
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!.click())
+    typePrompt('next')
+    await act(async () => rejectSend(new Error('offline')))
+    expect(readComposerDraft('A')?.text).toBe('failed\n\nnext')
+    expect(container.querySelector<HTMLTextAreaElement>('.composer textarea')?.value).toBe('failed\n\nnext')
   })
 
   it('does not expose an automatic model choice before the catalog loads', () => {

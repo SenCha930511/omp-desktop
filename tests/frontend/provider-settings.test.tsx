@@ -143,6 +143,24 @@ describe('provider settings behavior and accessibility', () => {
 })
 
 describe('provider runtime mutations', () => {
+  it('resolves model and supported effort together before the initial catalog arrives', async () => {
+    const pending = deferred<PrimeModelCatalog>()
+    const bridge = { providers: { catalog: vi.fn(() => pending.promise) } } as unknown as DesktopApi
+    const reportError = vi.fn()
+    let value!: ProviderCatalog
+    function Harness() {
+      value = useProviderCatalog({ bridge, runtime: null, defaultEffort: 'medium', syncRuntime: noop, reportError })
+      return null
+    }
+    act(() => root.render(<Harness />))
+    expect(value.model).toBe('')
+    const selection = value.resolveSelection!()
+    await act(async () => {
+      pending.resolve({ ...catalog, models: [{ ...model, input: [...model.input], availableThinkingLevels: ['low', 'high'], fastModeSupported: false }] })
+      expect(await selection).toEqual({ model: model.key, effort: 'auto', fast: false })
+    })
+  })
+
   function mountCatalogHook(options: {
     command: DesktopApi['agent']['command']
     syncRuntime?: (runtimeId: string) => Promise<void>

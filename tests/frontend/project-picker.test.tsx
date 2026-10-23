@@ -75,6 +75,28 @@ describe('project picker', () => {
     act(() => trigger?.click())
     expect(onAddFolder).toHaveBeenCalledOnce()
   })
+
+  it('offers existing projects before adding folders and supports keyboard navigation', () => {
+    const onAddFolder = vi.fn()
+    const onSelectProject = vi.fn()
+    act(() => root.render(<ProjectPicker projects={projects} activeProjectId="p-tmp" onAddFolder={onAddFolder} onSelectProject={onSelectProject} />))
+    const trigger = container.querySelector<HTMLButtonElement>('.project-picker__trigger')!
+    act(() => trigger.click())
+    expect(onAddFolder).not.toHaveBeenCalled()
+    const options = container.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')
+    expect(options).toHaveLength(2)
+    expect(options[0]?.getAttribute('aria-checked')).toBe('true')
+    expect(document.activeElement).toBe(options[0])
+    act(() => options[0]?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })))
+    expect(document.activeElement).toBe(options[1])
+    act(() => options[1]?.click())
+    expect(onSelectProject).toHaveBeenCalledWith(projects[1])
+    expect(document.activeElement).toBe(trigger)
+    act(() => trigger.click())
+    act(() => container.querySelector<HTMLButtonElement>('[role="menuitem"]')?.click())
+    expect(onAddFolder).toHaveBeenCalledOnce()
+    expect(container.querySelector('[role="menu"]')).toBeNull()
+  })
 })
 
 describe('composer project picker integration', () => {

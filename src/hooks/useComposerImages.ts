@@ -260,6 +260,16 @@ export function useComposerImages({ shortName, draftKey }: UseComposerImagesOpti
     clear,
     remove,
     restoreWithinLimits,
+    restoreAfterUnmount: (restored: ComposerImage[]) => {
+      if (!draftKey) return
+      const entry = composerAttachmentStore.get(draftKey)
+      const current = entry?.images ?? []
+      const ids = new Set(current.map((image) => image.id))
+      saveAttachmentStoreEntry(draftKey, {
+        images: [...restored.filter((image) => !ids.has(image.id)), ...current],
+        unsupportedFiles: entry?.unsupportedFiles ?? [],
+      })
+    },
     dragHandlers: { onDragEnter, onDragOver, onDragLeave, onDrop },
   }
 }

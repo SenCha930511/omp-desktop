@@ -127,7 +127,11 @@ function isAuthorized(project: ProjectRecord) {
 }
 
 function projectForSession(session: SessionRecord, projects: ProjectRecord[]) {
-  return projects.find((project) => project.path === session.projectPath)
+  return projects.find((project) => sessionBelongsToProject(session, project))
+}
+
+function sessionBelongsToProject(session: SessionRecord, project: ProjectRecord) {
+  return session.projectPath === project.path || project.folders.includes(session.projectPath)
 }
 
 function defaultScheduleModel(models: PrimeModelDescriptor[], lastSelectedModel: string): string {
@@ -359,7 +363,7 @@ export function ScheduledPage({
   const selectedProject = projectMap.get(form.projectId)
   const eligibleSessions = useMemo(() => {
     const project = projects.find((item) => item.id === form.projectId)
-    return project ? sessions.filter((session) => session.projectPath === project.path && !session.archived) : []
+    return project ? sessions.filter((session) => sessionBelongsToProject(session, project) && !session.archived) : []
   }, [form.projectId, projects, sessions])
   const selectedModel = models.find((model) => model.key === form.model)
   const availableModels = models.filter((model) => model.enabled !== false && model.available)
@@ -433,7 +437,7 @@ export function ScheduledPage({
   }
   const setProject = (projectId: string) => {
     const project = projectMap.get(projectId)
-    const firstSession = project ? sessions.find((session) => session.projectPath === project.path && !session.archived) : undefined
+    const firstSession = project ? sessions.find((session) => sessionBelongsToProject(session, project) && !session.archived) : undefined
     setForm((current) => ({ ...current, projectId, sessionId: firstSession?.id ?? '' }))
   }
   const selectModel = (modelKey: string) => {

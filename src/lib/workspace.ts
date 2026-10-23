@@ -13,21 +13,33 @@ export function gitStatusForWorkspace(snapshot: OwnedGitStatus, cwd?: string): G
   return cwd && snapshot.cwd === cwd ? snapshot.status : EMPTY_GIT_STATUS
 }
 
-/** Per-file edits a turn introduced: new dirty files count fully, files that
-    were already dirty count only the growth over the turn-start baseline, and
-    untouched dirty files drop out entirely. A null baseline means no turn has
-    run in this window, so nothing is attributable yet. */
+/** Changed files since turn start. Counts describe their current Git diff,
+    not a reversible patch for this turn. Scope distinguishes index/worktree. */
 export function turnFileDeltas(current: readonly GitFileChange[], baseline: readonly GitFileChange[] | null): GitFileChange[] {
   if (!baseline) return []
-  const before = new Map(baseline.map((file) => [file.path, file]))
+  const before = new Map(baseline.map((file) => [`${file.staged}:${file.path}`, file]))
   const deltas: GitFileChange[] = []
   for (const file of current) {
-    const prior = before.get(file.path)
+    const prior = before.get(`${file.staged}:${file.path}`)
+    if (file.contentHash !== undefined && prior?.contentHash !== undefined) {
+      if (file.contentHash !== prior.contentHash || file.status !== prior.status) deltas.push(file)
+      continue
+    }
     const additions = file.additions - (prior?.additions ?? 0)
     const deletions = file.deletions - (prior?.deletions ?? 0)
     if (additions > 0 || deletions > 0) deltas.push({ ...file, additions, deletions })
   }
-  return deltas
+  for (const file of baseline) {
+    if (file.contentHash !== undefined && !current.some((candidate) => candidate.path === file.path && candidate.staged === file.staged)) {
+      deltas.push({ ...file, additions: 0, deletions: 0 })
+    }
+  }
+  const files = new Map<string, GitFileChange>()
+  for (const file of deltas) {
+    const previous = files.get(file.path)
+    files.set(file.path, previous ? { ...file, additions: previous.additions + file.additions, deletions: previous.deletions + file.deletions } : file)
+  }
+  return [...files.values()]
 }
 
 export interface WorkspaceSelection {

@@ -6,6 +6,7 @@ import {
   composerDraftStorageKey,
   readComposerDraft,
   saveComposerDraft,
+  saveComposerDraftFromDom,
   takeComposerDraft,
 } from '../../src/lib/composer-draft'
 
@@ -14,6 +15,20 @@ afterEach(() => {
 })
 
 describe('composer draft storage', () => {
+  it('saves a crash snapshot only to the visible composer scope', () => {
+    const composer = document.createElement('div')
+    composer.className = 'composer'
+    const textarea = document.createElement('textarea')
+    textarea.dataset.draftScope = 'A'
+    textarea.value = 'crash recovery'
+    composer.append(textarea)
+    document.body.append(composer)
+    saveComposerDraftFromDom()
+    composer.remove()
+    expect(readComposerDraft('A')?.text).toBe('crash recovery')
+    expect(readComposerDraft('B')).toBeNull()
+  })
+
   it('round-trips text and model selection for a workspace scope', () => {
     saveComposerDraft('project:new', { text: 'Ship the sidebar', model: 'openai:gpt-5.2', effort: 'high', fast: true })
     expect(readComposerDraft('project:new')).toEqual({
@@ -33,10 +48,11 @@ describe('composer draft storage', () => {
     expect(readComposerDraft('project:session')).toEqual({ text: 'other' })
   })
 
-  it('falls back to the crash snapshot when a scoped draft is missing', () => {
+  it('claims the legacy crash snapshot for only one scope', () => {
     window.sessionStorage.setItem('omp-desktop.composer-draft', 'recovered after crash')
     expect(readComposerDraft('project:new')).toEqual({ text: 'recovered after crash' })
-    expect(takeComposerDraft()).toBe('recovered after crash')
+    expect(readComposerDraft('another:session')).toBeNull()
+    expect(readComposerDraft('project:new')).toEqual({ text: 'recovered after crash' })
     expect(takeComposerDraft()).toBe('')
   })
 })

@@ -268,7 +268,7 @@ export function ChangesPanel({
     return () => {
       cancelled = true
     }
-  }, [cwd, activeSelectedPath, scope])
+  }, [cwd, activeSelectedPath, scope, git.files])
 
   const mutate = async (kind: 'stage' | 'unstage' | 'restore', paths: string[]): Promise<boolean> => {
     if (readOnly || !cwd || !window.desktop) return false
