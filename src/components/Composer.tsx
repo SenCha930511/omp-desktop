@@ -1061,25 +1061,25 @@ export const Composer = memo(function Composer({
                 <ArrowUp size={17} />
               </button>
             ) : busy ? (
-              <>
-                {value.trim() || images.length > 0 || unsupportedFiles.length > 0 || annotations.length > 0 || terminalSelection?.text ? (
-                  // Typing while the model works flips the action surface to a
-                  // queue-send; the stop control stays reachable beside it.
-                  <button
-                    type="button"
-                    className="send-button"
-                    aria-label={t('composer.send')}
-                    title={t('composer.send.queued')}
-                    disabled={processingImages || submitting || loading || disabled}
-                    onClick={() => void submit()}
-                  >
-                    <ArrowUp size={17} />
-                  </button>
-                ) : null}
+              value.trim() || images.length > 0 || unsupportedFiles.length > 0 || annotations.length > 0 || terminalSelection?.text ? (
+                // Typing while the model works flips the action surface to a
+                // queue-send in the same style as the idle send button; it
+                // stands in for the stop control until the draft empties.
+                <button
+                  type="button"
+                  className="send-button"
+                  aria-label={t('composer.send')}
+                  title={t('composer.send.queued')}
+                  disabled={processingImages || submitting || loading || disabled}
+                  onClick={() => void submit()}
+                >
+                  <ArrowUp size={17} />
+                </button>
+              ) : (
                 <button type="button" className="send-button send-button--stop" aria-label={t('composer.stop')} onClick={() => void onStop()}>
                   <Square size={10} fill="currentColor" aria-hidden="true" />
                 </button>
-              </>
+              )
             ) : (
               <button
                 type="button"

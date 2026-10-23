@@ -104,4 +104,54 @@ describe('composer queue tray', () => {
     expect(tray?.textContent).toContain('OMP is holding 2 messages for the next turn.')
   })
 
+  it('replaces the stop button with the queue-send while a draft exists', () => {
+    const onSend = vi.fn()
+    const onStop = vi.fn()
+    act(() => root.render(<Composer
+      busy
+      submitting={false}
+      loading={false}
+      disabled={false}
+      model="auto"
+      effort="medium"
+      modelsByProvider={new Map()}
+      providers={[]}
+      reasoningLevels={['medium']}
+      fast={false}
+      fastSupported={false}
+      fastAvailable={false}
+      imageInputSupported={true}
+      messageEnterAction="queue"
+      skills={[]}
+      onModelChange={vi.fn()}
+      onEffortChange={vi.fn()}
+      onFastChange={vi.fn()}
+      onSend={onSend}
+      onStop={onStop}
+    />))
+
+    const steerButton = () => container.querySelector<HTMLButtonElement>('.composer__actions .send-button:not(.send-button--stop)')
+    const stopButton = () => container.querySelector<HTMLButtonElement>('.composer__actions .send-button--stop')
+    // Empty draft while busy: only the stop control.
+    expect(stopButton()).not.toBeNull()
+    expect(steerButton()).toBeNull()
+
+    // Typing swaps in the idle-styled queue-send in its place.
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea')!
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!
+    act(() => {
+      setter.call(textarea, 'follow-up')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    expect(stopButton()).toBeNull()
+    expect(steerButton()).not.toBeNull()
+    act(() => steerButton()!.click())
+    expect(onSend).toHaveBeenCalledWith('follow-up', [], 'queue')
+    expect(onStop).not.toHaveBeenCalled()
+
+    // The draft cleared on submit: the stop control returns.
+    expect(stopButton()).not.toBeNull()
+    expect(steerButton()).toBeNull()
+  })
+
 })

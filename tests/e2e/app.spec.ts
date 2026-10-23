@@ -1100,14 +1100,15 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect.poll(() => existsSync(join(fixtureRoot, 'prompt-admission-barrier-started'))).toBe(true)
     await expect(page.getByRole('button', { name: 'Stop OMP' })).toBeVisible()
 
-    // While the model works, a typed draft surfaces a queue-send action next
-    // to the red stop button instead of hiding the send path behind it.
+    // While the model works, a typed draft replaces the red stop button with
+    // the queue-send action; an emptied draft brings the stop control back.
     await expect(page.getByRole('button', { name: 'Send message', exact: true })).toHaveCount(0)
     await composer.fill('barrier follow-up')
     await expect(page.getByRole('button', { name: 'Send message', exact: true })).toBeVisible()
-    await expect(page.getByRole('button', { name: 'Stop OMP' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Stop OMP' })).toHaveCount(0)
 
     await composer.press('Enter')
+    await expect(page.getByRole('button', { name: 'Stop OMP' })).toBeVisible()
     const queuedTray = page.getByRole('region', { name: 'Queued messages' })
     await expect(queuedTray.locator('.composer-queue__item')).toHaveCount(1)
 
