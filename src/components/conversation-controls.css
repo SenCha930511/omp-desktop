@@ -42,9 +42,11 @@
 ::highlight(conversation-search) { background-color: color-mix(in srgb, var(--prime) 38%, transparent); color: inherit; }
 .turn-recovery { display: flex; align-items: center; flex-wrap: wrap; gap: var(--conversation-control-gap); padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--danger) 25%, var(--border)); border-radius: var(--conversation-panel-radius); background: var(--surface-subtle); font-size: var(--conversation-control-font); }
 .turn-recovery__title { color: var(--danger); font-weight: 500; white-space: nowrap; flex-shrink: 0; }
-.turn-recovery button { min-height: var(--conversation-control-height); padding: 4px 9px; border: 1px solid var(--border); border-radius: var(--conversation-control-radius); background: var(--surface-raised); color: var(--text-secondary); font: inherit; cursor: pointer; }
+.turn-recovery button { min-height: var(--conversation-control-height); display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px; border: 1px solid var(--border); border-radius: var(--conversation-control-radius); background: var(--surface-raised); color: var(--text-secondary); font: inherit; cursor: pointer; }
+.turn-recovery button svg { flex: 0 0 auto; }
 .turn-recovery button:hover { color: var(--text); border-color: var(--border-strong); }
 .turn-recovery button:disabled { opacity: .5; cursor: default; }
+.turn-recovery [role='status'] { color: var(--text-tertiary); }
 .turn-recovery :focus-visible, .conversation-search-trigger:focus-visible { outline: 1.5px solid var(--prime); outline-offset: 2px; }
 .subagents__filter { display: flex; padding: 0 10px 8px; }
 .subagents__filter select { width: 100%; max-width: none; }
