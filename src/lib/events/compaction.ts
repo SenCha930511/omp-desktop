@@ -14,14 +14,13 @@ function compactionOutcome(value: unknown): CompactionPart['outcome'] {
   return value === 'failed' || value === 'cancelled' || value === 'skipped' ? value : undefined
 }
 
-function compactionResult(value: unknown): Pick<CompactionPart, 'summary' | 'tokensBefore' | 'firstKeptEntryId'> {
+function compactionResult(value: unknown): Pick<CompactionPart, 'summary' | 'tokensBefore' | 'tokensAfter' | 'firstKeptEntryId'> {
   const result = record(value)
-  const tokensBefore = typeof result?.tokensBefore === 'number' && Number.isFinite(result.tokensBefore) && result.tokensBefore >= 0
-    ? result.tokensBefore
-    : undefined
+  const tokenCount = (candidate: unknown) => typeof candidate === 'number' && Number.isFinite(candidate) && candidate >= 0 ? candidate : undefined
   return {
     summary: string(result?.summary),
-    tokensBefore,
+    tokensBefore: tokenCount(result?.tokensBefore),
+    tokensAfter: tokenCount(result?.tokensAfter),
     firstKeptEntryId: string(result?.firstKeptEntryId),
   }
 }

@@ -39,7 +39,7 @@ function TodoHud({ phases }: { phases: TodoPhase[] }) {
     setManualOpen(null)
   }
   const allDone = tasks.length > 0 && done === tasks.length
-  const open = manualOpen ?? !allDone
+  const open = manualOpen ?? false
   return (
     <div className={`todo-hud${open ? ' is-open' : ''}`}>
       <button type="button" className="todo-hud__bar" aria-expanded={open} onClick={() => setManualOpen(!open)}>

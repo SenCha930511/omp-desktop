@@ -185,6 +185,7 @@ export type MessagePart =
       reason?: PrimeCompactionReason
       outcome?: PrimeCompactionOutcome
       tokensBefore?: number
+      tokensAfter?: number
       firstKeptEntryId?: string
       summary?: string
       error?: string

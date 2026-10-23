@@ -317,6 +317,7 @@ async function readTranscriptWithDialect(dialect: TranscriptDialect, filePath: s
     if (entry.type === 'compaction') {
       const timestamp = typeof entry.timestamp === 'string' ? boundedString(entry.timestamp, 128) : undefined
       const tokensBefore = typeof entry.tokensBefore === 'number' && Number.isFinite(entry.tokensBefore) && entry.tokensBefore >= 0 ? entry.tokensBefore : undefined
+      const tokensAfter = typeof entry.tokensAfter === 'number' && Number.isFinite(entry.tokensAfter) && entry.tokensAfter >= 0 ? entry.tokensAfter : undefined
       const summary = typeof entry.summary === 'string' ? boundedString(entry.summary, MAX_PART_TEXT_CHARS) : undefined
       const firstKeptEntryId = typeof entry.firstKeptEntryId === 'string' ? boundedString(entry.firstKeptEntryId, 1_024) : undefined
       const customInstructions = typeof entry.customInstructions === 'string' ? boundedString(entry.customInstructions, MAX_PART_TEXT_CHARS) : undefined
@@ -326,7 +327,7 @@ async function readTranscriptWithDialect(dialect: TranscriptDialect, filePath: s
         timestamp,
         startedAt: timestamp,
         completedAt: timestamp,
-        parts: [{ type: 'compaction', status: 'done', tokensBefore, summary, firstKeptEntryId, customInstructions }],
+        parts: [{ type: 'compaction', status: 'done', tokensBefore, tokensAfter, summary, firstKeptEntryId, customInstructions }],
       })
       activeAssistant = undefined
       continue

@@ -153,6 +153,23 @@ export const OMP_RPC_ADAPTER: HarnessRpcAdapter = {
   normalizeEvent: (event) => {
     if (event.type === 'auto_compaction_start') return { ...event, type: 'compaction_start' }
     if (event.type === 'auto_compaction_end') return { ...event, type: 'compaction_end' }
+    // A manual /compact runs as a local harness command: it never emits the
+    // compaction lifecycle events the automatic path uses, only a
+    // command_output completion line. Translate that line into the
+    // compaction_end shape so the live transcript renders the divider (with
+    // token counts) immediately instead of after a session re-entry.
+    if (event.type === 'command_output' && typeof event.text === 'string') {
+      const match = /^Compaction complete\. Tokens: (\d+) -> (\d+) \(saved -?\d+\)\.$/.exec(event.text)
+      if (match) {
+        return {
+          type: 'compaction_end',
+          reason: 'manual',
+          aborted: false,
+          willRetry: false,
+          result: { tokensBefore: Number(match[1]), tokensAfter: Number(match[2]) },
+        }
+      }
+    }
     // A non-terminal agent_end is a turn boundary inside a continuing run; it
     // must not finalize streaming rows in the renderer.
     if (event.type === 'agent_end' && event.isTerminal === false) return null

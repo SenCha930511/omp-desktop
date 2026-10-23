@@ -174,7 +174,7 @@ function createHermeticFixture(): { userData: string; home: string; project: str
       JSON.stringify({ type: 'message', id: 'todo-result', parentId: 'todo-assistant', timestamp: '2026-03-10T00:00:02.000Z', message: { role: 'toolResult', toolCallId: 'todo-call', toolName: 'todo', content: [
         { type: 'text', text: 'Remaining items (2):\n  - task2 [in_progress] (phase A)\n  - task3 [pending] (phase B)\nOverall: 1/3 done, 2 open.\n  phase A:\n    - [X] task1\n    - [ ] task2 (in progress)\n  phase B:\n    - [ ] task3' },
       ], timestamp: 1773571202000 } }),
-      JSON.stringify({ type: 'compaction', id: 'todo-compaction', parentId: 'todo-result', timestamp: '2026-03-10T00:00:03.000Z', tokensBefore: 99_175, summary: 'Earlier fixture work was summarized.' }),
+      JSON.stringify({ type: 'compaction', id: 'todo-compaction', parentId: 'todo-result', timestamp: '2026-03-10T00:00:03.000Z', tokensBefore: 99_175, tokensAfter: 24_793, summary: 'Earlier fixture work was summarized.' }),
       JSON.stringify({ type: 'message', id: 'todo-tail', parentId: 'todo-compaction', timestamp: '2026-03-10T00:00:04.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'Plan is set; starting on task2.' }], timestamp: 1773571204000 } }),
     ],
   )
@@ -310,11 +310,18 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
       contextUsage: { tokens: 12000, contextWindow: 100000, percent: 12 },
       fastModeEnabled: false, queuedMessageCount: 0,
     } }), Number(process.env.OMP_FIXTURE_START_DELAY_MS || 0))
+  } else if (command.type === 'compact') {
+    fs.writeFileSync(marker('compact-command-reached'), 'reached')
+    // Manual compaction behaves exactly like the real harness: it appends the
+    // compaction record to the session file and emits no lifecycle events.
+    // The desktop reads the record back and synthesizes the divider event.
+    fs.appendFileSync(sessionFile, JSON.stringify({ type: 'compaction', id: 'fixture-compact-' + Date.now(), parentId: null, timestamp: new Date().toISOString(), tokensBefore: 12000, tokensAfter: 3000, summary: 'Fixture compaction summary.' }) + '\\n')
+    send({ id: command.id, type: 'response', command: command.type, success: true, data: { agentInvoked: false } })
   } else if (command.type === 'get_session_stats') {
     send({ id: command.id, type: 'response', command: command.type, success: true, data: { contextUsage: { tokens: 12000, contextWindow: 100000, percent: 12 }, cost: 0.42, tokens: { input: 10000, output: 2000, cacheRead: 0, cacheWrite: 0, total: 12000 } } })
   } else if (command.type === 'set_subagent_subscription') {
     send({ id: command.id, type: 'response', command: command.type, success: true, data: { level: command.level } })
-    send({ type: 'available_commands_update', commands: [{ name: 'context', description: 'Show runtime context' }, { name: 'effort', subcommands: [{ name: 'high', description: 'Deep reasoning' }] }, { name: 'modelpreset', source: 'builtin', subcommands: [{ name: 'list', description: 'List presets' }] }] })
+    send({ type: 'available_commands_update', commands: [{ name: 'compact', description: 'Compact the conversation context' }, { name: 'context', description: 'Show runtime context' }, { name: 'effort', subcommands: [{ name: 'high', description: 'Deep reasoning' }] }, { name: 'modelpreset', source: 'builtin', subcommands: [{ name: 'list', description: 'List presets' }] }] })
   } else if (command.type === 'get_subagents') {
     fs.writeFileSync(marker('subagent-subscription-ready'), 'ready')
     send({ id: command.id, type: 'response', command: command.type, success: true, data: { subagents: [] } })
@@ -699,6 +706,24 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(composer).not.toBeVisible()
     await page.getByRole('button', { name: 'Conversation', exact: true }).click()
     await expect(composer).toBeVisible()
+  })
+
+  test('renders a manual compact in the live transcript', async () => {
+    await page.locator('.session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
+    // The compact command starts a runtime, which needs a resolved model.
+    await expect(page.locator('.model-picker__trigger')).toHaveAccessibleName('Model: Claude Fixture')
+    const composer = page.getByRole('combobox', { name: 'Message OMP' })
+    await composer.fill('/compact')
+    await page.getByRole('button', { name: 'Send message', exact: true }).click()
+
+    // The manual compact completes as a local harness command: no lifecycle
+    // events arrive over RPC, so the desktop reads the compaction record it
+    // wrote to the session file and synthesizes the divider immediately —
+    // no session re-entry required.
+    const divider = page.locator('.compaction-divider.is-done')
+    await expect(divider).toBeVisible()
+    await expect(divider).toContainText('Context compacted')
+    await expect(divider).toContainText('12,000 → 3,000 tokens (25% of original)')
   })
 
   test('offers to update omp when the startup check finds a newer version', async () => {
@@ -2294,12 +2319,16 @@ test.describe('OMP Desktop desktop smoke', () => {
   test('docks the todo plan at the top and renders compaction as a divider', async () => {
     await page.locator('.session-row-wrap').filter({ hasText: 'Todo plan fixture' }).locator('.session-row').click()
 
-    // The plan floats at the top of the conversation pane as an auto-expanded
-    // checklist bar while work remains, Claude-Code style.
+    // The plan floats at the top of the conversation pane as a collapsed
+    // bar; the user expands it on demand.
     const bar = page.locator('.todo-hud__bar')
-    await expect(bar).toHaveAttribute('aria-expanded', 'true')
+    await expect(bar).toHaveAttribute('aria-expanded', 'false')
     await expect(bar).toContainText('1/3')
     await expect(bar).toContainText('task2')
+    await expect(page.locator('.todo-hud__task')).toHaveCount(0)
+
+    await bar.click()
+    await expect(bar).toHaveAttribute('aria-expanded', 'true')
     await expect(page.locator('.todo-hud__task.is-completed')).toContainText('task1')
     await expect(page.locator('.todo-hud__task.is-in_progress')).toContainText('task2')
     await expect(page.locator('.todo-hud__task.is-pending')).toContainText('task3')
@@ -2326,7 +2355,7 @@ test.describe('OMP Desktop desktop smoke', () => {
     // a card and never part of the bottom bar.
     const divider = page.locator('.compaction-divider.is-done')
     await expect(divider).toContainText('Context compacted')
-    await expect(divider).toContainText('99,175 tokens before')
+    await expect(divider).toContainText('99,175 → 24,793 tokens (25% of original)')
     await expect(page.locator('.transcript .compaction-card')).toHaveCount(0)
     await expect(page.locator('.todo-hud .compaction-hud')).toHaveCount(0)
   })

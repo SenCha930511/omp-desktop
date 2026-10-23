@@ -57,6 +57,14 @@ describe('compaction divider', () => {
     expect(divider?.querySelector('.spin')).toBeNull()
   })
 
+  it('labels completed compactions with before, after and the size ratio', () => {
+    renderParts([{ type: 'compaction', status: 'done', reason: 'manual', tokensBefore: 99_175, tokensAfter: 24_793 }])
+
+    const divider = container.querySelector('.compaction-divider.is-done')
+    expect(divider).not.toBeNull()
+    expect(divider?.textContent).toContain('99,175 → 24,793 tokens (25% of original)')
+  })
+
   it('flags failed and cancelled compactions with the danger color', () => {
     renderParts([{ type: 'compaction', status: 'failed', reason: 'manual' }, { type: 'compaction', status: 'cancelled', reason: 'requested' }])
 

@@ -24,6 +24,87 @@ afterEach(async () => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
 
+
+describe('OMP RPC adapter event normalization', () => {
+  it('translates the manual compact completion line into a compaction end event', () => {
+    const translated = OMP_RPC_ADAPTER.normalizeEvent({ type: 'command_output', text: 'Compaction complete. Tokens: 35500 -> 36047 (saved -547).' })
+    expect(translated).toEqual({
+      type: 'compaction_end',
+      reason: 'manual',
+      aborted: false,
+      willRetry: false,
+      result: { tokensBefore: 35_500, tokensAfter: 36_047 },
+    })
+  })
+
+  it('passes other command output and failed compactions through untouched', () => {
+    expect(OMP_RPC_ADAPTER.normalizeEvent({ type: 'command_output', text: 'Compaction failed: Nothing to compact (session too small or already rolled over)' }))
+      .toEqual({ type: 'command_output', text: 'Compaction failed: Nothing to compact (session too small or already rolled over)' })
+    expect(OMP_RPC_ADAPTER.normalizeEvent({ type: 'command_output', text: 'Saved preset deck' }))
+      .toEqual({ type: 'command_output', text: 'Saved preset deck' })
+  })
+})
+
+describe('manual compact synthesis', () => {
+  it('reads the compaction record after a successful compact command and emits a compaction end event', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-rpc-manual-compact-'))
+    dirs.push(cwd)
+    const sessionFile = join(cwd, 'session.jsonl')
+    writeFileSync(sessionFile, `${JSON.stringify({ type: 'session', id: 'session-1', cwd, timestamp: '2026-08-07T00:00:00.000Z' })}\n`)
+    const executable = join(cwd, 'compact-agent.cjs')
+    writeFileSync(executable, `#!/usr/bin/env node
+const fs = require('node:fs')
+const readline = require('node:readline')
+const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
+const sessionFile = ${JSON.stringify(sessionFile)}
+readline.createInterface({ input: process.stdin }).on('line', (line) => {
+  const command = JSON.parse(line)
+  if (command.type === 'negotiate_protocol') {
+    send({ id: command.id, type: 'response', command: command.type, success: true, data: { protocolVersion: 2 } })
+  } else if (command.type === 'get_state') {
+    send({ id: command.id, type: 'response', command: command.type, success: true, data: { sessionId: 'manual-compact', sessionFile, isStreaming: false, isCompacting: false } })
+  } else if (command.type === 'compact') {
+    // Exactly like the real harness: the record lands in the session file and
+    // no lifecycle event is emitted.
+    fs.appendFileSync(sessionFile, JSON.stringify({ type: 'compaction', id: 'compact-1', parentId: null, timestamp: '2026-08-07T00:02:00.000Z', tokensBefore: 35_743, tokensAfter: 21_259, summary: 'Summarized.', firstKeptEntryId: 'kept-1' }) + '\\n')
+    send({ id: command.id, type: 'response', command: command.type, success: true, data: { agentInvoked: false } })
+  }
+})
+`)
+    chmodSync(executable, 0o755)
+    const manager = new AgentRpcManager(executable, async (dir) => dir, async (path) => path, undefined, () => new Set(), OMP_RPC_ADAPTER)
+    managers.push(manager)
+    const envelopes: Array<{ runtimeId: string; event: Record<string, unknown> }> = []
+    manager.setEventSink((envelope) => envelopes.push(envelope as { runtimeId: string; event: Record<string, unknown> }))
+    const runtime = await manager.start({ cwd, sessionPath: sessionFile })
+    try {
+      await manager.command(runtime.runtimeId, { type: 'compact' })
+      const synthetic = envelopes.map((envelope) => envelope.event).find((event) => event.type === 'compaction_end')
+      expect(synthetic).toMatchObject({
+        type: 'compaction_end',
+        reason: 'manual',
+        aborted: false,
+        willRetry: false,
+        result: { tokensBefore: 35_743, tokensAfter: 21_259, summary: 'Summarized.', firstKeptEntryId: 'kept-1' },
+      })
+    } finally {
+      await manager.stop(runtime.runtimeId)
+    }
+  })
+
+  it('stays silent when the compact command fails or the session has no record', async () => {
+    const reader = vi.fn(async () => undefined)
+    const manager = new AgentRpcManager(null, async (cwd) => cwd, async (path) => path, undefined, () => new Set(), OMP_RPC_ADAPTER, undefined, undefined, reader)
+    managers.push(manager)
+    const envelopes: Array<{ event: Record<string, unknown> }> = []
+    manager.setEventSink((envelope) => envelopes.push(envelope as { event: Record<string, unknown> }))
+    // No runtime: a failed command must not reach the synthesis.
+    await expect(manager.command('missing', { type: 'compact' })).rejects.toThrow()
+    expect(envelopes).toEqual([])
+    expect(reader).not.toHaveBeenCalled()
+  })
+})
+
 describe('agent RPC exit details', () => {
   const writeExitingAgent = (body: string): { cwd: string; executable: string } => {
     const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-rpc-exit-'))

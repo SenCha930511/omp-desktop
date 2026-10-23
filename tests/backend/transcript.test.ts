@@ -276,14 +276,14 @@ describe('persisted compaction transcript entries', () => {
     writeFileSync(file, [
       JSON.stringify({ type: 'session', id: 'session-1', cwd: dir, timestamp: '2026-08-07T00:00:00.000Z' }),
       JSON.stringify({ type: 'message', id: 'user-1', parentId: null, timestamp: '2026-08-07T00:01:00.000Z', message: { role: 'user', content: 'Investigate the failure' } }),
-      JSON.stringify({ type: 'compaction', id: 'compact-1', parentId: 'user-1', timestamp: '2026-08-07T00:02:00.000Z', summary: 'The prior investigation was summarized.', firstKeptEntryId: 'kept-1', tokensBefore: 99_175 }),
+      JSON.stringify({ type: 'compaction', id: 'compact-1', parentId: 'user-1', timestamp: '2026-08-07T00:02:00.000Z', summary: 'The prior investigation was summarized.', firstKeptEntryId: 'kept-1', tokensBefore: 99_175, tokensAfter: 24_793 }),
       '',
     ].join('\n'))
 
     const transcript = await readTranscript(file, false)
     expect(transcript.at(-1)).toMatchObject({ role: 'system', id: 'compact-1' })
     expect(transcript.at(-1)?.parts[0]).toMatchObject({
-      type: 'compaction', status: 'done', tokensBefore: 99_175, firstKeptEntryId: 'kept-1',
+      type: 'compaction', status: 'done', tokensBefore: 99_175, tokensAfter: 24_793, firstKeptEntryId: 'kept-1',
       summary: 'The prior investigation was summarized.',
     })
   })

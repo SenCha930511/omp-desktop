@@ -1,4 +1,5 @@
 import type { PrimeEventEnvelope, PrimeModelCatalog, PrimeModelDescriptor, RuntimeInfo } from '../../../src/types/api'
+import { readLatestCompactionRecord, type ManualCompactionReader } from './manual-compaction'
 import { assertNoMcpAuthenticationCommand } from '../../../src/lib/mcp-policy'
 import { parseSessionActionSnapshot, streamingBehaviorForIntent } from '../../../src/lib/session-actions'
 import { resolveExecutable, type ExecutableSource } from '../process-utils'
@@ -57,6 +58,8 @@ export class AgentRpcManager {
     /** OMP approval-mode override consumed by the harness arg builder. */
     private readonly approvalMode: () => string | undefined = () => undefined,
     private readonly retention: RuntimeRetentionOptions = {},
+    /** Reads the compaction record a manual compact wrote; injectable for tests. */
+    private readonly manualCompactionReader: ManualCompactionReader = readLatestCompactionRecord,
   ) {}
 
   setEventSink(sink: (envelope: PrimeEventEnvelope) => void): void { this.eventSink = sink }
@@ -285,6 +288,23 @@ export class AgentRpcManager {
       throw new Error('The active model does not accept images. Choose a vision model and try again.')
     }
     const response = await runtime.command(translated)
+    if (command.type === 'compact' && isRecord(response) && response.success === true) {
+      // The harness compact command writes the session file but emits no
+      // lifecycle events over RPC. Read the fresh compaction record back and
+      // synthesize the compaction_end so the live transcript renders the
+      // divider immediately instead of after a session re-entry. The
+      // renderer dedupes against the disk-loaded record.
+      const sessionFile = runtime.snapshot().sessionFile
+      if (sessionFile) {
+        const record = await this.manualCompactionReader(sessionFile).catch(() => undefined)
+        if (record) {
+          this.eventSink({
+            runtimeId: runtime.runtimeId,
+            event: { type: 'compaction_end', reason: 'manual', aborted: false, willRetry: false, result: record },
+          })
+        }
+      }
+    }
     if (command.type === 'steer' || command.type === 'follow_up') {
       // OMP reports only queuedMessageCount. Refresh after admission so the
       // refreshed count reaches the renderer before a queued row can appear

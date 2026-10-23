@@ -281,7 +281,15 @@ function CompactionPart({ part }: { part: Extract<MessagePart, { type: 'compacti
         ? part.outcome === 'skipped' ? t('transcript.compaction.skipped') : t('transcript.compaction.done')
         : part.status === 'cancelled' ? t('transcript.compaction.cancelled') : t('transcript.compaction.failed')
   const reason = t(part.reason ? COMPACTION_REASON_KEYS[part.reason] : COMPACTION_REASON_KEYS.context)
-  const tokenLabel = part.tokensBefore === undefined ? '' : t('transcript.compaction.tokensBefore', { count: part.tokensBefore.toLocaleString() })
+  const tokenLabel = part.tokensBefore === undefined
+    ? ''
+    : part.tokensAfter !== undefined
+      ? t('transcript.compaction.tokens', {
+          before: part.tokensBefore.toLocaleString(),
+          after: part.tokensAfter.toLocaleString(),
+          percent: part.tokensBefore > 0 ? Math.max(1, Math.round((part.tokensAfter / part.tokensBefore) * 100)) : 0,
+        })
+      : t('transcript.compaction.tokensBefore', { count: part.tokensBefore.toLocaleString() })
   return (
     <div className={`compaction-divider is-${part.status}`} role="note">
       <span className="compaction-divider__rule" aria-hidden="true" />

@@ -102,11 +102,11 @@ describe('agent transport events', () => {
 
     const finished = applyPrimeEvent(started, {
       type: 'compaction_end', reason: 'overflow', willRetry: true, aborted: false,
-      result: { summary: 'Earlier work was summarized.', tokensBefore: 99_175, firstKeptEntryId: 'kept-1' },
+      result: { summary: 'Earlier work was summarized.', tokensBefore: 99_175, tokensAfter: 24_793, firstKeptEntryId: 'kept-1' },
     })
     expect(finished.at(-1)).toMatchObject({ role: 'system', streaming: false, completedAt: expect.any(Number) })
     expect(finished.at(-1)?.parts[0]).toMatchObject({
-      type: 'compaction', status: 'done', reason: 'overflow', tokensBefore: 99_175,
+      type: 'compaction', status: 'done', reason: 'overflow', tokensBefore: 99_175, tokensAfter: 24_793,
       summary: 'Earlier work was summarized.', willRetry: true,
     })
   })
