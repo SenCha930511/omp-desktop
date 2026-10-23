@@ -259,4 +259,16 @@ describe('ModelPicker', () => {
     expect(onChange).not.toHaveBeenCalled()
     expect(container.querySelector('.model-picker__popover')).not.toBeNull()
   })
+
+  it('shows the model id under every entry, even when it matches the name', async () => {
+    const same = model('openai/GLM-5.2', 'openai', 'GLM-5.2')
+    const provider: PrimeProviderDescriptor = { id: 'openai', name: 'OpenAI', authMethod: 'oauth', configured: true, modelCount: 1, availableModelCount: 1, enabled: true }
+    await act(async () => {
+      root.render(<ModelPicker value="openai/GLM-5.2" modelsByProvider={groupModelsByProvider([same])} providers={[provider]} onChange={vi.fn()} />)
+    })
+    await openPicker()
+    const identity = container.querySelector('.model-picker__option .model-picker__identity')!
+    expect(identity.querySelector('strong')?.textContent).toBe('GLM-5.2')
+    expect(identity.querySelector('small')?.textContent).toBe('GLM-5.2')
+  })
 })

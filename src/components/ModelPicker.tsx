@@ -300,7 +300,7 @@ export const ModelPicker = memo(function ModelPicker({ value, modelsByProvider, 
                       <span className="model-picker__check">{isSelected ? <Check size={13} /> : null}</span>
                       <span className="model-picker__identity">
                         <strong>{candidate.name}</strong>
-                        {candidate.id !== candidate.name ? <small>{candidate.id}</small> : null}
+                        <small>{candidate.id}</small>
                       </span>
                       {!candidate.available ? <span className="model-picker__availability">{t('modelPicker.connect')}</span> : null}
                     </button>
