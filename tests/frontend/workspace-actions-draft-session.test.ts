@@ -3,6 +3,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createWorkspaceActions, type WorkspaceActionsDeps } from '../../src/hooks/useWorkspaceActions'
 import { readComposerDraft, saveComposerDraft } from '../../src/lib/composer-draft'
+import { createSingleFlightAdmission } from '../../src/lib/workspace'
 import type { DesktopApi, RuntimeInfo, SessionRecord } from '../../src/types/api'
 
 const project = {
@@ -194,15 +195,7 @@ describe('draft session adoption on first prompt', () => {
           },
           settingsState: { settings: { activeHarness: 'omp', locale: 'en' } },
           provider: { model: 'auto', effort: 'medium', fast: false },
-          submissionAdmissionRef: {
-            current: {
-              active: false,
-              run: async (task: () => Promise<void>) => {
-                await task()
-                return true
-              },
-            },
-          },
+          submissionAdmissionRef: { current: createSingleFlightAdmission() },
           initialized: true,
           layout: {},
           pluginSkills: {},

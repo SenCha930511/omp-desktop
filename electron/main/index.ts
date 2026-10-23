@@ -6,7 +6,7 @@ import { readFile, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { pathToFileURL } from 'node:url'
 import { assertNoMcpAuthenticationCommand } from '../../src/lib/mcp-policy'
-import { BROWSER_PARTITION, type ApplicationMenuName, type AppMeta, type AppUpdateState, type PrimeEventEnvelope, type RuntimeInfo, type ThemeMode } from '../../src/types/api'
+import { BROWSER_PARTITION, type ApplicationMenuName, type AppMeta, type AppUpdateState, type HarnessUpdateState, type PrimeEventEnvelope, type RuntimeInfo, type ThemeMode } from '../../src/types/api'
 import { AgentRpcManager, OMP_RPC_ADAPTER } from './agent-rpc'
 import { installApplicationMenu } from './application-menu'
 import { MacBackgroundController, shouldStartInBackground } from './background'
@@ -40,6 +40,7 @@ import { LEGACY_USER_DATA_DIR_NAME, migrateLegacyUserData } from './user-data-mi
 import { VoiceService, voiceSecretStorageStatus } from './voice'
 import { isAllowedRendererAudioPermission } from './voice-permissions'
 import { createManualUpdateCheck, getAutoUpdater, isDeveloperIdSigned, UpdateService } from './updates'
+import { HarnessUpdateService } from './harness-update'
 
 // Development builds run the rebranded Electron bundle, whose product name
 // matches the packaged app, so both resolve to the same userData directory
@@ -815,6 +816,7 @@ async function bootstrap(): Promise<void> {
   const signed = app.isPackaged ? await isDeveloperIdSigned(resolve(process.resourcesPath, '..', '..')) : true
   const updates = new UpdateService(getAutoUpdater(), { enabled: app.isPackaged, signed, currentVersion: meta.version })
   updateService = updates
+  const harnessUpdates = new HarnessUpdateService({ resolveExecutable: () => discovery.executable('omp') })
   const refreshHarnesses = async () => {
     const harnesses = await discovery.refresh()
     const currentSettings = await reconcileActiveHarness(stateStore, harnesses)
@@ -823,7 +825,7 @@ async function bootstrap(): Promise<void> {
   }
   trustedRendererUrl = resolveRendererUrl()
   ipc = registerIpc({
-    meta, refreshHarnesses, projects, checkouts, sessions, agents: ompManager, terminals, git, plugins, catalog, settings, updates, cuaDriver, schedules, browser: browserService, voice,
+    meta, refreshHarnesses, projects, checkouts, sessions, agents: ompManager, terminals, git, plugins, catalog, settings, updates, harnessUpdates, cuaDriver, schedules, browser: browserService, voice,
     popupApplicationMenu, setTitleBarTheme,
     applyInterfaceZoom,
   }, trustedRendererUrl)
@@ -846,6 +848,19 @@ async function bootstrap(): Promise<void> {
       renderer.send(IPC_CHANNELS.updates.onChanged, state)
     }
   })
+  harnessUpdates.setEventSink((state: HarnessUpdateState) => {
+    const renderer = mainWindow?.webContents
+    if (!shutdownStarted && renderer && !renderer.isDestroyed()
+      && isTrustedRendererUrl(renderer.getURL(), trustedRendererUrl)
+      && isTrustedRendererUrl(renderer.mainFrame.url, trustedRendererUrl)) {
+      renderer.send(IPC_CHANNELS.harnessUpdates.onChanged, state)
+    }
+    // A finished install replaced the omp binary: re-probe so the About view
+    // and the harness picker reflect the new version.
+    if (state.phase === 'installed') void refreshHarnesses().catch(() => undefined)
+  })
+  // Startup update check: quiet unless omp reports an installable version.
+  void harnessUpdates.check().catch(() => undefined)
   installApplicationMenu({
     appName: 'OMP Desktop',
     updatesEnabled: updates.isEnabled(),

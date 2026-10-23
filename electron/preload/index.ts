@@ -1,6 +1,6 @@
 import { IPC_CHANNELS, type IpcChannel } from '../../src/types/ipc'
 import { contextBridge, ipcRenderer } from 'electron'
-import type { AgentBrowserActivityEvent, AgentBrowserPointerEvent, AgentBrowserState, AppUpdateState, PrimeEventEnvelope, DesktopApi, ScheduleChangeEvent, SessionChangeEvent, TerminalDataEvent, TerminalExitEvent } from '../../src/types/api'
+import type { AgentBrowserActivityEvent, AgentBrowserPointerEvent, AgentBrowserState, AppUpdateState, HarnessUpdateState, PrimeEventEnvelope, DesktopApi, ScheduleChangeEvent, SessionChangeEvent, TerminalDataEvent, TerminalExitEvent } from '../../src/types/api'
 
 function subscribe<T>(channel: IpcChannel, callback: (payload: T) => void): () => void {
   if (typeof callback !== 'function') throw new TypeError('callback must be a function')
@@ -48,6 +48,11 @@ const api: DesktopApi = {
     checkLatestRelease: () => invoke(IPC_CHANNELS.updates.checkLatestRelease),
     downloadAndInstall: () => invoke(IPC_CHANNELS.updates.downloadAndInstall),
     onChanged: (callback) => subscribe<AppUpdateState>(IPC_CHANNELS.updates.onChanged, callback),
+  },
+  harnessUpdates: {
+    getState: () => invoke(IPC_CHANNELS.harnessUpdates.getState),
+    install: () => invoke(IPC_CHANNELS.harnessUpdates.install),
+    onChanged: (callback) => subscribe<HarnessUpdateState>(IPC_CHANNELS.harnessUpdates.onChanged, callback),
   },
   projects: {
     list: (harness) => invoke(IPC_CHANNELS.projects.list, harness),

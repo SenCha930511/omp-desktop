@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createWorkspaceActions, type WorkspaceActionsDeps } from '../../src/hooks/useWorkspaceActions'
 import type { DesktopApi, RuntimeInfo, SessionRecord, TranscriptMessage } from '../../src/types/api'
+import { createSingleFlightAdmission } from '../../src/lib/workspace'
 
 const project = {
   id: 'optimistic-project',
@@ -45,6 +46,7 @@ interface FixtureOptions {
 
 function fixture({ workspaceRuntime = null, listedRuntimes = [], sessionStatus = 'idle' }: FixtureOptions = {}) {
   let currentRuntime = workspaceRuntime
+  const submissionAdmission = createSingleFlightAdmission()
   let messages: TranscriptMessage[] = []
   const currentSession = session(sessionStatus)
   const workspaceRef = {
@@ -60,14 +62,20 @@ function fixture({ workspaceRuntime = null, listedRuntimes = [], sessionStatus =
   const start = vi.fn(async () => runtime('started-runtime'))
   const queuePrompt = vi.fn(() => 'queued-prompt-id')
   const setSessions = vi.fn()
+  const runtimeIdRef = { current: null as string | null }
+  const runtimeOwnerRef = { current: null as { runtimeId: string; generation: number } | null }
   const workspace = {
-    runtime: currentRuntime,
+    get runtime() { return currentRuntime },
     workspaceRef,
-    runtimeIdRef: { current: null as string | null },
-    runtimeOwnerRef: { current: null as { runtimeId: string; generation: number } | null },
+    runtimeIdRef,
+    runtimeOwnerRef,
     prepareForPrompt: () => true,
     adoptSessionId: vi.fn(),
-    attachRuntime: (next: RuntimeInfo | undefined) => { currentRuntime = next ?? null },
+    attachRuntime: (next: RuntimeInfo | undefined) => {
+      currentRuntime = next ?? null
+      runtimeIdRef.current = next?.runtimeId ?? null
+      runtimeOwnerRef.current = next ? { runtimeId: next.runtimeId, generation: 1 } : null
+    },
     setRuntime: (next: RuntimeInfo | ((current: RuntimeInfo | null) => RuntimeInfo | null)) => {
       currentRuntime = typeof next === 'function' ? next(currentRuntime) : next
     },
@@ -92,7 +100,7 @@ function fixture({ workspaceRuntime = null, listedRuntimes = [], sessionStatus =
     workspace,
     settingsState: { settings: { activeHarness: 'omp', locale: 'en' } },
     provider: { model: 'auto', effort: 'medium', fast: false },
-    submissionAdmissionRef: { current: { active: false, run: async (task: () => Promise<void>) => { await task(); return true } } },
+    submissionAdmissionRef: { current: submissionAdmission },
     initialized: true,
     layout: {},
     pluginSkills: {},
@@ -195,5 +203,43 @@ describe('optimistic turn rows in existing sessions', () => {
 
     finishStart(runtime('started-runtime'))
     await sending
+  })
+
+  it('queues a follow-up while a previous admission is still starting the runtime', async () => {
+    const state = fixture()
+    let finishStart!: (value: RuntimeInfo) => void
+    state.start.mockImplementationOnce(() => new Promise<RuntimeInfo>((resolve) => { finishStart = resolve }))
+    const first = state.actions.sendPrompt('First message')
+    await vi.waitFor(() => expect(state.start).toHaveBeenCalled())
+
+    // The optimistic rows already mark the transcript busy; a second send
+    // must queue behind the in-flight admission instead of failing it.
+    await state.actions.sendPrompt('Second message')
+    expect(state.queuePrompt).toHaveBeenCalledWith('Second message', 'queue')
+    expect(state.messages().filter((message) => message.role === 'user')).toHaveLength(1)
+
+    finishStart(runtime('started-runtime'))
+    await first
+    expect(state.messages().map((message) => message.role)).toEqual(['user', 'assistant'])
+  })
+
+  it('waits for an in-flight admission before delivering a steer', async () => {
+    const state = fixture()
+    let finishStart!: (value: RuntimeInfo) => void
+    state.start.mockImplementationOnce(() => new Promise<RuntimeInfo>((resolve) => { finishStart = resolve }))
+    const first = state.actions.sendPrompt('First message')
+    await vi.waitFor(() => expect(state.start).toHaveBeenCalled())
+
+    const steer = state.actions.sendPrompt('Steer this', [], 'steer')
+    await Promise.resolve()
+    // Still waiting on the admission: nothing queued, nothing commanded.
+    expect(state.queuePrompt).not.toHaveBeenCalled()
+    expect(state.command).not.toHaveBeenCalled()
+
+    finishStart(runtime('started-runtime'))
+    await first
+    await steer
+    expect(state.command).toHaveBeenCalledWith('started-runtime', expect.objectContaining({ type: 'steer', message: 'Steer this' }))
+    expect(state.queuePrompt).toHaveBeenCalledWith('Steer this', 'steer', expect.any(Array), expect.any(Number))
   })
 })

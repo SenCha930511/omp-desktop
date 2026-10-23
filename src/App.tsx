@@ -22,6 +22,8 @@ import { useAgentEvents } from '@/hooks/useAgentEvents'
 import { useGitStatus } from '@/hooks/useGitStatus'
 import { useAppSettings } from '@/hooks/useAppSettings'
 import { useAppUpdates } from '@/hooks/useAppUpdates'
+import { useHarnessUpdates } from '@/hooks/useHarnessUpdates'
+import { Modal } from '@/components/ui'
 import { useBootstrap } from '@/hooks/useBootstrap'
 import { useBrowserAnnotations } from '@/hooks/useBrowserAnnotations'
 import { useExtensionUi } from '@/hooks/useExtensionUi'
@@ -180,6 +182,28 @@ export default function App() {
     },
     [bridge],
   )
+  const harnessUpdates = useHarnessUpdates(bridge, reportError)
+  const [harnessUpdatePromptOpen, setHarnessUpdatePromptOpen] = useState(false)
+  const harnessUpdatePromptShownRef = useRef(false)
+  // The startup omp-update check opens its prompt exactly once per launch;
+  // later availability (a retry) stays reachable through the sidebar row.
+  useEffect(() => {
+    if (harnessUpdates.state.phase === 'available' && !harnessUpdatePromptShownRef.current) {
+      harnessUpdatePromptShownRef.current = true
+      setHarnessUpdatePromptOpen(true)
+    }
+  }, [harnessUpdates.state.phase])
+  const runHarnessUpdate = useCallback(() => {
+    setHarnessUpdatePromptOpen(false)
+    void harnessUpdates.install().then((state) => {
+      if (state?.phase === 'installed') setToast(t('sidebar.harnessUpdate.installedToast', { version: state.availableVersion ?? '' }))
+    })
+  }, [harnessUpdates, setToast, t])
+  const openHarnessUpdatePrompt = useCallback(() => {
+    // The error row retries directly: omp re-checks before installing anyway.
+    if (harnessUpdates.state.phase === 'error') runHarnessUpdate()
+    else setHarnessUpdatePromptOpen(true)
+  }, [harnessUpdates.state.phase, runHarnessUpdate])
   const appUpdates = useAppUpdates(bridge, reportError)
   useEffect(() => {
     window.localStorage.setItem('omp-desktop.cleared-session-attention', JSON.stringify(clearedAttention))
@@ -1099,6 +1123,8 @@ export default function App() {
             activeHarness={activeHarness}
             updateState={appUpdates.state}
             onUpdateAction={appUpdates.act}
+            harnessUpdateState={harnessUpdates.state}
+            onHarnessUpdateAction={openHarnessUpdatePrompt}
             projectSortMode={settingsState.settings.projectSortMode}
             {...sidebarActions}
             onSelectDraftSession={openDraftSession}
@@ -1391,6 +1417,24 @@ export default function App() {
           <Suspense fallback={<LoadingPanel label={t('app.panel.request')} />}>
             <ExtensionUiModal request={extension.extensionUi.request} onRespond={(response) => void extension.respondToExtensionUi(response)} platform={platform} />
           </Suspense>
+        ) : null}
+        {harnessUpdatePromptOpen && harnessUpdates.state.phase === 'available' ? (
+          <Modal
+            title={t('sidebar.harnessUpdate.confirmTitle')}
+            onClose={() => setHarnessUpdatePromptOpen(false)}
+            footer={
+              <>
+                <button type="button" className="button" onClick={() => setHarnessUpdatePromptOpen(false)}>
+                  {t('sidebar.harnessUpdate.later')}
+                </button>
+                <button type="button" className="button button--primary" onClick={runHarnessUpdate}>
+                  {t('sidebar.harnessUpdate.updateNow')}
+                </button>
+              </>
+            }
+          >
+            <p>{t('sidebar.harnessUpdate.confirmBody', { version: harnessUpdates.state.availableVersion ?? '' })}</p>
+          </Modal>
         ) : null}
         {meta && !detectedHarnesses.length && !noHarnessPromptDismissed ? (
           <NoHarnessPrompt

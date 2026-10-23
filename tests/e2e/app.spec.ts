@@ -210,6 +210,12 @@ const args = process.argv.slice(2)
 const fixtureRoot = ${JSON.stringify(fixtureRoot)}
 const marker = (name) => path.join(fixtureRoot, name)
 if (args.includes('--version')) { process.stdout.write('omp/17.2.15\\n'); process.exit(0) }
+if (args[0] === 'update' && args.includes('--check')) {
+  if (process.env.OMP_FIXTURE_UPDATE_AVAILABLE) { process.stdout.write('Current version: 17.2.15\\nNew version available: ' + process.env.OMP_FIXTURE_UPDATE_AVAILABLE + '\\n') }
+  else { process.stdout.write('Current version: 17.2.15\\n✔ Already up to date\\n') }
+  process.exit(0)
+}
+if (args[0] === 'update') { process.stdout.write('Installing update...\\nRestart omp to use the new version\\n'); process.exit(0) }
 if (args[0] === 'plugin' && ['install', 'enable', 'disable', 'uninstall'].includes(args[1])) {
   const target = args[2]
   const pluginsRoot = ${JSON.stringify(join(home, '.omp', 'plugins'))}
@@ -379,6 +385,14 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
       send({ type: 'agent_start' })
       send({ id: command.id, type: 'response', command: command.type, success: true, data: { agentInvoked: true } })
       const release = marker('prompt-admission-barrier-release')
+      // The app can show its busy state before this prompt is admitted, so a
+      // test may write the release before the watcher exists; treat that as
+      // an immediate release.
+      if (fs.existsSync(release)) {
+        streaming = false
+        send({ type: 'agent_end' })
+        return
+      }
       const watcher = fs.watch(fixtureRoot, (_event, filename) => {
         if (filename?.toString() !== 'prompt-admission-barrier-release' || !fs.existsSync(release)) return
         watcher.close()
@@ -401,6 +415,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
       return
     }
     if (message.includes('stay busy')) {
+      fs.writeFileSync(marker('stay-busy-received'), '1')
       streaming = true
       send({ type: 'agent_start' })
       send({ id: command.id, type: 'response', command: command.type, success: true, data: { agentInvoked: true } })
@@ -561,6 +576,7 @@ test.describe('OMP Desktop desktop smoke', () => {
         const environment = hermeticEnvironment(fixture.home, fixture.ompExecutable, fixture.cuaExecutable, noOmp)
         if (testInfo.title === 'shows a new conversation immediately while the harness starts') environment.OMP_FIXTURE_START_DELAY_MS = '2500'
         if (testInfo.title === 'Command-Q backgrounds the window and menu-bar Open restores it') environment.OMP_DESKTOP_E2E_HIDE_WINDOWS = '0'
+        if (testInfo.title === 'offers to update omp when the startup check finds a newer version') environment.OMP_FIXTURE_UPDATE_AVAILABLE = '17.3.0'
         app = await electron.launch({
           args: ['.', `--user-data-dir=${fixture.userData}`],
           cwd: process.cwd(),
@@ -666,6 +682,26 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(composer).not.toBeVisible()
     await page.getByRole('button', { name: 'Conversation', exact: true }).click()
     await expect(composer).toBeVisible()
+  })
+
+  test('offers to update omp when the startup check finds a newer version', async () => {
+    const dialog = page.locator('.modal')
+    await expect(dialog).toBeVisible()
+    await expect(dialog).toContainText('17.3.0')
+
+    // Later keeps the sidebar row as the persistent way in.
+    await dialog.getByRole('button', { name: 'Later' }).click()
+    await expect(dialog).toHaveCount(0)
+    const sidebarRow = page.locator('.sidebar-update--harness-available')
+    await expect(sidebarRow).toContainText('OMP 17.3.0 available')
+
+    // The row reopens the prompt; Update now runs omp update in place.
+    await sidebarRow.click()
+    await expect(dialog).toBeVisible()
+    await dialog.getByRole('button', { name: 'Update now' }).click()
+    await expect(dialog).toHaveCount(0)
+    await expect(page.locator('.sidebar-update--harness-installing, .sidebar-update--harness-installed')).toBeVisible()
+    await expect(page.locator('.sidebar-update--harness-installed')).toContainText('OMP 17.3.0 installed', { timeout: 10_000 })
   })
 
   test('offers auto effort and persists the thinking disclosure setting', async () => {
@@ -1317,7 +1353,7 @@ test.describe('OMP Desktop desktop smoke', () => {
       return { type: typeof bridge, groups: bridge ? Object.keys(bridge).sort() : [], voiceMethods: voice && typeof voice === 'object' ? Object.keys(voice).sort() : [] }
     })
     expect(bridge.type).toBe('object')
-    expect(bridge.groups).toEqual(['agent', 'app', 'browser', 'git', 'plugins', 'projects', 'providers', 'schedules', 'sessions', 'settings', 'terminal', 'updates', 'voice'])
+      expect(bridge.groups).toEqual(['agent', 'app', 'browser', 'git', 'harnessUpdates', 'plugins', 'projects', 'providers', 'schedules', 'sessions', 'settings', 'terminal', 'updates', 'voice'])
     expect(bridge.voiceMethods).toContain('testSelfHosted')
     const updateMenu = await app!.evaluate(({ Menu }) => {
       const parents = Menu.getApplicationMenu()?.items ?? []
@@ -3188,6 +3224,10 @@ test.describe('OMP Desktop desktop smoke', () => {
     await composer.fill('stay busy while I close the window')
     await composer.press('Enter')
     await expect(page.getByRole('button', { name: 'Stop OMP' })).toBeVisible()
+    // The busy state now appears while the runtime is still starting; the
+    // close confirmation needs the agent's turn actually streaming, so wait
+    // until the fixture has received the prompt.
+    await expect.poll(() => existsSync(join(fixtureRoot, 'stay-busy-received'))).toBe(true)
     await stubCloseDialog(app!)
 
     const runningPrompt = {
@@ -3232,12 +3272,17 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect.poll(() => app!.evaluate(() => typeof (globalThis as { __trayQuit?: unknown }).__trayQuit)).toBe('function')
 
     await page.locator('.session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
+    await expect(page.locator('.model-picker__trigger')).toHaveAccessibleName('Model: Claude Fixture')
     const composer = page.getByRole('combobox', { name: 'Message OMP' })
     await composer.fill('stay busy while I background the window')
     await composer.press('Enter')
-    await expect(page.getByRole('button', { name: 'Stop OMP' })).toBeVisible()
     const runtimePidPath = join(fixtureRoot, 'omp-runtime.pid')
     await expect.poll(() => existsSync(runtimePidPath)).toBe(true)
+    // The busy indicator now appears while the runtime is still starting;
+    // the runtime handshake must finish before the window hides, or the
+    // turn never starts. The marker is written when the fixture receives
+    // the prompt, which is after the handshake completed.
+    await expect.poll(() => existsSync(join(fixtureRoot, 'stay-busy-received'))).toBe(true)
     const runtimePid = Number(readFileSync(runtimePidPath, 'utf8'))
     expect(runtimePid).toBeGreaterThan(0)
     expect(processIsAlive(runtimePid)).toBe(true)

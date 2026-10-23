@@ -7,6 +7,7 @@ import type { ApplicationMenuName, AppMeta, AppSettings, HarnessId, SessionChang
 import type { AgentRpcManager } from './agent-rpc'
 import type { GitService } from './git'
 import type { CuaDriverService } from './cua-driver'
+import type { HarnessUpdateService } from './harness-update'
 import type { ModelCatalogProvider } from './model-catalog'
 import { OPT_IN_PROVIDERS } from './model-visibility'
 import type { PluginService } from './plugins'
@@ -36,6 +37,7 @@ interface Services {
   plugins: PluginService
   catalog: ModelCatalogProvider
   settings: SettingsService
+  harnessUpdates: HarnessUpdateService
   updates: UpdateService
   cuaDriver: CuaDriverService
   schedules: AutomationService
@@ -186,6 +188,8 @@ export function registerIpc(services: Services, expectedRendererUrl: string): Ip
   handle(IPC_CHANNELS.updates.check, () => services.updates.check())
   handle(IPC_CHANNELS.updates.checkLatestRelease, () => services.updates.checkLatestRelease())
   handle(IPC_CHANNELS.updates.downloadAndInstall, () => services.updates.downloadAndInstall())
+  handle(IPC_CHANNELS.harnessUpdates.getState, () => services.harnessUpdates.getState())
+  handle(IPC_CHANNELS.harnessUpdates.install, () => services.harnessUpdates.install())
 
   handle(IPC_CHANNELS.projects.list, () => services.projects.list())
   handle(IPC_CHANNELS.projects.listFiles, (_event, root) => services.projects.listFiles(root))

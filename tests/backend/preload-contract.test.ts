@@ -23,6 +23,8 @@ const INVOKE_CASES: Array<[domain: string, method: string, channel: string, args
   ['updates', 'check', 'updates:check', []],
   ['updates', 'checkLatestRelease', 'updates:check-latest-release', []],
   ['updates', 'downloadAndInstall', 'updates:download-and-install', []],
+  ['harnessUpdates', 'getState', 'harnessUpdates:get-state', []],
+  ['harnessUpdates', 'install', 'harnessUpdates:install', []],
   ['projects', 'list', 'projects:list', ['omp']],
   ['projects', 'listFiles', 'projects:list-files', ['/repo', 'omp']],
   ['projects', 'listCheckouts', 'projects:list-checkouts', ['project-id', 'omp']],
@@ -94,6 +96,7 @@ const INVOKE_CASES: Array<[domain: string, method: string, channel: string, args
 
 const SUBSCRIPTION_CASES: Array<[domain: string, method: string, channel: string]> = [
   ['updates', 'onChanged', 'updates:changed'],
+  ['harnessUpdates', 'onChanged', 'harnessUpdates:changed'],
   ['sessions', 'onChanged', 'sessions:changed'],
   ['agent', 'onEvent', 'agent:event'],
   ['terminal', 'onData', 'terminal:data'],

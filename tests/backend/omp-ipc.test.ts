@@ -61,6 +61,7 @@ interface TestServices {
   schedules: { list: Mock; create: Mock }
   browser: { closeForSession: Mock }
   terminals: { killForSession: Mock }
+  harnessUpdates: { getState: Mock; install: Mock }
 }
 
 interface Harness {
@@ -135,6 +136,7 @@ function buildServices(options: { includeApple?: boolean } = {}) {
     },
     schedules: { ...serviceStub(), onDidChange: vi.fn(() => () => undefined), list: vi.fn(() => 'scheduled'), create: vi.fn(async () => 'created') },
     browser: { ...serviceStub(), closeForSession: vi.fn(() => true), onDidChange: vi.fn(() => vi.fn()), onPointer: vi.fn(() => vi.fn()), onActivity: vi.fn(() => vi.fn()) },
+    harnessUpdates: { ...serviceStub(), getState: vi.fn(async () => ({ phase: 'idle' })), install: vi.fn(async () => ({ phase: 'idle' })) },
   }
 }
 
@@ -276,6 +278,13 @@ describe('harness-aware IPC routing', () => {
   it('does not register MCP-specific authentication or credential cleanup channels', () => {
     expect(electronMocks.ipcMain.handle).not.toHaveBeenCalledWith('providers:start-mcp-oauth', expect.any(Function))
     expect(electronMocks.ipcMain.handle).not.toHaveBeenCalledWith('providers:logout-mcp', expect.any(Function))
+  })
+
+  it('routes the harness update channels to the omp update service', async () => {
+    await expect(harness.invoke('harnessUpdates:get-state')).resolves.toEqual({ phase: 'idle' })
+    await expect(harness.invoke('harnessUpdates:install')).resolves.toEqual({ phase: 'idle' })
+    expect(harness.services.harnessUpdates.getState).toHaveBeenCalledTimes(1)
+    expect(harness.services.harnessUpdates.install).toHaveBeenCalledTimes(1)
   })
 
   it('stores OMP provider visibility in desktop settings', async () => {

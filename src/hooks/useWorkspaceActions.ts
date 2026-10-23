@@ -371,8 +371,25 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
       return
     }
     const currentWorkspace = workspace.workspaceRef.current
-    const currentRuntime = workspace.runtime
-    const currentOwner = workspace.runtimeOwnerRef.current
+    let currentRuntime = workspace.runtime
+    let currentOwner = workspace.runtimeOwnerRef.current
+    // An admission still in flight owns the turn slot even while
+    // workspace.runtime is briefly null during runtime startup — the
+    // optimistic rows already mark the transcript busy. Queue behind it
+    // instead of losing the race with the single-flight gate.
+    if (bridge && intent === 'queue' && images.length === 0 && submissionAdmissionRef.current.active) {
+      if (!queuedFlushPromptId) workspace.queuePrompt(prompt, intent)
+      return
+    }
+    // A steer aimed at a turn whose admission is still delivering must wait
+    // for that admission: workspace.runtime is briefly null during runtime
+    // startup, so the streaming-runtime shortcut below cannot route it yet.
+    if (bridge && intent === 'steer' && submissionAdmissionRef.current.active) {
+      await submissionAdmissionRef.current.waitForIdle()
+      if (workspace.workspaceRef.current.generation !== currentWorkspace.generation) return
+      currentRuntime = getDeps().workspace.runtime
+      currentOwner = workspace.runtimeOwnerRef.current
+    }
     const ownsStreamingRuntime = Boolean(
       bridge && currentRuntime && (currentRuntime.isStreaming || submissionAdmissionRef.current.active)
       && workspace.runtimeIdRef.current === currentRuntime.runtimeId

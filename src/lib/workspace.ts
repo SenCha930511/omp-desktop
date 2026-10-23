@@ -40,6 +40,8 @@ export interface WorkspaceSelection {
 export interface SingleFlightAdmission {
   readonly active: boolean
   run(task: () => Promise<void> | void): Promise<boolean>
+  /** Resolves once no admission is in flight; callers use it to queue work behind the gate. */
+  waitForIdle(): Promise<void>
 }
 
 export function projectContainsPath(project: ProjectRecord, path?: string): boolean {
@@ -99,8 +101,18 @@ export function selectStartupWorkspace(
 
 export function createSingleFlightAdmission(): SingleFlightAdmission {
   let active = false
+  const idleWaiters: Array<() => void> = []
+  const settleIdleWaiters = () => {
+    if (active) return
+    const pending = idleWaiters.splice(0)
+    for (const resolve of pending) resolve()
+  }
   return {
     get active() { return active },
+    async waitForIdle() {
+      if (!active) return
+      await new Promise<void>((resolve) => { idleWaiters.push(resolve) })
+    },
     async run(task) {
       if (active) return false
       active = true
@@ -109,6 +121,7 @@ export function createSingleFlightAdmission(): SingleFlightAdmission {
         return true
       } finally {
         active = false
+        settleIdleWaiters()
       }
     },
   }

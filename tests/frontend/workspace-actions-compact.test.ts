@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createWorkspaceActions, type WorkspaceActionsDeps } from '../../src/hooks/useWorkspaceActions'
+import { createSingleFlightAdmission } from '../../src/lib/workspace'
 import type { DesktopApi, RuntimeInfo, SessionRecord, TranscriptMessage } from '../../src/types/api'
 
 const project = {
@@ -103,7 +104,7 @@ function fixture({ runtime: configuredRuntime = null, sessionStatus = 'idle', ow
     workspace,
     settingsState: { settings: { activeHarness: 'omp', locale: 'en' } },
     provider: { model: 'auto', effort: 'medium', fast: false },
-    submissionAdmissionRef: { current: { active: false, run: async (task: () => Promise<void>) => { await task(); return true } } },
+    submissionAdmissionRef: { current: createSingleFlightAdmission() },
     initialized: true,
     layout: {},
     pluginSkills: {},

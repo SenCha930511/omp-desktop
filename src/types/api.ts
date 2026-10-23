@@ -56,6 +56,19 @@ export interface LatestReleaseCheck {
   url: string
 }
 
+/** Lifecycle of the `omp update` flow driven from the main process. */
+export type HarnessUpdatePhase = 'idle' | 'available' | 'installing' | 'installed' | 'up-to-date' | 'error'
+
+export interface HarnessUpdateState {
+  phase: HarnessUpdatePhase
+  /** Version of the omp executable the check ran against. */
+  currentVersion?: string
+  /** Version `omp update --check` reported as installable. */
+  availableVersion?: string
+  /** Failure detail; present only in the error phase. */
+  message?: string
+}
+
 export interface ProjectScripts {
   setup: string
   run: string
@@ -737,6 +750,11 @@ export interface DesktopApi {
     checkLatestRelease(): Promise<LatestReleaseCheck>
     downloadAndInstall(): Promise<boolean>
     onChanged(callback: (state: AppUpdateState) => void): () => void
+  }
+  harnessUpdates: {
+    getState(): Promise<HarnessUpdateState>
+    install(): Promise<HarnessUpdateState>
+    onChanged(callback: (state: HarnessUpdateState) => void): () => void
   }
   projects: {
     list(harness?: HarnessId): Promise<ProjectRecord[]>

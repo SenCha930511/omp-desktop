@@ -29,7 +29,7 @@ import { HARNESS_PRODUCT_NAMES } from '@/lib/harness'
 import { type MessageKey, useI18n } from '@/lib/i18n'
 import { shortcutLabel } from '@/lib/platform-shortcuts'
 import { sortProjects } from '@/lib/project-order'
-import { type AppUpdateState, type HarnessId, PROJECT_SORT_MODES, type ProjectRecord, type ProjectSortMode, type SessionRecord, type WorkspaceView } from '@/types/api'
+import { type AppUpdateState, type HarnessId, type HarnessUpdateState, PROJECT_SORT_MODES, type ProjectRecord, type ProjectSortMode, type SessionRecord, type WorkspaceView } from '@/types/api'
 import { IconButton, Modal, useFocusTrap } from './ui'
 
 const PROJECT_SORT_LABEL_KEYS = { recent: 'projects.sort.recent', alphabetical: 'projects.sort.alphabetical' } as const satisfies Record<ProjectSortMode, MessageKey>
@@ -43,6 +43,8 @@ export interface SidebarProps {
   activeHarness?: HarnessId
   clearedAttention?: Record<string, string>
   updateState?: AppUpdateState
+  harnessUpdateState?: HarnessUpdateState
+  onHarnessUpdateAction?(): void
   onUpdateAction?(): void | Promise<void>
   onSelectProject(project: ProjectRecord): void
   onSelectSession(session: SessionRecord): void
@@ -167,6 +169,22 @@ export function updateConfirmCopy(state: AppUpdateState, t: Translator): { title
   }
 }
 
+/** Sidebar-row copy for the omp harness update lifecycle. */
+export function harnessUpdateControlCopy(state: HarnessUpdateState, t: Translator): { label: string; title: string } {
+  switch (state.phase) {
+    case 'available':
+      return { label: t('sidebar.harnessUpdate.availableLabel', { version: state.availableVersion ?? '' }), title: t('sidebar.harnessUpdate.confirmBody', { version: state.availableVersion ?? '' }) }
+    case 'installing':
+      return { label: t('sidebar.harnessUpdate.installingLabel'), title: t('sidebar.harnessUpdate.installingLabel') }
+    case 'installed':
+      return { label: t('sidebar.harnessUpdate.installedLabel', { version: state.availableVersion ?? '' }), title: t('sidebar.harnessUpdate.installedLabel', { version: state.availableVersion ?? '' }) }
+    case 'error':
+      return { label: t('sidebar.harnessUpdate.errorLabel'), title: state.message ?? t('sidebar.harnessUpdate.errorLabel') }
+    default:
+      return { label: '', title: '' }
+  }
+}
+
 async function copySessionUuid(id: string): Promise<void> {
   if (navigator.clipboard?.writeText) {
     try {
@@ -196,6 +214,8 @@ function SidebarView({
   activeHarness = 'omp',
   clearedAttention = {},
   updateState = { phase: 'unsupported' },
+  harnessUpdateState,
+  onHarnessUpdateAction,
   onUpdateAction,
   onSelectProject,
   onSelectSession,
@@ -254,6 +274,8 @@ function SidebarView({
   const updateBusy = updateState.phase === 'checking' || updateState.phase === 'downloading'
   const updateIndeterminate = updateState.phase === 'downloading' && updateState.percent === undefined
   const updateVisible = updateState.phase === 'available' || updateState.phase === 'downloading' || updateState.phase === 'downloaded' || updateState.phase === 'error'
+  const harnessUpdateCopy = harnessUpdateState ? harnessUpdateControlCopy(harnessUpdateState, t) : null
+  const harnessUpdateVisible = Boolean(harnessUpdateState && harnessUpdateState.phase !== 'idle' && harnessUpdateState.phase !== 'up-to-date')
   useEffect(() => {
     if (!projectMenu) return
     const dismiss = (event: PointerEvent) => {
@@ -684,6 +706,21 @@ function SidebarView({
             </button>
           </>
         ) : null}
+        {harnessUpdateVisible && harnessUpdateCopy ? (
+          <button
+            type="button"
+            className={`sidebar-update sidebar-update--harness-${harnessUpdateState?.phase}`}
+            title={harnessUpdateCopy.title}
+            aria-label={harnessUpdateCopy.title}
+            disabled={harnessUpdateState?.phase === 'installing'}
+            onClick={() => onHarnessUpdateAction?.()}
+          >
+            <span className="sidebar-update__icon">
+              {harnessUpdateState?.phase === 'installing' ? <LoaderCircle size={15} className="spin" /> : <Download size={15} />}
+            </span>
+            <span>{harnessUpdateCopy.label}</span>
+          </button>
+        ) : null}
         <button type="button" title={t('nav.settings')} className={activeView === 'settings' ? 'is-active' : ''} onClick={() => onNavigate('settings')}>
           <Settings size={15} />
           <span>{t('nav.settings')}</span>
@@ -827,6 +864,8 @@ export function areSidebarPropsEqual(previous: SidebarProps, next: SidebarProps)
     previous.activeHarness === next.activeHarness &&
     previous.clearedAttention === next.clearedAttention &&
     previous.updateState === next.updateState &&
+    previous.harnessUpdateState === next.harnessUpdateState &&
+    previous.onHarnessUpdateAction === next.onHarnessUpdateAction &&
     previous.onUpdateAction === next.onUpdateAction &&
     previous.onSelectProject === next.onSelectProject &&
     previous.onSelectSession === next.onSelectSession &&

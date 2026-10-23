@@ -18,6 +18,11 @@ export const IPC_CHANNELS = {
     downloadAndInstall: 'updates:download-and-install',
     onChanged: 'updates:changed',
   },
+  harnessUpdates: {
+    getState: 'harnessUpdates:get-state',
+    install: 'harnessUpdates:install',
+    onChanged: 'harnessUpdates:changed',
+  },
   projects: {
     list: 'projects:list',
     listFiles: 'projects:list-files',

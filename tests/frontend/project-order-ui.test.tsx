@@ -62,6 +62,11 @@ beforeEach(() => {
       downloadAndInstall: vi.fn(async () => true),
       onChanged: vi.fn(() => () => undefined),
     },
+    harnessUpdates: {
+      getState: vi.fn(async () => ({ phase: 'idle' as const })),
+      install: vi.fn(async () => ({ phase: 'idle' as const })),
+      onChanged: vi.fn(() => () => undefined),
+    },
     projects: {
       list: vi.fn(async () => projects),
       listFiles: vi.fn(async () => ({ entries: [], skipped: 0 })),

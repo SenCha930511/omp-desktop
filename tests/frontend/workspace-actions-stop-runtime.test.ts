@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createWorkspaceActions, type WorkspaceActionsDeps } from '../../src/hooks/useWorkspaceActions'
 import type { DesktopApi, RuntimeInfo, TranscriptMessage } from '../../src/types/api'
+import { createSingleFlightAdmission } from '../../src/lib/workspace'
 
 interface Deferred<T> {
   promise: Promise<T>
@@ -277,7 +278,7 @@ describe('idle prompt streaming behavior', () => {
       workspace,
       settingsState: { settings: { activeHarness: 'omp' } },
       provider: { model: 'auto', effort: 'medium', fast: false },
-      submissionAdmissionRef: { current: { active: false, run: async (task: () => Promise<void>) => { await task(); return true } } },
+      submissionAdmissionRef: { current: createSingleFlightAdmission() },
       initialized: true,
       layout: {},
       pluginSkills: {},
@@ -349,7 +350,7 @@ describe('idle prompt streaming behavior', () => {
       workspace,
       settingsState: { settings: { activeHarness: 'omp' } },
       provider: { model: 'auto', effort: 'medium', fast: false },
-      submissionAdmissionRef: { current: { active: false, run: async (task: () => Promise<void>) => { await task(); return true } } },
+      submissionAdmissionRef: { current: createSingleFlightAdmission() },
       initialized: true,
       layout: {},
       pluginSkills: {},
