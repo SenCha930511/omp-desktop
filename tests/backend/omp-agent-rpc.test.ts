@@ -11,6 +11,7 @@ import {
   type RpcChunkAssemblyTiming,
 } from '../../electron/main/agent-rpc/runtime'
 import { RPC_READ_FRAME_LIMIT_BYTES } from '../../electron/main/jsonl-limits'
+import { canonicalSessionPath } from '../../electron/main/session-paths'
 import { OmpModelCatalogService, MAX_CATALOG_PROVIDERS } from '../../electron/main/providers-omp'
 import { ScheduledRunExecutor } from '../../electron/main/schedules/executor'
 import type { PrimeModelDescriptor } from '../../src/types/api'
@@ -35,7 +36,8 @@ interface FakeOmpOptions {
   acceptNegotiate?: boolean
   sessionActions?: Record<string, unknown>
   queuedMessageCount?: number
-  /** Optional model payload served when the same fake is probed as an OMP catalog CLI. */
+  /** Session file the fake reports from get_state before a script rolls it. */
+  initialSessionFile?: string
   catalogModels?: unknown[]
 }
 
@@ -51,6 +53,7 @@ const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
 const sessionActions = ${JSON.stringify(options.sessionActions)}
 let negotiated = false
 let streaming = false
+let sessionFileVar = ${JSON.stringify(options.initialSessionFile ?? null)}
 send({ type: 'ready', protocolVersion: 1, supportedProtocolVersions: [1, 2] })
 send({ type: 'available_commands_update', commands: [{ name: 'help' }] })
 send({ type: 'fake_argv', argv: process.argv.slice(2) })
@@ -73,8 +76,8 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     send({ id: command.id, type: 'response', command: 'get_state', success: true, data: {
       sessionId: 'omp-session', isStreaming: streaming, isCompacting: false, thinkingLevel: 'medium',
       fastModeEnabled: true, model: { provider: 'openai-codex', id: 'gpt-5.6-luna', name: 'Luna GPT-5.6' },
-      contextUsage: { tokens: 12000, contextWindow: 200000, percent: 6 },
       queuedMessageCount: ${options.queuedMessageCount ?? 0},
+      ...(sessionFileVar ? { sessionFile: sessionFileVar } : {}),
       ...(sessionActions ? { sessionActions } : {}),
     } })
   } else if (command.type === 'get_session_stats') {
@@ -566,6 +569,32 @@ describe('OMP RPC event normalization', () => {
     expect(manager.list()[0]).toMatchObject({ isStreaming: false, isCompacting: false })
   })
 
+  it('follows the rolled session file after an auto compaction ends', async () => {
+    const scaffold = fakeOmpAgent()
+    writeFileSync(join(scaffold.cwd, 'session-old.jsonl'), '')
+    writeFileSync(join(scaffold.cwd, 'session-rolled.jsonl'), '')
+    const oldPath = join(scaffold.cwd, 'session-old.jsonl')
+    const rolledPath = join(scaffold.cwd, 'session-rolled.jsonl')
+    const fake = fakeOmpAgent({
+      initialSessionFile: oldPath,
+      promptScript: `
+    sessionFileVar = ${JSON.stringify(rolledPath)}
+    streaming = true
+    send({ type: 'agent_start' })
+    send({ type: 'auto_compaction_start', reason: 'threshold' })
+    send({ type: 'auto_compaction_end', reason: 'threshold', aborted: false, willRetry: false })` })
+    const manager = ompManager(fake.executable)
+    const runtime = await manager.start({ cwd: fake.cwd })
+    expect(runtime.sessionFile).toBe(canonicalSessionPath(oldPath))
+
+    await manager.command(runtime.runtimeId, { type: 'prompt', message: 'continue' })
+
+    // A streaming runtime parked on the sealed predecessor is what shields
+    // the duplicate sidebar row; the refresh after compaction_end must move
+    // it onto the successor file.
+    await waitUntil(() => manager.list()[0]?.sessionFile === canonicalSessionPath(rolledPath))
+    expect(manager.list()[0]).toMatchObject({ sessionFile: canonicalSessionPath(rolledPath), isStreaming: true })
+  })
   it('swallows non-terminal agent_end turn boundaries and forwards the terminal one', async () => {
     const fake = fakeOmpAgent({ promptScript: `
     streaming = true

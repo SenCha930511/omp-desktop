@@ -426,6 +426,8 @@ export class RpcRuntime {
       this.compactionEpisode = 'none'
       this.emit({ type: 'compaction_end', synthetic: true, aborted: false, willRetry: false })
       void this.refreshContextUsage()
+      // Follow the rolled successor file — see compaction_end in handleFrame.
+      void this.refreshState().catch(() => undefined)
     }, this.watchdogTimings.endGraceMs)
     this.compactionEndFallback.unref()
   }
@@ -565,6 +567,8 @@ export class RpcRuntime {
         this.compactionEpisode = 'none'
         this.clearCompactionEndFallback()
         this.emit({ type: 'compaction_end', synthetic: true, aborted: false, willRetry: true })
+        // Follow the rolled successor file — see compaction_end in handleFrame.
+        void this.refreshState().catch(() => undefined)
       }
     } else if (value.type === 'agent_end') {
       // retryPending is cleared only by agent_start or auto_retry_end, never
@@ -603,7 +607,16 @@ export class RpcRuntime {
       || value.type === 'turn_end'
       || value.type === 'agent_end') {
       void this.refreshContextUsage(this.liveContextUsage.tokens)
-    } else if (value.type === 'compaction_end') void this.refreshContextUsage()
+    } else if (value.type === 'compaction_end') {
+      void this.refreshContextUsage()
+      // A compact rolls the session file forward (experimental-context
+      // rollover) and emits no path change of its own: refresh so this
+      // runtime points at the successor. A streaming runtime still parked
+      // on the sealed predecessor "actively writes" it for the sidebar's
+      // supersession scan, which shields the stale row from hiding and
+      // lists one logical conversation as two sessions.
+      void this.refreshState().catch(() => undefined)
+    }
   }
 
   private handleChunkFrame(frame: RpcObject): void {
