@@ -283,6 +283,30 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
       setToast(translate(locale, 'sessions.deleted'))
     } catch (error) { reportError(error) }
   }
+  const branchSession = async (session: SessionRecord) => {
+    const { bridge, setSessions, setToast, settingsState, reportError } = getDeps()
+    if (!bridge) return
+    const locale = resolveLocale(settingsState.settings.locale ?? 'system')
+    try {
+      const branch = await bridge.sessions.branch(session.filePath)
+      setSessions((items) => (items.some((item) => item.filePath === branch.filePath) ? items : [...items, branch]))
+      selectSession(branch)
+      setToast(translate(locale, 'sessions.branched'))
+    } catch (error) {
+      reportError(error instanceof Error ? error : new Error(translate(locale, 'sessions.branchFailed')))
+    }
+  }
+  const togglePinSession = async (session: SessionRecord) => {
+    const { bridge, setSessions, reportError } = getDeps()
+    if (!bridge) return
+    const pinned = !session.pinned
+    try {
+      await bridge.sessions.setPinned(session.filePath, pinned)
+      setSessions((items) => items.map((item) => (item.filePath === session.filePath ? { ...item, pinned } : item)))
+    } catch (error) {
+      reportError(error)
+    }
+  }
   const addProject = async () => {
     const { bridge, workspace, setProjects, setView, setToast, settingsState, reportError } = getDeps()
     if (!bridge) { setToast('Project picker is available in the desktop app.'); return }
@@ -796,7 +820,7 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
 
   return {
     grantProject, persistPanel, toggleSidebar, toggleInspector, toggleTerminal,
-    selectProject, selectSession, newSession, openDraftSession, discardDraftSession, navigate, renameSession, setSessionArchived, deleteSession,
+    selectProject, selectSession, newSession, openDraftSession, discardDraftSession, navigate, renameSession, setSessionArchived, deleteSession, branchSession, togglePinSession,
     addProject, relocateProject, removeProject, togglePinProject, setProjectSortMode, sendPrompt, stopRuntime, installSkill, installExtension, connectMcp, setMcpEnabled, mutateCapability,
     createSchedule, updateSchedule, mutateSchedule, openScheduledSession,
     openBrowser, openChanges,

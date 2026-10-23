@@ -250,7 +250,6 @@ describe('transcript rendering', () => {
 
   it('keeps an accepted omp steer in history without duplicating the working indicator', () => {
     const harness = 'omp'
-    const shortName = 'OMP'
     const html = renderToStaticMarkup(createElement(Transcript, {
       messages: [
         { id: 'before', role: 'assistant', timestamp: 1_000, parts: [{ type: 'text', text: 'Current response' }] },
@@ -469,7 +468,7 @@ describe('transcript rendering', () => {
       role: 'system',
       parts: [{ type: 'compaction', status: 'done', reason: 'overflow', tokensBefore: 99_175, summary: 'The earlier work was summarized.' }],
     }])
-    expect(html).toContain('activity-line--compaction')
+    expect(html).toContain('compaction-card')
     expect(html).toContain('Context compacted')
     expect(html).toContain('overflow recovery')
     expect(html).toContain('99,175 tokens before')

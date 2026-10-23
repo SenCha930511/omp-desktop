@@ -34,9 +34,7 @@
 .row-action { opacity: 0; transition: opacity 130ms ease-out; }
 .project-row:hover .row-action, .project-row:focus-within .row-action { opacity: 1; }
 .project-row__new-session { flex: 0 0 auto; color: var(--text-tertiary); }
-.project-row__menu { position: absolute; z-index: 120; top: 33px; right: 2px; width: 154px; padding: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-raised); box-shadow: var(--shadow-popover); }
-.project-row__menu button { width: 100%; min-height: 29px; display: flex; align-items: center; gap: 7px; padding: 0 7px; border-radius: 5px; color: var(--text-secondary); background: transparent; text-align: left; }
-.project-row__menu button:hover, .project-row__menu button:focus-visible { color: var(--danger); background: var(--danger-soft); }
+/* Context menus are native OS menus now; the row keeps only its inline affordances. */
 .session-list { padding-left: 20px; margin-top: 1px; }
 .session-row-wrap { position: relative; border-radius: 7px; }
 .session-row-wrap:hover:not(.is-selected)::before, .session-row-wrap:focus-within:not(.is-selected)::before { content: ''; position: absolute; inset: 0 0 0 -20px; z-index: -1; border-radius: 7px; background: var(--surface-hover); }
@@ -68,9 +66,7 @@
 .session-row__archive { right: 30px; color: var(--text-tertiary); }
 .session-row__archive.is-confirming { color: var(--success); background: color-mix(in srgb, var(--success) 12%, transparent); }
 .session-row__more { right: 3px; }
-.session-row__menu { position: absolute; z-index: 120; top: 33px; right: 2px; width: 132px; padding: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-raised); box-shadow: var(--shadow-popover); }
-.session-row__menu button { width: 100%; min-height: 29px; display: flex; align-items: center; gap: 7px; padding: 0 7px; border-radius: 5px; color: var(--text-secondary); background: transparent; text-align: left; }
-.session-row__menu button:hover, .session-row__menu button:focus-visible { color: var(--text); background: var(--surface-hover); }
+.session-row__pin { flex: 0 0 auto; display: inline-flex; color: var(--prime); }
 
 .session-row { width: 100%; min-height: 37px; display: flex; align-items: center; gap: 7px; padding: 5px 6px; border-radius: 7px; color: var(--text-secondary); background: transparent; text-align: left; }
 /* Hover paints only unselected rows: the selected fill lives on the wrap's

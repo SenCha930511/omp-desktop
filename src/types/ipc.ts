@@ -11,6 +11,9 @@ export const IPC_CHANNELS = {
     setTitleBarTheme: 'app:set-title-bar-theme',
     onOpenSettings: 'app:open-settings',
   },
+  menu: {
+    popup: 'menu:popup',
+  },
   updates: {
     getState: 'updates:get-state',
     check: 'updates:check',
@@ -42,6 +45,8 @@ export const IPC_CHANNELS = {
     list: 'sessions:list',
     sync: 'sessions:sync',
     read: 'sessions:read',
+    branch: 'sessions:branch',
+    setPinned: 'sessions:setPinned',
     rename: 'sessions:rename',
     archive: 'sessions:archive',
     delete: 'sessions:delete',

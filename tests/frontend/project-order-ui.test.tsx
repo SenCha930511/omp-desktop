@@ -79,12 +79,17 @@ beforeEach(() => {
       touch: vi.fn(async () => true),
       setPinned: vi.fn(async () => true),
     },
+    menu: {
+      popup: vi.fn(async (items: Array<{ id: string; label: string }>) => (items.some((item) => item.label.includes('Pin project')) ? 'pin' : null)),
+    },
     sessions: {
       list: vi.fn(async () => []),
       read: vi.fn(async () => []),
       followUp: vi.fn(async () => true),
       rename: vi.fn(async () => true),
       archive: vi.fn(async () => true),
+      branch: vi.fn(async () => ({})),
+      setPinned: vi.fn(async () => undefined),
       onChanged: vi.fn(() => () => undefined),
     },
     agent: {
@@ -198,10 +203,11 @@ describe('project ordering controls in App', () => {
     await act(async () => {
       container.querySelector('.project-row')?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2 }))
     })
-    const pin = [...container.querySelectorAll('[aria-label^="Project options"] button')].find((button) => button.textContent?.includes('Pin project'))
-    expect(pin).toBeDefined()
-    await press(pin!)
     expect(bridge.projects.setPinned).toHaveBeenCalledWith('alpha', true, 'omp')
-    expect([...container.querySelectorAll('[aria-label^="Project options"] button')].some((button) => button.textContent?.includes('Pin project'))).toBe(false)
+    // A pinned project offers Unpin the next time the menu opens.
+    await act(async () => {
+      container.querySelector('.project-row')?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2 }))
+    })
+    expect(vi.mocked(bridge.menu.popup).mock.lastCall?.[0].some((item) => item.label.includes('Unpin project'))).toBe(true)
   })
 })

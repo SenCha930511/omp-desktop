@@ -57,6 +57,7 @@ describe('sidebar project context menu', () => {
     ]
     const onSetProjectSortMode = vi.fn()
     const onTogglePinProject = vi.fn()
+    const menuItems: Array<{ id: string; label: string }> = []
     await act(async () => {
       root.render(
         <Sidebar
@@ -64,6 +65,10 @@ describe('sidebar project context menu', () => {
           onSetProjectSortMode={onSetProjectSortMode} onTogglePinProject={onTogglePinProject}
           onSelectProject={noop} onSelectSession={noop} onNavigate={noop} onNewSession={noop} onAddProject={noop} onRemoveProject={noop}
           onClose={noop} onOpenPalette={noop} onRenameSession={async () => undefined} onArchiveSession={async () => undefined}
+          onPopupMenu={async (items) => {
+            menuItems.push(...items)
+            return 'pin'
+          }}
         />,
       )
     })
@@ -76,9 +81,7 @@ describe('sidebar project context menu', () => {
     expect(onSetProjectSortMode).toHaveBeenCalledWith('alphabetical')
 
     await rightClick(container.querySelector('.project-row')!)
-    const pin = [...container.querySelectorAll('[aria-label^="Project options"] button')].find((button) => button.textContent?.includes('Pin project'))
-    expect(pin).toBeDefined()
-    await press(pin!)
+    expect(menuItems.some((item) => item.id === 'pin' && item.label.includes('Pin project'))).toBe(true)
     expect(onTogglePinProject).toHaveBeenCalledWith(projects[1])
   })
 
@@ -167,14 +170,12 @@ describe('sidebar project context menu', () => {
           projects={[project]} sessions={[session]} activeView="session"
           onSelectProject={noop} onSelectSession={noop} onNavigate={noop} onNewSession={noop} onAddProject={noop} onRemoveProject={noop}
           onClose={noop} onOpenPalette={noop} onRenameSession={async () => undefined} onArchiveSession={async () => undefined}
+          onPopupMenu={async (items) => (items.some((item) => item.label.includes('Copy session UUID')) ? 'copy' : null)}
         />,
       )
     })
 
     await rightClick(container.querySelector('.session-row')!)
-    const copy = [...container.querySelectorAll('[aria-label="Session options"] button')].find((button) => button.textContent?.includes('Copy session UUID'))
-    expect(copy).toBeDefined()
-    await press(copy!)
     expect(writeText).toHaveBeenCalledWith(session.id)
   })
 
@@ -196,16 +197,12 @@ describe('sidebar project context menu', () => {
           onOpenPalette={noop}
           onRenameSession={async () => undefined}
           onArchiveSession={async () => undefined}
+          onPopupMenu={async (items) => (items.some((item) => item.label.includes('Delete project')) ? 'remove' : null)}
         />,
       )
     })
 
     await rightClick(container.querySelector('.project-row')!)
-    const menu = container.querySelector('[aria-label="Project options for Project"]')
-    expect(menu).not.toBeNull()
-    const remove = [...menu!.querySelectorAll('button')].find((button) => button.textContent?.includes('Delete project'))
-    expect(remove).toBeDefined()
-    await press(remove!)
 
     expect(document.body.querySelector('[role="dialog"]')).not.toBeNull()
     expect(document.body.textContent).toContain('All of its saved sessions will be permanently deleted from OMP Desktop.')

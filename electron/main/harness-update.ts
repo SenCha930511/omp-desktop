@@ -28,6 +28,7 @@ export interface HarnessUpdateParse {
 
 /** Removes ANSI escape sequences chalk may still emit for piped output. */
 export function stripAnsiCodes(text: string): string {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: the ESC byte is exactly what an ANSI stripper must match
   return text.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '')
 }
 

@@ -272,10 +272,9 @@ function AgentActivityPart({ part }: { part: Extract<MessagePart, { type: 'agent
 
 function CompactionPart({ part }: { part: Extract<MessagePart, { type: 'compaction' }> }) {
   const { t } = useI18n()
-  // A static status row: no expansion. The expandable details panel below
-  // used to open with an empty summary and read as a stray input box; the
-  // condensed summary adds nothing the transcript itself does not carry, and
-  // the failure state is already announced by the CircleAlert state label.
+  // A static status card: no expansion. The condensed summary adds nothing
+  // the transcript itself does not carry, and the failure state is already
+  // announced by the state chip.
   const label =
     part.status === 'running'
       ? t('transcript.compaction.running')
@@ -302,16 +301,16 @@ function CompactionPart({ part }: { part: Extract<MessagePart, { type: 'compacti
     )
   const tokenLabel = part.tokensBefore === undefined ? '' : t('transcript.compaction.tokensBefore', { count: part.tokensBefore.toLocaleString() })
   return (
-    <div className={`activity-line activity-line--compaction is-${part.status}`}>
-      <div className="activity-tool__summary is-static">
-        <span className="activity-line__icon">
-          {part.status === 'running' ? <LoaderCircle className="spin" size={13} /> : part.status === 'done' ? <Layers3 size={13} /> : <CircleAlert size={13} />}
-        </span>
-        <span className="activity-line__kind">{label}</span>
-        <span className="activity-compaction__reason">{t(part.reason ? COMPACTION_REASON_KEYS[part.reason] : COMPACTION_REASON_KEYS.context)}</span>
-        {tokenLabel ? <span className="activity-compaction__tokens">{tokenLabel}</span> : null}
-        <span className="activity-tool__state">{state}</span>
-      </div>
+    <div className={`compaction-card is-${part.status}`}>
+      <span className="compaction-card__icon">
+        {part.status === 'running' ? <LoaderCircle className="spin" size={13} /> : part.status === 'done' ? <Layers3 size={13} /> : <CircleAlert size={13} />}
+      </span>
+      <span className="compaction-card__title">{label}</span>
+      <span className="compaction-card__meta">
+        <span className="compaction-card__reason">{t(part.reason ? COMPACTION_REASON_KEYS[part.reason] : COMPACTION_REASON_KEYS.context)}</span>
+        {tokenLabel ? <span className="compaction-card__tokens">{tokenLabel}</span> : null}
+      </span>
+      <span className="compaction-card__state">{state}</span>
     </div>
   )
 }
@@ -414,6 +413,20 @@ export function WorkDisclosure({
         {running && <LiveElapsed since={message.startedAt ?? message.timestamp} />}
         {running && !open && <LoaderCircle size={12} className="spin" />}
       </button>
+      {running && !open ? (
+        <div className="work-disclosure__notes">
+          {parts.map((part, index) =>
+            // Same stray-glyph filter as WorkTimeline: a lone "·" or "…"
+            // between tool calls is not narration. Hoisted only while a
+            // running row is collapsed — open rows render notes inside.
+            part.type === 'text' && /[\p{L}\p{N}]/u.test(part.text) ? (
+              <div className="activity-line activity-line--note" key={partKey(part, index)}>
+                <MarkdownText text={part.text} streaming />
+              </div>
+            ) : null,
+          )}
+        </div>
+      ) : null}
       {open ? (
         <div className={`accordion-grid is-open${userToggledRef.current ? ' is-animated' : ''}`}>
           <div className="accordion-grid__inner">

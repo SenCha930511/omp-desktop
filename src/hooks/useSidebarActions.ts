@@ -14,6 +14,9 @@ type SidebarActions = Pick<SidebarProps,
   | 'onOpenPalette'
   | 'onRenameSession'
   | 'onArchiveSession'
+  | 'onPopupMenu'
+  | 'onBranchSession'
+  | 'onTogglePinSession'
 >
 
 export interface SidebarActionProxy {
@@ -38,6 +41,9 @@ export function createSidebarActionProxy(initialActions: SidebarActions): Sideba
       onOpenPalette: () => current.onOpenPalette(),
       onRenameSession: (session, title) => current.onRenameSession(session, title),
       onArchiveSession: (session) => current.onArchiveSession(session),
+      onPopupMenu: (items) => current.onPopupMenu?.(items) ?? Promise.resolve(null),
+      onBranchSession: (session) => current.onBranchSession?.(session),
+      onTogglePinSession: (session) => current.onTogglePinSession?.(session),
     },
     update(actions) { current = actions },
   }

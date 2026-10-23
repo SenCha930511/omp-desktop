@@ -44,12 +44,45 @@ export interface SingleFlightAdmission {
   waitForIdle(): Promise<void>
 }
 
+const PATH_SEPARATORS = new Set(['/', '\\'])
+
+function stripTrailingSeparators(path: string): string {
+  let end = path.length
+  while (end > 1 && PATH_SEPARATORS.has(path[end - 1]!)) end -= 1
+  return path.slice(0, end)
+}
+
+/** Boundary-safe containment: equal, or separated by a path separator. Platform-agnostic so recorded POSIX and Windows paths both match. */
+function pathIsWithin(path: string, folder: string): boolean {
+  const base = stripTrailingSeparators(folder)
+  if (path === base) return true
+  // An empty folder matches nothing beyond exact equality; a lone separator
+  // is a filesystem root and contains every path.
+  if (base.length === 0) return false
+  if (base.length === 1 && PATH_SEPARATORS.has(base)) return true
+  return path.startsWith(base) && PATH_SEPARATORS.has(path.charAt(base.length))
+}
+
+function matchingFolder(project: ProjectRecord, path: string): string | undefined {
+  return [project.path, ...project.folders].find((folder) => pathIsWithin(path, folder))
+}
+
 export function projectContainsPath(project: ProjectRecord, path?: string): boolean {
-  return Boolean(path && (project.path === path || project.folders.includes(path)))
+  return Boolean(path && matchingFolder(project, path))
 }
 
 export function findProjectForSession(projects: ProjectRecord[], session?: SessionRecord): ProjectRecord | undefined {
-  return session ? projects.find((project) => projectContainsPath(project, session.projectPath)) : undefined
+  if (!session) return undefined
+  let best: { project: ProjectRecord; folder: string } | undefined
+  for (const project of projects) {
+    const folder = matchingFolder(project, session.projectPath)
+    if (folder === undefined) continue
+    // Deterministic under containment: the project whose matching folder is
+    // longest (most specific) wins, so <repo>/packages/app maps to the nested
+    // project rather than whichever repo-scoped project iterated first.
+    if (best === undefined || folder.length > best.folder.length) best = { project, folder }
+  }
+  return best?.project
 }
 
 export function workspaceCwd(project?: ProjectRecord, session?: SessionRecord): string | undefined {

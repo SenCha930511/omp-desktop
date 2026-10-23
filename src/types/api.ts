@@ -39,6 +39,14 @@ export interface AppMeta {
 
 export type ApplicationMenuName = 'file' | 'edit' | 'view' | 'window' | 'help'
 
+/** One entry in a native context menu shown at the cursor via `menu.popup`. */
+export interface NativeMenuItem {
+  id: string
+  label: string
+  enabled?: boolean
+  separator?: boolean
+}
+
 export type AppUpdatePhase = 'idle' | 'checking' | 'available' | 'downloading' | 'downloaded' | 'not-available' | 'error' | 'unsupported'
 
 export interface AppUpdateState {
@@ -111,6 +119,7 @@ export interface SessionRecord {
   provider?: string
   thinkingLevel?: string
   depth: number
+  /** Pinned sessions sort first in the sidebar; persisted in the app store, not the session file. */
   pinned?: boolean
   unread?: boolean
   /** Monotonic renderer lifecycle revision used to distinguish attention events. */
@@ -744,6 +753,7 @@ export interface SideQuestionTopic extends SideQuestionTurn {
 
 export interface DesktopApi {
   app: { getMeta(): Promise<AppMeta>; refreshHarnesses(): Promise<{ meta: AppMeta; settings: AppSettings }>; openExternal(url: string): Promise<boolean>; revealPath(path: string): Promise<boolean>; popupMenu(menu: ApplicationMenuName, x: number, y: number): Promise<boolean>; setTitleBarTheme(theme: Exclude<ThemeMode, 'system'>): Promise<boolean>; onOpenSettings(callback: () => void): () => void }
+  menu: { popup(items: NativeMenuItem[]): Promise<string | null> }
   updates: {
     getState(): Promise<AppUpdateState>
     check(): Promise<AppUpdateState>
@@ -777,6 +787,8 @@ export interface DesktopApi {
     read(filePath: string): Promise<TranscriptMessage[]>
     rename(filePath: string, title: string): Promise<boolean>
     archive(filePath: string, archived?: boolean): Promise<boolean>
+    branch(filePath: string): Promise<SessionRecord>
+    setPinned(filePath: string, pinned: boolean): Promise<void>
     delete(filePath: string): Promise<boolean>
     onChanged(callback: (event: SessionChangeEvent) => void): () => void
   }

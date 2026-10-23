@@ -42,6 +42,9 @@ const api: DesktopApi = {
     setTitleBarTheme: (theme) => invoke(IPC_CHANNELS.app.setTitleBarTheme, theme),
     onOpenSettings: (callback) => subscribeSignal(IPC_CHANNELS.app.onOpenSettings, callback),
   },
+  menu: {
+    popup: (items) => invoke(IPC_CHANNELS.menu.popup, items),
+  },
   updates: {
     getState: () => invoke(IPC_CHANNELS.updates.getState),
     check: () => invoke(IPC_CHANNELS.updates.check),
@@ -75,6 +78,8 @@ const api: DesktopApi = {
     read: (filePath) => invoke(IPC_CHANNELS.sessions.read, filePath),
     rename: (filePath, title) => invoke(IPC_CHANNELS.sessions.rename, filePath, title),
     archive: (filePath, archived) => invoke(IPC_CHANNELS.sessions.archive, filePath, archived),
+    branch: (filePath) => invoke(IPC_CHANNELS.sessions.branch, filePath),
+    setPinned: (filePath, pinned) => invoke(IPC_CHANNELS.sessions.setPinned, filePath, pinned),
     delete: (filePath) => invoke(IPC_CHANNELS.sessions.delete, filePath),
     onChanged: (callback) => subscribe<SessionChangeEvent>(IPC_CHANNELS.sessions.onChanged, callback),
   },

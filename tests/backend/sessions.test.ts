@@ -854,7 +854,7 @@ describe('SessionService transcript bounds', () => {
     const { root, project, service } = setup()
     const file = join(root, 'large-parts.jsonl')
     const largeArgs = `args-start-${'a'.repeat(300_000)}-args-end`
-    const largeImage = `image-start-${'i'.repeat(3_000_000)}-image-end`
+    const largeImage = `image-start-${'i'.repeat(9 * 1024 * 1024)}-image-end`
     const largeOutput = `output-start-${'o'.repeat(300_000)}-output-end`
     writeFileSync(file, [
       JSON.stringify({ type: 'session', id: 'large-parts', cwd: project }),
@@ -880,11 +880,37 @@ describe('SessionService transcript bounds', () => {
     expect(typeof call?.args).toBe('string')
     expect((call!.args as string).length).toBeLessThanOrEqual(128 * 1024)
     expect(result?.text.length).toBeLessThanOrEqual(128 * 1024)
-    expect(image?.data?.length).toBeLessThanOrEqual(2 * 1024 * 1024)
+    expect(image?.data?.length).toBeLessThanOrEqual(8 * 1024 * 1024)
     expect(call?.args).toContain('[truncated]')
     expect(result?.text).toContain('[truncated]')
     expect(image?.data).toContain('[truncated]')
     expect(image?.dataTruncated).toBe(true)
+  })
+
+  it('keeps several multi-MB images intact through partsFromMessage and boundedTranscript', async () => {
+    const { root, project, service } = setup()
+    const file = join(root, 'multi-image.jsonl')
+    // Six screenshots of ~2.5 MiB base64 each: past the old 2 MiB per-part and
+    // global caps, comfortably inside the current 8 MiB per-part / 24 MiB
+    // transcript budgets.
+    const screenshot = (marker: string) => `${marker}-${'i'.repeat(2_500_000)}`
+    const images = [screenshot('one'), screenshot('two'), screenshot('three'), screenshot('four'), screenshot('five'), screenshot('six')]
+    writeFileSync(file, [
+      JSON.stringify({ type: 'session', id: 'multi-image', cwd: project }),
+      JSON.stringify({
+        type: 'message', id: 'screenshots', parentId: null,
+        message: { role: 'user', content: images.map((data, index) => ({ type: 'image', mimeType: 'image/png', data: `${index}-${data}` })) },
+      }),
+      '',
+    ].join('\n'))
+
+    const transcript = await service.read(file)
+    const parts = (transcript[0]?.parts ?? []).filter((part) => part.type === 'image')
+    expect(parts).toHaveLength(6)
+    for (const [index, part] of parts.entries()) {
+      expect(part.dataTruncated).toBeUndefined()
+      expect(part.data).toBe(`${index}-${images[index]}`)
+    }
   })
 
 

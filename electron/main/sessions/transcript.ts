@@ -14,11 +14,18 @@ const MAX_TRANSCRIPT_PARTS = 2_000
 const MAX_TRANSCRIPT_TEXT_CHARS = 1024 * 1024
 const MAX_TRANSCRIPT_TOOL_CHARS = 512 * 1024
 const MAX_TRANSCRIPT_ARGS_CHARS = 256 * 1024
-const MAX_TRANSCRIPT_IMAGE_CHARS = 2 * 1024 * 1024
+// Image budgets: session files already admit records up to 64 MiB, and pasted
+// screenshots routinely exceed the old 2 MiB caps, so a single large image (or
+// a handful of smaller ones) marked dataTruncated and the renderer showed
+// "圖片附件無法使用" after reload. The budget only exists to bound renderer
+// memory, so keep it generous: 8 MiB per part and 24 MiB across the transcript.
+const MAX_TRANSCRIPT_IMAGE_CHARS = 24 * 1024 * 1024
 export const MAX_PART_TEXT_CHARS = 256 * 1024
 const MAX_PART_TOOL_CHARS = 128 * 1024
 const MAX_PART_ARGS_CHARS = 128 * 1024
-const MAX_PART_IMAGE_CHARS = 2 * 1024 * 1024
+// See MAX_TRANSCRIPT_IMAGE_CHARS: per-part cap sized so multi-MB screenshots
+// survive the partsFromMessage path without dataTruncated.
+const MAX_PART_IMAGE_CHARS = 8 * 1024 * 1024
 const MAX_PARTS_PER_RECORD = 200
 const TRUNCATION_MARKER = '\n… [truncated] …\n'
 

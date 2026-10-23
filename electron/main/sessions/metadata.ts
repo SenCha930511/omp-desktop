@@ -13,7 +13,7 @@ export type JsonRecord = Record<string, unknown>
 /** Per-file metadata snapshot; the owning SessionService stamps the harness when it builds SessionRecords. */
 export interface SessionMetadata extends Omit<SessionRecord, 'harness'> { sessionName?: string }
 
-const MAX_SESSION_FILE_BYTES = 256 * 1024 * 1024
+export const MAX_SESSION_FILE_BYTES = 256 * 1024 * 1024
 export const MAX_METADATA_RECORDS = 200_000
 // The transcript reader of the same file MUST share this per-record tolerance.
 const MAX_METADATA_RECORD_BYTES = SESSION_FILE_RECORD_LIMIT_BYTES

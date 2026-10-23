@@ -5,6 +5,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
+import type { PluggableList } from 'unified'
 // KaTeX ships its own stylesheet and fonts; the bundler emits both, and the
 // omp-desktop:// protocol already serves .woff2 with the right MIME type.
 import 'katex/dist/katex.min.css'
@@ -127,7 +128,7 @@ function MarkdownCodeBlock({ node: _node, children, ...props }: ComponentPropsWi
   )
 }
 
-const markdownPlugins = [remarkGfm, remarkMath]
+const markdownPlugins: PluggableList = [[remarkGfm, { singleTilde: false }], remarkMath]
 /** Theme-matched KaTeX rendering: errors reuse the danger color, and unusual
  *  Unicode input stays silent instead of spamming the console. */
 const katexOptions = { errorColor: 'var(--danger)', strict: false } as const

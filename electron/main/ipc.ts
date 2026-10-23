@@ -1,9 +1,9 @@
 import { IPC_CHANNELS } from '../../src/types/ipc'
-import { ipcMain, shell, type IpcMainEvent, type IpcMainInvokeEvent, type WebContents } from 'electron'
+import { ipcMain, Menu, shell, type IpcMainEvent, type IpcMainInvokeEvent, type WebContents } from 'electron'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { readModelPresets } from './model-presets'
-import type { ApplicationMenuName, AppMeta, AppSettings, HarnessId, SessionChangeEvent, ThemeMode } from '../../src/types/api'
+import type { ApplicationMenuName, AppMeta, AppSettings, HarnessId, NativeMenuItem, SessionChangeEvent, ThemeMode } from '../../src/types/api'
 import type { AgentRpcManager } from './agent-rpc'
 import type { GitService } from './git'
 import type { CuaDriverService } from './cua-driver'
@@ -20,7 +20,7 @@ import type { TerminalService } from './terminal'
 import type { VoiceService } from './voice'
 import type { UpdateService } from './updates'
 import type { AgentBrowserService } from './browser/agent-service'
-import { requireExistingPath, requireRecord, requireString, requireWebUrl } from './validation'
+import { rejectUnknownKeys, requireBoolean, requireExistingPath, requireRecord, requireString, requireWebUrl } from './validation'
 import { deleteProjectSessions, resolveProjectRoots } from './project-sessions'
 
 interface Services {
@@ -66,6 +66,52 @@ function requireMenuCoordinate(value: unknown): number {
 function requireResolvedTheme(value: unknown): Exclude<ThemeMode, 'system'> {
   if (value === 'light' || value === 'dark') return value
   throw new TypeError('Invalid resolved theme')
+}
+
+/**
+ * Strict gate for untrusted native context-menu items. Every entry is bounded
+ * and unknown keys are rejected, so a compromised renderer cannot smuggle
+ * extra Electron menu properties (roles, icons, submenus, accelerators)
+ * through the validated surface.
+ */
+function requireNativeMenuItems(value: unknown): NativeMenuItem[] {
+  if (!Array.isArray(value) || value.length > 24) throw new TypeError('items must be an array of at most 24 entries')
+  return value.map((item, index) => {
+    const record = requireRecord(item, `items[${index}]`)
+    rejectUnknownKeys(record, ['id', 'label', 'enabled', 'separator'], `items[${index}]`)
+    const separator = record.separator === undefined ? false : requireBoolean(record.separator, `items[${index}].separator`)
+    const enabled = record.enabled === undefined ? true : requireBoolean(record.enabled, `items[${index}].enabled`)
+    const id = requireString(record.id, `items[${index}].id`, { min: 1, max: 64 })
+    if (record.label === undefined && !separator) throw new TypeError(`items[${index}].label is too short`)
+    const label = record.label === undefined ? '' : requireString(record.label, `items[${index}].label`, { min: separator ? 0 : 1, max: 200 })
+    return { id, label, enabled, separator }
+  })
+}
+
+/**
+ * Shows a native context menu at the cursor. Resolves the clicked item's id,
+ * or null when the menu is dismissed without a choice; item clicks fire
+ * before the dismissal callback, so only the first settle wins.
+ */
+function popupNativeMenu(items: NativeMenuItem[]): Promise<string | null> {
+  // Native menus are OS surfaces Playwright cannot click, so the hermetic
+  // suite selects choices programmatically. The knob is a plain global set
+  // via ElectronApplication.evaluate — which already holds full main-process
+  // access — so it grants nothing new and defaults to unset in production.
+  const e2eChoice = (globalThis as { __e2eMenuChoice?: string }).__e2eMenuChoice
+  if (e2eChoice !== undefined) return Promise.resolve(e2eChoice === '' ? null : e2eChoice)
+  return new Promise((resolve) => {
+    let settled = false
+    const settle = (id: string | null): void => {
+      if (settled) return
+      settled = true
+      resolve(id)
+    }
+    const menu = Menu.buildFromTemplate(items.map((item) => item.separator
+      ? { type: 'separator' as const }
+      : { label: item.label, enabled: item.enabled, click: () => settle(item.id) }))
+    menu.popup({ callback: () => settle(null) })
+  })
 }
 
 type IpcEvent = IpcMainInvokeEvent | IpcMainEvent
@@ -153,6 +199,7 @@ export function registerIpc(services: Services, expectedRendererUrl: string): Ip
   handle(IPC_CHANNELS.app.refreshHarnesses, () => services.refreshHarnesses())
   handle(IPC_CHANNELS.app.popupMenu, (event, menu, x, y) => services.popupApplicationMenu(event.sender, requireApplicationMenu(menu), requireMenuCoordinate(x), requireMenuCoordinate(y)))
   handle(IPC_CHANNELS.app.setTitleBarTheme, (event, theme) => services.setTitleBarTheme(event.sender, requireResolvedTheme(theme)))
+  handle(IPC_CHANNELS.menu.popup, (_event, items) => popupNativeMenu(requireNativeMenuItems(items)))
   handle(IPC_CHANNELS.app.openExternal, async (_event, url) => {
     try { await shell.openExternal(requireWebUrl(url, { mailto: true }), { activate: true }); return true } catch (error) {
       console.warn('Rejected app:open-external:', error instanceof Error ? error.message : error)
@@ -245,6 +292,11 @@ export function registerIpc(services: Services, expectedRendererUrl: string): Ip
       await services.terminals.killForSession(filePath)
     }
     return result
+  })
+  handle(IPC_CHANNELS.sessions.branch, async (_event, filePath) => (await sessionsForPath(filePath)).service.branch(filePath))
+  handle(IPC_CHANNELS.sessions.setPinned, async (_event, filePath, pinned) => {
+    const routed = await sessionsForPath(filePath)
+    await routed.service.setPinned(filePath, pinned)
   })
 
   handle(IPC_CHANNELS.agent.start, (_event, rawOptions) => {

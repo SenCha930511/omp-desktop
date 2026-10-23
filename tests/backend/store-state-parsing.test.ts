@@ -347,3 +347,46 @@ describe('persisted schedule parsing', () => {
     expect(schedules[0].id).toBe('schedule-0')
   })
 })
+
+describe('persisted pinned sessions', () => {
+  it('defaults to an empty pin list for fresh and pre-pin state files', () => {
+    expect(loadState({ version: 4 }).pinnedSessions).toEqual([])
+    expect(loadState({ version: 3 }).pinnedSessions).toEqual([])
+    expect(loadState({ version: 4, pinnedSessions: [] }).pinnedSessions).toEqual([])
+  })
+
+  it('sanitizes pinned session paths to bounded, deduplicated strings', () => {
+    const { pinnedSessions } = loadState({
+      version: 4,
+      pinnedSessions: ['/sessions/a.jsonl', '/sessions/a.jsonl', '', 7, null, 'x'.repeat(4_097), '/sessions/b.jsonl', 'bad\0path'],
+    })
+    expect(pinnedSessions).toEqual(['/sessions/a.jsonl', '/sessions/b.jsonl'])
+  })
+
+  it('caps pinned sessions at 500 entries, keeping the newest pins', () => {
+    const paths = Array.from({ length: 505 }, (_, index) => `/sessions/pin-${String(index).padStart(3, '0')}.jsonl`)
+    expect(loadState({ version: 4, pinnedSessions: paths }).pinnedSessions).toEqual(paths.slice(5))
+  })
+
+  it('exposes pinned sessions through a copied accessor and drops the oldest pin past the cap', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gooeypi-store-pins-')); dirs.push(dir)
+    const store = new JsonStateStore(join(dir, 'state.json'))
+    expect(store.getPinnedSessions()).toEqual([])
+
+    await store.update((state) => {
+      state.pinnedSessions = Array.from({ length: 500 }, (_, index) => `/sessions/old-${index}.jsonl`)
+    })
+    await store.update((state) => {
+      state.pinnedSessions.push('/sessions/new.jsonl')
+    })
+    const pinned = store.getPinnedSessions()
+    expect(pinned).toHaveLength(500)
+    expect(pinned.at(-1)).toBe('/sessions/new.jsonl')
+    expect(pinned).not.toContain('/sessions/old-0.jsonl')
+    expect(pinned).toContain('/sessions/old-1.jsonl')
+
+    // The accessor hands out a copy; mutating it cannot corrupt the store.
+    store.getPinnedSessions().pop()
+    expect(store.getPinnedSessions()).toHaveLength(500)
+  })
+})

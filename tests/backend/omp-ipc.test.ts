@@ -12,6 +12,7 @@ const electronMocks = vi.hoisted(() => ({
     removeAllListeners: vi.fn(),
   },
   shell: { openExternal: vi.fn(), showItemInFolder: vi.fn() },
+  Menu: { buildFromTemplate: vi.fn() },
 }))
 
 vi.mock('electron', () => electronMocks)
@@ -52,7 +53,7 @@ function serviceStub(): Record<string, unknown> {
 interface TestServices {
   refreshHarnesses: Mock
   agents: { start: Mock; command: Mock; stop: Mock; list: Mock }
-  sessions: { list: Mock; read: Mock; rename: Mock; archive: Mock }
+  sessions: { list: Mock; read: Mock; rename: Mock; archive: Mock; branch: Mock; setPinned: Mock }
   projects: { list: Mock; grantInferred: Mock }
   checkouts: { list: Mock; execute: Mock }
   plugins: Record<string, Mock>
@@ -116,6 +117,8 @@ function buildServices(options: { includeApple?: boolean } = {}) {
       read: vi.fn(async () => ['omp-transcript']),
       rename: vi.fn(async () => false),
       archive: vi.fn(async () => true),
+      branch: vi.fn(async () => ({ id: 'omp-branched' })),
+      setPinned: vi.fn(async () => undefined),
     },
     agents: {
       ...serviceStub(),
@@ -402,5 +405,62 @@ describe('harness-aware IPC routing', () => {
     expect(harness.services.schedules.list).toHaveBeenCalledWith('omp')
     await expect(harness.invoke('schedules:create', { prompt: 'p' }, 'omp')).resolves.toBe('created')
     expect(harness.services.schedules.create).toHaveBeenCalledWith({ prompt: 'p' }, 'user', 'omp')
+  })
+
+  it('routes sessions:branch and sessions:setPinned through the omp session root authorization', async () => {
+    await expect(harness.invoke('sessions:branch', OMP_SESSION)).resolves.toEqual({ id: 'omp-branched' })
+    expect(harness.services.sessions.branch).toHaveBeenCalledWith(OMP_SESSION)
+    await expect(harness.invoke('sessions:setPinned', OMP_SESSION, true)).resolves.toBeUndefined()
+    expect(harness.services.sessions.setPinned).toHaveBeenCalledWith(OMP_SESSION, true)
+    await expect(async () => harness.invoke('sessions:branch', '/etc/passwd')).rejects.toThrow('outside the OMP session directory')
+    await expect(async () => harness.invoke('sessions:setPinned', '/etc/passwd', true)).rejects.toThrow('outside the OMP session directory')
+  })
+
+  it('rejects malformed menu:popup payloads before any native menu is built', async () => {
+    const buildFromTemplate = electronMocks.Menu.buildFromTemplate
+    buildFromTemplate.mockReset()
+    await expect(async () => harness.invoke('menu:popup', 'not-an-array')).rejects.toThrow('items must be an array')
+    await expect(async () => harness.invoke('menu:popup', Array.from({ length: 25 }, () => ({ id: 'a', label: 'A' })))).rejects.toThrow('items must be an array')
+    await expect(async () => harness.invoke('menu:popup', ['item'])).rejects.toThrow('items[0] must be an object')
+    await expect(async () => harness.invoke('menu:popup', [{ label: 'A' }])).rejects.toThrow('items[0].id must be a string')
+    await expect(async () => harness.invoke('menu:popup', [{ id: '', label: 'A' }])).rejects.toThrow('items[0].id is too short')
+    await expect(async () => harness.invoke('menu:popup', [{ id: 'a'.repeat(65), label: 'A' }])).rejects.toThrow('items[0].id is too long')
+    await expect(async () => harness.invoke('menu:popup', [{ id: 'a', label: 'A' }, { id: 'b' }])).rejects.toThrow('items[1].label is too short')
+    await expect(async () => harness.invoke('menu:popup', [{ id: 'a', label: 'x'.repeat(201) }])).rejects.toThrow('items[0].label is too long')
+    await expect(async () => harness.invoke('menu:popup', [{ id: 'a', label: 'A', enabled: 'yes' }])).rejects.toThrow('items[0].enabled must be a boolean')
+    await expect(async () => harness.invoke('menu:popup', [{ id: 'a', label: 'A', separator: 1 }])).rejects.toThrow('items[0].separator must be a boolean')
+    await expect(async () => harness.invoke('menu:popup', [{ id: 'a', label: 'A', role: 'cut' }])).rejects.toThrow('items[0].role is not supported')
+    expect(buildFromTemplate).not.toHaveBeenCalled()
+  })
+
+  it('builds the native menu from validated items and resolves the first settle only', async () => {
+    const buildFromTemplate = electronMocks.Menu.buildFromTemplate
+    const popup = vi.fn()
+    buildFromTemplate.mockReset()
+    buildFromTemplate.mockReturnValue({ popup })
+    const items = [
+      { id: 'branch', label: 'Branch' },
+      { id: 'sep', label: '', separator: true },
+      { id: 'pin', label: 'Pin', enabled: false },
+    ]
+
+    const pending = harness.invoke('menu:popup', items)
+    const template = buildFromTemplate.mock.calls[0]?.[0] as Array<Record<string, unknown>>
+    expect(template).toEqual([
+      { label: 'Branch', enabled: true, click: expect.any(Function) },
+      { type: 'separator' },
+      { label: 'Pin', enabled: false, click: expect.any(Function) },
+    ])
+    expect(popup).toHaveBeenCalledWith({ callback: expect.any(Function) })
+
+    ;(template[0].click as () => void)()
+    const firstPopupOptions = popup.mock.calls[0]?.[0] as { callback: () => void } | undefined
+    firstPopupOptions?.callback()
+    await expect(pending).resolves.toBe('branch')
+
+    const dismissed = harness.invoke('menu:popup', [])
+    const lastPopupOptions = popup.mock.calls.at(-1)?.[0] as { callback: () => void } | undefined
+    lastPopupOptions?.callback()
+    await expect(dismissed).resolves.toBeNull()
   })
 })

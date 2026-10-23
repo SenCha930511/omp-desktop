@@ -20,6 +20,39 @@ export interface ComposerUnsupportedFile {
 
 interface UseComposerImagesOptions {
   shortName: string
+  /** Draft-store key of the workspace/session; attachments persist across composer remounts like draft text. */
+  draftKey?: string
+}
+
+interface ComposerAttachmentStoreEntry {
+  images: ComposerImage[]
+  unsupportedFiles: ComposerUnsupportedFile[]
+}
+
+// The Composer remounts per session (its key changes in App), so pending
+// attachments live in this module store keyed like the draft store: attached
+// images survive the remount exactly like draft text survives via sessionStorage.
+const composerAttachmentStore = new Map<string, ComposerAttachmentStoreEntry>()
+const MAX_ATTACHMENT_STORE_KEYS = 8
+const MAX_ATTACHMENT_STORE_IMAGE_CHARS = 32 * 1024 * 1024
+
+function attachmentStoreChars(): number {
+  let total = 0
+  for (const entry of composerAttachmentStore.values()) for (const image of entry.images) total += image.data.length
+  return total
+}
+
+function saveAttachmentStoreEntry(key: string, entry: ComposerAttachmentStoreEntry): void {
+  composerAttachmentStore.delete(key)
+  composerAttachmentStore.set(key, entry)
+  // Least-recently-used eviction bounds the store's key count and total base64
+  // payload. The just-saved entry always survives so persistence never fights
+  // the live composer state, even when that entry alone exceeds the budget.
+  while (composerAttachmentStore.size > MAX_ATTACHMENT_STORE_KEYS || (composerAttachmentStore.size > 1 && attachmentStoreChars() > MAX_ATTACHMENT_STORE_IMAGE_CHARS)) {
+    const oldest = composerAttachmentStore.keys().next().value
+    if (oldest === undefined) break
+    composerAttachmentStore.delete(oldest)
+  }
 }
 
 function base64FromBuffer(buffer: ArrayBuffer): string {
@@ -33,7 +66,7 @@ function isFileDrag(event: DragEvent<HTMLElement>): boolean {
   return Array.from(event.dataTransfer.types).includes('Files')
 }
 
-export function useComposerImages({ shortName }: UseComposerImagesOptions) {
+export function useComposerImages({ shortName, draftKey }: UseComposerImagesOptions) {
   const [images, setImages] = useState<ComposerImage[]>([])
   const [unsupportedFiles, setUnsupportedFiles] = useState<ComposerUnsupportedFile[]>([])
   const [error, setError] = useState('')
@@ -46,6 +79,8 @@ export function useComposerImages({ shortName }: UseComposerImagesOptions) {
   const reservedCountRef = useRef(0)
   const dragDepthRef = useRef(0)
   const mountedRef = useRef(true)
+  const draftKeyRef = useRef(draftKey)
+  draftKeyRef.current = draftKey
 
   useEffect(() => {
     mountedRef.current = true
@@ -111,6 +146,8 @@ export function useComposerImages({ shortName }: UseComposerImagesOptions) {
   }, [shortName, updateError])
 
   const clear = useCallback(() => {
+    const key = draftKeyRef.current
+    if (key) composerAttachmentStore.delete(key)
     imagesRef.current = []
     unsupportedFilesRef.current = []
     setImages([])
@@ -150,6 +187,36 @@ export function useComposerImages({ shortName }: UseComposerImagesOptions) {
     }
     return { restored: accepted.length, omitted }
   }, [])
+
+  // On mount, bring back whatever the previous composer instance for this
+  // draft key had attached. The restore rides the existing restoreWithinLimits
+  // path so the file-count limit (and the "message was not sent, images
+  // restored" failure flow) keeps working unchanged.
+  useEffect(() => {
+    const key = draftKeyRef.current
+    if (!key) return
+    const entry = composerAttachmentStore.get(key)
+    if (!entry) return
+    composerAttachmentStore.delete(key)
+    composerAttachmentStore.set(key, entry)
+    const existingIds = new Set(unsupportedFilesRef.current.map((file) => file.id))
+    const restoredFiles = entry.unsupportedFiles.filter((file) => !existingIds.has(file.id))
+    if (restoredFiles.length > 0) {
+      const next = [...unsupportedFilesRef.current, ...restoredFiles]
+      unsupportedFilesRef.current = next
+      setUnsupportedFiles(next)
+    }
+    restoreWithinLimits(entry.images)
+  }, [restoreWithinLimits])
+
+  useEffect(() => {
+    if (!draftKey) return
+    if (images.length === 0 && unsupportedFiles.length === 0) {
+      composerAttachmentStore.delete(draftKey)
+      return
+    }
+    saveAttachmentStoreEntry(draftKey, { images, unsupportedFiles })
+  }, [draftKey, images, unsupportedFiles])
 
   const onDragEnter = useCallback((event: DragEvent<HTMLDivElement>) => {
     if (!isFileDrag(event)) return

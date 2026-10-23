@@ -589,6 +589,8 @@ export default function App() {
     navigate,
     renameSession,
     deleteSession,
+    branchSession,
+    togglePinSession,
     addProject,
     relocateProject,
     removeProject,
@@ -945,6 +947,13 @@ export default function App() {
     onOpenPalette: () => setPaletteOpen(true),
     onRenameSession: renameSession,
     onArchiveSession: deleteSession,
+    onPopupMenu: (items) => bridge?.menu?.popup(items) ?? Promise.resolve(null),
+    onBranchSession: (session) => {
+      void branchSession(session)
+    },
+    onTogglePinSession: (session) => {
+      void togglePinSession(session)
+    },
   })
 
   const onAppKeyDown = useStableCallback(

@@ -71,4 +71,51 @@ describe('sidebar session ordering', () => {
     await renderSidebar('in-use')
     expect(rowTitles()).toEqual(['newer', 'older', 'in-use'])
   })
+
+  it('floats pinned sessions above recency', () => {
+    const pinned = { ...session('pinned-old', '2026-01-01T00:00:00.000Z'), pinned: true }
+    const sessions = [session('newer', '2026-01-03T00:00:00.000Z'), pinned]
+    const { sessionsByProject } = indexSidebarSessions([project], sessions)
+    expect(sessionsByProject.get('project')?.map((item) => item.id)).toEqual(['pinned-old', 'newer'])
+  })
+
+  it('claims subdirectory sessions for the containing project', () => {
+    const nested: ProjectRecord = { ...project, id: 'nested', path: '/project/packages/app', folders: ['/project/packages/app'], primaryFolder: '/project/packages/app' }
+    const sessions = [
+      session('root', '2026-01-02T00:00:00.000Z'),
+      { ...session('deep', '2026-01-03T00:00:00.000Z'), projectPath: '/project/packages/app' },
+      { ...session('mid', '2026-01-03T00:00:00.000Z'), projectPath: '/project/packages' },
+    ]
+    const { sessionsByProject } = indexSidebarSessions([project, nested], sessions)
+    // The nested project claims its own directory; the parent keeps the rest.
+    expect(sessionsByProject.get('nested')?.map((item) => item.id)).toEqual(['deep'])
+    expect(sessionsByProject.get('project')?.map((item) => item.id)).toEqual(['mid', 'root'])
+  })
+
+  it('opens the native session menu and dispatches its actions', async () => {
+    const menuItems: Array<{ id: string }> = []
+    const onBranchSession = vi.fn()
+    const target = session('branch-me', '2026-01-02T00:00:00.000Z')
+    await act(async () => {
+      root.render(
+        <Sidebar
+          projects={[project]} sessions={[target]} activeView="session" projectSortMode="recent"
+          onSelectProject={noop} onSelectSession={noop} onNavigate={noop} onNewSession={noop} onAddProject={noop} onRemoveProject={noop}
+          onClose={noop} onOpenPalette={noop} onRenameSession={async () => undefined} onArchiveSession={async () => undefined}
+          onPopupMenu={async (items) => {
+            menuItems.push(...items)
+            return 'branch'
+          }}
+          onBranchSession={onBranchSession}
+        />,
+      )
+    })
+    const row = container.querySelector<HTMLElement>('.session-row')
+    expect(row).not.toBeNull()
+    await act(async () => {
+      row!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+    })
+    expect(menuItems.map((item) => item.id)).toEqual(['pin', 'branch', 'separator', 'copy', 'rename'])
+    expect(onBranchSession).toHaveBeenCalledWith(target)
+  })
 })

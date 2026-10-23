@@ -1353,7 +1353,7 @@ test.describe('OMP Desktop desktop smoke', () => {
       return { type: typeof bridge, groups: bridge ? Object.keys(bridge).sort() : [], voiceMethods: voice && typeof voice === 'object' ? Object.keys(voice).sort() : [] }
     })
     expect(bridge.type).toBe('object')
-      expect(bridge.groups).toEqual(['agent', 'app', 'browser', 'git', 'harnessUpdates', 'plugins', 'projects', 'providers', 'schedules', 'sessions', 'settings', 'terminal', 'updates', 'voice'])
+      expect(bridge.groups).toEqual(['agent', 'app', 'browser', 'git', 'harnessUpdates', 'menu', 'plugins', 'projects', 'providers', 'schedules', 'sessions', 'settings', 'terminal', 'updates', 'voice'])
     expect(bridge.voiceMethods).toContain('testSelfHosted')
     const updateMenu = await app!.evaluate(({ Menu }) => {
       const parents = Menu.getApplicationMenu()?.items ?? []
@@ -2181,10 +2181,14 @@ test.describe('OMP Desktop desktop smoke', () => {
       })
     })
     const selected = page.locator('.session-row-wrap.is-selected .session-row')
+    await app!.evaluate(() => {
+      ;(globalThis as { __e2eMenuChoice?: string }).__e2eMenuChoice = 'copy'
+    })
     await selected.click({ button: 'right' })
-    const sessionMenu = page.getByLabel('Session options')
-    await sessionMenu.getByRole('button', { name: 'Copy session UUID' }).click()
     await expect.poll(() => page.evaluate(() => (window as Window & { __copiedSessionId?: string }).__copiedSessionId)).toBe('fixture-session')
+    await app!.evaluate(() => {
+      delete (globalThis as { __e2eMenuChoice?: string }).__e2eMenuChoice
+    })
 
     const composer = page.getByRole('combobox', { name: 'Message OMP' })
     await composer.fill('Coordinate with @Ownership')
@@ -2235,10 +2239,10 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(projectRow.getByTitle('New session in Multi-folder fixture')).toHaveCount(1)
     await expect(page.getByTitle('Delete Hermetic desktop fixture')).toHaveCount(1)
 
+    await app!.evaluate(() => {
+      ;(globalThis as { __e2eMenuChoice?: string }).__e2eMenuChoice = 'remove'
+    })
     await projectRow.click({ button: 'right' })
-    const menu = page.getByRole('menu', { name: 'Project options for Multi-folder fixture' })
-    await expect(menu).toBeVisible()
-    await menu.getByRole('menuitem', { name: 'Delete project' }).click()
 
     const dialog = page.getByRole('dialog', { name: 'Delete project' })
     await expect(dialog).toContainText('All of its saved sessions will be permanently deleted from OMP Desktop.')
@@ -2249,6 +2253,9 @@ test.describe('OMP Desktop desktop smoke', () => {
     expect(existsSync(fixtureSessionFile)).toBe(false)
     expect(existsSync(fixturePrimarySessionFile)).toBe(false)
     expect(existsSync(join(fixtureRoot, 'project'))).toBe(true)
+    await app!.evaluate(() => {
+      delete (globalThis as { __e2eMenuChoice?: string }).__e2eMenuChoice
+    })
   })
 
   test('renders agent handoffs and goal summaries as collapsed readable disclosures', async () => {

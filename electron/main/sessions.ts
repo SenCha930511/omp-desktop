@@ -1,17 +1,19 @@
+import { randomUUID } from 'node:crypto'
 import { watch, type Dirent, type Stats } from 'node:fs'
-import { readdir, realpath, unlink } from 'node:fs/promises'
+import { open, readdir, realpath, stat, unlink, type FileHandle } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { join, resolve, sep } from 'node:path'
+import { dirname, join, resolve, sep } from 'node:path'
 import type { HarnessId, SessionCatalogUpdate, SessionChangeEvent, SessionRecord, TranscriptMessage } from '../../src/types/api'
 import { SessionCatalogSync } from './sessions/sync'
 
 import { comparePaths, createAdmissionQueue, createSingleFlight, type AdmissionQueue } from './lib/async'
+import { SESSION_FILE_RECORD_LIMIT_BYTES } from './jsonl-limits'
 import { resolveExecutable, runProcess, type ExecutableSource } from './process-utils'
 import { SessionMetadataCatalog, type SessionCatalogIo, type SessionNameTimestamp } from './sessions/catalog'
-import { createSessionMetadataReader, type SessionMetadata, type SessionMetadataReader } from './sessions/metadata'
+import { createSessionMetadataReader, MAX_SESSION_FILE_BYTES, type SessionMetadata, type SessionMetadataReader } from './sessions/metadata'
 import { readTranscript } from './sessions/transcript'
 import type { JsonStateStore } from './store'
-import { isPathWithin, requireBoolean, requireExistingDirectory, requireString } from './validation'
+import { isRecord, isPathWithin, requireBoolean, requireExistingDirectory, requireString } from './validation'
 
 interface RuntimeSessionState { isStreaming: boolean; isCompacting?: boolean }
 
@@ -21,6 +23,9 @@ const MAX_SESSION_FILES = 5_000
 const MAX_SESSION_WATCH_DIRECTORIES = 512
 const MAX_CONCURRENT_TRANSCRIPT_READS = 2
 const MAX_PENDING_TRANSCRIPT_READS = 32
+const BRANCH_COPY_CHUNK_BYTES = 256 * 1024
+/** Byte budget scanned from a session head for the identity header before a fork falls back to a verbatim copy. */
+const MAX_BRANCH_HEADER_SCAN_BYTES = 64 * 1024
 
 type TranscriptReader = (filePath: string, isStreaming: boolean) => Promise<TranscriptMessage[]>
 
@@ -44,6 +49,25 @@ const watchSessionDirectory: SessionWatchFactory = (path, options, listener) => 
 )
 
 const authorizeOmpSessionPath: SessionPathAuthorizer = (root, path) => isPathWithin(root, path) && path.endsWith('.jsonl')
+
+/** Bucketed branch file name: `<now with dashes>_<fresh uuid>.jsonl`, matching BUCKETED_SESSION_FILE_NAME. */
+function branchSessionFileName(id: string): string {
+  return `${new Date().toISOString().replace(/[:.]/g, '-')}_${id}.jsonl`
+}
+
+/**
+ * Rewrites a session identity header line (`{"type":"session",...}`) to the
+ * branched session id. Returns null for every other line so a fork copies the
+ * source byte-for-byte except for its session identity.
+ */
+const SESSION_HEADER_NEWLINE = Buffer.from('\n')
+function rewrittenSessionHeader(line: Buffer, sessionId: string): string | null {
+  if (line.length === 0 || line.length > SESSION_FILE_RECORD_LIMIT_BYTES) return null
+  let value: unknown
+  try { value = JSON.parse(line.toString('utf8')) } catch { return null }
+  if (!isRecord(value) || value.type !== 'session' || typeof value.id !== 'string') return null
+  return JSON.stringify({ ...value, id: sessionId })
+}
 
 export interface SessionServiceOptions {
   /** Harness stamped on every record and change event this service emits; defaults to 'omp'. */
@@ -171,6 +195,7 @@ export class SessionService {
     if (force) this.catalog.invalidateLiveCatalog()
     const sessions = await this.catalog.all()
     const archived = new Set(this.store.getArchivedSessions().map((path) => resolve(path)))
+    const pinned = new Set(this.store.getPinnedSessions().map((path) => resolve(path)))
     // One runtime snapshot per list call; each session then resolves in O(1).
     const runtimeBySession = this.snapshotRuntimeSessions()
     const records: SessionRecord[] = []
@@ -183,7 +208,7 @@ export class SessionService {
         : this.runtimeForSession(metadata.filePath)
       if (runtime) metadata.status = runtime.isStreaming || runtime.isCompacting ? 'running' : 'idle'
       const { sessionName: _sessionName, ...record } = metadata
-      records.push({ ...record, harness: this.harness, archived: isArchived })
+      records.push({ ...record, harness: this.harness, archived: isArchived, pinned: pinned.has(resolve(metadata.filePath)) })
     }
     return records.sort((a, b) => Date.parse(b.lastUserMessageAt ?? b.createdAt) - Date.parse(a.lastUserMessageAt ?? a.createdAt) || comparePaths(a.filePath, b.filePath))
   }
@@ -252,6 +277,41 @@ export class SessionService {
     return true
   }
 
+  /**
+   * Pins or unpins a session in the persisted app store. Mirrors `archive`:
+   * the store update is the whole mutation and the renderer reconciles its
+   * local record from the resolved call, so no change event is emitted.
+   */
+  async setPinned(filePath: unknown, pinnedValue: unknown): Promise<void> {
+    const safePath = await this.requireSessionPath(filePath)
+    const pinned = requireBoolean(pinnedValue, 'pinned')
+    await this.store.update((state) => {
+      state.pinnedSessions = state.pinnedSessions.filter((path) => resolve(path) !== resolve(safePath))
+      if (pinned) state.pinnedSessions.push(safePath)
+    })
+  }
+
+  /**
+   * Forks a session by copying its file to a fresh bucketed sibling named
+   * `<now>_<fresh uuid>.jsonl`. The copy is byte-exact except that its session
+   * identity header is re-stamped with the fresh uuid (OMP ties the file-name
+   * uuid to the session id), so the fork is a distinct session while the
+   * source file is never modified.
+   */
+  async branch(filePath: unknown): Promise<SessionRecord> {
+    const safePath = await this.requireSessionPath(filePath)
+    const fileStat = await stat(safePath)
+    if (fileStat.size > MAX_SESSION_FILE_BYTES) throw new Error('Session file is too large to branch')
+    const id = randomUUID()
+    const target = join(dirname(safePath), branchSessionFileName(id))
+    await this.copySessionFork(safePath, target, id)
+    this.emitChange({ harness: this.harness })
+    const records = await this.list(undefined, true, true)
+    const record = records.find((candidate) => resolve(candidate.filePath) === resolve(target))
+    if (!record) throw new Error('Branched session did not appear in the session catalog')
+    return record
+  }
+
   async delete(filePath: unknown): Promise<boolean> {
     const safePath = await this.requireSessionPath(filePath)
     await this.stopRuntimeForSession(safePath)
@@ -271,6 +331,61 @@ export class SessionService {
     const path = await realpath(requested)
     if (!this.isSessionPathAuthorized(root, path)) throw new TypeError('Session path is outside the Prime session directory')
     return path
+  }
+
+  /**
+   * Streams a session file to a fresh sibling, rewriting only the first
+   * `{"type":"session"}` identity record to the branched id. Every other byte
+   * (including fixed-width leading slots) is copied verbatim, and a failed
+   * copy never leaves a partial target behind.
+   */
+  private async copySessionFork(source: string, target: string, sessionId: string): Promise<void> {
+    const input = await open(source, 'r')
+    let output: FileHandle | null = null
+    try {
+      output = await open(target, 'wx')
+      const chunk = Buffer.allocUnsafe(BRANCH_COPY_CHUNK_BYTES)
+      let pending: Buffer = Buffer.alloc(0)
+      let scanned = 0
+      let headerRewritten = false
+      let gaveUp = false
+      let position = 0
+      while (true) {
+        const { bytesRead } = await input.read(chunk, 0, chunk.length, position)
+        if (bytesRead === 0) break
+        position += bytesRead
+        let data = pending.length ? Buffer.concat([pending, chunk.subarray(0, bytesRead)]) : chunk.subarray(0, bytesRead)
+        pending = Buffer.alloc(0)
+        if (!headerRewritten && !gaveUp) {
+          scanned += bytesRead
+          while (!headerRewritten) {
+            const newline = data.indexOf(0x0a)
+            if (newline < 0) break
+            const line = data.subarray(0, newline)
+            data = data.subarray(newline + 1)
+            const rewritten = rewrittenSessionHeader(line, sessionId)
+            if (rewritten !== null) headerRewritten = true
+            await output.write(rewritten !== null ? Buffer.from(rewritten, 'utf8') : line)
+            await output.write(SESSION_HEADER_NEWLINE)
+          }
+          if (!headerRewritten && scanned >= MAX_BRANCH_HEADER_SCAN_BYTES) gaveUp = true
+        }
+        if (headerRewritten || gaveUp) await output.write(data)
+        else pending = Buffer.from(data)
+      }
+      // A source without a trailing newline keeps its final partial line; it
+      // can still be the identity header when the file is one line long.
+      if (pending.length) {
+        const rewritten = headerRewritten ? null : rewrittenSessionHeader(pending, sessionId)
+        await output.write(rewritten !== null ? Buffer.from(rewritten, 'utf8') : pending)
+      }
+    } catch (error) {
+      await unlink(target).catch(() => undefined)
+      throw error
+    } finally {
+      await input.close()
+      await output?.close()
+    }
   }
 
   private startWatcher(): void {

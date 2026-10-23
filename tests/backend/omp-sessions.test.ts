@@ -1,7 +1,7 @@
 import { appendFileSync, closeSync, createReadStream, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync, writeSync } from 'node:fs'
 import { stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SessionService } from '../../electron/main/sessions'
 import { METADATA_VERIFY_TAIL_BYTES } from '../../electron/main/sessions/metadata'
@@ -362,5 +362,86 @@ describe('OMP file-level rename fallback', () => {
     writeFileSync(file, body)
     expect(writeOmpTitleSlot(file, 'Should not write')).toBe(false)
     expect(readFileSync(file, 'utf8')).toBe(body)
+  })
+})
+
+describe('OMP session branching and pinning', () => {
+  it('branches a session to a fresh bucketed sibling with a distinct id, leaving the source untouched', async () => {
+    const { root, project, service } = setup()
+    mkdirSync(join(root, '-bucket'))
+    const file = join(root, '-bucket', NAME_A)
+    writeOmpSession(file, {
+      id: 'source-session',
+      cwd: project,
+      title: 'Source title',
+      entries: [ompEntry('message', 'aa11bb22', null, { message: { role: 'user', content: 'question' } })],
+    })
+    const before = readFileSync(file)
+
+    const branched = await service.branch(file)
+
+    expect(branched.filePath).not.toBe(realpathSync(file))
+    expect(dirname(branched.filePath)).toBe(realpathSync(join(root, '-bucket')))
+    expect(basename(branched.filePath)).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z_[0-9a-f-]+\.jsonl$/)
+    expect(branched.id).not.toBe('source-session')
+    // OMP ties the file-name uuid to the session id; the fork keeps that convention.
+    expect(branched.id).toBe(basename(branched.filePath, '.jsonl').split('_').at(-1))
+    expect(readFileSync(file).equals(before)).toBe(true)
+
+    // The fork copies the title slot and every entry verbatim; only the
+    // session identity header carries the fresh id.
+    const sourceLines = before.toString('utf8').split('\n')
+    const copyLines = readFileSync(branched.filePath, 'utf8').split('\n')
+    expect(copyLines).toHaveLength(sourceLines.length)
+    expect(copyLines[0]).toBe(sourceLines[0])
+    expect(copyLines.slice(2)).toEqual(sourceLines.slice(2))
+    expect(JSON.parse(copyLines[1])).toMatchObject({ type: 'session', id: branched.id, cwd: project })
+
+    const records = await service.list(undefined, true)
+    expect(new Set(records.map((record) => record.id))).toEqual(new Set(['source-session', branched.id]))
+  })
+
+  it('rejects branch and setPinned for paths outside the session root', async () => {
+    const { root, project, service } = setup()
+    mkdirSync(join(root, '-bucket'))
+    const file = join(root, '-bucket', NAME_A)
+    writeOmpSession(file, { cwd: project })
+    const outside = join(dirname(root), 'outside.jsonl')
+    writeOmpSession(outside, { cwd: project })
+
+    await expect(service.branch(outside)).rejects.toThrow('outside the')
+    await expect(service.setPinned(outside, true)).rejects.toThrow('outside the')
+    await expect(service.branch(join(root, '-bucket', 'missing.jsonl'))).rejects.toThrow()
+    expect(await service.list()).toHaveLength(1)
+  })
+
+  it('persists session pins in the app store and reflects them in list()', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-omp-pins-')); dirs.push(dir)
+    const root = join(dir, 'sessions'); mkdirSync(root)
+    const project = join(dir, 'project'); mkdirSync(project)
+    const statePath = join(dir, 'state.json')
+    const store = new JsonStateStore(statePath)
+    const service = new SessionService(store, null, undefined, ompSessionServiceOptions(root))
+    mkdirSync(join(root, '-bucket'))
+    const fileA = join(root, '-bucket', NAME_A)
+    const fileB = join(root, '-bucket', NAME_B)
+    writeOmpSession(fileA, { id: 'session-a', cwd: project })
+    writeOmpSession(fileB, { id: 'session-b', cwd: project })
+    const pinnedOf = async (id: string) => (await service.list()).find((record) => record.id === id)?.pinned
+
+    expect(await pinnedOf('session-a')).toBe(false)
+    await service.setPinned(fileA, true)
+    expect(await pinnedOf('session-a')).toBe(true)
+    expect(await pinnedOf('session-b')).toBe(false)
+    // Re-pinning is idempotent and a second pin joins the persisted list.
+    await service.setPinned(fileA, true)
+    await service.setPinned(fileB, true)
+    expect(await pinnedOf('session-a')).toBe(true)
+
+    await service.setPinned(fileA, false)
+    expect(await pinnedOf('session-a')).toBe(false)
+    expect(await pinnedOf('session-b')).toBe(true)
+
+    expect(new JsonStateStore(statePath).snapshot().pinnedSessions).toEqual([realpathSync(fileB)])
   })
 })
