@@ -150,7 +150,7 @@ export function LiveElapsed({ since }: { since?: string | number }) {
   )
 }
 
-const ToolPart = memo(function ToolPart({ part, next, streaming, live }: { part: Extract<MessagePart, { type: 'toolCall' }>; next?: MessagePart; streaming: boolean; live?: boolean }) {
+const ToolPart = memo(function ToolPart({ part, next, streaming }: { part: Extract<MessagePart, { type: 'toolCall' }>; next?: MessagePart; streaming: boolean }) {
   const { t } = useI18n()
   const [manualOpen, setOpen] = useState(false)
   const reveal = useContext(SearchRevealContext)
@@ -192,9 +192,9 @@ const ToolPart = memo(function ToolPart({ part, next, streaming, live }: { part:
     <div className={`activity-line activity-line--tool activity-line--${kind} is-${state}`}>
       <button type="button" className="activity-tool__summary" disabled={!canExpand} onClick={() => setOpen((value) => !value)} aria-expanded={canExpand ? open : undefined}>
         <span className="activity-line__icon">{toolIcon(kind)}</span>
-        <span className={`activity-line__kind${state === 'running' && live ? ' shine-sweep' : ''}`}>{kind === 'question' ? t('transcript.tool.questionKind') : part.name}</span>
+        <span className={`activity-line__kind${state === 'running' ? ' shine-sweep' : ''}`}>{kind === 'question' ? t('transcript.tool.questionKind') : part.name}</span>
         {preview ? (
-          <code className={`activity-tool__preview${state === 'running' && !open && live ? ' shine-sweep' : ''}`}>
+          <code className={`activity-tool__preview${state === 'running' && !open ? ' shine-sweep' : ''}`}>
             <SyntaxText text={preview} />
           </code>
         ) : null}
@@ -209,7 +209,7 @@ const ToolPart = memo(function ToolPart({ part, next, streaming, live }: { part:
             t('transcript.tool.state.needsInput')
           ) : (
             <>
-              <LoaderCircle className="spin" size={12} /> {t('transcript.tool.state.running')}
+              <LoaderCircle className="spin" size={12} /> <span className="shine-sweep">{t('transcript.tool.state.running')}</span>
             </>
           )}
         </span>
@@ -309,10 +309,11 @@ function partKey(part: MessagePart, index: number): string {
 
 export function WorkTimeline({ parts, showReasoning, showTools, streaming = false }: { parts: MessagePart[]; showReasoning: boolean; showTools: boolean; streaming?: boolean }) {
   const pairedResults = new Set<number>()
-  // A running section marked every pending row live, so backgrounded
-  // commands (results minutes away) and earlier thinking rows all swept in
-  // unison. Only the newest rendered thinking/tool row — the one the agent
-  // is actually working on — may shine; earlier rows stay settled.
+  // A running section once marked every pending row live, so backgrounded
+  // commands and earlier thinking rows all swept in unison. Now settled
+  // thinking rows stay quiet — only the newest one (the row the agent is
+  // writing) may shine — while running tools sweep on their own running
+  // state regardless of position.
   let lastLiveIndex = -1
   for (let index = 0; index < parts.length; index += 1) {
     const part = parts[index]
@@ -330,7 +331,7 @@ export function WorkTimeline({ parts, showReasoning, showTools, streaming = fals
           if (!showTools) return null
           const next = parts[index + 1]
           if (next?.type === 'toolResult') pairedResults.add(index + 1)
-          return <ToolPart key={key} part={part} next={next} streaming={streaming} live={live} />
+          return <ToolPart key={key} part={part} next={next} streaming={streaming} />
         }
         if (part.type === 'toolResult') return showTools ? <StandaloneToolResult key={key} part={part} /> : null
         if (part.type === 'agentMessage') return <AgentActivityPart key={key} part={part} />

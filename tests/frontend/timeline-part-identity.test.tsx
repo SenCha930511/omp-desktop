@@ -132,19 +132,21 @@ describe('timeline part identity', () => {
       }))
     })
 
-    // The backgrounded command (result minutes away) stays a plain running
-    // row; only the thinking row the agent is writing right now sweeps.
-    const rowsWithSweep = [...container.querySelectorAll('.activity-line')].filter((row) => row.querySelector('.shine-sweep'))
-    expect(rowsWithSweep).toHaveLength(1)
-    expect(rowsWithSweep[0].classList.contains('activity-line--reasoning')).toBe(true)
+    // Settled thinking rows stay quiet; only the newest one sweeps. The
+    // running tool sweeps on its own running state.
+    const thinkingRows = [...container.querySelectorAll('.activity-line--reasoning')]
+    expect(thinkingRows.filter((row) => row.querySelector('.shine-sweep'))).toHaveLength(1)
+    expect(thinkingRows[1].querySelector('.shine-sweep')).not.toBeNull()
+    expect(container.querySelector('.activity-line--tool .shine-sweep')).not.toBeNull()
   })
 
-  it('shines only the newest tool row while a section runs', () => {
+  it('shines a running tool row regardless of newer reasoning', () => {
     act(() => {
       root.render(createElement(WorkTimeline, {
         parts: [
-          { type: 'thinking', text: 'Earlier reasoning line.' },
+          { type: 'thinking', text: 'Settled earlier reasoning.' },
           { type: 'toolCall', id: 'tool-1', name: 'Bash', args: { command: 'grep -rn shine src/' } },
+          { type: 'thinking', text: 'Current reasoning line.' },
         ],
         showReasoning: true,
         showTools: true,
@@ -152,8 +154,8 @@ describe('timeline part identity', () => {
       }))
     })
 
-    const rowsWithSweep = [...container.querySelectorAll('.activity-line')].filter((row) => row.querySelector('.shine-sweep'))
-    expect(rowsWithSweep).toHaveLength(1)
-    expect(rowsWithSweep[0].classList.contains('activity-line--tool')).toBe(true)
+    const toolRow = container.querySelector('.activity-line--tool')
+    expect(toolRow?.querySelectorAll('.shine-sweep').length).toBeGreaterThanOrEqual(1)
+    expect(toolRow?.textContent).toContain('running')
   })
 })
