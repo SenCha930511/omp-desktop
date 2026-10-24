@@ -189,7 +189,7 @@ export function Transcript({
           ))}
           {hiddenAfter > 0 && <button type="button" className="transcript__show-earlier" onClick={showNewer}>{t('conversation.search.newer', { count: Math.min(250, hiddenAfter) })}</button>}
           {recovery && onRetry && onRestorePrompt && <TurnRecovery turn={recovery} busy={active} onRetry={onRetry} onRestore={onRestorePrompt} />}
-          {active && !activeAssistantId ? (
+          {active && !activeAssistantId && !recovery ? (
             <article className="message message--assistant transcript-active-placeholder" aria-live="polite">
               <div className="streaming-state">
                 <ThinkingDots /> <span className="shine-sweep">{t('transcript.workStatus.thinking')}</span>

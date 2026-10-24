@@ -248,6 +248,26 @@ describe('transcript rendering', () => {
     expect(html).toContain('Thinking')
   })
 
+  it('does not keep a thinking placeholder under a failed turn recovery banner', () => {
+    const html = renderToStaticMarkup(createElement(Transcript, {
+      messages: [
+        { id: 'user-1', role: 'user', timestamp: 1_000, parts: [{ type: 'text', text: 'Run the suite' }] },
+        { id: 'error-1', role: 'system', timestamp: 2_000, parts: [{ type: 'text', text: 'The agent stopped unexpectedly (exit code 1).' }] },
+      ],
+      git,
+      harness: 'omp',
+      active: true,
+      onOpenChanges: noop,
+      onSuggestion: noop,
+      onRetry: async () => undefined,
+      onRestorePrompt: noop,
+    }))
+
+    expect(html).toContain('turn-recovery')
+    expect(html).not.toContain('transcript-active-placeholder')
+    expect(html).not.toContain('Thinking')
+  })
+
   it('keeps an accepted omp steer in history without duplicating the working indicator', () => {
     const harness = 'omp'
     const html = renderToStaticMarkup(createElement(Transcript, {
