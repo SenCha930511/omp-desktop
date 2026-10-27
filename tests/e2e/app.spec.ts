@@ -664,6 +664,8 @@ test.describe('OMP Desktop desktop smoke', () => {
       try {
         const environment = hermeticEnvironment(fixture.home, fixture.ompExecutable, fixture.cuaExecutable, noOmp)
         if (testInfo.title === 'shows a new conversation immediately while the harness starts') environment.OMP_FIXTURE_START_DELAY_MS = '2500'
+        // The durable new-session flight adopts whatever get_state reports; the fixture reports the pre-existing session file, so on slow runners the adoption lands inside this test's hover/click window and detaches the placeholder. Stalling get_state keeps the flight in flight until the discard bumps the generation.
+        if (testInfo.title === 'discards the draft placeholder without a confirmation dialog and resumes the newest session') environment.OMP_FIXTURE_START_DELAY_MS = '5000'
         if (testInfo.title === 'Command-Q backgrounds the window and menu-bar Open restores it') environment.OMP_DESKTOP_E2E_HIDE_WINDOWS = '0'
         if (testInfo.title === 'offers to update omp when the startup check finds a newer version') environment.OMP_FIXTURE_UPDATE_AVAILABLE = '17.3.0'
         app = await electron.launch({
