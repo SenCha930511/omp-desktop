@@ -13,11 +13,11 @@ describe('OMP steering protocol parity', () => {
     const steer = { type: 'steer', message: 'inspect this instead', images }
 
     expect(OMP_RPC_ADAPTER.translateCommand(steer)).toBe(steer)
+    // 2.1: streamingBehavior is verified and forwarded to OMP, not stripped.
     const prompt = { type: 'prompt', message: 'inspect', images, streamingBehavior: 'steer' }
     const translated = OMP_RPC_ADAPTER.translateCommand(prompt)
-    expect(translated).not.toBe(prompt)
-    expect(translated).not.toHaveProperty('streamingBehavior')
-    expect(translated).toMatchObject({ type: 'prompt', message: 'inspect', images })
+    expect(translated).toBe(prompt)
+    expect(translated).toMatchObject({ type: 'prompt', message: 'inspect', images, streamingBehavior: 'steer' })
   })
 
   it('preserves both queued and picked-up session action snapshots', () => {

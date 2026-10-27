@@ -10,6 +10,7 @@ import {
   Globe2,
   Package,
   Palette,
+  Pencil,
   Plus,
   RefreshCw,
   Search,
@@ -24,8 +25,9 @@ import { useMemo, useState } from 'react'
 import { EmptyState, Modal } from '@/components/ui'
 import { HARNESS_SHORT_NAMES } from '@/lib/harness'
 import { type MessageKey, useI18n } from '@/lib/i18n'
-import { NETWORK_MCP_UNAVAILABLE_DETAIL } from '@/lib/mcp-policy'
+import { assessMcpUrl, detectMcpSecretExpansion, MCP_SECRET_EXPANSION_DETAIL } from '@/lib/mcp-policy'
 import type { CapabilityMutationInput, ExtensionInstallInput, HarnessId, McpConnectionInput, McpStateInput, PluginWarning, SkillRecord } from '@/types/api'
+import { ProviderAccountsPanel, type ProviderAccountsPanelProps } from '@/components/ProviderAccountsPanel'
 
 const MCP_STDIO_HELP: Record<HarnessId, MessageKey> = {
   omp: 'plugins.mcpStdioHelp',
@@ -74,6 +76,11 @@ interface PluginsPageProps {
   onConnectMcp(input: McpConnectionInput): Promise<{ ok: boolean; output: string }>
   onSetMcpEnabled(input: McpStateInput): Promise<{ ok: boolean; output: string }>
   onMutateCapability?(input: CapabilityMutationInput): Promise<{ ok: boolean; output: string }>
+  /** 轉送 reload 文字 prompt(/mcp reload、/reload-plugins);busy 時依現行規則排隊。 */
+  onReloadCapabilities?(kind: 'mcp' | 'plugins'): void
+  /** Provider OAuth 帳號面板(App 注入 hook 狀態;/login /logout 的 GUI 入口)。
+   * 無 active runtime 時 usable=false,面板僅顯示提示。 */
+  providerAccounts?: ProviderAccountsPanelProps
 }
 
 export function PluginsPage({
@@ -95,6 +102,8 @@ export function PluginsPage({
   onConnectMcp,
   onSetMcpEnabled,
   onMutateCapability,
+  onReloadCapabilities,
+  providerAccounts,
 }: PluginsPageProps) {
   const { t } = useI18n()
   const mutateCapability = onMutateCapability ?? (async () => ({ ok: false, output: t('plugins.capabilityChangesUnavailable') }))
@@ -105,8 +114,13 @@ export function PluginsPage({
   const [addKind, setAddKind] = useState<AddKind | null>(null)
   const [source, setSource] = useState('')
   const [mcpName, setMcpName] = useState('')
+  const [mcpTransport, setMcpTransport] = useState<'stdio' | 'http' | 'sse'>('stdio')
   const [mcpCommand, setMcpCommand] = useState('')
   const [mcpArgs, setMcpArgs] = useState('')
+  const [mcpUrl, setMcpUrl] = useState('')
+  const [mcpHeaders, setMcpHeaders] = useState('')
+  const [mcpAllowInsecure, setMcpAllowInsecure] = useState(false)
+  const [editingMcp, setEditingMcp] = useState<SkillRecord | null>(null)
   const [mcpScope, setMcpScope] = useState<McpScope>('user')
   const [result, setResult] = useState('')
   const [adding, setAdding] = useState(false)
@@ -142,12 +156,42 @@ export function PluginsPage({
     [askUserEnabled, browserEnabled, computerUseEnabled, skills, tab, filter, query],
   )
 
+  // 網路 transport 的即時政策評估(https 預設、私網/純 http 警告)。評估只
+  // 供 UI 阻擋/提示;最終寫入仍由主程序 validateMcpConnection/assessMcpUrl
+  // 再驗一次,renderer 不被信任。
+  const mcpUrlAssessment = useMemo(
+    () => (addKind === 'mcp' && mcpTransport !== 'stdio' && mcpUrl.trim() ? assessMcpUrl(mcpUrl.trim(), { allowInsecureHttp: mcpAllowInsecure }) : undefined),
+    [addKind, mcpTransport, mcpUrl, mcpAllowInsecure],
+  )
+  // headers 每行一組 "Name: value";值中的 ${VAR}/!command 原樣寫入,由上游載入時解析。
+  const parsedMcpHeaders = useMemo(() => {
+    if (addKind !== 'mcp' || mcpTransport === 'stdio') return { headers: {} as Record<string, string>, invalid: false, hasSecret: false }
+    let invalid = false
+    let hasSecret = false
+    const headers: Record<string, string> = {}
+    for (const line of mcpHeaders.split('\n')) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+      const colon = trimmed.indexOf(':')
+      if (colon <= 0) { invalid = true; continue }
+      const key = trimmed.slice(0, colon).trim()
+      const value = trimmed.slice(colon + 1).trim()
+      if (!key) { invalid = true; continue }
+      headers[key] = value
+      if (detectMcpSecretExpansion(value)) hasSecret = true
+    }
+    return { headers, invalid, hasSecret }
+  }, [addKind, mcpTransport, mcpHeaders])
+  const mcpNetworkValid = mcpTransport === 'stdio'
+    ? Boolean(mcpCommand.trim())
+    : Boolean(mcpUrlAssessment?.ok && !parsedMcpHeaders.invalid)
+
   const canAdd =
     addKind === 'bundle'
       ? Boolean(source.trim())
       : addKind === 'extension'
         ? Boolean(source.trim() && (mcpScope !== 'project' || activeProjectPath))
-        : addKind === 'mcp' && Boolean(mcpName.trim() && mcpCommand.trim() && (mcpScope !== 'project' || activeProjectPath))
+        : addKind === 'mcp' && Boolean(mcpName.trim() && mcpNetworkValid && (mcpScope !== 'project' || (editingMcp ? editingMcp.location === 'project' : activeProjectPath)))
 
   const add = async () => {
     if (!canAdd) return
@@ -159,23 +203,43 @@ export function PluginsPage({
           ? await onInstall(source.trim())
           : addKind === 'extension'
             ? await onInstallExtension({ source: source.trim(), scope: mcpScope, projectPath: mcpScope === 'project' ? activeProjectPath : undefined })
-            : await onConnectMcp({
-                name: mcpName.trim(),
-                scope: mcpScope,
-                projectPath: mcpScope === 'project' ? activeProjectPath : undefined,
-                type: 'stdio',
-                command: mcpCommand.trim(),
-                args: mcpArgs
-                  .split('\n')
-                  .map((arg) => arg.trim())
-                  .filter(Boolean),
-              })
+            : await onConnectMcp(
+                mcpTransport === 'stdio'
+                  ? {
+                      name: mcpName.trim(),
+                      scope: editingMcp ? (editingMcp.location === 'project' ? 'project' : 'user') : mcpScope,
+                      projectPath: (editingMcp ? editingMcp.location === 'project' : mcpScope === 'project') ? activeProjectPath : undefined,
+                      ...(editingMcp ? { mode: 'replace' as const } : {}),
+                      type: 'stdio',
+                      command: mcpCommand.trim(),
+                      args: mcpArgs
+                        .split('\n')
+                        .map((arg) => arg.trim())
+                        .filter(Boolean),
+                    }
+                  : {
+                      name: mcpName.trim(),
+                      scope: editingMcp ? (editingMcp.location === 'project' ? 'project' : 'user') : mcpScope,
+                      projectPath: (editingMcp ? editingMcp.location === 'project' : mcpScope === 'project') ? activeProjectPath : undefined,
+                      ...(editingMcp ? { mode: 'replace' as const } : {}),
+                      type: mcpTransport,
+                      url: mcpUrl.trim(),
+                      // 編輯時留空 = 保留既有 headers(secret 不回流 renderer);
+                      // 填了才整組覆寫。
+                      ...(Object.keys(parsedMcpHeaders.headers).length ? { headers: parsedMcpHeaders.headers } : {}),
+                      ...(mcpAllowInsecure ? { allowInsecureHttp: true } : {}),
+                    },
+              )
       setResult(response.output)
       if (response.ok) {
         setSource('')
         setMcpName('')
         setMcpCommand('')
         setMcpArgs('')
+        setMcpUrl('')
+        setMcpHeaders('')
+        setMcpAllowInsecure(false)
+        setEditingMcp(null)
         if (addKind === 'mcp' || addKind === 'bundle') await onRefresh()
       }
     } finally {
@@ -187,10 +251,28 @@ export function PluginsPage({
     setAddKind(value)
     setSource('')
     setResult('')
+    if (value === null) setEditingMcp(null)
   }
   const openAdd = () => {
     setResult('')
+    setEditingMcp(null)
     setAddKind(null)
+    setAddOpen(true)
+  }
+  // 編輯既有 mcp.json 定義:以 bounded 摘要預填(secret 欄位如 header 值不回流,
+  // 送存時未提供的欄位由主程序保留)。名稱為 map key,編輯時鎖定不給改。
+  const openMcpEditor = (skill: SkillRecord) => {
+    if (!skill.mcpDefinition) return
+    setEditingMcp(skill)
+    setAddKind('mcp')
+    setResult('')
+    setMcpName(skill.definitionKey ?? skill.name)
+    setMcpTransport(skill.mcpDefinition.transport)
+    setMcpCommand(skill.mcpDefinition.command ?? '')
+    setMcpArgs((skill.mcpDefinition.args ?? []).join('\n'))
+    setMcpUrl(skill.mcpDefinition.url ?? '')
+    setMcpHeaders('')
+    setMcpAllowInsecure(false)
     setAddOpen(true)
   }
   const setAskUser = async (enabled: boolean) => {
@@ -349,6 +431,16 @@ export function PluginsPage({
             <button type="button" className="button" onClick={() => void onRefresh()}>
               <RefreshCw className={loading ? 'spin' : ''} size={13} /> {t('plugins.refresh')}
             </button>
+            {onReloadCapabilities ? (
+              <>
+                <button type="button" className="button" title={t('plugins.reloadHint')} onClick={() => onReloadCapabilities('mcp')}>
+                  <RefreshCw size={13} /> {t('plugins.reloadMcp')}
+                </button>
+                <button type="button" className="button" title={t('plugins.reloadHint')} onClick={() => onReloadCapabilities('plugins')}>
+                  <RefreshCw size={13} /> {t('plugins.reloadPlugins')}
+                </button>
+              </>
+            ) : null}
             <button type="button" className="button" onClick={() => setFilter('installed')}>
               <Settings2 size={13} /> {t('plugins.manage')}
             </button>
@@ -357,6 +449,9 @@ export function PluginsPage({
             </button>
           </div>
         </header>
+        {/* /login /logout 的 GUI 入口:provider OAuth 帳號面板(驅動殼,
+            憑證由 OMP custody,流程走既有 extension_ui open_url/input)。 */}
+        {providerAccounts ? <ProviderAccountsPanel {...providerAccounts} /> : null}
         <div className="directory-tabs">
           <button type="button" className={tab === 'plugins' ? 'is-active' : ''} onClick={() => setTab('plugins')}>
             {t('plugins.tabCapabilities')}
@@ -396,7 +491,7 @@ export function PluginsPage({
           </p>
         ) : null}
         <p className="connection-warning">
-          <ShieldCheck size={13} /> {NETWORK_MCP_UNAVAILABLE_DETAIL}
+          <ShieldCheck size={13} /> {t('plugins.networkBoundary')}
         </p>
         <div className="directory-heading">
           <h2>{filter === 'installed' ? t('plugins.filterInstalled') : tab === 'plugins' ? t('plugins.tabCapabilities') : t('plugins.tabSkills')}</h2>
@@ -422,6 +517,16 @@ export function PluginsPage({
                     </p>
                   </div>
                   <div className="capability-actions">
+                    {skill.kind === 'mcp' && skill.mcpDefinition && !skill.availability && (skill.location === 'user' || skill.location === 'project') ? (
+                      <button
+                        type="button"
+                        className="plugin-remove"
+                        aria-label={t('plugins.editCapability', { name: skill.name })}
+                        onClick={() => openMcpEditor(skill)}
+                      >
+                        <Pencil size={13} />
+                      </button>
+                    ) : null}
                     {skill.kind === 'package' || (skill.kind === 'mcp' && skill.location !== 'bundled' && skill.location !== 'system' && skill.definitionRemovalAvailable !== false) ? (
                       <button
                         type="button"
@@ -486,10 +591,10 @@ export function PluginsPage({
           <Modal
             title={
               addKind
-                ? t(addKind === 'mcp' ? 'plugins.addMcpServerTitle' : addKind === 'extension' ? 'plugins.addExtensionWordTitle' : 'plugins.addPluginWordTitle')
+                ? t(addKind === 'mcp' ? (editingMcp ? 'plugins.editMcpServerTitle' : 'plugins.addMcpServerTitle') : addKind === 'extension' ? 'plugins.addExtensionWordTitle' : 'plugins.addPluginWordTitle')
                 : t('plugins.addCapabilityTitle', { harness: HARNESS_SHORT_NAMES[harness] })
             }
-            onClose={() => setAddOpen(false)}
+            onClose={() => { setAddOpen(false); setEditingMcp(null) }}
             footer={
               addKind ? (
                 <>
@@ -598,22 +703,82 @@ export function PluginsPage({
                 <p className="modal-intro">{t('plugins.mcpIntro')}</p>
                 <label className="field">
                   <span>{t('plugins.serverName')}</span>
-                  <input autoFocus value={mcpName} onChange={(event) => setMcpName(event.target.value)} placeholder="my-local-tools" />
+                  <input autoFocus value={mcpName} onChange={(event) => setMcpName(event.target.value)} placeholder="my-local-tools" disabled={Boolean(editingMcp)} />
                 </label>
-                <p className="field-help">{t(MCP_STDIO_HELP[harness])}</p>
+                {editingMcp ? <p className="field-help">{t('plugins.editMcpNameLocked')}</p> : null}
                 <label className="field">
-                  <span>{t('plugins.executable')}</span>
-                  <input value={mcpCommand} onChange={(event) => setMcpCommand(event.target.value)} placeholder="npx" />
+                  <span>{t('plugins.mcpTransport')}</span>
+                  <select
+                    value={mcpTransport}
+                    onChange={(event) => setMcpTransport(event.target.value as 'stdio' | 'http' | 'sse')}
+                  >
+                    <option value="stdio">{t('plugins.transportStdio')}</option>
+                    <option value="http">{t('plugins.transportHttp')}</option>
+                    <option value="sse">{t('plugins.transportSse')}</option>
+                  </select>
                 </label>
-                <label className="field">
-                  <span>
-                    {t('plugins.arguments')} <small>{t('plugins.onePerLine')}</small>
-                  </span>
-                  <textarea value={mcpArgs} onChange={(event) => setMcpArgs(event.target.value)} rows={3} placeholder={'-y\n@modelcontextprotocol/server-filesystem\n/path/to/project'} />
-                </label>
+                {mcpTransport === 'stdio' ? (
+                  <>
+                    <p className="field-help">{t(MCP_STDIO_HELP[harness])}</p>
+                    <label className="field">
+                      <span>{t('plugins.executable')}</span>
+                      <input value={mcpCommand} onChange={(event) => setMcpCommand(event.target.value)} placeholder="npx" />
+                    </label>
+                    <label className="field">
+                      <span>
+                        {t('plugins.arguments')} <small>{t('plugins.onePerLine')}</small>
+                      </span>
+                      <textarea value={mcpArgs} onChange={(event) => setMcpArgs(event.target.value)} rows={3} placeholder={'-y\n@modelcontextprotocol/server-filesystem\n/path/to/project'} />
+                    </label>
+                  </>
+                ) : (
+                  <>
+                    <label className="field">
+                      <span>{t('plugins.mcpUrl')}</span>
+                      <input value={mcpUrl} onChange={(event) => setMcpUrl(event.target.value)} placeholder="https://mcp.example.com/mcp" />
+                    </label>
+                    {mcpUrlAssessment && !mcpUrlAssessment.ok && !mcpUrlAssessment.insecurePrivateHttp ? (
+                      <p className="page-inline-error" role="alert">
+                        <AlertTriangle size={13} /> {mcpUrlAssessment.error}
+                      </p>
+                    ) : null}
+                    {mcpUrlAssessment && mcpUrlAssessment.hostClass !== 'public' ? (
+                      <p className="connection-warning">
+                        <AlertTriangle size={13} /> {t('plugins.mcpPrivateNetworkWarning')}
+                      </p>
+                    ) : null}
+                    {mcpUrlAssessment?.insecurePrivateHttp ? (
+                      <label className="field field--checkbox">
+                        <input type="checkbox" checked={mcpAllowInsecure} onChange={(event) => setMcpAllowInsecure(event.target.checked)} />
+                        <span>{t('plugins.mcpAllowInsecureHttp')}</span>
+                      </label>
+                    ) : null}
+                    <label className="field">
+                      <span>
+                        {t('plugins.mcpHeaders')} <small>{t('plugins.onePerLine')}</small>
+                      </span>
+                      <textarea value={mcpHeaders} onChange={(event) => setMcpHeaders(event.target.value)} rows={3} placeholder={'Authorization: Bearer ${MCP_TOKEN}'} />
+                    </label>
+                    {editingMcp?.mcpDefinition?.headerNames?.length ? (
+                      <p className="field-help">
+                        {t('plugins.mcpHeadersPreserved', { names: editingMcp.mcpDefinition.headerNames.join(', ') })}
+                      </p>
+                    ) : null}
+                    {parsedMcpHeaders.invalid ? (
+                      <p className="page-inline-error" role="alert">
+                        <AlertTriangle size={13} /> {t('plugins.mcpHeadersInvalid')}
+                      </p>
+                    ) : null}
+                    {parsedMcpHeaders.hasSecret ? (
+                      <p className="connection-warning">
+                        <ShieldCheck size={13} /> {MCP_SECRET_EXPANSION_DETAIL}
+                      </p>
+                    ) : null}
+                  </>
+                )}
                 <label className="field">
                   <span>{t('plugins.availableIn')}</span>
-                  <select value={mcpScope} onChange={(event) => setMcpScope(event.target.value as McpScope)}>
+                  <select value={editingMcp ? (editingMcp.location === 'project' ? 'project' : 'user') : mcpScope} onChange={(event) => setMcpScope(event.target.value as McpScope)} disabled={Boolean(editingMcp)}>
                     <option value="user">{t('plugins.allProjectsPersonal')}</option>
                     <option value="project" disabled={!activeProjectPath}>
                       {t('plugins.currentProject')}

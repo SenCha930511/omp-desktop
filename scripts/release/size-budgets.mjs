@@ -13,10 +13,21 @@ const MIB = 1024 * KIB
  * bundle-size creep still fails the release build.
  */
 export const BUNDLE_SIZE_BUDGETS = Object.freeze({
-  mainBytes: 512 * KIB,
-  preloadBytes: 16 * KIB,
-  initialRendererBytes: 1280 * KIB,
-  largestRendererChunkBytes: 600 * KIB,
+  // 2026-10-27 parity 檔期：main-process 新增 12+ 個上游 RPC 指令的 schema
+  // 驗證（fork/branch/queue/goal/login/logout/live voice/subagent 控制等）、
+  // MCP mcp.json 編輯器驗證、live_* 事件 adapter、session 設定與 OAuth
+  // custody 驗證。量測 533,785 bytes → 依協定升至下一個 8 KiB 倍數。
+  mainBytes: 528 * KIB,
+  // 2026-10-27 parity 檔期：renderer 新增 live voice 面板、provider 帳號
+  // 面板、子代理控制/歷史游標、session 設定、extension 能力徽章、MCP
+  // 編輯器與非文字內容資料視圖。量測 1,343,617 bytes → 依協定升至下一個
+  // 8 KiB 倍數。
+  initialRendererBytes: 1320 * KIB,
+  // 2026-10-27 parity 檔期：renderer 主 chunk 隨 parity 功能面成長（同
+  // initialRendererBytes 註記）。量測 653,456 bytes → 依協定升至下一個
+  // 8 KiB 倍數；後續值得做一輪 code-split（live voice 面板 lazy 化、
+  // vendor 切分重評）把量壓回來。
+  largestRendererChunkBytes: 640 * KIB,
   rendererJsCssBytes: 2320 * KIB,
 })
 

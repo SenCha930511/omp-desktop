@@ -1,0 +1,25 @@
+/* Context popover 的「session 設定」區塊:六項工作階段設定列。 */
+.session-settings { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 9px; }
+.session-settings__header { display: flex; flex-direction: column; gap: 2px; }
+.session-settings__header h4 { margin: 0; font-size: 11px; font-weight: 620; letter-spacing: .02em; color: var(--text); }
+.session-settings__scope { color: var(--text-tertiary); font-size: 10.5px; }
+.session-settings__row { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.session-settings__text { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.session-settings__label { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 560; color: var(--text); }
+.session-settings__description { color: var(--text-tertiary); font-size: 10.5px; line-height: 1.35; }
+.session-settings__scope-tag { color: var(--text-secondary); font-size: 10px; font-style: italic; }
+.session-settings__unknown { color: var(--warning); font-size: 10px; }
+.session-settings__pending { color: var(--text-tertiary); font-size: 10px; font-weight: 400; }
+
+.session-settings__switch { flex: none; position: relative; width: 28px; height: 16px; margin-top: 1px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface-hover); cursor: pointer; transition: background .15s ease, border-color .15s ease; }
+.session-settings__switch .session-settings__thumb { position: absolute; top: 1.5px; left: 2px; width: 11px; height: 11px; border-radius: 50%; background: var(--text-tertiary); transition: transform .15s ease, background .15s ease; }
+.session-settings__switch.is-on { background: color-mix(in srgb, var(--prime) 60%, var(--surface-hover)); border-color: color-mix(in srgb, var(--prime) 55%, var(--border)); }
+.session-settings__switch.is-on .session-settings__thumb { transform: translateX(12px); background: #fff; }
+.session-settings__switch.is-unknown { border-style: dashed; }
+.session-settings__switch:disabled { opacity: .5; cursor: default; }
+
+.session-settings__segmented { flex: none; display: inline-flex; gap: 2px; margin-top: 1px; padding: 2px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.session-settings__option { padding: 2px 6px; border: none; border-radius: 6px; background: transparent; color: var(--text-secondary); font-size: 10.5px; font-weight: 540; white-space: nowrap; cursor: pointer; }
+.session-settings__option:hover:not(:disabled):not(.is-active) { color: var(--text); }
+.session-settings__option.is-active { background: color-mix(in srgb, var(--prime) 11%, var(--surface-subtle)); color: var(--prime); }
+.session-settings__option:disabled { opacity: .5; cursor: default; }

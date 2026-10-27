@@ -17,7 +17,6 @@
 .context-popover__empty { margin: 0 0 10px; color: var(--text-secondary); }
 .context-popover__compact { width: 100%; min-height: 30px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-hover); color: var(--text); font: inherit; cursor: pointer; }
 .context-popover__compact:hover:not(:disabled) { background: var(--surface-selected); }
-.context-popover__compact:disabled { opacity: .5; cursor: default; }
 .composer-queue__item { min-width: 0; min-height: 29px; display: flex; align-items: center; gap: 6px; padding: 3px 5px; border-top: 1px solid var(--border-subtle); color: var(--text-secondary); font-size: 11px; }
 .composer-queue__item:first-child { border-top: 0; }
 .composer-queue__item:hover { background: var(--surface-hover); }
@@ -170,6 +169,11 @@
 .fast-mode-toggle:hover:not(:disabled) { color: var(--text); background: var(--surface-hover); }
 .fast-mode-toggle.is-active { color: var(--prime); border-color: color-mix(in srgb, var(--prime) 38%, var(--border)); background: color-mix(in srgb, var(--prime) 11%, var(--surface-subtle)); }
 .fast-mode-toggle:disabled { opacity: .5; cursor: not-allowed; }
+/* 慢速 scope 徽章:global 是 per-model 持久設定(所有工作階段共用),
+   以底線邊框標示,與 session-only 的樸素文字區分。 */
+/* 限流徽章(low_priority/wrap_up):非互動,只提示降速原因,hover 見完整說明。 */
+.usage-limit-badge { height: 26px; display: inline-flex; align-items: center; gap: 4px; padding: 0 8px; border-radius: 999px; color: var(--warning); background: color-mix(in srgb, var(--warning) 10%, var(--surface-subtle)); font-size: 11px; font-weight: 520; white-space: nowrap; }
+/* Ultra 上游無 RPC:靜態標示,刻意不做成按鈕,避免偽造切換互動。 */
 .approval-mode-toggle { height: 26px; display: inline-flex; align-items: center; gap: 4px; padding: 0 8px; border: 1px solid transparent; border-radius: 999px; color: var(--text-secondary); background: transparent; font-size: 11px; font-weight: 520; cursor: pointer; transition: color 130ms var(--ease-out), background 130ms var(--ease-out), border-color 130ms var(--ease-out); }
 .approval-mode-toggle:hover { color: var(--text); background: var(--surface-hover); }
 .approval-mode-toggle.is-yolo { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 38%, var(--border)); background: color-mix(in srgb, var(--warning) 11%, var(--surface-subtle)); }
@@ -189,6 +193,7 @@
 .composer-menu button > span { min-width: 0; display: flex; flex-direction: column; }
 .composer-menu strong { color: var(--text); font-size: 12px; font-weight: 540; }
 .composer-menu small { overflow: hidden; color: var(--text-tertiary); font-size: 10.5px; white-space: nowrap; text-overflow: ellipsis; }
+.composer-menu__group-label { padding: 7px 9px 2px; color: var(--text-tertiary); font-size: 10px; font-weight: 620; letter-spacing: .04em; text-transform: uppercase; user-select: none; }
 .approval-mode { position: relative; }
 .approval-mode__menu { position: absolute; z-index: 70; left: 0; bottom: calc(100% + 7px); min-width: 176px; padding: 6px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-raised); box-shadow: var(--shadow-popover); }
 .approval-mode__option { width: 100%; display: flex; align-items: center; gap: 7px; padding: 6px 7px; border-radius: 7px; color: var(--text-secondary); background: transparent; font-size: 11.5px; font-weight: 540; text-align: left; }

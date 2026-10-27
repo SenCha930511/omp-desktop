@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { PRIME_THINKING_LEVELS } from '@/types/api'
-import type { HarnessId, PrimeModelCatalog, PrimeModelDescriptor, PrimeThinkingLevel, PrimeEffortSelector, DesktopApi, RuntimeInfo, SessionRecord } from '@/types/api'
+import type { HarnessId, PrimeModelCatalog, PrimeModelDescriptor, PrimeThinkingLevel, PrimeEffortSelector, DesktopApi, RuntimeInfo, SessionRecord, UsageLimitState } from '@/types/api'
 
 /** Stable fallback identities so consumers can memoize on prop equality. */
 const DEFAULT_REASONING_LEVELS: PrimeThinkingLevel[] = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
 
 function isUsable(candidate: PrimeModelDescriptor): boolean {
-  return candidate.enabled !== false && candidate.available
+  return candidate.available
 }
 
 /** Resolve a session's persisted model against the catalog, matching either the model id or the full key. */
@@ -25,7 +25,6 @@ function supportsEffort(model: PrimeModelDescriptor | undefined, effort: string)
 export function groupModelsByProvider(models: readonly PrimeModelDescriptor[] | undefined): Map<string, PrimeModelDescriptor[]> {
   const grouped = new Map<string, PrimeModelDescriptor[]>()
   for (const model of models ?? []) {
-    if (model.enabled === false) continue
     const bucket = grouped.get(model.provider)
     if (bucket) bucket.push(model)
     else grouped.set(model.provider, [model])
@@ -56,6 +55,8 @@ export interface ProviderCatalog {
   model: string
   effort: PrimeEffortSelector
   fast: boolean
+  /** 帳號限流狀態(low_priority/wrap_up);顯示之避免誤判為 app bug。 */
+  usageLimit: UsageLimitState | undefined
   catalog: PrimeModelCatalog | null
   selectedModel: PrimeModelDescriptor | undefined
   reasoningLevels: PrimeEffortSelector[]
@@ -67,10 +68,6 @@ export interface ProviderCatalog {
   changeModel(modelKey: string): void
   changeEffort(value: PrimeEffortSelector): void
   changeFast(enabled: boolean): void
-  setEnabled(providerId: string, enabled: boolean): Promise<void>
-  setAllEnabled(): Promise<void>
-  setAllDisabled(): Promise<void>
-  setModelEnabled(modelKey: string, enabled: boolean): Promise<void>
 }
 
 export function useProviderCatalog({ bridge, ready = true, harness = 'omp', runtime, activeSession, lastSelectedModel = '', defaultEffort = 'medium', rememberModel, syncRuntime, reportError }: UseProviderCatalogOptions): ProviderCatalog {
@@ -137,7 +134,7 @@ export function useProviderCatalog({ bridge, ready = true, harness = 'omp', runt
   useLayoutEffect(() => { rememberSelectionRef.current = rememberSelection })
 
   const firstUsableModel = useCallback((nextCatalog: PrimeModelCatalog | null | undefined) => (
-    nextCatalog?.models.find((candidate) => candidate.enabled !== false && candidate.available)
+    nextCatalog?.models.find((candidate) => candidate.available)
   ), [])
 
   const fallbackModel = useCallback((nextCatalog: PrimeModelCatalog | null | undefined) => {
@@ -145,12 +142,12 @@ export function useProviderCatalog({ bridge, ready = true, harness = 'omp', runt
       const sessionModel = findSessionModel(nextCatalog, activeSession)
       if (sessionModel) return sessionModel
     }
-    return nextCatalog?.models.find((candidate) => candidate.key === lastSelectedModel && candidate.enabled !== false && candidate.available)
+    return nextCatalog?.models.find((candidate) => candidate.key === lastSelectedModel && candidate.available)
       ?? firstUsableModel(nextCatalog)
   }, [activeSession, firstUsableModel, lastSelectedModel])
 
   const selectedModel = useMemo<PrimeModelDescriptor | undefined>(() => {
-    return catalog?.models.find((candidate) => candidate.key === model && candidate.enabled !== false && candidate.available)
+    return catalog?.models.find((candidate) => candidate.key === model && candidate.available)
   }, [catalog, model])
   const reasoningLevels = useMemo<PrimeEffortSelector[]>(() => {
     const levels = selectedModel?.availableThinkingLevels ?? runtime?.availableThinkingLevels ?? DEFAULT_REASONING_LEVELS
@@ -185,7 +182,7 @@ export function useProviderCatalog({ bridge, ready = true, harness = 'omp', runt
 
   useEffect(() => {
     if (!catalog) return
-    const current = catalog.models.find((candidate) => candidate.key === modelRef.current && candidate.enabled !== false && candidate.available)
+    const current = catalog.models.find((candidate) => candidate.key === modelRef.current && candidate.available)
     if (current) return
     const fallback = fallbackModel(catalog)
     updateModel(fallback?.key ?? '')
@@ -252,6 +249,7 @@ export function useProviderCatalog({ bridge, ready = true, harness = 'omp', runt
     updateFast(runtime.serviceTier === 'priority')
   }, [runtime?.runtimeId, runtime?.serviceTier, updateFast])
 
+
   const changeModel = useCallback((nextModelKey: string) => {
     const previous = { model: modelRef.current, effort: effortRef.current, fast: fastRef.current }
     const nextModel = catalog?.models.find((candidate) => candidate.key === nextModelKey)
@@ -304,49 +302,6 @@ export function useProviderCatalog({ bridge, ready = true, harness = 'omp', runt
     )
   }, [bridge, queueRuntimeMutation, runtime, updateFast])
 
-  const setEnabled = useCallback(async (providerId: string, enabled: boolean) => {
-    if (!bridge) throw new Error('Providers can only be configured in the desktop app.')
-    const next = await bridge.providers.setEnabled(providerId, enabled, harness)
-    setCatalogFor(harness, next)
-    const disabledProviders = next.providers.filter((provider) => !provider.enabled).map((provider) => provider.id)
-    const selectedProvider = catalog?.models.find((candidate) => candidate.key === modelRef.current)?.provider
-    if (selectedProvider && disabledProviders.includes(selectedProvider)) {
-      const fallback = fallbackModel(next)
-      updateModel(fallback?.key ?? '')
-      if (fallback) rememberSelection(fallback.key)
-      updateFast(false)
-    }
-  }, [bridge, catalog?.models, fallbackModel, harness, rememberSelection, setCatalogFor, updateFast, updateModel])
-
-  const setAllEnabled = useCallback(async () => {
-    if (!bridge) throw new Error('Providers can only be configured in the desktop app.')
-    setCatalogFor(harness, await bridge.providers.setDisabled([], harness))
-  }, [bridge, harness, setCatalogFor])
-
-  const setAllDisabled = useCallback(async () => {
-    if (!bridge) throw new Error('Providers can only be configured in the desktop app.')
-    const providerIds = catalog?.providers.map((provider) => provider.id).sort() ?? []
-    if (!providerIds.length) throw new Error('Provider catalogue is not loaded.')
-    setCatalogFor(harness, await bridge.providers.setDisabled(providerIds, harness))
-    const selectedProvider = catalog?.models.find((candidate) => candidate.key === modelRef.current)?.provider
-    if (selectedProvider && providerIds.includes(selectedProvider)) {
-      updateModel('')
-      updateFast(false)
-    }
-  }, [bridge, catalog?.models, catalog?.providers, harness, setCatalogFor, updateFast, updateModel])
-
-  const setModelEnabled = useCallback(async (modelKey: string, enabled: boolean) => {
-    if (!bridge) throw new Error('Models can only be configured in the desktop app.')
-    const next = await bridge.providers.setModelEnabled(modelKey, enabled, harness)
-    setCatalogFor(harness, next)
-    if (!enabled && modelRef.current === modelKey) {
-      const fallback = fallbackModel(next)
-      updateModel(fallback?.key ?? '')
-      if (fallback) rememberSelection(fallback.key)
-      updateFast(false)
-    }
-  }, [bridge, fallbackModel, harness, rememberSelection, setCatalogFor, updateFast, updateModel])
-
   const resolvedAutoEffort = effort !== 'auto' || runtime?.autoThinkingResolved !== true ? undefined : PRIME_THINKING_LEVELS.find((level) => level === runtime.thinkingLevel)
 
   const resolveSelection = async () => {
@@ -363,8 +318,9 @@ export function useProviderCatalog({ bridge, ready = true, harness = 'omp', runt
   }
 
   return {
-    model, effort, fast, catalog, selectedModel, reasoningLevels, resolvedAutoEffort, modelsByProvider,
+    model, effort, fast,
+    usageLimit: runtime?.usageLimit,
+    catalog, selectedModel, reasoningLevels, resolvedAutoEffort, modelsByProvider,
     refresh, resolveSelection, changeModel, changeEffort, changeFast,
-    setEnabled, setAllEnabled, setAllDisabled, setModelEnabled,
   }
 }

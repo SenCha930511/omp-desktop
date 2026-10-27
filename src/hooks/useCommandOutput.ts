@@ -4,16 +4,16 @@ import { commandOutputText } from '@/lib/command-output'
 const MAX_OUTPUT_CHARS = 128 * 1024
 
 const MAX_RESULTS = 5
-export interface CommandResult { id: number; text: string; command?: string; status?: 'running' | 'completed' | 'failed' }
+export interface CommandResult { id: number; text: string; command?: string; status?: 'running' | 'completed' | 'failed'; /** 進行中可中止(使用者 `!` bash 的 abort_bash 入口)。 */ onAbort?: () => void }
 interface OutputState { owner: number; entries: CommandResult[]; activeId?: number; selectedId?: number; visible: boolean }
 
 /** Late frames update the active command, never a selected older result. */
 export function useCommandOutput(owner: number) {
   const [state, setState] = useState<OutputState>({ owner, entries: [], visible: false })
   const sequence = useRef(0)
-  const begin = useCallback((command: string) => {
+  const begin = useCallback((command: string, onAbort?: () => void) => {
     const id = ++sequence.current
-    const entry: CommandResult = { id, command, status: 'running', text: '' }
+    const entry: CommandResult = { id, command, status: 'running', text: '', ...(onAbort ? { onAbort } : {}) }
     setState((current) => ({ owner, entries: [entry, ...(current.owner === owner ? current.entries : [])].slice(0, MAX_RESULTS), activeId: id, selectedId: id, visible: true }))
   }, [owner])
   const finish = useCallback((failure?: string, agentInvoked = false) => setState((current) => {
@@ -45,6 +45,7 @@ export function useCommandOutput(owner: number) {
   const selected = history.find((entry) => entry.id === state.selectedId) ?? history[0]
   const visible = state.owner === owner && state.visible
   return { text: visible ? selected?.text ?? '' : '', command: visible ? selected?.command : undefined, status: visible ? selected?.status : undefined,
+    onAbort: visible ? selected?.onAbort : undefined,
     history, selectedId: selected?.id, visible, begin, finish, append, dismiss, clear, select }
 }
 

@@ -65,7 +65,7 @@ describe('PluginService discovery', () => {
     expect(promptRecords).toHaveLength(1)
     expect(promptRecords[0]).toMatchObject({ location: 'user' })
   })
-  it('keeps every user and project OMP MCP definition visible but unavailable', async () => {
+  it('keeps every user and project OMP MCP definition visible with source scope and editable summaries', async () => {
     const root = temp()
     const agentDir = join(root, 'agent')
     const project = join(root, 'project')
@@ -87,13 +87,21 @@ describe('PluginService discovery', () => {
     for (const [name, location] of [
       ['http-server', 'user'], ['sse-server', 'project'],
     ] as const) {
-      expect(records).toContainEqual(expect.objectContaining({
-        name, location, availability: { available: false, detail: expect.stringContaining('managed outside OMP Desktop') },
-      }))
+      // Manageable keys are fully actionable now (edit/enable/disable/remove);
+      // availability stays undefined instead of the old external-management block.
+      expect(records).toContainEqual(expect.objectContaining({ name, location }))
+      expect(records.find((item) => item.name === name)?.availability).toBeUndefined()
     }
     // Non-record definitions never surface, so hostile values stay unread.
     expect(records.some((item) => item.name === 'legacy-scalar' || item.name === 'null-shape')).toBe(false)
-    expect(records.find((item) => item.name === 'http-server')?.description).toContain('Managed outside OMP Desktop')
+    const httpRecord = records.find((item) => item.name === 'http-server')
+    expect(httpRecord?.description).toContain('HTTP MCP server at https://mcp.example')
+    expect(httpRecord?.description).not.toContain('Managed outside OMP Desktop')
+    // 編輯器摘要:URL 原樣帶回;header 值不回流。
+    expect(httpRecord?.mcpDefinition).toMatchObject({ transport: 'http', url: 'https://mcp.example/server' })
+    const sseRecord = records.find((item) => item.name === 'sse-server')
+    expect(sseRecord?.description).toContain('SSE MCP server at https://project.example')
+    expect(sseRecord?.mcpDefinition?.transport).toBe('sse')
 
     await expect(service.mutateCapability({ kind: 'mcp', action: 'remove', name: 'http-server', scope: 'user' }))
       .resolves.toMatchObject({ ok: true })
@@ -570,50 +578,206 @@ describe('PluginService discovery', () => {
 })
 
 describe('PluginService MCP connections', () => {
-  it('rejects network transports at the settings writer even if callers bypass service validation', async () => {
+  it('writes stdio and https network definitions at the low-level settings writer', async () => {
     const root = temp()
     const settingsPath = join(root, 'mcp.json')
 
     await expect(updateMcpSettings(
       settingsPath,
-      { name: 'remote', scope: 'user', type: 'sse', url: 'https://mcp.example/sse' } as never,
+      { name: 'remote', scope: 'user', type: 'sse', url: 'https://mcp.example/sse', headers: { Authorization: 'Bearer ${MCP_TOKEN}' } },
       undefined,
       { harness: 'omp', agentName: 'OMP' },
-    )).rejects.toThrow(/managed outside OMP Desktop/)
-    expect(existsSync(settingsPath)).toBe(false)
+    )).resolves.toMatchObject({ ok: true })
+
+    const config = JSON.parse(readFileSync(settingsPath, 'utf8'))
+    // ${VAR} 原樣寫入;OMP Desktop 不展開,上游載入時才解析。
+    expect(config.mcpServers.remote).toEqual({
+      type: 'sse', url: 'https://mcp.example/sse', headers: { Authorization: 'Bearer ${MCP_TOKEN}' }, enabled: true,
+    })
   })
 
-  it('rejects state changes for network definitions at the low-level writer', async () => {
+  it('toggles network definitions at the low-level writer and normalizes allow/deny lists', async () => {
     const root = temp()
     const settingsPath = join(root, 'mcp.json')
-    const original = JSON.stringify({ mcpServers: { local: { type: 'http', url: 'https://mcp.example/mcp', enabled: true } } })
-    writeFileSync(settingsPath, original)
+    writeFileSync(settingsPath, JSON.stringify({
+      mcpServers: {
+        remote: { type: 'http', url: 'https://mcp.example/mcp', enabled: true },
+        forced: { type: 'stdio', command: 'mcp-forced', enabled: false },
+      },
+      disabledServers: ['remote'],
+      enabledServers: ['forced'],
+    }))
 
-    await expect(updateMcpState(settingsPath, { name: 'local', scope: 'user', enabled: false }))
-      .resolves.toMatchObject({ ok: false, reason: 'blocked', output: expect.stringContaining('Network MCP servers are managed outside OMP Desktop') })
-    expect(readFileSync(settingsPath, 'utf8')).toBe(original)
+    // deny 優先:清單中的 remote 即使 enabled:true 也視為停用;enable 時一併從清單移除。
+    await expect(updateMcpState(settingsPath, { name: 'remote', scope: 'user', enabled: true }))
+      .resolves.toMatchObject({ ok: true })
+    // allow 會覆蓋定義的 enabled:false;disable 時一併從 allowlist 移除。
+    await expect(updateMcpState(settingsPath, { name: 'forced', scope: 'user', enabled: false }))
+      .resolves.toMatchObject({ ok: true })
+
+    const config = JSON.parse(readFileSync(settingsPath, 'utf8'))
+    expect(config.mcpServers.remote.enabled).toBe(true)
+    expect(config.mcpServers.forced.enabled).toBe(false)
+    expect(config.disabledServers ?? []).not.toContain('remote')
+    expect(config.enabledServers ?? []).not.toContain('forced')
   })
 
-  it('rejects every omp network MCP transport before touching settings', async () => {
+  it('replace saves preserve harness-owned auth/oauth and unsupplied fields', async () => {
+    const root = temp()
+    const settingsPath = join(root, 'mcp.json')
+    writeFileSync(settingsPath, JSON.stringify({
+      mcpServers: {
+        remote: {
+          type: 'http',
+          url: 'https://old.example/mcp',
+          headers: { Authorization: 'Bearer ${MCP_TOKEN}' },
+          auth: { type: 'oauth', credentialId: 'cred-1', tokenUrl: 'https://old.example/token' },
+          oauth: { clientId: 'client-1' },
+          enabled: false,
+        },
+      },
+    }))
+
+    // 編輯 URL(未提供 headers/auth/oauth/enabled):全部保留,hidden credential
+    // 不被編輯器抹掉。
+    await expect(updateMcpSettings(
+      settingsPath,
+      { name: 'remote', scope: 'user', mode: 'replace', type: 'http', url: 'https://new.example/mcp' },
+      undefined,
+      { harness: 'omp', agentName: 'OMP' },
+    )).resolves.toMatchObject({ ok: true })
+
+    const saved = JSON.parse(readFileSync(settingsPath, 'utf8')).mcpServers.remote
+    expect(saved).toEqual({
+      type: 'http',
+      url: 'https://new.example/mcp',
+      headers: { Authorization: 'Bearer ${MCP_TOKEN}' },
+      auth: { type: 'oauth', credentialId: 'cred-1', tokenUrl: 'https://old.example/token' },
+      oauth: { clientId: 'client-1' },
+      enabled: false,
+    })
+
+    // replace 未知名稱 → blocked;create 撞名 → blocked。
+    await expect(updateMcpSettings(
+      settingsPath,
+      { name: 'missing', scope: 'user', mode: 'replace', type: 'http', url: 'https://new.example/mcp' },
+      undefined,
+      { harness: 'omp', agentName: 'OMP' },
+    )).resolves.toMatchObject({ ok: false, reason: 'blocked' })
+    await expect(updateMcpSettings(
+      settingsPath,
+      { name: 'remote', scope: 'user', type: 'http', url: 'https://other.example/mcp' },
+      undefined,
+      { harness: 'omp', agentName: 'OMP' },
+    )).resolves.toMatchObject({ ok: false, reason: 'blocked' })
+
+    // 換 transport 時丟棄舊 transport 專屬欄位,仍保留 auth。
+    await expect(updateMcpSettings(
+      settingsPath,
+      { name: 'remote', scope: 'user', mode: 'replace', type: 'stdio', command: 'mcp-local' },
+      undefined,
+      { harness: 'omp', agentName: 'OMP' },
+    )).resolves.toMatchObject({ ok: true })
+    const swapped = JSON.parse(readFileSync(settingsPath, 'utf8')).mcpServers.remote
+    expect(swapped).toMatchObject({ type: 'stdio', command: 'mcp-local', auth: { type: 'oauth', credentialId: 'cred-1', tokenUrl: 'https://old.example/token' } })
+    expect(swapped).not.toHaveProperty('url')
+    expect(swapped).not.toHaveProperty('headers')
+  })
+
+  it('renders effective state from disabledServers/enabledServers and labels harness-resolved secrets', async () => {
+    const root = temp()
+    const agentDir = join(root, 'agent')
+    mkdirSync(agentDir)
+    writeFileSync(join(agentDir, 'mcp.json'), JSON.stringify({
+      mcpServers: {
+        denied: { type: 'http', url: 'https://denied.example/mcp', enabled: true },
+        allowed: { type: 'stdio', command: 'mcp-allowed', enabled: false },
+        secretful: { type: 'http', url: 'https://secret.example/mcp', headers: { Authorization: '!gh auth token' } },
+      },
+      disabledServers: ['denied'],
+      enabledServers: ['allowed'],
+    }))
+    const service = new PluginService(null, async (path) => resolve(path), { agentDir })
+
+    const records = (await service.list()).skills.filter((item) => item.kind === 'mcp')
+    const denied = records.find((item) => item.name === 'denied')
+    expect(denied?.enabled).toBe(false)
+    expect(denied?.description).toContain('Disabled by the disabledServers list')
+    const allowed = records.find((item) => item.name === 'allowed')
+    expect(allowed?.enabled).toBe(true)
+    expect(allowed?.description).toContain('Enabled by the enabledServers list')
+    // 讀檔不解析 !command / ${...}:只標示由 OMP 解析;header 值不回流摘要。
+    const secretful = records.find((item) => item.name === 'secretful')
+    expect(secretful?.description).toContain('${VAR} or !command')
+    expect(secretful?.mcpDefinition?.headerNames).toEqual(['Authorization'])
+    expect(JSON.stringify(secretful?.mcpDefinition)).not.toContain('gh auth token')
+  })
+
+  it('surfaces OMP-quarantined mcp.json.broken-* files as catalog warnings', async () => {
+    const root = temp()
+    const agentDir = join(root, 'agent')
+    mkdirSync(agentDir)
+    writeFileSync(join(agentDir, 'mcp.json.broken-1761234567890-42-9f0d3b7e'), '{ not json')
+    writeFileSync(join(agentDir, 'mcp.json'), JSON.stringify({ mcpServers: { ok: { type: 'stdio', command: 'mcp-ok' } } }))
+    const service = new PluginService(null, async (path) => resolve(path), { agentDir })
+
+    const catalog = await service.list()
+
+    expect(catalog.skills).toContainEqual(expect.objectContaining({ name: 'ok', kind: 'mcp' }))
+    expect(catalog.warnings).toContainEqual(expect.objectContaining({
+      scope: 'user',
+      message: expect.stringContaining('mcp.json.broken-'),
+    }))
+  })
+
+  it('enforces the network URL policy before touching settings', async () => {
     const root = temp()
     const agentDir = join(root, 'agent')
     mkdirSync(agentDir)
     const service = new PluginService(null, async (path) => resolve(path), { agentDir })
     const settingsPath = join(agentDir, 'mcp.json')
 
-    for (const input of [
-      { type: 'http', url: 'http://127.0.0.1:3333/mcp', auth: 'none' },
-      { type: 'http', url: 'http://localhost:3333/mcp', auth: 'none' },
-      { type: 'http', url: 'http://[::1]:3333/mcp', auth: 'none' },
-      { type: 'http', url: 'https://mcp.example/mcp', auth: 'oauth' },
-      { type: 'http', url: 'https://mcp.example/mcp', auth: 'bearer', bearerTokenEnvVar: 'MCP_TOKEN' },
-      { type: 'sse', url: 'https://mcp.example/sse', auth: 'none' },
-      { type: 'stdio', command: 'mcp-local', url: 42 },
-    ] as const) {
-      await expect(service.connectMcp({ name: 'remote', scope: 'user', ...input } as never))
-        .rejects.toThrow('Network MCP servers are managed outside OMP Desktop')
+    // 公網必須 https;純 http 一律拒絕。
+    for (const url of ['http://mcp.example/mcp', 'ftp://mcp.example/mcp', 'not-a-url', 'https://user:pw@mcp.example/mcp']) {
+      await expect(service.connectMcp({ name: 'remote', scope: 'user', type: 'http', url } as never)).rejects.toThrow()
       expect(existsSync(settingsPath)).toBe(false)
     }
+    // loopback/私有網段的純 http 需要明示 allowInsecureHttp。
+    for (const url of ['http://127.0.0.1:3333/mcp', 'http://localhost:3333/mcp', 'http://[::1]:3333/mcp', 'http://192.168.1.10/mcp', 'http://printer.local/mcp']) {
+      await expect(service.connectMcp({ name: 'remote', scope: 'user', type: 'http', url } as never))
+        .rejects.toThrow('insecure-http')
+      expect(existsSync(settingsPath)).toBe(false)
+    }
+    // stdio 與 url 互斥(上游 schema not: required [url])。
+    await expect(service.connectMcp({ name: 'remote', scope: 'user', type: 'stdio', command: 'mcp-local', url: 'https://mcp.example/mcp' } as never))
+      .rejects.toThrow('cannot include a URL')
+    // http/sse 與 command 互斥。
+    await expect(service.connectMcp({ name: 'remote', scope: 'user', type: 'http', url: 'https://mcp.example/mcp', command: 'mcp-local' } as never))
+      .rejects.toThrow('cannot include a command')
+    expect(existsSync(settingsPath)).toBe(false)
+  })
+
+  it('accepts https network transports and acknowledged private http', async () => {
+    const root = temp()
+    const agentDir = join(root, 'agent')
+    mkdirSync(agentDir)
+    const service = new PluginService(null, async (path) => resolve(path), { agentDir })
+
+    for (const input of [
+      { type: 'http', url: 'https://mcp.example/mcp' },
+      { type: 'sse', url: 'https://mcp.example/sse' },
+      { type: 'http', url: 'http://127.0.0.1:3333/mcp', allowInsecureHttp: true },
+      { type: 'http', url: 'https://mcp.example/mcp', headers: { Authorization: 'Bearer ${MCP_TOKEN}' }, timeout: 30_000, requestIdFormat: 'string' },
+    ] as const) {
+      const name = `remote-${Math.random().toString(36).slice(2, 8)}`
+      await expect(service.connectMcp({ name, scope: 'user', ...input } as never)).resolves.toMatchObject({ ok: true })
+    }
+
+    const config = JSON.parse(readFileSync(join(agentDir, 'mcp.json'), 'utf8'))
+    const saved = Object.values(config.mcpServers) as Array<Record<string, unknown>>
+    expect(saved).toHaveLength(4)
+    expect(saved.some((item) => item.type === 'sse' && item.url === 'https://mcp.example/sse' && item.enabled === true)).toBe(true)
+    expect(saved.some((item) => item.type === 'http' && item.timeout === 30_000 && item.requestIdFormat === 'string')).toBe(true)
   })
 
   it('retains local stdio create and state management for omp', async () => {
@@ -659,7 +823,7 @@ describe('PluginService MCP connections', () => {
     })
   })
 
-  it('keeps an externally configured omp network server visible but non-actionable', async () => {
+  it('toggles an omp network server through both state APIs without touching its definition', async () => {
     const root = temp()
     const agentDir = join(root, 'agent')
     mkdirSync(agentDir)
@@ -668,22 +832,22 @@ describe('PluginService MCP connections', () => {
     const service = new PluginService(null, async (path) => resolve(path), { agentDir })
 
     const record = (await service.list()).skills.find((item) => item.kind === 'mcp' && item.name === 'remote')
-    expect(record).toMatchObject({
-      enabled: true,
-      availability: {
-        available: false,
-        detail: expect.stringContaining('managed outside OMP Desktop'),
-      },
-    })
+    expect(record).toMatchObject({ enabled: true })
+    expect(record?.availability).toBeUndefined()
 
-    const original = readFileSync(settingsPath, 'utf8')
     await expect(service.setMcpEnabled({ name: 'remote', scope: 'user', enabled: false }))
-      .resolves.toMatchObject({ ok: false, reason: 'blocked', output: expect.stringContaining('managed outside OMP Desktop') })
+      .resolves.toMatchObject({ ok: true })
+    expect(JSON.parse(readFileSync(settingsPath, 'utf8')).mcpServers.remote).toMatchObject({
+      type: 'sse', url: 'https://mcp.example/sse', enabled: false,
+    })
     await expect(service.mutateCapability({ kind: 'mcp', action: 'enable', name: 'remote', scope: 'user' }))
-      .resolves.toMatchObject({ ok: false, reason: 'blocked', output: expect.stringContaining('managed outside OMP Desktop') })
+      .resolves.toMatchObject({ ok: true })
     await expect(service.mutateCapability({ kind: 'mcp', action: 'disable', name: 'remote', scope: 'user' }))
-      .resolves.toMatchObject({ ok: false, reason: 'blocked', output: expect.stringContaining('managed outside OMP Desktop') })
-    expect(readFileSync(settingsPath, 'utf8')).toBe(original)
+      .resolves.toMatchObject({ ok: true })
+    const saved = JSON.parse(readFileSync(settingsPath, 'utf8')).mcpServers.remote
+    expect(saved).toMatchObject({ type: 'sse', url: 'https://mcp.example/sse', enabled: false })
+    // URL/transport 原樣保留;toggle 只動 enabled 旗標。
+    expect(saved.url).toBe('https://mcp.example/sse')
   })
 
   it('allows definition-only deletion for an externally configured network server', async () => {
@@ -896,7 +1060,7 @@ describe('PluginService MCP connections', () => {
     writeFileSync(join(agentDir, 'mcp.json'), JSON.stringify({ mcpServers: { existing: { type: 'stdio', command: 'safe' } } }))
     const service = new PluginService(null, async (path) => resolve(path), { agentDir, harness: 'omp' })
 
-    await expect(service.connectMcp({ name: 'secret', scope: 'user', type: 'http', url: 'https://token@example.test/mcp' })).rejects.toThrow(/managed outside OMP Desktop/)
+    await expect(service.connectMcp({ name: 'secret', scope: 'user', type: 'http', url: 'https://token@example.test/mcp' })).rejects.toThrow(/must not embed credentials/)
     const duplicate = await service.connectMcp({ name: 'existing', scope: 'user', type: 'stdio', command: 'other' })
     expect(duplicate.ok).toBe(false)
     expect(JSON.parse(readFileSync(join(agentDir, 'mcp.json'), 'utf8')).mcpServers.existing.command).toBe('safe')
@@ -1071,12 +1235,14 @@ describe('PluginService OMP parity', () => {
     expect(catalog.skills.some((item) => item.name === 'transitive-only')).toBe(false)
     expect(catalog.skills).toContainEqual(expect.objectContaining({
       name: 'docs', kind: 'mcp', location: 'user',
-      availability: { available: false, detail: expect.stringContaining('managed outside OMP Desktop') },
+      description: expect.stringContaining('HTTP MCP server at https://docs.example'),
+      mcpDefinition: expect.objectContaining({ transport: 'http', url: 'https://docs.example/mcp' }),
     }))
+    expect(catalog.skills.find((item) => item.kind === 'mcp' && item.name === 'docs')?.availability).toBeUndefined()
     expect(catalog.skills).toContainEqual(expect.objectContaining({ name: 'files', kind: 'mcp', location: 'project' }))
   })
 
-  it('writes only local stdio definitions to native OMP mcp.json files at both scopes', async () => {
+  it('writes stdio and https network definitions to native OMP mcp.json files at both scopes', async () => {
     const root = temp()
     const agentDir = join(root, '.omp', 'agent')
     const project = join(root, 'project')
@@ -1084,20 +1250,24 @@ describe('PluginService OMP parity', () => {
     mkdirSync(project)
     const service = new PluginService(null, async (path) => realpathSync(path), { agentDir, harness: 'omp' })
 
-    await expect(service.connectMcp({ name: 'docs:remote', scope: 'user', type: 'http', url: 'https://docs.example/mcp', auth: 'oauth' }))
-      .rejects.toThrow(/managed outside OMP Desktop/)
-    await expect(service.connectMcp({ name: 'stream', scope: 'user', type: 'sse', url: 'https://docs.example/sse' } as never))
-      .rejects.toThrow(/managed outside OMP Desktop/)
+    const remote = await service.connectMcp({ name: 'docs:remote', scope: 'user', type: 'http', url: 'https://docs.example/mcp' })
+    const stream = await service.connectMcp({ name: 'stream', scope: 'user', type: 'sse', url: 'https://docs.example/sse' })
     const user = await service.connectMcp({ name: 'local', scope: 'user', type: 'stdio', command: 'mcp-local' })
     const projectResult = await service.connectMcp({ name: 'files', scope: 'project', projectPath: project, type: 'stdio', command: 'npx', args: ['-y', 'server'] })
     await expect(service.connectMcp({ name: 'invalid name', scope: 'user', type: 'stdio', command: 'npx' })).rejects.toThrow(/unsupported characters/)
 
+    expect(remote.ok).toBe(true)
+    expect(stream.ok).toBe(true)
     expect(user).toMatchObject({ ok: true, output: expect.stringContaining('new OMP session') })
     expect(projectResult.ok).toBe(true)
     const userConfig = JSON.parse(readFileSync(join(agentDir, 'mcp.json'), 'utf8'))
     const projectConfig = JSON.parse(readFileSync(join(project, '.omp', 'mcp.json'), 'utf8'))
     expect(userConfig.$schema).toContain('can1357/oh-my-pi')
-    expect(userConfig.mcpServers).toEqual({ local: { type: 'stdio', command: 'mcp-local', enabled: true } })
+    expect(userConfig.mcpServers).toEqual({
+      'docs:remote': { type: 'http', url: 'https://docs.example/mcp', enabled: true },
+      stream: { type: 'sse', url: 'https://docs.example/sse', enabled: true },
+      local: { type: 'stdio', command: 'mcp-local', enabled: true },
+    })
     expect(projectConfig.mcpServers.files).toEqual({ type: 'stdio', command: 'npx', args: ['-y', 'server'], enabled: true })
     expect(existsSync(join(project, '.prime'))).toBe(false)
   })

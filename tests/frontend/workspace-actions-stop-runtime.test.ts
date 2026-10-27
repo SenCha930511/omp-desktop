@@ -82,7 +82,7 @@ describe('workspace runtime abort ownership', () => {
     const command = deferred<unknown>()
     const fixture = stopRuntimeFixture(command)
     const stopping = fixture.actions.stopRuntime()
-    expect(fixture.agentCommand).toHaveBeenCalledWith('runtime-a', { type: 'abort' })
+    expect(fixture.agentCommand).toHaveBeenCalledWith('runtime-a', { type: 'abort_and_restore_queue' })
 
     const runtimeB = runtime('runtime-b')
     const messagesB = [transcript('message-b')]

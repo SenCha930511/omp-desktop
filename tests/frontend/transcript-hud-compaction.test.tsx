@@ -73,6 +73,15 @@ describe('compaction divider', () => {
     expect(cancelled.textContent).toContain('Context compaction cancelled')
   })
 
+  it('makes missing authoritative completion explicit without success or failure styling', () => {
+    renderParts([{ type: 'compaction', status: 'sync_pending', reason: 'threshold' }])
+    const divider = container.querySelector('.compaction-divider.is-sync_pending')
+    expect(divider?.textContent).toBe('Compaction outcome pending synchronization')
+    expect(divider?.classList.contains('is-done')).toBe(false)
+    expect(divider?.classList.contains('is-failed')).toBe(false)
+    expect(divider?.querySelector('.spin')).toBeNull()
+  })
+
   it('stays out of the bottom HUD, which carries only the todo plan', () => {
     const message: TranscriptMessage = {
       id: 'message-1',

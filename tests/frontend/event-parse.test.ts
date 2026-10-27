@@ -50,6 +50,13 @@ describe('agentMessagePart', () => {
     expect(agentMessagePart({ customType: 'agent_message', details: { from: 'Planner' } })).toEqual({ type: 'agentMessage', text: '', agentName: undefined })
   })
 
+  it('extracts array content like the persisted transcript reader (GAP 4)', () => {
+    expect(agentMessagePart({
+      customType: 'agent_message',
+      content: [{ type: 'text', text: 'first line' }, { type: 'image', data: 'x' }, { type: 'text', text: 'second line' }],
+    })).toEqual({ type: 'agentMessage', text: 'first line\nsecond line', agentName: undefined })
+  })
+
   it('ignores parts that are not agent messages', () => {
     expect(agentMessagePart({ customType: 'tool_call' })).toBeUndefined()
     expect(agentMessagePart({})).toBeUndefined()

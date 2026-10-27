@@ -4,18 +4,15 @@ import type { ProviderCatalog } from './agent-rpc'
 /**
  * The model-catalog surface shared by every agent harness provider service.
  *
- * This captures exactly what the two consumers use today:
- * - `AgentRpcManager` calls `requireAvailableModel` (start options and
- *   `set_model` validation) and `capabilities` (runtime capability decoration
- *   after model or thinking changes).
- * - The `providers:catalog` IPC handler calls `catalog(force, disabledProviders, disabledModels)`.
+ * - The `providers:catalog` IPC handler calls `catalog(force)`.
  *
  * Auth mutations (API keys, logout, OAuth flows) are intentionally excluded:
- * the manager never touches them and they are Prime-specific — OMP
+ * the manager never touches them and are Prime-specific — OMP
  * authentication is owned by the omp CLI itself.
  */
+
 export interface ModelCatalogProvider extends ProviderCatalog {
-  catalog(force?: boolean, disabledProviders?: ReadonlySet<string>, disabledModels?: ReadonlySet<string>): Promise<PrimeModelCatalog>
+  catalog(force?: boolean): Promise<PrimeModelCatalog>
 }
 
 export const MAX_CATALOG_MODELS = 5_000

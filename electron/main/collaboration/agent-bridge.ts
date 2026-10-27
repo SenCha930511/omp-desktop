@@ -59,8 +59,6 @@ export interface AgentCollaborationBridgeOptions {
   sessions: Record<HarnessId, CollaborationSessionService>
   agents: Record<HarnessId, AgentRpcManager>
   catalogs: Record<HarnessId, ModelCatalogProvider>
-  disabledProviders: Record<HarnessId, () => ReadonlySet<string>>
-  disabledModels: Record<HarnessId, () => ReadonlySet<string>>
   waitClock?: CollaborationWaitClock
 }
 
@@ -170,6 +168,15 @@ export class AgentCollaborationBridge extends CapabilityBridge {
     }
   }
 
+  /**
+   * Path-only move:sourceFor 以 sessionPath 解析出的 source 會 cache 在
+   * sourcesByToken;claim 已換檔後必須丟棄快取,讓下一次 dispatch 用新檔
+   * 重新解析,否則協作會一直綁在已滾走的舊檔。
+   */
+  protected override onSessionRebound(claim: CapabilityClaim, _previousPath: string, _newPath: string): void {
+    this.sourcesByToken.delete(claim.token)
+  }
+
   protected onClaimRevoked(claim: CapabilityClaim): void {
     const { token } = claim
     this.sourcesByToken.delete(token)
@@ -261,7 +268,7 @@ export class AgentCollaborationBridge extends CapabilityBridge {
 
   private async modelsFor(source: CollaborationTarget): Promise<PrimeModelDescriptor[]> {
     const harness = source.session.harness
-    return availableModels(this.options.catalogs[harness], this.options.disabledProviders[harness](), this.options.disabledModels[harness]())
+    return availableModels(this.options.catalogs[harness])
   }
 
   private async listModels(source: CollaborationTarget, rawQuery: unknown): Promise<Record<string, unknown>> {

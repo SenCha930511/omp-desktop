@@ -27,6 +27,7 @@ import { HARNESS_PRODUCT_NAMES } from '@/lib/harness'
 import { type MessageKey, useI18n } from '@/lib/i18n'
 import { shortcutLabel } from '@/lib/platform-shortcuts'
 import { sortProjects } from '@/lib/project-order'
+import { continuedSessionKeys } from '@/lib/session-lineage'
 import { type AppUpdateState, type HarnessId, type HarnessUpdateState, type NativeMenuItem, PROJECT_SORT_MODES, type ProjectRecord, type ProjectSortMode, type SessionRecord, type WorkspaceView } from '@/types/api'
 import { IconButton, Modal, useFocusTrap } from './ui'
 
@@ -112,9 +113,14 @@ export function indexSidebarSessions(
       entries.push(project.id)
       ownersByFolder.set(path, entries)
     }
+  // Lineage collapse: one row per continued chain (see session-lineage.ts) —
+  // a session another file names as its parent is folded into that
+  // continuation instead of listing the same title twice.
+  const continuedBy = continuedSessionKeys(sessions)
   for (const session of sessions) {
     if (stats) stats.sessionScans += 1
     if (session.archived) continue
+    if (continuedBy.has(session.id) || continuedBy.has(session.filePath)) continue
     activeSessions.push(session)
     // When several projects contain the path, only the most specific folder
     // claims the row, so a nested project does not double-list it; folders of

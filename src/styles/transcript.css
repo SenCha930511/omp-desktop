@@ -33,6 +33,13 @@
 .message--steer-read { display: flex; align-items: center; gap: 10px; margin: -8px 0 29px; color: var(--text-tertiary); font-size: 10.5px; }
 .message--steer-read::before, .message--steer-read::after { height: 1px; flex: 1; background: var(--border); content: ''; }
 .message--steer-read span { flex: 0 0 auto; }
+/* Agent notice rows: always-readable status lines; severity colors the level tag only. */
+.message--notice { display: flex; align-items: baseline; gap: 8px; margin: -4px 0 24px; color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
+.message__notice-level { flex: 0 0 auto; font-size: 10px; font-weight: 620; letter-spacing: 0.05em; text-transform: uppercase; color: var(--text-tertiary); }
+.message__notice-text { overflow-wrap: anywhere; }
+.message--notice[data-level='warning'] .message__notice-level { color: var(--warning); }
+.message--notice[data-level='error'] .message__notice-level { color: var(--danger); }
+.message--notice[data-level='error'] .message__notice-text { color: var(--text); }
 /* User turns are compact right-hugging bubbles with a soft tail corner;
    assistant prose uses the shared reading column, uncontained. */
 .user-bubble { max-width: min(100%, 640px); padding: 9px 14px; border-radius: 18px 18px 5px 18px; background: var(--surface-subtle); color: var(--text); font-size: 13px; line-height: 1.58; overflow-wrap: anywhere; }
@@ -172,6 +179,12 @@
    light theme keeps the success tint because pure white would vanish. */
 :root[data-theme="dark"] .compaction-divider.is-done .compaction-divider__label { color: #fff; }
 .compaction-divider.is-failed .compaction-divider__label, .compaction-divider.is-cancelled .compaction-divider__label { color: var(--danger); }
+.compaction-divider .compaction-sync-retry { display: inline-flex; align-items: center; gap: 6px; }
+.compaction-sync-retry__button { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border: 1px solid var(--border); border-radius: 999px; background: transparent; color: var(--text-secondary); font: inherit; cursor: pointer; }
+.compaction-sync-retry__button:hover:not(:disabled) { color: var(--text-primary); border-color: var(--text-tertiary); }
+.compaction-sync-retry__button:disabled { opacity: 0.6; cursor: default; }
+.compaction-sync-retry__error { color: var(--danger); }
+.compaction-sync-retry__note { color: var(--success); }
 .todo-hud { min-width: 0; border: 1px solid var(--border); border-radius: 10px; background: var(--canvas); overflow: hidden; }
 .todo-hud__bar { width: 100%; display: flex; align-items: center; gap: 7px; min-height: 30px; padding: 4px 10px; border: 0; background: transparent; color: var(--text); font-size: 11.5px; cursor: pointer; }
 .todo-hud__bar:hover { background: var(--surface-subtle); }
@@ -225,6 +238,12 @@
 .image-part__preview:focus-visible { outline: 2px solid var(--annotation); outline-offset: 3px; }
 .image-part { display: block; max-width: 100%; max-height: 320px; margin: 0; object-fit: contain; }
 .image-part--unavailable { max-width: min(100%, 420px); margin: 7px 0; padding: 20px; border: 1px solid var(--border); border-radius: 10px; color: var(--text-tertiary); text-align: center; }
+/* 無法呈現內容的 content block 的可讀資料視圖（使用者氣泡與工具時間軸共用）。 */
+.attachment-part--unsupported { color: var(--text-tertiary); font-size: 12.5px; font-style: italic; }
+.attachment-part--with-data { display: block; max-width: min(100%, 560px); margin: 6px 0; padding: 8px 10px; border: 1px dashed var(--border); border-radius: 8px; background: var(--surface-sunken, var(--canvas)); }
+.attachment-part__label { display: block; font-style: italic; }
+.attachment-part__notice { color: var(--text-tertiary); font-style: normal; opacity: 0.85; }
+.attachment-part__data { max-height: 240px; margin: 6px 0 0; padding: 0; overflow: auto; font-size: 12px; font-style: normal; line-height: 1.45; white-space: pre-wrap; word-break: break-word; }
 .image-lightbox { position: fixed; z-index: 240; inset: 0; display: flex; align-items: center; justify-content: center; padding: 32px; overflow: hidden; background: color-mix(in srgb, #090909 78%, transparent); backdrop-filter: blur(5px); animation: fade-in 130ms ease-out; }
 .image-lightbox__panel { position: relative; display: flex; max-width: 100%; max-height: 100%; align-items: center; justify-content: center; outline: none; }
 .image-lightbox__image { display: block; width: auto; height: auto; max-width: calc(100vw - 64px); max-height: calc(100vh - 64px); border-radius: 6px; box-shadow: 0 18px 60px rgba(0,0,0,.48); object-fit: contain; transform: translate3d(var(--pan-x, 0px), var(--pan-y, 0px), 0) scale(var(--zoom, 1)); transform-origin: 50% 50%; will-change: transform; user-select: none; -webkit-user-drag: none; cursor: zoom-in; transition: transform 140ms var(--ease-out); }

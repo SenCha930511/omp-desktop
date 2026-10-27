@@ -11,8 +11,8 @@ import { splitTerminalContextBlock } from '@/lib/terminal-context'
 import type { HarnessId, MessagePart, TranscriptMessage } from '@/types/api'
 import { MarkdownText } from '../MarkdownText'
 import { SearchRevealContext } from '../TranscriptSearch'
+import { ImagePart, UnsupportedAttachment } from './attachment-part'
 import { InlineText } from './syntax'
-import { TranscriptImage } from './TranscriptImage'
 import { ThinkingDots, WorkDisclosure, WorkTimeline } from './timeline'
 
 const MESSAGE_COPY_KEYS = {
@@ -21,22 +21,15 @@ const MESSAGE_COPY_KEYS = {
   agent: { copy: 'transcript.copy.agent', copied: 'transcript.copied.agent' },
 } as const satisfies Record<'user' | 'assistant' | 'agent', { copy: MessageKey; copied: MessageKey }>
 
-function imageSource(part: Extract<MessagePart, { type: 'image' }>): string | undefined {
-  if (part.dataTruncated || !part.data || !part.mimeType || !/^image\/(png|jpeg|gif|webp)$/i.test(part.mimeType) || !/^[a-z\d+/=\s]+$/i.test(part.data)) return undefined
-  return `data:${part.mimeType};base64,${part.data.replace(/\s/g, '')}`
-}
-
-function ImagePart({ part }: { part: Extract<MessagePart, { type: 'image' }> }) {
+function UserImagePart({ part }: { part: Extract<MessagePart, { type: 'image' }> }) {
   const { t } = useI18n()
-  const source = imageSource(part)
-  if (source) return <TranscriptImage source={source} alt={t('transcript.image.userAttachment')} />
-  return <div className="image-part image-part--unavailable">{t('transcript.image.unavailable')}</div>
+  return <ImagePart part={part} alt={t('transcript.image.userAttachment')} />
 }
 
 function renderNarrative(parts: MessagePart[], keyPrefix: string, streaming = false) {
   return parts.map((part, index) => {
     if (part.type === 'text') return <MarkdownText key={`${keyPrefix}-${index}`} text={part.text} streaming={streaming} />
-    if (part.type === 'image') return <ImagePart key={`${keyPrefix}-${index}`} part={part} />
+    if (part.type === 'image') return <UserImagePart key={`${keyPrefix}-${index}`} part={part} />
     return null
   })
 }
@@ -297,7 +290,10 @@ export const UserMessage = memo(function UserMessage({ message, entering = false
           part.type === 'text' ? (
             <UserText key={index} text={part.text} onOpenSessionReference={onOpenSessionReference} />
           ) : part.type === 'image' ? (
-            <ImagePart key={`user-${index}`} part={part} />
+            <UserImagePart key={`user-${index}`} part={part} />
+          ) : part.type === 'unsupported' ? (
+            // 使用者訊息裡的未知附件（file/audio 等）顯示可讀資料視圖，不靜默消失
+            <UnsupportedAttachment key={`user-${index}`} contentType={part.contentType} data={part.data} />
           ) : null,
         )}
       </div>
@@ -320,6 +316,31 @@ export const SteerReadMarker = memo(function SteerReadMarker({ message }: { mess
   return (
     <div className="message message--steer-read" role="status">
       <span>{messageText(message)}</span>
+    </div>
+  )
+})
+
+export type AgentNoticeLevel = 'info' | 'warning' | 'error'
+
+export function isAgentNoticeKind(kind: TranscriptMessage['kind']): kind is 'agent-notice' | 'agent-notice-warning' | 'agent-notice-error' {
+  return kind === 'agent-notice' || kind === 'agent-notice-warning' || kind === 'agent-notice-error'
+}
+
+/**
+ * Agent notice row (upstream `notice` events): always readable — never folded
+ * into the collapsed work-activity disclosure, since persistence and
+ * compaction-sync notices carry guidance the user must actually read.
+ */
+export const NoticeMessage = memo(function NoticeMessage({ message }: { message: TranscriptMessage }) {
+  const { t } = useI18n()
+  const level: AgentNoticeLevel = message.kind === 'agent-notice-error'
+    ? 'error'
+    : message.kind === 'agent-notice-warning' ? 'warning' : 'info'
+  const levelLabel = t(level === 'error' ? 'transcript.notice.level.error' : level === 'warning' ? 'transcript.notice.level.warning' : 'transcript.notice.level.info')
+  return (
+    <div className="message message--notice" data-level={level} role="status" aria-label={t('transcript.notice.aria')}>
+      <span className="message__notice-level">{levelLabel}</span>
+      <span className="message__notice-text">{messageText(message)}</span>
     </div>
   )
 })

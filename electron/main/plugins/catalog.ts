@@ -1,15 +1,15 @@
 import { createHash } from 'node:crypto'
 import type { Dir } from 'node:fs'
-import { lstat, opendir, realpath } from 'node:fs/promises'
+import { lstat, opendir, readdir, realpath } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path'
 import type { HarnessId, PluginCatalog, PluginWarning, SkillRecord } from '../../../src/types/api'
 import {
+  collectMcpSecretExpansionFields,
   isAppManageableLocalMcpKey,
   isNetworkMcpDefinition,
   LOCAL_MCP_STATE_UNAVAILABLE_DETAIL,
   MAX_MCP_DEFINITION_KEY_LENGTH,
-  NETWORK_MCP_UNAVAILABLE_DETAIL,
 } from '../../../src/lib/mcp-policy'
 import { HARNESSES } from '../harness'
 import { mapLimit } from '../lib/async'
@@ -312,6 +312,11 @@ function addMcpSettingsMetadata(
       message: `MCP discovery is limited to 2,500 definitions in this file; remaining entries are managed directly in ${HARNESSES[harness].agentName}.`,
     })
   }
+  // 上游原生 allow/deny 清單(bounded 讀取):deny 優先;allow 覆蓋定義的 enabled:false。
+  const nameList = (key: 'disabledServers' | 'enabledServers'): Set<string> =>
+    new Set(Array.isArray(settings[key]) ? (settings[key] as unknown[]).filter((item): item is string => typeof item === 'string').slice(0, 1_024) : [])
+  const denylist = nameList('disabledServers')
+  const allowlist = nameList('enabledServers')
   for (const [name, raw] of entries.slice(0, MAX_MCP_DISCOVERY_RECORDS)) {
     const definition = isRecord(raw) ? raw : undefined
     const displayName = [...name.slice(0, 120)].map((character) => {
@@ -321,30 +326,76 @@ function addMcpSettingsMetadata(
     const definitionIdentity = name.length <= MAX_MCP_DEFINITION_KEY_LENGTH
       ? { definitionKey: name }
       : { definitionRemovalAvailable: false }
-    const enabled = definition?.enabled !== false
+    // 生效狀態:定義 enabled → allowlist 覆蓋 → denylist 最高優先。
+    const flagEnabled = definition?.enabled !== false
+    const enabled = denylist.has(name) ? false : flagEnabled || allowlist.has(name)
+    const stateNote = denylist.has(name)
+      ? ' Disabled by the disabledServers list.'
+      : !flagEnabled && allowlist.has(name)
+        ? ' Enabled by the enabledServers list.'
+        : ''
+    const manageableKey = isAppManageableLocalMcpKey(name)
+    const availability = !manageableKey
+      ? { available: false as const, detail: LOCAL_MCP_STATE_UNAVAILABLE_DETAIL }
+      : undefined
     if (definition && isNetworkMcpDefinition(definition)) {
       let origin = 'remote HTTP server'
       try { const url = new URL(typeof definition.url === 'string' ? definition.url : ''); origin = url.protocol === 'https:' || url.protocol === 'http:' ? url.origin : 'remote server' } catch { /* omit invalid and potentially secret URL */ }
-      const transport = definition.type === 'sse' ? 'SSE' : 'HTTP'
+      const transport = definition.type === 'sse' ? 'sse' as const : 'http' as const
+      const transportLabel = transport === 'sse' ? 'SSE' : 'HTTP'
+      const headers = isRecord(definition.headers) ? definition.headers : undefined
+      // 讀檔不解析 ${VAR}/!command:原樣保存於 mcp.json,僅標示由 OMP 解析。
+      const expansionFields = collectMcpSecretExpansionFields({
+        url: typeof definition.url === 'string' ? definition.url : undefined,
+        headers: headers ? Object.fromEntries(Object.entries(headers).slice(0, 32).map(([key, value]) => [key, String(value)])) : undefined,
+      })
+      const secretNote = expansionFields.length ? ' Contains ${VAR} or !command values that OMP resolves at load time.' : ''
       output.push({
         id: idFor('mcp', location, name), name: displayName,
-        description: `${transport} MCP server at ${origin}. Managed outside OMP Desktop.`,
+        description: `${transportLabel} MCP server at ${origin}.${secretNote}${stateNote}`,
         kind: 'mcp', location, enabled, source: origin, ...definitionIdentity,
-        availability: { available: false, detail: NETWORK_MCP_UNAVAILABLE_DETAIL },
+        ...(availability ? { availability } : {}),
+        mcpDefinition: {
+          transport,
+          url: typeof definition.url === 'string' ? definition.url.slice(0, 2_048) : undefined,
+          headerNames: headers ? Object.keys(headers).slice(0, 32).map((key) => key.slice(0, 128)) : undefined,
+          timeout: typeof definition.timeout === 'number' && Number.isInteger(definition.timeout) && definition.timeout >= 0 && definition.timeout <= 600_000 ? definition.timeout : undefined,
+          requestIdFormat: definition.requestIdFormat === 'string' || definition.requestIdFormat === 'number' ? definition.requestIdFormat : undefined,
+        },
       })
     } else if (definition && definition.type === 'stdio' && typeof definition.command === 'string') {
       const command = basename(definition.command).slice(0, 120)
-      const availability = !isAppManageableLocalMcpKey(name)
-        ? { available: false as const, detail: LOCAL_MCP_STATE_UNAVAILABLE_DETAIL }
+      const args = Array.isArray(definition.args)
+        ? definition.args.filter((arg): arg is string => typeof arg === 'string').slice(0, 64).map((arg) => arg.slice(0, 2_048))
         : undefined
+      const expansionFields = collectMcpSecretExpansionFields({ command: definition.command, args })
+      const secretNote = expansionFields.length ? ' Contains ${VAR} or !command values that OMP resolves at load time.' : ''
       output.push({
         id: idFor('mcp', location, name), name: displayName,
-        description: `Local stdio MCP server (${command}).`,
+        description: `Local stdio MCP server (${command}).${secretNote}${stateNote}`,
         kind: 'mcp', location, enabled, source: command, ...definitionIdentity,
         ...(availability ? { availability } : {}),
+        mcpDefinition: {
+          transport: 'stdio',
+          command: definition.command.slice(0, 2_048),
+          ...(args?.length ? { args } : {}),
+        },
       })
     }
   }
+}
+
+/** 上游隔離無效設定檔會改名為 <file>.broken-<ts>-<pid>-<uuid>;列出讓使用者看見。 */
+async function warnQuarantinedMcpConfigs(directory: string, settingsPath: string, scope: PluginWarning['scope'], warnings: PluginWarning[]): Promise<void> {
+  let entries: string[]
+  try { entries = await readdir(directory) } catch { return }
+  const quarantined = entries.slice(0, 4_096).filter((entry) => entry.startsWith('mcp.json.broken-')).slice(0, 8)
+  if (!quarantined.length) return
+  warnings.push({
+    scope,
+    path: settingsPath,
+    message: `OMP moved ${quarantined.length} invalid MCP config file(s) aside (e.g. ${quarantined[0].slice(0, 120)}); definitions from those files are not loaded. Fix or remove the quarantined copies in the config folder.`,
+  })
 }
 
 
@@ -495,11 +546,13 @@ export async function discoverPlugins(agentDir: string, safeProjectPath: string 
   const globalMcp = await readSettings(globalMcpPath, 'user')
   if (globalMcp.warning) warnings.push(globalMcp.warning)
   addMcpSettingsMetadata(globalMcp.settings, globalMcpPath, 'user', mcpRecords, warnings, harness, true)
+  await warnQuarantinedMcpConfigs(agentDir, globalMcpPath, 'user', warnings)
   if (safeProjectPath) {
     const projectMcpPath = join(safeProjectPath, ...PROJECT_AGENT_SEGMENTS, 'mcp.json')
     const projectMcp = await readSettings(projectMcpPath, 'project')
     if (projectMcp.warning) warnings.push(projectMcp.warning)
     addMcpSettingsMetadata(projectMcp.settings, projectMcpPath, 'project', mcpRecords, warnings, harness, true)
+    await warnQuarantinedMcpConfigs(join(safeProjectPath, ...PROJECT_AGENT_SEGMENTS), projectMcpPath, 'project', warnings)
   }
   result.push(...mcpRecords)
   return { skills: result.sort((a, b) => a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name)), warnings }

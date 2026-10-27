@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { DragEvent } from 'react'
+import { clearAttachmentDraft, readAttachmentDraft, saveAttachmentDraft } from '@/lib/composer-attachment-draft'
 import type { PromptImage } from '@/types/api'
 
 const supportedImageTypes = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp'])
@@ -70,6 +71,9 @@ export function useComposerImages({ shortName, draftKey }: UseComposerImagesOpti
   const [images, setImages] = useState<ComposerImage[]>([])
   const [unsupportedFiles, setUnsupportedFiles] = useState<ComposerUnsupportedFile[]>([])
   const [error, setError] = useState('')
+  // 圖片超出持久化預算而未寫入的數量;>0 時由 Composer 顯示「重啟後無法保留」警告,
+  // 不可靜默遺失受控檔案。
+  const [persistDropped, setPersistDropped] = useState(0)
   const [processing, setProcessing] = useState(false)
   const [dragging, setDragging] = useState(false)
   const imagesRef = useRef<ComposerImage[]>([])
@@ -147,11 +151,16 @@ export function useComposerImages({ shortName, draftKey }: UseComposerImagesOpti
 
   const clear = useCallback(() => {
     const key = draftKeyRef.current
-    if (key) composerAttachmentStore.delete(key)
+    if (key) {
+      composerAttachmentStore.delete(key)
+      // 成功送出後一併清掉持久化附件草稿,避免下一輪誤恢復舊圖片。
+      clearAttachmentDraft(key)
+    }
     imagesRef.current = []
     unsupportedFilesRef.current = []
     setImages([])
     setUnsupportedFiles([])
+    setPersistDropped(0)
   }, [])
 
   const remove = useCallback((id: string) => {
@@ -196,26 +205,38 @@ export function useComposerImages({ shortName, draftKey }: UseComposerImagesOpti
     const key = draftKeyRef.current
     if (!key) return
     const entry = composerAttachmentStore.get(key)
-    if (!entry) return
-    composerAttachmentStore.delete(key)
-    composerAttachmentStore.set(key, entry)
-    const existingIds = new Set(unsupportedFilesRef.current.map((file) => file.id))
-    const restoredFiles = entry.unsupportedFiles.filter((file) => !existingIds.has(file.id))
-    if (restoredFiles.length > 0) {
-      const next = [...unsupportedFilesRef.current, ...restoredFiles]
-      unsupportedFilesRef.current = next
-      setUnsupportedFiles(next)
+    if (entry) {
+      composerAttachmentStore.delete(key)
+      composerAttachmentStore.set(key, entry)
+      const existingIds = new Set(unsupportedFilesRef.current.map((file) => file.id))
+      const restoredFiles = entry.unsupportedFiles.filter((file) => !existingIds.has(file.id))
+      if (restoredFiles.length > 0) {
+        const next = [...unsupportedFilesRef.current, ...restoredFiles]
+        unsupportedFilesRef.current = next
+        setUnsupportedFiles(next)
+      }
+      restoreWithinLimits(entry.images)
     }
-    restoreWithinLimits(entry.images)
+    // 跨重啟恢復:記憶體 store 只活到本次 app 生命週期,
+    // 持久化附件草稿在重啟後補回圖片;過期/毀損已在讀取端降級為 null。
+    // 與記憶體還原合併時依 id 去重,不會重複貼上同一張圖。
+    if (imagesRef.current.length === 0) {
+      const persisted = readAttachmentDraft(key)
+      if (persisted) restoreWithinLimits(persisted.images.map((image) => ({ ...image, type: 'image' as const })))
+    }
   }, [restoreWithinLimits])
 
   useEffect(() => {
     if (!draftKey) return
     if (images.length === 0 && unsupportedFiles.length === 0) {
       composerAttachmentStore.delete(draftKey)
+      clearAttachmentDraft(draftKey)
+      setPersistDropped(0)
       return
     }
     saveAttachmentStoreEntry(draftKey, { images, unsupportedFiles })
+    // 持久化預算只算圖片本體;超量部分回報數量讓 UI 顯示「重啟後無法保留」。
+    setPersistDropped(saveAttachmentDraft(draftKey, images))
   }, [draftKey, images, unsupportedFiles])
 
   const onDragEnter = useCallback((event: DragEvent<HTMLDivElement>) => {
@@ -253,6 +274,7 @@ export function useComposerImages({ shortName, draftKey }: UseComposerImagesOpti
     unsupportedFilesRef,
     error,
     setError: updateError,
+    persistDropped,
     processing,
     hasPending: () => pendingBatchesRef.current > 0,
     dragging,
@@ -265,10 +287,14 @@ export function useComposerImages({ shortName, draftKey }: UseComposerImagesOpti
       const entry = composerAttachmentStore.get(draftKey)
       const current = entry?.images ?? []
       const ids = new Set(current.map((image) => image.id))
+      const merged = [...restored.filter((image) => !ids.has(image.id)), ...current]
       saveAttachmentStoreEntry(draftKey, {
-        images: [...restored.filter((image) => !ids.has(image.id)), ...current],
+        images: merged,
         unsupportedFiles: entry?.unsupportedFiles ?? [],
       })
+      // 元件已卸載,持久化鏡像要自己補;超量部分此時無 UI 可提示,交由下次掛載的
+      // persist 效果重新計算並顯示。
+      saveAttachmentDraft(draftKey, merged)
     },
     dragHandlers: { onDragEnter, onDragOver, onDragLeave, onDrop },
   }

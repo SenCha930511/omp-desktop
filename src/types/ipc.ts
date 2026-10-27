@@ -55,15 +55,13 @@ export const IPC_CHANNELS = {
   agent: {
     start: 'agent:start',
     command: 'agent:command',
+    refreshState: 'agent:refresh-state',
     stop: 'agent:stop',
     list: 'agent:list',
     onEvent: 'agent:event',
   },
   providers: {
     catalog: 'providers:catalog',
-    setEnabled: 'providers:set-enabled',
-    setDisabled: 'providers:set-disabled',
-    setModelEnabled: 'providers:set-model-enabled',
   },
   voice: {
     credentialStatus: 'voice:credential-status',

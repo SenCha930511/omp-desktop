@@ -38,13 +38,25 @@ interface FakeOmpOptions {
   queuedMessageCount?: number
   /** Session file the fake reports from get_state before a script rolls it. */
   initialSessionFile?: string
+  forkSessionFile?: string
+  newSessionFile?: string
+  forkCancelled?: boolean
+  holdForkUntilReleased?: boolean
+  failStateAfterFork?: boolean
   catalogModels?: unknown[]
+  /** get_state 回報的 usageLimit 初值;可被 promptScript 改寫。 */
+  usageLimit?: 'low_priority' | 'wrap_up'
 }
 
 function fakeOmpAgent(options: FakeOmpOptions = {}): { cwd: string; executable: string } {
   const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-omp-rpc-'))
   dirs.push(cwd)
   const executable = join(cwd, 'fake-omp.cjs')
+  const fakeUsageLimit = options.usageLimit === 'low_priority'
+    ? { stage: 'low_priority', resetsAtSec: 1_900_000_000, allowanceLeftPercent: 12 }
+    : options.usageLimit === 'wrap_up'
+      ? { stage: 'wrap_up', extraUsage: true }
+      : null
   writeFileSync(executable, `#!/usr/bin/env node
 if (process.argv[2] === '--version') { process.stdout.write('omp/1.2.3\\n'); process.exit(0) }
 if (process.argv[2] === 'models' && process.argv[3] === '--json') { process.stdout.write(${JSON.stringify(JSON.stringify({ models: options.catalogModels ?? [] }))}); process.exit(0) }
@@ -53,6 +65,8 @@ const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
 const sessionActions = ${JSON.stringify(options.sessionActions)}
 let negotiated = false
 let streaming = false
+let askDialogEnabled = false
+let usageLimitVar = ${JSON.stringify(fakeUsageLimit)}
 let sessionFileVar = ${JSON.stringify(options.initialSessionFile ?? null)}
 send({ type: 'ready', protocolVersion: 1, supportedProtocolVersions: [1, 2] })
 send({ type: 'available_commands_update', commands: [{ name: 'help' }] })
@@ -73,20 +87,41 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     return
   }
   if (command.type === 'get_state') {
+    if (${options.failStateAfterFork === true} && sessionFileVar === ${JSON.stringify(options.forkSessionFile)}) {
+      send({ id: command.id, type: 'response', command: 'get_state', success: false, error: 'Injected state failure after fork' })
+      return
+    }
     send({ id: command.id, type: 'response', command: 'get_state', success: true, data: {
       sessionId: 'omp-session', isStreaming: streaming, isCompacting: false, thinkingLevel: 'medium',
       fastModeEnabled: true, model: { provider: 'openai-codex', id: 'gpt-5.6-luna', name: 'Luna GPT-5.6' },
       queuedMessageCount: ${options.queuedMessageCount ?? 0},
+      fakeAskDialogEnabled: askDialogEnabled,
       ...(sessionFileVar ? { sessionFile: sessionFileVar } : {}),
       ...(sessionActions ? { sessionActions } : {}),
+      ...(usageLimitVar ? { usageLimit: usageLimitVar } : {}),
     } })
   } else if (command.type === 'get_session_stats') {
     send({ id: command.id, type: 'response', command: 'get_session_stats', success: true, data: { contextUsage: { tokens: 12000, contextWindow: 200000, percent: 6 }, tokens: { input: 9000, output: 3000, cacheRead: 0, cacheWrite: 0, total: 12000 } } })
   } else if (command.type === 'set_thinking_level') {
     send({ id: command.id, type: 'response', command: command.type, success: true })
-  } else if (command.type === 'branch' || command.type === 'get_branch_messages') {
-    send({ id: command.id, type: 'response', command: command.type, success: true, data: { received: command.type, entryId: command.entryId } })
-  } else if (command.type === 'fork' || command.type === 'get_fork_messages') {
+  } else if (command.type === 'set_ask_dialog') {
+    askDialogEnabled = command.enabled === true
+    send({ id: command.id, type: 'response', command: command.type, success: true, data: { enabled: askDialogEnabled } })
+  } else if (command.type === 'branch' || command.type === 'fork' || command.type === 'get_branch_messages') {
+    const completeFork = () => {
+      if (command.type === 'fork' && ${JSON.stringify(options.forkSessionFile)} && !${options.forkCancelled === true}) sessionFileVar = ${JSON.stringify(options.forkSessionFile)}
+      send({ id: command.id, type: 'response', command: command.type, success: true, data: { received: command.type, entryId: command.entryId, ...(command.type === 'fork' && ${options.forkCancelled === true} ? { cancelled: true } : {}) } })
+    }
+    if (command.type === 'fork' && ${options.holdForkUntilReleased === true}) {
+      const fs = require('node:fs')
+      const watcher = fs.watch(process.cwd(), (_event, filename) => {
+        if (String(filename) !== 'release-fork' || !fs.existsSync('release-fork')) return
+        watcher.close()
+        completeFork()
+      })
+      send({ type: 'fake_fork_pending' })
+    } else completeFork()
+  } else if (command.type === 'get_fork_messages') {
     send({ id: command.id, type: 'response', command: command.type, success: false, error: 'Unknown command ' + command.type })
   } else if (command.type === 'btw' || command.type === 'btw_cancel' || command.type === 'get_btw_history') {
     send({ id: command.id, type: 'response', command: command.type, success: true, data: { received: command.type, question: command.question, recordId: command.recordId } })
@@ -97,6 +132,9 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     send({ id: command.id, type: 'response', command: 'set_fast_mode', success: true })
   } else if (command.type === 'set_service_tier') {
     send({ id: command.id, type: 'response', command: 'set_service_tier', success: false, error: 'Unknown command set_service_tier' })
+  } else if (command.type === 'new_session') {
+    sessionFileVar = ${JSON.stringify(options.newSessionFile ?? null)}
+    send({ id: command.id, type: 'response', command: command.type, success: true, data: { cancelled: false } })
   } else if (command.type === 'prompt') {
     send({ id: command.id, type: 'response', command: 'prompt', success: true, data: { agentInvoked: true } })
     ${options.promptScript ?? ''}
@@ -129,7 +167,6 @@ function ompManager(executable: string, options: { providers?: ProviderCatalog; 
     async (cwd) => cwd,
     async (path) => path,
     options.providers,
-    () => new Set(),
     OMP_RPC_ADAPTER,
     options.approvalMode ?? (() => undefined),
   )
@@ -404,7 +441,7 @@ describe('OMP RPC handshake', () => {
     const fake = fakeOmpAgent({ catalogModels: models })
     const catalog = new OmpModelCatalogService(fake.executable)
     const manager = ompManager(fake.executable, { providers: catalog })
-    const schedules = new ScheduledRunExecutor({} as never, {} as never, manager, catalog, () => new Set(), () => new Set())
+    const schedules = new ScheduledRunExecutor({} as never, {} as never, manager, catalog)
     const retainedExecution = { model: 'provider-000/model', thinking: 'off', speed: 'normal' } as const
     const omittedExecution = { model: 'provider-256/model', thinking: 'off', speed: 'normal' } as const
 
@@ -455,24 +492,146 @@ describe('OMP RPC command translation', () => {
       })
   })
 
-  it('translates fork to branch and correlates the branch response', async () => {
+  it('keeps native fork distinct from branch and correlates the fork response', async () => {
     const fake = fakeOmpAgent()
     const manager = ompManager(fake.executable)
     const runtime = await manager.start({ cwd: fake.cwd })
 
     const response = await manager.command(runtime.runtimeId, { type: 'fork', entryId: 'entry-123' })
 
-    expect(response.command).toBe('branch')
+    expect(response.command).toBe('fork')
     expect(response.success).toBe(true)
-    expect(response.data).toEqual({ received: 'branch', entryId: 'entry-123' })
+    expect(response.data).toEqual({ received: 'fork', entryId: 'entry-123' })
   })
 
-  it('translates get_fork_messages to get_branch_messages', async () => {
+  it('supports a full native fork without requiring an entry id', async () => {
+    const fake = fakeOmpAgent()
+    const manager = ompManager(fake.executable)
+    const runtime = await manager.start({ cwd: fake.cwd })
+    const response = await manager.command(runtime.runtimeId, { type: 'fork' })
+    expect(response.success).toBe(true)
+    expect(response.command).toBe('fork')
+    expect(response.data).toEqual({ received: 'fork' })
+  })
+
+  it('opts into native ask dialogs only through the implemented desktop renderer contract', async () => {
+    const fake = fakeOmpAgent()
+    const manager = ompManager(fake.executable)
+    const runtime = await manager.start({ cwd: fake.cwd })
+    const response = await manager.command(runtime.runtimeId, { type: 'get_state' })
+    expect(response.data).toMatchObject({ fakeAskDialogEnabled: true })
+  })
+
+  it('retires forked runtimes and revokes their source-scoped capabilities instead of reusing them for the fork', async () => {
+    const source = join(tmpdir(), 'parity-source.jsonl')
+    const target = join(tmpdir(), 'parity-fork.jsonl')
+    const fake = fakeOmpAgent({ initialSessionFile: source, forkSessionFile: target })
+    const manager = ompManager(fake.executable)
+    const bound = vi.fn()
+    const revoked = vi.fn()
+    manager.setRuntimeEnvironmentProvider(() => ({ PARITY_CAPABILITY_TOKEN: 'source-only-token' }))
+    manager.setRuntimeStartListener(bound)
+    manager.setRuntimeEndListener(revoked)
+    await manager.start({ cwd: fake.cwd, sessionPath: source })
+    await expect(manager.forkForSession(source, fake.cwd)).resolves.toBe(canonicalSessionPath(target))
+    expect(manager.getForSession(source)).toBeUndefined()
+    expect(manager.getForSession(target)).toBeUndefined()
+    expect(manager.list()).toEqual([])
+    expect(bound).toHaveBeenCalledOnce()
+    expect(revoked).toHaveBeenCalledOnce()
+    expect(revoked.mock.calls[0]?.[0]).toMatchObject({ PARITY_CAPABILITY_TOKEN: 'source-only-token' })
+  })
+
+  it('binds a fresh runtime once its first durable session path is materialized', async () => {
+    const target = join(tmpdir(), 'parity-first-durable.jsonl')
+    const fake = fakeOmpAgent({ promptScript: `sessionFileVar = ${JSON.stringify(target)}` })
+    const manager = ompManager(fake.executable)
+    const bound = vi.fn()
+    const synchronized = Promise.withResolvers<void>()
+    manager.setRuntimeStartListener(bound)
+    manager.setEventSink(({ event }) => { if (event.type === 'runtime_state') synchronized.resolve() })
+    const runtime = await manager.start({ cwd: fake.cwd })
+    expect(bound).toHaveBeenCalledOnce()
+    expect(bound.mock.calls[0]?.[1].sessionFile).toBeUndefined()
+    await manager.command(runtime.runtimeId, { type: 'prompt', message: 'materialize the fixture' })
+    await synchronized.promise
+    expect(bound).toHaveBeenCalledTimes(2)
+    expect(bound.mock.calls[1]?.[1].sessionFile).toBe(canonicalSessionPath(target))
+  })
+
+  it('binds native new_session capabilities before a prompt is sent', async () => {
+    const target = join(tmpdir(), 'parity-new-session-durable.jsonl')
+    const fake = fakeOmpAgent({ newSessionFile: target })
+    const manager = ompManager(fake.executable)
+    const bound = vi.fn()
+    manager.setRuntimeStartListener(bound)
+    const runtime = await manager.start({ cwd: fake.cwd })
+    expect(bound).toHaveBeenCalledOnce()
+    expect(bound.mock.calls[0]?.[1].sessionFile).toBeUndefined()
+    await manager.command(runtime.runtimeId, { type: 'new_session' })
+    await manager.command(runtime.runtimeId, { type: 'get_state' })
+    expect(manager.list()[0].sessionFile).toBe(canonicalSessionPath(target))
+    expect(bound).toHaveBeenCalledTimes(2)
+    expect(bound.mock.calls[1]?.[1].sessionFile).toBe(canonicalSessionPath(target))
+    await manager.command(runtime.runtimeId, { type: 'get_state' })
+    expect(bound).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not report a cancelled native fork as a created session', async () => {
+    const source = join(tmpdir(), 'parity-source.jsonl')
+    const fake = fakeOmpAgent({ initialSessionFile: source, forkCancelled: true })
+    const manager = ompManager(fake.executable)
+    await expect(manager.forkForSession(source, fake.cwd)).rejects.toThrow(/cancel/i)
+    expect(manager.getForSession(source)).toBeDefined()
+  })
+
+  it('refuses to fork a runtime with accepted queued input', async () => {
+    const source = join(tmpdir(), 'parity-source.jsonl')
+    const fake = fakeOmpAgent({ initialSessionFile: source, queuedMessageCount: 1 })
+    const manager = ompManager(fake.executable)
+    await manager.start({ cwd: fake.cwd, sessionPath: source })
+    await expect(manager.forkForSession(source, fake.cwd)).rejects.toThrow(/idle/i)
+    expect(manager.getForSession(source)?.sessionFile).toBe(canonicalSessionPath(source))
+  })
+
+  it('does not reuse or stop a runtime while its native fork is changing identity', async () => {
+    const source = join(tmpdir(), 'parity-mutation-source.jsonl')
+    const target = join(tmpdir(), 'parity-mutation-fork.jsonl')
+    const fake = fakeOmpAgent({ initialSessionFile: source, forkSessionFile: target, holdForkUntilReleased: true })
+    const manager = ompManager(fake.executable)
+    const entered = Promise.withResolvers<void>()
+    manager.setEventSink(({ event }) => { if (event.type === 'fake_fork_pending') entered.resolve() })
+    const runtime = await manager.start({ cwd: fake.cwd, sessionPath: source })
+    const forked = manager.forkForSession(source, fake.cwd)
+    await entered.promise
+    try {
+      await expect(manager.start({ cwd: fake.cwd, sessionPath: source })).rejects.toThrow(/identity is being changed/)
+      await expect(manager.stop(runtime.runtimeId)).rejects.toThrow(/identity is being changed/)
+      await expect(manager.stopForSession(source)).rejects.toThrow(/identity is being changed/)
+    } finally {
+      writeFileSync(join(fake.cwd, 'release-fork'), 'release')
+      await forked
+    }
+  })
+
+  it('retires source-scoped capabilities even when post-fork synchronization fails', async () => {
+    const source = join(tmpdir(), 'parity-sync-source.jsonl')
+    const target = join(tmpdir(), 'parity-sync-fork.jsonl')
+    const fake = fakeOmpAgent({ initialSessionFile: source, forkSessionFile: target, failStateAfterFork: true })
+    const manager = ompManager(fake.executable)
+    const revoked = vi.fn()
+    manager.setRuntimeEndListener(revoked)
+    await expect(manager.forkForSession(source, fake.cwd)).rejects.toThrow(/state|synchron/i)
+    expect(manager.list()).toEqual([])
+    expect(revoked).toHaveBeenCalledOnce()
+  })
+
+  it('uses the native get_branch_messages command', async () => {
     const fake = fakeOmpAgent()
     const manager = ompManager(fake.executable)
     const runtime = await manager.start({ cwd: fake.cwd })
 
-    const response = await manager.command(runtime.runtimeId, { type: 'get_fork_messages' })
+    const response = await manager.command(runtime.runtimeId, { type: 'get_branch_messages' })
 
     expect(response.command).toBe('get_branch_messages')
     expect(response.data).toMatchObject({ received: 'get_branch_messages' })
@@ -547,6 +706,196 @@ describe('OMP RPC command translation', () => {
     await waitUntil(() => events.some((event) => event.type === 'fake_received' && event.enabled === false))
     expect(manager.list()[0]?.serviceTier).toBe('default')
   })
+
+  it('reads usage-limit state from get_state', async () => {
+    const fake = fakeOmpAgent({ usageLimit: 'low_priority' })
+    const manager = ompManager(fake.executable, { providers: ompCatalog })
+
+    const runtime = await manager.start({ cwd: fake.cwd })
+
+    expect(runtime.serviceTier).toBe('priority')
+    expect(runtime.usageLimit).toEqual({ stage: 'low_priority', resetsAtSec: 1_900_000_000, allowanceLeftPercent: 12 })
+  })
+})
+
+interface CapabilityRollOptions {
+  /** compact 成功後 get_state 回報的權威 identity;未提供代表就地改寫、不滾動。 */
+  afterCompact?: { sessionId: string; sessionFile: string }
+}
+
+/**
+ * capability claim 回歸 fixture:一開始掛 fileA / sessionId 'identity-alpha',
+ * compact 成功後依選項把 get_state 滾到新狀態(同 sessionId 換檔 = path-only move;
+ * 換 sessionId = true identity change)。FAKE_IDENTITY 讓同一支 fake 依每個 runtime
+ * 注入的 environment 分飾不同 lineage,供「舊 claim 保持、新 session 各自綁定」的
+ * pin 使用。刻意不回報 isSettled:settlement 維持 unknown,runtime 不會被
+ * admission 的自動退役掃走,兩支 lineage 才得以並存。
+ */
+function capabilityRollAgent(options: CapabilityRollOptions = {}): { cwd: string; executable: string; fileA: string; fileB: string } {
+  const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-rpc-capability-'))
+  dirs.push(cwd)
+  const fileA = join(cwd, 'lineage-a.jsonl')
+  const fileB = join(cwd, 'lineage-b.jsonl')
+  const executable = join(cwd, 'capability-roll-agent.cjs')
+  writeFileSync(executable, `#!/usr/bin/env node
+const readline = require('node:readline')
+const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
+const fileA = ${JSON.stringify(fileA)}
+const fileB = ${JSON.stringify(fileB)}
+const afterCompact = ${JSON.stringify(options.afterCompact ?? null)}
+let sessionId = process.env.FAKE_IDENTITY === 'identity-beta' ? 'identity-beta' : 'identity-alpha'
+let sessionFile = process.env.FAKE_IDENTITY === 'identity-beta' ? fileB : fileA
+send({ type: 'ready', protocolVersion: 1, supportedProtocolVersions: [1, 2] })
+readline.createInterface({ input: process.stdin }).on('line', (line) => {
+  const command = JSON.parse(line)
+  if (command.type === 'negotiate_protocol') {
+    send({ id: command.id, type: 'response', command: 'negotiate_protocol', success: true, data: { protocolVersion: 2 } })
+  } else if (command.type === 'get_state') {
+    send({ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId, sessionFile, isStreaming: false, isCompacting: false } })
+  } else if (command.type === 'get_session_stats') {
+    send({ id: command.id, type: 'response', command: 'get_session_stats', success: true, data: { contextUsage: { tokens: 12000, contextWindow: 200000, percent: 6 } } })
+  } else if (command.type === 'get_tree') {
+    // leaf 診斷探針:立即回應,compact 路徑的診斷不等 5 秒降級逾時。
+    send({ id: command.id, type: 'response', command: 'get_tree', success: true, data: { leafId: 'a'.repeat(64), tree: {} } })
+  } else if (command.type === 'compact') {
+    if (afterCompact) {
+      sessionId = afterCompact.sessionId
+      sessionFile = afterCompact.sessionFile
+    }
+    send({ id: command.id, type: 'response', command: 'compact', success: true, data: { agentInvoked: false } })
+  } else {
+    // 其餘選用命令(set_subagent_subscription / set_ask_dialog 等)一律成功,不讓測試等逾時。
+    send({ id: command.id, type: 'response', command: command.type, success: true })
+  }
+})
+`)
+  chmodSync(executable, 0o755)
+  return { cwd, executable, fileA, fileB }
+}
+
+// 1.2 前置安全回歸(test-first):pin active session 的 browser/collab/schedule
+// capability claim 在 sessionFile / sessionId 改變後的應有行為。目前 manager 的
+// durableSessionBound 一旦置 true 便不再 rebind,claim 永遠停在首次綁定的檔案,
+// 因此「rebinds capabilities…」與「retires a runtime…」兩則斷言在 1.2 實作前
+// 預期 FAIL;其餘正向不變量應維持 PASS,1.2 不得退化。
+describe('session identity capability claims', () => {
+  it('rebinds capabilities when compaction reports a new path for the same session identity', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-rpc-roll-target-'))
+    dirs.push(cwd)
+    const fileB = join(cwd, 'rolled.jsonl')
+    const fake = capabilityRollAgent({ afterCompact: { sessionId: 'identity-alpha', sessionFile: fileB } })
+    const manager = ompManager(fake.executable)
+    const bound = vi.fn()
+    const revoked = vi.fn()
+    manager.setRuntimeEnvironmentProvider(() => ({ OMP_DESKTOP_BROWSER_TOKEN: 'cap-token-alpha' }))
+    manager.setRuntimeStartListener(bound)
+    manager.setRuntimeEndListener(revoked)
+    const runtime = await manager.start({ cwd: fake.cwd, sessionPath: fake.fileA })
+    expect(bound).toHaveBeenCalledTimes(1)
+    expect(bound.mock.calls[0]?.[1].sessionId).toBe('identity-alpha')
+    expect(bound.mock.calls[0]?.[1].sessionFile).toBe(canonicalSessionPath(fake.fileA))
+
+    // compact 的後續 refreshState 會同步到 fileB(sessionId 不變):path-only move。
+    await manager.command(runtime.runtimeId, { type: 'compact' })
+
+    // 1.2 契約(a):同一 session identity 只換檔案時,既有的同一組 token
+    // claim 必須顯式 rebind 到新檔 — 不撤銷、不重發 token(那與 identity
+    // change 不同)。目前 durableSessionBound 擋住第二次綁定,以下斷言 FAIL。
+    expect(revoked).not.toHaveBeenCalled()
+    expect(bound).toHaveBeenCalledTimes(2)
+    expect(bound.mock.calls[1]?.[0]).toMatchObject({ OMP_DESKTOP_BROWSER_TOKEN: 'cap-token-alpha' })
+    expect(bound.mock.calls[1]?.[1].sessionId).toBe('identity-alpha')
+    expect(bound.mock.calls[1]?.[1].sessionFile).toBe(canonicalSessionPath(fileB))
+  })
+
+  it('retires a runtime whose session identity changes, not silently re-scoping old claims', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-rpc-identity-target-'))
+    dirs.push(cwd)
+    const fileB = join(cwd, 'new-identity.jsonl')
+    const fake = capabilityRollAgent({ afterCompact: { sessionId: 'identity-beta', sessionFile: fileB } })
+    const manager = ompManager(fake.executable)
+    const bound = vi.fn()
+    const revoked = vi.fn()
+    manager.setRuntimeEnvironmentProvider(() => ({ OMP_DESKTOP_BROWSER_TOKEN: 'cap-token-alpha' }))
+    manager.setRuntimeStartListener(bound)
+    manager.setRuntimeEndListener(revoked)
+    const runtime = await manager.start({ cwd: fake.cwd, sessionPath: fake.fileA })
+    expect(bound).toHaveBeenCalledTimes(1)
+
+    // get_state 改報 sessionId 'identity-beta' / fileB:true identity change。
+    await manager.command(runtime.runtimeId, { type: 'compact' })
+
+    // 1.2 契約(b):sessionId 改變代表全新 identity。Manager 必須 quarantine
+    // 該 runtime 並撤銷舊 token 的 claim,canRetireSafely 後退役;檔案路由
+    // 不得再把新舊檔導向這支 runtime,後續指令必須被拒。新 identity 的
+    // capability 絕不可沿用舊 token 綁定。目前 manager 不檢查 sessionId,
+    // runtime 繼續當 active,以下斷言 FAIL。
+    expect(revoked).toHaveBeenCalledTimes(1)
+    expect(revoked.mock.calls[0]?.[0]).toMatchObject({ OMP_DESKTOP_BROWSER_TOKEN: 'cap-token-alpha' })
+    expect(bound).toHaveBeenCalledTimes(1)
+    expect(manager.getForSession(fake.fileA)).toBeUndefined()
+    expect(manager.getForSession(fileB)).toBeUndefined()
+    await expect(manager.command(runtime.runtimeId, { type: 'get_state' })).rejects.toThrow(/identity|retir|quarantin|not found/i)
+  })
+
+  it('keeps capability claims stable when compaction rewrites the session file in place', async () => {
+    // 既有正向不變量(應持續 PASS):sessionId 與 sessionFile 都不變時,
+    // claim 維持 fileA,不重建也不撤銷。
+    const fake = capabilityRollAgent()
+    const manager = ompManager(fake.executable)
+    const bound = vi.fn()
+    const revoked = vi.fn()
+    manager.setRuntimeEnvironmentProvider(() => ({ OMP_DESKTOP_BROWSER_TOKEN: 'cap-token-alpha' }))
+    manager.setRuntimeStartListener(bound)
+    manager.setRuntimeEndListener(revoked)
+    const runtime = await manager.start({ cwd: fake.cwd, sessionPath: fake.fileA })
+    expect(bound).toHaveBeenCalledTimes(1)
+
+    await manager.command(runtime.runtimeId, { type: 'compact' })
+
+    expect(bound).toHaveBeenCalledTimes(1)
+    expect(revoked).not.toHaveBeenCalled()
+    expect(manager.list()[0]?.sessionId).toBe('identity-alpha')
+    expect(manager.list()[0]?.sessionFile).toBe(canonicalSessionPath(fake.fileA))
+    expect(manager.getForSession(fake.fileA)?.runtimeId).toBe(runtime.runtimeId)
+  })
+
+  it('binds each forked lineage to its own claims while the source session claim stays put', async () => {
+    // SessionIdentityFix 既有保證(應持續 PASS):一個 lineage 的 claim 與
+    // 另一個無關;退役其中一支只撤自己的 token,另一支的綁定原封不動。
+    // 1.2 的 rebind / quarantine 邏輯不得退化這個隔離性。
+    const fake = capabilityRollAgent()
+    const manager = ompManager(fake.executable)
+    const bound = vi.fn()
+    const revoked = vi.fn()
+    manager.setRuntimeEnvironmentProvider((scope) => ({
+      FAKE_IDENTITY: scope.sessionPath === fake.fileB ? 'identity-beta' : 'identity-alpha',
+      OMP_DESKTOP_BROWSER_TOKEN: scope.sessionPath === fake.fileB ? 'cap-token-beta' : 'cap-token-alpha',
+    }))
+    manager.setRuntimeStartListener(bound)
+    manager.setRuntimeEndListener(revoked)
+    const first = await manager.start({ cwd: fake.cwd, sessionPath: fake.fileA })
+    const second = await manager.start({ cwd: fake.cwd, sessionPath: fake.fileB })
+
+    expect(bound).toHaveBeenCalledTimes(2)
+    expect(bound.mock.calls[0]?.[0]).toMatchObject({ OMP_DESKTOP_BROWSER_TOKEN: 'cap-token-alpha' })
+    expect(bound.mock.calls[0]?.[1].sessionId).toBe('identity-alpha')
+    expect(bound.mock.calls[0]?.[1].sessionFile).toBe(canonicalSessionPath(fake.fileA))
+    expect(bound.mock.calls[1]?.[0]).toMatchObject({ OMP_DESKTOP_BROWSER_TOKEN: 'cap-token-beta' })
+    expect(bound.mock.calls[1]?.[1].sessionId).toBe('identity-beta')
+    expect(bound.mock.calls[1]?.[1].sessionFile).toBe(canonicalSessionPath(fake.fileB))
+    expect(manager.getForSession(fake.fileA)?.runtimeId).toBe(first.runtimeId)
+    expect(manager.getForSession(fake.fileB)?.runtimeId).toBe(second.runtimeId)
+
+    // 退役新 lineage 只撤新 token 的 claim;舊 session 的綁定必須保持。
+    await manager.stopForSession(fake.fileB)
+    expect(revoked).toHaveBeenCalledTimes(1)
+    expect(revoked.mock.calls[0]?.[0]).toMatchObject({ OMP_DESKTOP_BROWSER_TOKEN: 'cap-token-beta' })
+    expect(revoked.mock.calls[0]?.[1]?.sessionId).toBe('identity-beta')
+    expect(manager.getForSession(fake.fileA)?.runtimeId).toBe(first.runtimeId)
+    expect(manager.getForSession(fake.fileB)).toBeUndefined()
+    expect(bound).toHaveBeenCalledTimes(2)
+  })
 })
 
 describe('OMP RPC event normalization', () => {
@@ -569,16 +918,16 @@ describe('OMP RPC event normalization', () => {
     expect(manager.list()[0]).toMatchObject({ isStreaming: false, isCompacting: false })
   })
 
-  it('follows the rolled session file after an auto compaction ends', async () => {
+  it('follows the authoritative session file reported after compaction', async () => {
     const scaffold = fakeOmpAgent()
     writeFileSync(join(scaffold.cwd, 'session-old.jsonl'), '')
-    writeFileSync(join(scaffold.cwd, 'session-rolled.jsonl'), '')
+    writeFileSync(join(scaffold.cwd, 'session-followed.jsonl'), '')
     const oldPath = join(scaffold.cwd, 'session-old.jsonl')
-    const rolledPath = join(scaffold.cwd, 'session-rolled.jsonl')
+    const followedPath = join(scaffold.cwd, 'session-followed.jsonl')
     const fake = fakeOmpAgent({
       initialSessionFile: oldPath,
       promptScript: `
-    sessionFileVar = ${JSON.stringify(rolledPath)}
+    sessionFileVar = ${JSON.stringify(followedPath)}
     streaming = true
     send({ type: 'agent_start' })
     send({ type: 'auto_compaction_start', reason: 'threshold' })
@@ -591,9 +940,9 @@ describe('OMP RPC event normalization', () => {
 
     // A streaming runtime parked on the sealed predecessor is what shields
     // the duplicate sidebar row; the refresh after compaction_end must move
-    // it onto the successor file.
-    await waitUntil(() => manager.list()[0]?.sessionFile === canonicalSessionPath(rolledPath))
-    expect(manager.list()[0]).toMatchObject({ sessionFile: canonicalSessionPath(rolledPath), isStreaming: true })
+    // it onto the followed file.
+    await waitUntil(() => manager.list()[0]?.sessionFile === canonicalSessionPath(followedPath))
+    expect(manager.list()[0]).toMatchObject({ sessionFile: canonicalSessionPath(followedPath), isStreaming: true })
   })
   it('swallows non-terminal agent_end turn boundaries and forwards the terminal one', async () => {
     const fake = fakeOmpAgent({ promptScript: `

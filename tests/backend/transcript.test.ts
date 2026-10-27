@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { readSessionMetadata } from '../../electron/main/sessions/metadata'
 import { readTranscript } from '../../electron/main/sessions/transcript'
+import { MAX_PART_IMAGE_CHARS, MAX_UNSUPPORTED_DATA_CHARS } from '../../src/lib/events/message-content'
 import { configureGooeyPiAgentMessageSigning, encodeGooeyPiAgentMessage, loadOrCreateGooeyPiAgentMessageKey, parseGooeyPiAgentMessage } from '../../electron/main/collaboration/message-envelope'
 
 const dirs: string[] = []
@@ -31,6 +32,28 @@ describe('session file record tolerance', () => {
     const transcript = await readTranscript(file, false)
     expect(transcript).toHaveLength(1)
     expect(transcript[0]).toMatchObject({ id: 'user-1', role: 'user' })
+  })
+})
+
+describe('bash execution history rows', () => {
+  it('renders a persisted bashExecution with command, output, status, and image parts', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-transcript-'))
+    dirs.push(dir)
+    const file = join(dir, 'session.jsonl')
+    writeFileSync(file, [
+      JSON.stringify({ type: 'session', id: 'bash-history', cwd: dir, timestamp: '2026-08-07T00:00:00.000Z' }),
+      JSON.stringify({ type: 'message', id: 'bash-1', parentId: null, timestamp: '2026-08-07T00:01:00.000Z', message: { role: 'bashExecution', command: 'ls -la', output: 'file.txt', cancelled: false, truncated: false, exitCode: 0, timestamp: 1_700_000_000_000 } }),
+      JSON.stringify({ type: 'message', id: 'bash-2', parentId: 'bash-1', timestamp: '2026-08-07T00:02:00.000Z', message: { role: 'bashExecution', command: 'sleep 999', output: 'partial', cancelled: true, truncated: true, exitCode: 130, timestamp: 1_700_000_060_000, images: [{ type: 'image', data: 'aW1hZ2U=', mimeType: 'image/png' }] } }),
+      '',
+    ].join('\n'))
+
+    const transcript = await readTranscript(file, false)
+    expect(transcript).toHaveLength(2)
+    expect(transcript[0]).toMatchObject({ id: 'bash-1', role: 'tool' })
+    expect(transcript[0]?.parts[0]).toMatchObject({ type: 'toolCall', name: 'bash', args: { command: 'ls -la' } })
+    expect(transcript[0]?.parts[1]).toMatchObject({ type: 'toolResult', name: 'bash', text: 'file.txt', isError: false })
+    expect(transcript[1]?.parts[1]).toMatchObject({ text: 'partial\n[cancelled] [truncated]', isError: true })
+    expect(transcript[1]?.parts[2]).toMatchObject({ type: 'image', data: 'aW1hZ2U=', mimeType: 'image/png' })
   })
 })
 
@@ -196,6 +219,107 @@ function makeSessionFile(): string {
   dirs.push(dir)
   return join(dir, 'session.jsonl')
 }
+
+// 階段 6.2 三態之（b）重開讀 .jsonl 與（c）fork 後新 leaf。
+// live event stream 路徑與其渲染在 tests/frontend/tool-content-parts.test.ts 斷言,
+// 三態的 part 形狀與資料必須一致。
+describe('non-text tool content persists across reload and fork', () => {
+  const toolTurnRecords = () => [
+    JSON.stringify({ type: 'session', id: 'session-1', cwd: '/tmp' }),
+    JSON.stringify({ type: 'message', id: 'user-1', parentId: null, message: { role: 'user', content: 'draw the weather' } }),
+    JSON.stringify({
+      type: 'message', id: 'assistant-1', parentId: 'user-1',
+      message: { role: 'assistant', content: [{ type: 'toolCall', id: 'call-1', name: 'chart_tool', arguments: { city: 'Taipei' } }] },
+    }),
+    JSON.stringify({
+      type: 'message', id: 'tool-1', parentId: 'assistant-1',
+      message: {
+        role: 'toolResult', toolCallId: 'call-1', toolName: 'chart_tool',
+        content: [
+          { type: 'text', text: 'rendered a chart' },
+          { type: 'image', mimeType: 'image/png', data: 'aXY=' },
+          { type: 'weather_widget', city: 'Taipei', tempC: 27 },
+        ],
+      },
+    }),
+  ]
+
+  it('（b）reload keeps tool-result images and unknown blocks as typed parts with data', async () => {
+    const file = makeSessionFile()
+    writeFileSync(file, [...toolTurnRecords(), ''].join('\n'))
+
+    const transcript = await readTranscript(file, false)
+    expect(transcript).toHaveLength(2)
+    const assistant = transcript[1]
+    expect(assistant?.role).toBe('assistant')
+    expect(assistant?.parts.map((part) => part.type)).toEqual(['toolCall', 'toolResult', 'image', 'unsupported'])
+    const [call, result, image, unsupported] = assistant!.parts
+    expect(call).toMatchObject({ type: 'toolCall', name: 'chart_tool', args: { city: 'Taipei' } })
+    expect(result).toMatchObject({ type: 'toolResult', name: 'chart_tool', text: 'rendered a chart', isError: false })
+    expect(image).toMatchObject({ type: 'image', mimeType: 'image/png', data: 'aXY=' })
+    expect(unsupported).toMatchObject({ type: 'unsupported', contentType: 'weather_widget' })
+    // 無 adapter 型別帶原始資料的可讀視圖,而不是只有型別名稱或靜默丟棄
+    expect(unsupported?.type === 'unsupported' && unsupported.data).toContain('"city": "Taipei"')
+  })
+
+  it('（c）a new leaf appended after a fork renders the copied image/unsupported parts identically', async () => {
+    const file = makeSessionFile()
+    // fork 語意:上游把歷史複製進新 session 檔,fork 點之後接新的 leaf。
+    // 檔案尾端是 fork 後的新訊息（parentId 指回工具結果）,reader 走出的
+    // branch 必須原樣帶上圖片與未知 block——資料不因 fork 而遺失或變形。
+    writeFileSync(file, [
+      ...toolTurnRecords(),
+      JSON.stringify({ type: 'message', id: 'fork-leaf-user', parentId: 'tool-1', message: { role: 'user', content: 'Go on from here.' } }),
+      JSON.stringify({ type: 'message', id: 'fork-leaf', parentId: 'fork-leaf-user', message: { role: 'assistant', content: 'Continuing from the fork.' } }),
+      '',
+    ].join('\n'))
+
+    const transcript = await readTranscript(file, false)
+    expect(transcript.map((message) => message.id)).toEqual(['user-1', 'assistant-1', 'fork-leaf-user', 'fork-leaf'])
+    const toolTurn = transcript[1]
+    expect(toolTurn?.parts.map((part) => part.type)).toEqual(['toolCall', 'toolResult', 'image', 'unsupported'])
+    const image = toolTurn?.parts[2]
+    expect(image).toMatchObject({ type: 'image', mimeType: 'image/png', data: 'aXY=' })
+    const unsupported = toolTurn?.parts[3]
+    expect(unsupported?.type === 'unsupported' && unsupported.data).toContain('"city": "Taipei"')
+
+    // Fork 產生的持久化 part 沒有 partId(renderer 以 type:index 作 key),
+    // 與 live part 不會發生 id 衝突。
+    expect(toolTurn?.parts.every((part) => part.partId === undefined)).toBe(true)
+    expect(transcript[3]).toMatchObject({ id: 'fork-leaf', parts: [{ type: 'text', text: 'Continuing from the fork.' }] })
+  })
+
+  it('（b）reload keeps malicious payloads inert: bounded data view, truncated oversized images', async () => {
+    const file = makeSessionFile()
+    const oversized = 'x'.repeat(MAX_PART_IMAGE_CHARS + 16)
+    writeFileSync(file, [
+      JSON.stringify({ type: 'session', id: 'session-1', cwd: '/tmp' }),
+      JSON.stringify({ type: 'message', id: 'user-1', parentId: null, message: { role: 'user', content: 'x' } }),
+      JSON.stringify({
+        type: 'message', id: 'tool-1', parentId: 'user-1',
+        message: {
+          role: 'toolResult', toolName: 'evil_tool',
+          content: [
+            { type: 'image', mimeType: 'image/png', data: oversized },
+            { type: 'svg_bomb', markup: '<script>alert(1)</script>'.repeat(50_000) },
+          ],
+        },
+      }),
+      '',
+    ].join('\n'))
+
+    const transcript = await readTranscript(file, false)
+    const toolMessage = transcript.find((message) => message.parts.some((part) => part.type === 'image'))
+    const image = toolMessage?.parts.find((part) => part.type === 'image')
+    expect(image).toMatchObject({ type: 'image', dataTruncated: true })
+    expect(image?.type === 'image' && image.data && image.data.length).toBeLessThanOrEqual(MAX_PART_IMAGE_CHARS)
+    const unsupported = toolMessage?.parts.find((part) => part.type === 'unsupported')
+    expect(unsupported?.type === 'unsupported' && unsupported.contentType).toBe('svg_bomb')
+    // script 內容留在資料視圖文字中(渲染層以純文字呈現),但總量有界。
+    expect(unsupported?.type === 'unsupported' && unsupported.data && unsupported.data.length)
+      .toBeLessThanOrEqual(MAX_UNSUPPORTED_DATA_CHARS)
+  })
+})
 
 describe('transcript graph budgets', () => {
   it('does not let non-renderable records evict renderable history or break the walk', async () => {

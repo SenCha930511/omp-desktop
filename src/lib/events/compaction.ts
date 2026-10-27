@@ -74,7 +74,7 @@ function compactionOutcomeFromEvent(raw: Record<string, unknown>): CompactionPar
 
 export function isCompactionEvent(raw: Record<string, unknown>): boolean {
   const type = string(raw.type) ?? string(raw.event)
-  return type === 'compaction_start' || type === 'compaction_end' || Boolean(compactionOutcomeFromEvent(raw))
+  return type === 'compaction_start' || type === 'compaction_end' || type === 'compaction_sync_pending' || Boolean(compactionOutcomeFromEvent(raw))
 }
 
 function sameCompactionResult(left: CompactionPart, right: CompactionPart): boolean {
@@ -122,15 +122,23 @@ export function applyCompactionEvent(messages: TranscriptMessage[], raw: Record<
       : message)
     return appendCompaction(finalized, compactionPartFromStart(raw), completedAt)
   }
+  if (type === 'compaction_sync_pending') {
+    const running = compactionIndex(messages, 'running')
+    if (running < 0) return messages
+    return messages.map((message, index) => index === running
+      ? { ...message, streaming: false, parts: message.parts.map((candidate) => candidate.type === 'compaction' ? { ...candidate, status: 'sync_pending' } : candidate) }
+      : message)
+  }
   let part: CompactionPart | undefined
   if (type === 'compaction_end') part = compactionPartFromEnd(raw)
   else part = compactionOutcomeFromEvent(raw)
   if (!part) return undefined
 
-  const running = compactionIndex(messages, 'running')
+  const runningIndex = compactionIndex(messages, 'running')
+  const running = runningIndex >= 0 ? runningIndex : compactionIndex(messages, 'sync_pending')
   if (running >= 0) {
     const alreadyPersisted = part.status !== 'running' && messages.some((message, index) => index !== running
-      && message.parts.some((candidate) => candidate.type === 'compaction' && candidate.status !== 'running' && sameCompactionResult(candidate, part!)))
+      && message.parts.some((candidate) => candidate.type === 'compaction' && candidate.status !== 'running' && candidate.status !== 'sync_pending' && sameCompactionResult(candidate, part!)))
     if (alreadyPersisted) return messages.filter((_, index) => index !== running)
     const completedAt = Date.now()
     return messages.map((message, index) => index === running
@@ -138,7 +146,7 @@ export function applyCompactionEvent(messages: TranscriptMessage[], raw: Record<
       : message)
   }
   if (part.status !== 'running') {
-    const duplicate = messages.some((message) => message.parts.some((candidate) => candidate.type === 'compaction' && candidate.status !== 'running' && sameCompactionResult(candidate, part!)))
+    const duplicate = messages.some((message) => message.parts.some((candidate) => candidate.type === 'compaction' && candidate.status !== 'running' && candidate.status !== 'sync_pending' && sameCompactionResult(candidate, part!)))
     if (duplicate) return messages
   }
   return appendCompaction(messages, part, Date.now())

@@ -2,6 +2,8 @@ import { useEffect } from 'react'
 import { contextUsageFromEvent, sessionUsageFromEvent } from '@/app/agent-events'
 import { applySessionLifecycleEvent, sessionLifecycleChange } from '@/app/session-attention'
 import { shouldNotifyCompletion, showCompletionNotification } from '@/lib/completion-notify'
+import { compactionSyncPendingStore } from '@/lib/compaction-sync-state'
+import { agentNoticeBody, agentNoticeFromEvent, isConfigWarningsChangedEvent } from '@/lib/events/reduce'
 import { fallbackModelFromRecord } from '@/lib/events/model-fallback'
 import { useI18n } from '@/lib/i18n'
 import { parseSessionActionSnapshot } from '@/lib/session-actions'
@@ -21,6 +23,9 @@ interface UseAgentEventsOptions {
   clearQueuedPromptFlushFailures?(): void
   clearQueuedPrompts?(): void
   queueAgentEvent(event: Record<string, unknown>): void
+  onNotice?(text: string, tone: 'info' | 'warning' | 'error'): void
+  /** 上游 config_warnings_changed:設定警告集合改變(reload 或 .broken-* 隔離後),用於重新整理功能目錄。 */
+  onConfigWarningsChanged?(): void
   onCommandOutput?(text: string, failed?: boolean): void
   reconcileTranscriptForEvent(runtimeId: string, event: Record<string, unknown>): void
   showExtensionUi(runtimeId: string, event: Record<string, unknown>): void
@@ -42,6 +47,8 @@ export function useAgentEvents({
   clearQueuedPromptFlushFailures = () => undefined,
   clearQueuedPrompts = () => undefined,
   queueAgentEvent,
+  onNotice = () => undefined,
+  onConfigWarningsChanged = () => undefined,
   onCommandOutput,
   reconcileTranscriptForEvent,
   showExtensionUi,
@@ -76,9 +83,38 @@ export function useAgentEvents({
       }
       showExtensionUi(runtimeId, event)
       if (type === 'runtime_exit') clearExtensionUi(runtimeId)
+      // A notice that cannot land in the visible transcript — another
+      // session's runtime, or the active session hidden behind another view —
+      // still reaches the user through the app toast; the transcript row
+      // itself renders from the event in the active runtime below.
+      if (type === 'notice') {
+        const notice = agentNoticeFromEvent(event)
+        if (notice && (runtimeIdRef.current !== runtimeId || !activeSessionVisible)) {
+          const toastKey = notice.level === 'error' ? 'transcript.notice.toast.error'
+            : notice.level === 'warning' ? 'transcript.notice.toast.warning' : 'transcript.notice.toast.info'
+          onNotice(t(toastKey, { text: agentNoticeBody(notice) }), notice.level)
+        }
+      }
+      // 上游設定警告集合改變(/mcp reload、/reload-plugins 或 .broken-* 隔離
+      // 後):事件本身不帶 payload,警告細節留在 session;GUI 提示一次並觸發
+      // 功能目錄重新探索(目錄會反映新定義、disabled/enabled 清單與隔離檔)。
+      // 不進 transcript(config_warnings_changed 不是訊息),也不限 active
+      // runtime——設定變更是全域的。
+      if (isConfigWarningsChangedEvent(event)) {
+        onNotice(t('transcript.notice.toast.configWarnings'), 'warning')
+        onConfigWarningsChanged()
+      }
       if (runtimeIdRef.current !== runtimeId) {
         if (type === 'runtime_exit') runtimeSessionsRef.current.delete(runtimeId)
         return
+      }
+      // The manual-compact path reports a failed post-compact state read as a
+      // warning notice because no formal lifecycle events fire. Track the
+      // pending sync for the active runtime so the divider can offer the
+      // user-triggered refresh retry.
+      if (type === 'notice' && agentNoticeFromEvent(event)?.source === 'desktop.compaction-sync') {
+        compactionSyncPendingStore.setPending(runtimeId)
+        setRuntime((current) => current?.runtimeId === runtimeId ? { ...current, synchronizationPending: true } : current)
       }
       if (type === 'context_usage') {
         const contextUsage = contextUsageFromEvent(event)
@@ -103,7 +139,13 @@ export function useAgentEvents({
       }
       if (type === 'runtime_state') {
         const state = event.state as RuntimeInfo | undefined
-        if (state?.runtimeId === runtimeId) setRuntime((current) => current?.runtimeId === runtimeId ? state : current)
+        if (state?.runtimeId === runtimeId) {
+          // An authoritative snapshot replaces the runtime wholesale; the
+          // renderer-tracked sync flag drops with it on purpose, whether the
+          // refresh came from the harness or the manual retry.
+          compactionSyncPendingStore.clear(runtimeId)
+          setRuntime((current) => current?.runtimeId === runtimeId ? state : current)
+        }
         return
       }
       if (type === 'session_usage') {
@@ -137,9 +179,14 @@ export function useAgentEvents({
       if (type === 'compaction_start') {
         setRuntime((current) => current?.runtimeId === runtimeId ? { ...current, isCompacting: true } : current)
       }
-      if (type === 'compaction_end') {
+      // A sync_pending outcome ended the compaction run even though the
+      // formal compaction_end never arrived; willRetry stays formal-only.
+      if (type === 'compaction_end' || type === 'compaction_sync_pending') {
+        const syncPending = type === 'compaction_sync_pending'
+        if (syncPending) compactionSyncPendingStore.setPending(runtimeId)
+        else compactionSyncPendingStore.clear(runtimeId)
         setRuntime((current) => current?.runtimeId === runtimeId
-          ? { ...current, isCompacting: false, isStreaming: event.willRetry === true || current.isStreaming }
+          ? { ...current, isCompacting: false, synchronizationPending: syncPending, isStreaming: event.willRetry === true || current.isStreaming }
           : current)
       }
       // A provider auto-retry continues the same turn after a backoff delay:
@@ -158,6 +205,9 @@ export function useAgentEvents({
       }
       if (type === 'runtime_exit') {
         clearExtensionUi(runtimeId)
+        // A stopped runtime can never serve the state refresh; a lingering
+        // divider stays visible as history but offers no retry.
+        compactionSyncPendingStore.clear(runtimeId)
         runtimeSessionsRef.current.delete(runtimeId)
         runtimeIdRef.current = null
         runtimeOwnerRef.current = null
@@ -188,6 +238,8 @@ export function useAgentEvents({
     reconcileQueuedPrompts,
     workspaceRef,
     queueAgentEvent,
+    onNotice,
+    onConfigWarningsChanged,
     onCommandOutput,
     reconcileTranscriptForEvent,
     refreshGit,

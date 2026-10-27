@@ -82,6 +82,10 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     send({ id: command.id, type: 'response', command: command.type, success: true, data: { protocolVersion: 2 } })
   } else if (command.type === 'get_state') {
     send({ id: command.id, type: 'response', command: command.type, success: true, data: { sessionId: 'manual-compact', sessionFile, isStreaming: false, isCompacting: false } })
+  } else if (command.type === 'get_tree') {
+    // Leaf diagnostics probe: answer immediately so compact-path diagnostics do
+    // not wait out the 5s readLeafId deadline before degrading.
+    send({ id: command.id, type: 'response', command: command.type, success: true, data: { leafId: 'a'.repeat(64), tree: {} } })
   } else if (command.type === 'compact') {
     // Exactly like the real harness: the record lands in the session file and
     // no lifecycle event is emitted.
@@ -91,7 +95,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
 })
 `)
     chmodSync(executable, 0o755)
-    const manager = new AgentRpcManager(executable, async (dir) => dir, async (path) => path, undefined, () => new Set(), OMP_RPC_ADAPTER)
+    const manager = new AgentRpcManager(executable, async (dir) => dir, async (path) => path, undefined, OMP_RPC_ADAPTER)
     managers.push(manager)
     const envelopes: Array<{ runtimeId: string; event: Record<string, unknown> }> = []
     manager.setEventSink((envelope) => envelopes.push(envelope as { runtimeId: string; event: Record<string, unknown> }))
@@ -111,74 +115,79 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     }
   })
 
-  it('follows a compact rollover to the successor session file', async () => {
-    const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-rpc-compact-roll-'))
+  it('follows a real path change reported by OMP after compaction', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-rpc-compact-path-change-'))
     dirs.push(cwd)
     const parentFile = join(cwd, '2026-08-07T00-00-00-000Z_01aaaaaa-0000-7000-8000-000000000001.jsonl')
-    const successorFile = join(cwd, '2026-08-07T00-02-00-000Z_01bbbbbb-0000-7000-8000-000000000002.jsonl')
+    const followedFile = join(cwd, '2026-08-07T00-02-00-000Z_01bbbbbb-0000-7000-8000-000000000002.jsonl')
     writeFileSync(parentFile, `${JSON.stringify({ type: 'session', id: 'parent-session', cwd, timestamp: '2026-08-07T00:00:00.000Z' })}\n`)
-    const executable = join(cwd, 'roll-agent.cjs')
+    const executable = join(cwd, 'path-change-agent.cjs')
     writeFileSync(executable, `#!/usr/bin/env node
 const fs = require('node:fs')
 const readline = require('node:readline')
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
 const cwdPath = ${JSON.stringify(cwd)}
 const parentFile = ${JSON.stringify(parentFile)}
-const successorFile = ${JSON.stringify(successorFile)}
-// Exactly like the real harness's experimental-context rollover: a compact
-// writes a NEW successor session file whose header names the predecessor,
-// keeps writing there, and reports the successor path from get_state.
+const followedFile = ${JSON.stringify(followedFile)}
+// A lock-conflict fork may change the file independently of compaction.
+// Only get_state, never parentSession or the compaction mode, proves the path.
 let currentFile = parentFile
 readline.createInterface({ input: process.stdin }).on('line', (line) => {
   const command = JSON.parse(line)
   if (command.type === 'negotiate_protocol') {
     send({ id: command.id, type: 'response', command: command.type, success: true, data: { protocolVersion: 2 } })
   } else if (command.type === 'get_state') {
-    send({ id: command.id, type: 'response', command: command.type, success: true, data: { sessionId: 'rolled', sessionFile: currentFile, isStreaming: false, isCompacting: false } })
+    send({ id: command.id, type: 'response', command: command.type, success: true, data: { sessionId: 'followed', sessionFile: currentFile, isStreaming: false, isCompacting: false } })
+  } else if (command.type === 'get_tree') {
+    // Answer the leaf-diagnostics probe promptly so the read does not wait out
+    // its 5s deadline before degrading to leafKnown:false.
+    send({ id: command.id, type: 'response', command: command.type, success: true, data: { leafId: 'b'.repeat(64), tree: {} } })
   } else if (command.type === 'compact') {
-    fs.writeFileSync(successorFile, [
-      JSON.stringify({ type: 'session', version: 3, id: 'successor-session', timestamp: '2026-08-07T00:02:00.000Z', cwd: cwdPath, parentSession: 'parent-session' }),
-      JSON.stringify({ type: 'compaction', id: 'roll-compact', parentId: null, timestamp: '2026-08-07T00:02:00.000Z', tokensBefore: 446_219, tokensAfter: 41_224, summary: 'Rolled.', firstKeptEntryId: 'kept-1' }),
+    fs.writeFileSync(followedFile, [
+      JSON.stringify({ type: 'session', version: 3, id: 'followed-session', timestamp: '2026-08-07T00:02:00.000Z', cwd: cwdPath, parentSession: 'parent-session' }),
+      JSON.stringify({ type: 'compaction', id: 'path-change-compact', parentId: null, timestamp: '2026-08-07T00:02:00.000Z', tokensBefore: 446_219, tokensAfter: 41_224, summary: 'Compacted.', firstKeptEntryId: 'kept-1' }),
       '',
     ].join('\\n'))
-    currentFile = successorFile
+    currentFile = followedFile
     send({ id: command.id, type: 'response', command: command.type, success: true, data: { details: { kind: 'experimental-context-rollover', version: 1 } } })
   }
 })
 `)
     chmodSync(executable, 0o755)
-    const manager = new AgentRpcManager(executable, async (dir) => dir, async (path) => path, undefined, () => new Set(), OMP_RPC_ADAPTER)
+    const manager = new AgentRpcManager(executable, async (dir) => dir, async (path) => path, undefined, OMP_RPC_ADAPTER)
     managers.push(manager)
     const envelopes: Array<{ runtimeId: string; event: Record<string, unknown> }> = []
     manager.setEventSink((envelope) => envelopes.push(envelope as { runtimeId: string; event: Record<string, unknown> }))
     const runtime = await manager.start({ cwd, sessionPath: parentFile })
     try {
       await manager.command(runtime.runtimeId, { type: 'compact' })
-      // The synthesized divider reads the compaction record from the rolled
-      // successor file, not the stale pre-compact path.
+      // This fixture fakes an out-of-band file change (a lock-conflict fork);
+      // a real compaction rewrites the file in place and never moves the path.
+      // The synthesized divider therefore reads the compaction record from
+      // the authoritative path that get_state reports, not the stale one.
       const synthetic = envelopes.map((envelope) => envelope.event).find((event) => event.type === 'compaction_end')
       expect(synthetic).toMatchObject({
         type: 'compaction_end',
         reason: 'manual',
-        result: { tokensBefore: 446_219, tokensAfter: 41_224, summary: 'Rolled.', firstKeptEntryId: 'kept-1' },
+        result: { tokensBefore: 446_219, tokensAfter: 41_224, summary: 'Compacted.', firstKeptEntryId: 'kept-1' },
       })
-      // The runtime rebinds to the successor path and the pushed runtime_state
-      // carries it so the renderer can follow the roll.
-      expect(manager.list()[0]?.sessionFile).toBe(realpathSync(successorFile))
+      // The runtime rebinds to the authoritative path and the pushed
+      // runtime_state carries it so the renderer can follow the change.
+      expect(manager.list()[0]?.sessionFile).toBe(realpathSync(followedFile))
       const state = envelopes.map((envelope) => envelope.event).find((event) => event.type === 'runtime_state')
-      expect(state).toMatchObject({ type: 'runtime_state', state: { sessionFile: realpathSync(successorFile) } })
+      expect(state).toMatchObject({ type: 'runtime_state', state: { sessionFile: realpathSync(followedFile) } })
     } finally {
       await manager.stop(runtime.runtimeId)
     }
   })
 
-  it('retargets a parked runtime to the superseding session file and stops the stale transport', async () => {
+  it('keeps an idle runtime on its authoritative file when a child session exists', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-rpc-rebind-'))
     dirs.push(cwd)
     const parentFile = join(cwd, '2026-08-07T00-00-00-000Z_01aaaaaa-0000-7000-8000-000000000001.jsonl')
-    const successorFile = join(cwd, '2026-08-07T00-02-00-000Z_01bbbbbb-0000-7000-8000-000000000002.jsonl')
+    const siblingFile = join(cwd, '2026-08-07T00-02-00-000Z_01bbbbbb-0000-7000-8000-000000000002.jsonl')
     writeFileSync(parentFile, `${JSON.stringify({ type: 'session', id: 'parent-session', cwd, timestamp: '2026-08-07T00:00:00.000Z' })}\n`)
-    writeFileSync(successorFile, `${JSON.stringify({ type: 'session', version: 3, id: 'successor-session', timestamp: '2026-08-07T00:02:00.000Z', cwd, parentSession: 'parent-session' })}\n`)
+    writeFileSync(siblingFile, `${JSON.stringify({ type: 'session', version: 3, id: 'sibling-session', timestamp: '2026-08-07T00:02:00.000Z', cwd, parentSession: 'parent-session' })}\n`)
     const executable = join(cwd, 'parked-agent.cjs')
     writeFileSync(executable, `#!/usr/bin/env node
 const readline = require('node:readline')
@@ -189,34 +198,27 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   if (command.type === 'negotiate_protocol') {
     send({ id: command.id, type: 'response', command: command.type, success: true, data: { protocolVersion: 2 } })
   } else if (command.type === 'get_state') {
-    // The runtime never learns about the roll — exactly like a runtime whose
-    // commands fail on another process's session lock.
+    // A legitimate child on disk does not change this runtime's identity.
     send({ id: command.id, type: 'response', command: command.type, success: true, data: { sessionId: 'parked', sessionFile: parentFile, isStreaming: false, isCompacting: false } })
   }
 })
 `)
     chmodSync(executable, 0o755)
-    const manager = new AgentRpcManager(executable, async (dir) => dir, async (path) => path, undefined, () => new Set(), OMP_RPC_ADAPTER)
+    const manager = new AgentRpcManager(executable, async (dir) => dir, async (path) => path, undefined, OMP_RPC_ADAPTER)
     managers.push(manager)
     const envelopes: Array<{ runtimeId: string; event: Record<string, unknown> }> = []
     manager.setEventSink((envelope) => envelopes.push(envelope as { runtimeId: string; event: Record<string, unknown> }))
     const runtime = await manager.start({ cwd, sessionPath: parentFile })
-    await manager.rebindSupersededSession(parentFile, successorFile)
-    // The runtime republished its state on the successor path so bound
-    // workspaces follow the roll ...
-    const state = envelopes.map((envelope) => envelope.event).find((event) => event.type === 'runtime_state')
-    expect(state).toMatchObject({ type: 'runtime_state', state: { sessionFile: realpathSync(successorFile) } })
-    // ... and the stale transport is gone: the next prompt spawns fresh
-    // against the successor instead of forking the predecessor.
-    await waitUntil(() => manager.list().length === 0, 5_000)
-    expect(manager.getForSession(realpathSync(successorFile))).toBeUndefined()
-    expect(manager.getForSession(realpathSync(parentFile))).toBeUndefined()
-    void runtime
+    await manager.command(runtime.runtimeId, { type: 'get_state' })
+    expect(manager.list()).toHaveLength(1)
+    expect(manager.getForSession(realpathSync(parentFile))?.runtimeId).toBe(runtime.runtimeId)
+    expect(manager.getForSession(realpathSync(siblingFile))).toBeUndefined()
+    expect(envelopes.filter((envelope) => envelope.event.type === 'runtime_exit')).toEqual([])
   })
 
   it('stays silent when the compact command fails or the session has no record', async () => {
     const reader = vi.fn(async () => undefined)
-    const manager = new AgentRpcManager(null, async (cwd) => cwd, async (path) => path, undefined, () => new Set(), OMP_RPC_ADAPTER, undefined, undefined, reader)
+    const manager = new AgentRpcManager(null, async (cwd) => cwd, async (path) => path, undefined, OMP_RPC_ADAPTER, undefined, undefined, reader)
     managers.push(manager)
     const envelopes: Array<{ event: Record<string, unknown> }> = []
     manager.setEventSink((envelope) => envelopes.push(envelope as { event: Record<string, unknown> }))
@@ -226,6 +228,41 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     expect(reader).not.toHaveBeenCalled()
   })
 })
+
+  it('does not read a stale compaction record when authoritative state synchronization fails', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-compact-sync-'))
+    dirs.push(cwd)
+    const sessionFile = join(cwd, 'session.jsonl')
+    writeFileSync(sessionFile, '')
+    const executable = join(cwd, 'sync-agent.cjs')
+    writeFileSync(executable, `#!/usr/bin/env node
+const readline = require('node:readline')
+const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
+let compacted = false
+readline.createInterface({ input: process.stdin }).on('line', (line) => {
+  const command = JSON.parse(line)
+  if (command.type === 'get_state') {
+    send(compacted
+      ? { id: command.id, type: 'response', command: command.type, success: false, error: 'State unavailable' }
+      : { id: command.id, type: 'response', command: command.type, success: true, data: { sessionId: 'sync', sessionFile: ${JSON.stringify(sessionFile)}, isStreaming: false } })
+  } else {
+    if (command.type === 'compact') compacted = true
+    send({ id: command.id, type: 'response', command: command.type, success: true })
+  }
+})
+`)
+    chmodSync(executable, 0o755)
+    const reader = vi.fn(async () => ({ id: 'old', tokensBefore: 100, tokensAfter: 50 }))
+    const manager = new AgentRpcManager(executable, async (dir) => dir, async (path) => path, undefined, OMP_RPC_ADAPTER, undefined, undefined, reader)
+    managers.push(manager)
+    const events: Record<string, unknown>[] = []
+    manager.setEventSink(({ event }) => events.push(event))
+    const runtime = await manager.start({ cwd, sessionPath: sessionFile })
+    await expect(manager.command(runtime.runtimeId, { type: 'compact' })).resolves.toMatchObject({ success: true, synchronizationPending: true })
+    expect(reader).not.toHaveBeenCalled()
+    expect(events.some((event) => event.type === 'notice')).toBe(true)
+    expect(events.some((event) => event.type === 'compaction_end')).toBe(false)
+  })
 
 describe('agent RPC exit details', () => {
   const writeExitingAgent = (body: string): { cwd: string; executable: string } => {
@@ -304,7 +341,7 @@ input.on('line', (line) => {
   if (command.type === 'negotiate_protocol') {
     send({ id: command.id, type: 'response', command: 'negotiate_protocol', success: true, data: { protocolVersion: command.protocolVersion } })
   } else if (command.type === 'get_state') {
-    send(${stateResponse ?? "{ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'session-1', thinkingLevel: 'medium', isStreaming: false } }"})
+    send(${stateResponse ?? "{ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'session-1', thinkingLevel: 'medium', isStreaming: false, isSettled: true, hasPendingAsyncWork: false } }"})
   } else if (command.type === 'get_session_stats') {
     send({ id: command.id, type: 'response', command: 'get_session_stats', success: true, data: { contextUsage: { tokens: 25000, contextWindow: 100000, percent: 25 } } })
   } else if (command.type === 'prompt') {
@@ -361,13 +398,14 @@ describe('agent RPC command frame bounds', () => {
     manager.setWorkspaceUseProvider((cwd, owner, retireIfIdle) => gate.beginWorkspaceUse(cwd, owner, retireIfIdle))
     const runtime = await manager.start({ cwd: fake.cwd })
     await manager.command(runtime.runtimeId, { type: 'prompt', message: 'completed work' })
+    await manager.command(runtime.runtimeId, { type: 'get_state' })
 
     await expect(gate.runBranchCheckout(fake.cwd, async () => 'changed')).resolves.toBe('changed')
     expect(manager.list()).toEqual([])
   })
 
   it('keeps commanding other runtimes while a checkout retires an idle one', async () => {
-    const slowState = "{ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'session-1', isStreaming: stateCalls++ === 0, isCompacting: false } }"
+    const slowState = "{ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'session-1', isStreaming: stateCalls++ === 0, isCompacting: false, isSettled: stateCalls > 1, hasPendingAsyncWork: false } }"
     const fake = fakeAgent("{ id: command.id, type: 'response', command: 'prompt', success: true }", slowState, 1_500)
     const other = fakeAgent("{ id: command.id, type: 'response', command: 'prompt', success: true }")
     const manager = managerFor(fake.executable)
@@ -391,7 +429,7 @@ describe('agent RPC command frame bounds', () => {
   }, 10_000)
 
   it('rejects commands to a runtime that is being retired', async () => {
-    const slowState = "{ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'session-1', isStreaming: stateCalls++ === 0, isCompacting: false } }"
+    const slowState = "{ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'session-1', isStreaming: stateCalls++ === 0, isCompacting: false, isSettled: stateCalls > 1, hasPendingAsyncWork: false } }"
     const fake = fakeAgent("{ id: command.id, type: 'response', command: 'prompt', success: true }", slowState, 1_500)
     const other = fakeAgent("{ id: command.id, type: 'response', command: 'prompt', success: true }")
     const manager = managerFor(fake.executable)
@@ -451,7 +489,7 @@ describe('agent RPC command frame bounds', () => {
       snapshot: () => ({ runtimeId: 'runtime-auth-policy', harness: 'omp', cwd: '/tmp', isStreaming: false, imageInputSupported: true }),
       command: wireCommand,
     }
-    const manager = new AgentRpcManager(null, async (cwd) => cwd, async (path) => path, undefined, () => new Set(), OMP_RPC_ADAPTER)
+    const manager = new AgentRpcManager(null, async (cwd) => cwd, async (path) => path, undefined, OMP_RPC_ADAPTER)
     ;(manager as unknown as { runtimes: Map<string, unknown> }).runtimes.set('runtime-auth-policy', runtime)
     const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).toString('base64')
     const errorLog = vi.spyOn(console, 'error').mockImplementation(() => undefined)
@@ -471,7 +509,7 @@ describe('agent RPC command frame bounds', () => {
 })
 
 describe('agent RPC prompt admission capabilities', () => {
-  it('strips streamingBehavior for omp at the wire seam', async () => {
+  it.each(['steer', 'followUp'] as const)('preserves %s streamingBehavior for omp at the wire seam', async (streamingBehavior) => {
     const cwd = mkdtempSync(join(tmpdir(), 'prompt-capability-omp-'))
     dirs.push(cwd)
     const executable = join(cwd, 'fake-agent.cjs')
@@ -496,13 +534,13 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
 })
 `)
     chmodSync(executable, 0o755)
-    const manager = new AgentRpcManager(executable, async (path) => path, async (path) => path, undefined, () => new Set(), OMP_RPC_ADAPTER)
+    const manager = new AgentRpcManager(executable, async (path) => path, async (path) => path, undefined, OMP_RPC_ADAPTER)
     managers.push(manager)
     const runtime = await manager.start({ cwd })
     await manager.command(runtime.runtimeId, {
       type: 'prompt',
       message: 'admit this prompt',
-      streamingBehavior: 'steer',
+      streamingBehavior,
       images: [{ type: 'image', mimeType: 'image/png', data: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).toString('base64') }],
     })
 
@@ -513,7 +551,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
       images: [{ type: 'image', mimeType: 'image/png', data: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).toString('base64') }],
     })
     expect(wire.id).toEqual(expect.any(String))
-    expect(wire).not.toHaveProperty('streamingBehavior')
+    expect(wire.streamingBehavior).toBe(streamingBehavior)
   })
 })
 
@@ -965,9 +1003,9 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
 
   it('reclaims excess children after concurrent turns become idle while keeping one warm', async () => {
     const fake = fakeAgent("{ id: command.id, type: 'response', command: 'prompt', success: true }",
-      "{ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'retained', isStreaming: stateCalls++ === 0 } }")
+      "{ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'retained', isStreaming: stateCalls++ === 0, isSettled: stateCalls > 1, hasPendingAsyncWork: false } }")
     const manager = new AgentRpcManager(fake.executable, async (cwd) => cwd, async (path) => path,
-      undefined, undefined, OMP_RPC_ADAPTER, undefined, { idleMs: 100, warmCount: 1 })
+      undefined, OMP_RPC_ADAPTER, undefined, { idleMs: 100, warmCount: 1 })
     managers.push(manager)
     const first = await manager.start({ cwd: fake.cwd })
     const second = await manager.start({ cwd: fake.cwd })
@@ -1285,7 +1323,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     return runtime
   }
 
-  it('synthesizes compaction lifecycle events when the agent reports compacting without streaming them', async () => {
+  it('reports unknown completion rather than inventing compaction success or failure when end events are missing', async () => {
     const fake = watchdogAgent('silent-compaction', `
     compacting = true
     setTimeout(() => { compacting = false }, 600)`)
@@ -1295,7 +1333,8 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
       await runtime.command({ type: 'prompt', message: 'continue' })
       await waitUntil(() => events.some((event) => event.type === 'compaction_start' && event.synthetic === true))
       expect(runtime.snapshot().isCompacting).toBe(true)
-      await waitUntil(() => events.some((event) => event.type === 'compaction_end' && event.synthetic === true))
+      await waitUntil(() => events.some((event) => event.type === 'compaction_sync_pending'))
+      expect(events.filter((event) => event.type === 'compaction_end')).toEqual([])
       expect(runtime.snapshot().isCompacting).toBe(false)
     } finally {
       await runtime.stop()

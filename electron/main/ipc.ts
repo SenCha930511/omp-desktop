@@ -9,7 +9,6 @@ import type { GitService } from './git'
 import type { CuaDriverService } from './cua-driver'
 import type { HarnessUpdateService } from './harness-update'
 import type { ModelCatalogProvider } from './model-catalog'
-import { OPT_IN_PROVIDERS } from './model-visibility'
 import type { PluginService } from './plugins'
 import type { ProjectService } from './projects'
 import type { CheckoutService } from './checkouts'
@@ -308,91 +307,18 @@ export function registerIpc(services: Services, expectedRendererUrl: string): Ip
     return services.agents.start(startOptions)
   })
   handle(IPC_CHANNELS.agent.command, (_event, runtimeId, command) => services.agents.command(runtimeId, command))
+  handle(IPC_CHANNELS.agent.refreshState, (_event, runtimeId) => services.agents.refreshState(requireString(runtimeId, 'runtimeId', { min: 1, max: 256, trim: true })))
   handle(IPC_CHANNELS.agent.stop, (_event, runtimeId) => services.agents.stop(runtimeId))
   handle(IPC_CHANNELS.agent.list, () => services.agents.list())
 
   const providerCatalog = async (force = false) => {
-    const catalog = await services.catalog.catalog(force, new Set(services.settings.get().ompDisabledProviders), new Set(services.settings.get().ompDisabledModels))
+    const catalog = await services.catalog.catalog(force)
     const presets = await readModelPresets(join(homedir(), '.omp', 'agent', 'config.yml'))
     return presets.length > 0 ? { ...catalog, presets } : catalog
   }
   handle(IPC_CHANNELS.providers.catalog, (_event, force, harness) => {
     requireHarness(harness)
     return providerCatalog(force === true)
-  })
-  handle(IPC_CHANNELS.providers.setEnabled, async (_event, providerId, enabled, harness) => {
-    requireHarness(harness)
-    const id = requireString(providerId, 'providerId', { min: 1, max: 128, trim: true })
-    if (typeof enabled !== 'boolean') throw new TypeError('enabled must be a boolean')
-    const catalog = await providerCatalog()
-    if (!catalog.providers.some((provider) => provider.id === id)) throw new Error('Provider was not found')
-    const settings = services.settings.get()
-    const disabledProviders = new Set(settings.ompDisabledProviders)
-    const disabledModels = new Set(settings.ompDisabledModels)
-    const enabledProviders = new Set(settings.ompEnabledProviders)
-    if (OPT_IN_PROVIDERS.has(id)) {
-      // Opt-in providers (e.g. apple) toggle only the affirmative list so a
-      // bulk disable elsewhere can never re-show an unconfigured provider.
-      if (enabled) {
-        enabledProviders.add(id)
-        // Mirrors the regular branch: an individual model hidden earlier must
-        // not dead-end the provider toggle.
-        for (const model of catalog.models) if (model.provider === id) disabledModels.delete(model.key)
-      } else enabledProviders.delete(id)
-    } else if (enabled) {
-      disabledProviders.delete(id)
-      for (const model of catalog.models) if (model.provider === id) disabledModels.delete(model.key)
-    } else disabledProviders.add(id)
-    await services.settings.update({
-      ompDisabledProviders: [...disabledProviders].sort(),
-      ompEnabledProviders: [...enabledProviders].sort(),
-      ompDisabledModels: [...disabledModels].sort(),
-    })
-    return providerCatalog()
-  })
-  handle(IPC_CHANNELS.providers.setDisabled, async (_event, providerIds, harness) => {
-    requireHarness(harness)
-    if (!Array.isArray(providerIds) || providerIds.length > 256) throw new TypeError('providerIds must be a bounded array')
-    const ids = [...new Set(providerIds.map((value, index) => requireString(value, `providerIds[${index}]`, { min: 1, max: 128, trim: true })))].sort()
-    const catalog = await providerCatalog()
-    const known = new Set(catalog.providers.map((provider) => provider.id))
-    if (ids.some((id) => !known.has(id))) throw new Error('Provider was not found')
-    const disabledModels = ids.length ? services.settings.get().ompDisabledModels : []
-    // Opt-in providers in the bulk-list mean "hide again" (drop from the
-    // affirmative set); absent ones keep their explicit state untouched.
-    const optInIds = ids.filter((id) => OPT_IN_PROVIDERS.has(id))
-    const nextEnabledProviders = optInIds.length ? services.settings.get().ompEnabledProviders.filter((id) => !optInIds.includes(id)) : services.settings.get().ompEnabledProviders
-    await services.settings.update({ ompDisabledProviders: ids.filter((id) => !OPT_IN_PROVIDERS.has(id)), ompEnabledProviders: nextEnabledProviders, ompDisabledModels: disabledModels })
-    return providerCatalog()
-  })
-  handle(IPC_CHANNELS.providers.setModelEnabled, async (_event, modelKey, enabled, harness) => {
-    requireHarness(harness)
-    const key = requireString(modelKey, 'modelKey', { min: 3, max: 385, trim: true })
-    if (typeof enabled !== 'boolean') throw new TypeError('enabled must be a boolean')
-    const catalog = await providerCatalog()
-    const model = catalog.models.find((candidate) => candidate.key === key)
-    if (!model) throw new Error('Model was not found')
-    const provider = catalog.providers.find((candidate) => candidate.id === model.provider)
-    if (!provider) throw new Error('Provider was not found')
-    const settings = services.settings.get()
-    const disabledProviders = new Set(settings.ompDisabledProviders)
-    const disabledModels = new Set(settings.ompDisabledModels)
-    const siblingKeys = catalog.models.filter((candidate) => candidate.provider === model.provider).map((candidate) => candidate.key)
-    if (enabled) {
-      if (!provider.enabled) {
-        disabledProviders.delete(model.provider)
-        for (const siblingKey of siblingKeys) if (siblingKey !== key) disabledModels.add(siblingKey)
-      }
-      disabledModels.delete(key)
-    } else {
-      disabledModels.add(key)
-      if (!siblingKeys.some((siblingKey) => !disabledModels.has(siblingKey))) disabledProviders.add(model.provider)
-    }
-    await services.settings.update({
-      ompDisabledProviders: [...disabledProviders].sort(),
-      ompDisabledModels: [...disabledModels].sort(),
-    })
-    return providerCatalog()
   })
 
   handle(IPC_CHANNELS.voice.credentialStatus, () => services.voice.credentialStatus())

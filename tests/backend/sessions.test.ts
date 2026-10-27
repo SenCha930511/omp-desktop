@@ -1,18 +1,26 @@
-import { appendFileSync, chmodSync, createReadStream, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync, type Stats } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { appendFileSync, chmodSync, createReadStream, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync, type Stats } from 'node:fs'
 import { lstat, readdir, realpath, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AgentRpcManager } from '../../electron/main/agent-rpc'
 import { ProjectService } from '../../electron/main/projects'
 import { SessionService, type SessionServiceOptions } from '../../electron/main/sessions'
 import { boundedSessionDiscoveryNames, SessionMetadataCatalog, type SessionCatalogIo } from '../../electron/main/sessions/catalog'
 import { applyLiveMetadata, createIncrementalMetadataReader, createSessionMetadataReader, METADATA_VERIFY_TAIL_BYTES, readSessionMetadata, type SessionMetadata } from '../../electron/main/sessions/metadata'
+import { ompSessionServiceOptions, OMP_TITLE_SLOT_BYTES } from '../../electron/main/sessions/omp'
 import { JsonStateStore } from '../../electron/main/store'
 import { waitUntil } from '../helpers/wait'
 
 const dirs: string[] = []
-afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true, maxRetries: 5 }) })
+const stores: JsonStateStore[] = []
+afterEach(async () => {
+  // State stores initialize asynchronously; settle every tracked store before
+  // its temp dir is removed so the init rename never hits a missing path.
+  await Promise.allSettled(stores.splice(0).map((store) => store.ready()))
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true, maxRetries: 5 })
+})
 
 function setup(
   maxSessionFiles?: number,
@@ -21,7 +29,7 @@ function setup(
   const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-sessions-')); dirs.push(dir)
   const root = join(dir, 'sessions'); mkdirSync(root)
   const project = join(dir, 'project'); mkdirSync(project)
-  const store = new JsonStateStore(join(dir, 'state.json'))
+  const store = new JsonStateStore(join(dir, 'state.json')); stores.push(store)
   const service = new SessionService(store, null, maxSessionFiles, options)
   Object.defineProperty(service, 'sessionRoot', { value: root })
   return { root, project, service, store }
@@ -49,6 +57,51 @@ function metadata(filePath: string, projectPath: string, id: string): SessionMet
     unread: false,
   }
 }
+
+/** OMP-dialect service over a bucketed temp root, matching the production wiring. */
+async function ompSetup(): Promise<{ root: string; project: string; service: SessionService; store: JsonStateStore }> {
+  const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-lineage-')); dirs.push(dir)
+  const root = join(dir, 'sessions'); mkdirSync(root); mkdirSync(join(root, '-bucket'))
+  const project = join(dir, 'project'); mkdirSync(project)
+  const store = new JsonStateStore(join(dir, 'state.json')); stores.push(store)
+  const service = new SessionService(store, null, undefined, ompSessionServiceOptions(root))
+  // The store initializes asynchronously; await it so the temp dir is never
+  // torn down mid-initialize (ENOENT rename).
+  await store.ready()
+  return { root, project, service, store }
+}
+
+/** Fixed-width 256-byte OMP title slot; the metadata reader skips exactly this many bytes. */
+function ompTitleSlot(): string {
+  const unpadded = JSON.stringify({ type: 'title', v: 1, title: '', updatedAt: '2026-08-08T02:12:49.414Z', pad: '' })
+  const padding = OMP_TITLE_SLOT_BYTES - 1 - Buffer.byteLength(unpadded, 'utf8')
+  return JSON.stringify({ type: 'title', v: 1, title: '', updatedAt: '2026-08-08T02:12:49.414Z', pad: ' '.repeat(padding) })
+}
+
+function writeOmpLineageSession(root: string, name: string, options: {
+  id: string
+  cwd: string
+  timestamp: string
+  parentSession?: string
+  previousSessionFiles?: string[]
+}): string {
+  const file = join(root, '-bucket', name)
+  writeFileSync(file, [
+    ompTitleSlot(),
+    JSON.stringify({
+      type: 'session', version: 3, id: options.id, cwd: options.cwd, timestamp: options.timestamp,
+      ...(options.parentSession !== undefined ? { parentSession: options.parentSession } : {}),
+      ...(options.previousSessionFiles !== undefined ? { previousSessionFiles: options.previousSessionFiles } : {}),
+    }),
+    '',
+  ].join('\n'))
+  return file
+}
+
+const LINEAGE_ORIGINAL_NAME = '2026-08-08T02-12-49-414Z_019fdf24-0000-7000-8000-0000000000a1.jsonl'
+const LINEAGE_FORK_A_NAME = '2026-08-09T10-00-00-000Z_019fdf24-0000-7000-8000-0000000000a2.jsonl'
+const LINEAGE_FORK_B_NAME = '2026-08-10T12-30-15-250Z_019fdf24-0000-7000-8000-0000000000a3.jsonl'
+const LINEAGE_FORK_OF_FORK_NAME = '2026-08-11T09-05-00-500Z_019fdf24-0000-7000-8000-0000000000a4.jsonl'
 
 describe('live session metadata', () => {
   const liveMetadata = (): SessionMetadata => ({
@@ -532,7 +585,8 @@ if (process.argv[2] === 'list') {
 process.exit(2)
 `)
     chmodSync(executable, 0o755)
-    const service = new SessionService(new JsonStateStore(join(dir, 'state.json')), executable)
+    const store = new JsonStateStore(join(dir, 'state.json')); stores.push(store)
+    const service = new SessionService(store, executable)
     Object.defineProperty(service, 'sessionRoot', { value: root })
 
     const record = (await service.list())[0]
@@ -1112,7 +1166,8 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
       const runtime = await manager.start({ cwd: project })
       expect(runtime.sessionFile).toBe(realpathSync(file))
 
-      const service = new SessionService(new JsonStateStore(join(dir, 'state.json')), null)
+      const store = new JsonStateStore(join(dir, 'state.json')); stores.push(store)
+      const service = new SessionService(store, null)
       Object.defineProperty(service, 'sessionRoot', { value: realRoot })
       service.bindRuntimeHooks({
         get: (path) => manager.getForSession(path),
@@ -1187,7 +1242,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     const file = join(root, 'prime.jsonl')
     writeSession(file, project, 'prime')
     const renameFile = vi.fn(() => true)
-    const store = new JsonStateStore(join(dir, 'state.json'))
+    const store = new JsonStateStore(join(dir, 'state.json')); stores.push(store)
     const service = new SessionService(store, process.execPath, undefined, { renameFile })
     Object.defineProperty(service, 'sessionRoot', { value: root })
     service.bindRuntimeHooks({
@@ -1198,5 +1253,137 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
 
     await expect(service.rename(file, 'Prime title')).resolves.toBe(false)
     expect(renameFile).not.toHaveBeenCalled()
+  })
+})
+
+describe('session fork lineage visibility', () => {
+  it('lists an original session and two deliberate forks of it', async () => {
+    const { root, project, service } = await ompSetup()
+    writeOmpLineageSession(root, LINEAGE_ORIGINAL_NAME, { id: 'original-session', cwd: project, timestamp: '2026-08-08T02:12:49.414Z' })
+    writeOmpLineageSession(root, LINEAGE_FORK_A_NAME, { id: 'deliberate-fork-a', cwd: project, timestamp: '2026-08-09T10:00:00.000Z', parentSession: 'original-session' })
+    writeOmpLineageSession(root, LINEAGE_FORK_B_NAME, { id: 'deliberate-fork-b', cwd: project, timestamp: '2026-08-10T12:30:15.250Z', parentSession: 'original-session' })
+
+    const ids = (await service.list()).map((record) => record.id).sort()
+    expect(ids).toEqual(['deliberate-fork-a', 'deliberate-fork-b', 'original-session'])
+  })
+
+  it('lists a fork of a fork alongside its ancestors', async () => {
+    const { root, project, service } = await ompSetup()
+    writeOmpLineageSession(root, LINEAGE_ORIGINAL_NAME, { id: 'original-session', cwd: project, timestamp: '2026-08-08T02:12:49.414Z' })
+    writeOmpLineageSession(root, LINEAGE_FORK_A_NAME, { id: 'deliberate-fork', cwd: project, timestamp: '2026-08-09T10:00:00.000Z', parentSession: 'original-session' })
+    writeOmpLineageSession(root, LINEAGE_FORK_OF_FORK_NAME, { id: 'fork-of-fork', cwd: project, timestamp: '2026-08-11T09:05:00.500Z', parentSession: 'deliberate-fork' })
+
+    const ids = (await service.list()).map((record) => record.id).sort()
+    expect(ids).toEqual(['deliberate-fork', 'fork-of-fork', 'original-session'])
+  })
+
+  it('does not retarget a parked runtime through parentSession lineage', async () => {
+    const { root, project, service } = await ompSetup()
+    const originalFile = writeOmpLineageSession(root, LINEAGE_ORIGINAL_NAME, { id: 'original-session', cwd: project, timestamp: '2026-08-08T02:12:49.414Z' })
+    writeOmpLineageSession(root, LINEAGE_FORK_A_NAME, { id: 'sibling-session', cwd: project, timestamp: '2026-08-09T10:00:00.000Z', parentSession: 'original-session' })
+    const adopted: Array<[string, string]> = []
+    const parkedFile = await service.requireSessionPath(originalFile)
+    const hooks = {
+      get: () => undefined,
+      all: () => [{ sessionFile: parkedFile, isStreaming: false, isCompacting: false }],
+      stop: async () => undefined,
+      rename: async () => false,
+      adoptSuperseded: (oldPath: string, newPath: string) => { adopted.push([oldPath, newPath]) },
+    }
+    service.bindRuntimeHooks(hooks)
+
+    const ids = (await service.list()).map((record) => record.id).sort()
+    expect(ids).toEqual(['original-session', 'sibling-session'])
+    expect(adopted).toEqual([])
+  })
+
+  it('treats previousSessionFiles as move history rather than replacement evidence', async () => {
+    const { root, project, service } = await ompSetup()
+    const originalFile = writeOmpLineageSession(root, LINEAGE_ORIGINAL_NAME, { id: 'original-session', cwd: project, timestamp: '2026-08-08T02:12:49.414Z' })
+    writeOmpLineageSession(root, LINEAGE_FORK_A_NAME, {
+      id: 'moved-session', cwd: project, timestamp: '2026-08-09T10:00:00.000Z',
+      previousSessionFiles: [realpathSync(originalFile)],
+    })
+
+    const ids = (await service.list()).map((record) => record.id).sort()
+    expect(ids).toEqual(['moved-session', 'original-session'])
+  })
+
+  it('keeps pin and archive ownership exact per session file', async () => {
+    const { root, project, service } = await ompSetup()
+    const originalFile = writeOmpLineageSession(root, LINEAGE_ORIGINAL_NAME, { id: 'original-session', cwd: project, timestamp: '2026-08-08T02:12:49.414Z' })
+    writeOmpLineageSession(root, LINEAGE_FORK_A_NAME, { id: 'sibling-session', cwd: project, timestamp: '2026-08-09T10:00:00.000Z', parentSession: 'original-session' })
+    await service.setPinned(originalFile, true)
+
+    const pinned = await service.list()
+    expect(pinned.map((record) => record.id).sort()).toEqual(['original-session', 'sibling-session'])
+    expect(pinned.find((record) => record.id === 'original-session')?.pinned).toBe(true)
+    expect(pinned.find((record) => record.id === 'sibling-session')?.pinned).toBe(false)
+
+    await service.archive(originalFile)
+    const active = await service.list()
+    expect(active.map((record) => record.id)).toEqual(['sibling-session'])
+    expect(active[0]?.archived).toBe(false)
+    expect((await service.list(undefined, true)).find((record) => record.id === 'original-session')?.archived).toBe(true)
+  })
+})
+
+describe('SessionService branch delegation', () => {
+  it('rejects branch with an explicit unsupported error and writes nothing when no runtime forker is bound', async () => {
+    const { root, project, service } = await ompSetup()
+    const source = writeOmpLineageSession(root, LINEAGE_ORIGINAL_NAME, { id: 'source-session', cwd: project, timestamp: '2026-08-08T02:12:49.414Z' })
+    const before = readFileSync(source)
+
+    await expect(service.branch(source)).rejects.toThrow('Native session fork is not available')
+
+    expect(readFileSync(source).equals(before)).toBe(true)
+    expect(readdirSync(join(root, '-bucket'))).toEqual([basename(source)])
+  })
+
+  it('branches through the injected runtime forker, preserving engine-managed artifacts', async () => {
+    const { root, project, service } = await ompSetup()
+    const source = writeOmpLineageSession(root, LINEAGE_ORIGINAL_NAME, { id: 'source-session', cwd: project, timestamp: '2026-08-08T02:12:49.414Z' })
+    const before = readFileSync(source)
+    const seen: Array<{ filePath: string; cwd: string }> = []
+    service.setRuntimeForker(async (filePath, cwd) => {
+      seen.push({ filePath, cwd })
+      const id = randomUUID()
+      const target = join(root, '-bucket', `${new Date().toISOString().replace(/[:.]/g, '-')}_${id}.jsonl`)
+      // The engine owns the fork: a fresh identity whose parent lineage names
+      // the source, plus whatever session artifacts it manages.
+      writeFileSync(target, [
+        ompTitleSlot(),
+        JSON.stringify({ type: 'session', version: 3, id, cwd, timestamp: new Date().toISOString(), parentSession: 'source-session' }),
+        JSON.stringify({ type: 'message', id: 'fork-entry', parentId: null, timestamp: new Date().toISOString(), message: { role: 'user', content: 'question' } }),
+        '',
+      ].join('\n'))
+      mkdirSync(join(root, '-bucket', `${id}.artifacts`))
+      writeFileSync(join(root, '-bucket', `${id}.artifacts`, 'tree.json'), '{"entries":[]}')
+      return target
+    })
+
+    const branched = await service.branch(source)
+
+    expect(seen).toEqual([{ filePath: realpathSync(source), cwd: realpathSync(project) }])
+    expect(branched.id).not.toBe('source-session')
+    expect(dirname(branched.filePath)).toBe(realpathSync(join(root, '-bucket')))
+    expect(readFileSync(source).equals(before)).toBe(true)
+    const header = JSON.parse(readFileSync(branched.filePath, 'utf8').split('\n')[1])
+    expect(header).toMatchObject({ type: 'session', id: branched.id, parentSession: 'source-session' })
+    expect(branched.parentSession).toBe('source-session')
+    expect(existsSync(join(root, '-bucket', `${branched.id}.artifacts`, 'tree.json'))).toBe(true)
+    const records = await service.list(undefined, true)
+    expect(new Set(records.map((record) => record.id))).toEqual(new Set(['source-session', branched.id]))
+  })
+
+  it('validates the forker result against the session root', async () => {
+    const { root, project, service } = await ompSetup()
+    const source = writeOmpLineageSession(root, LINEAGE_ORIGINAL_NAME, { id: 'source-session', cwd: project, timestamp: '2026-08-08T02:12:49.414Z' })
+    const outside = join(dirname(root), 'outside-fork.jsonl')
+    writeFileSync(outside, '')
+    service.setRuntimeForker(async () => outside)
+
+    await expect(service.branch(source)).rejects.toThrow('outside')
+    expect(readdirSync(join(root, '-bucket'))).toEqual([basename(source)])
   })
 })

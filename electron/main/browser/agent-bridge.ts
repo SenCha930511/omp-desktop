@@ -38,6 +38,15 @@ export class AgentBrowserBridge extends CapabilityBridge {
     if (claim && !claim.sessionPath) claim.sessionPath = sessionFile
   }
 
+  /**
+   * Path-only move:claim scope 已由基底 orthogonally 改寫成 newPath;這裡把
+   * 分頁註冊表裡屬於舊檔的 tab/active/preview 所有權一併移過去,
+   * 否則該 session 已開啟的瀏覽器分頁會變成永久不可達的孤兒。
+   */
+  protected override onSessionRebound(_claim: CapabilityClaim, previousPath: string, newPath: string): void {
+    this.options.service.rekeySession(previousPath, newPath)
+  }
+
   protected async dispatch(method: string, params: Record<string, unknown>, claim: CapabilityClaim): Promise<unknown> {
     if (!claim.sessionPath) throw new Error('Browser control is not available yet for this thread; try again in a moment')
     return this.call(method, params, canonicalSessionPath(claim.sessionPath))

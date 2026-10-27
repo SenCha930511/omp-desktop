@@ -110,7 +110,21 @@ describe('JsonStateStore', () => {
 
     settings.messageEnterAction = 'invalid' as typeof settings.messageEnterAction
     writeFileSync(path, JSON.stringify({ version: 1, projects: [], settings, archivedSessions: [], dismissedProjectPaths: [] }))
-    expect(new JsonStateStore(path).snapshot().settings.messageEnterAction).toBe('queue')
+    expect(new JsonStateStore(path).snapshot().settings.messageEnterAction).toBe('steer')
+  })
+
+  it('migrates an unstamped legacy Enter default but keeps a stamped explicit choice', () => {
+    const dir = makeDirectory()
+    const path = join(dir, 'state.json')
+    // 未蓋戳的舊狀態:一律套用 TUI 預設(舊 queue 值無法與預設區分)。
+    const settings = { ...defaultSettings(), messageEnterAction: 'queue' as const, inputShortcutsVersion: undefined }
+    writeFileSync(path, JSON.stringify({ version: 4, projects: [], settings, archivedSessions: [], dismissedProjectPaths: [], schedules: [] }))
+    expect(new JsonStateStore(path).snapshot().settings.messageEnterAction).toBe('steer')
+    // 蓋戳後的明確選擇永遠保留。
+    writeFileSync(path, JSON.stringify({ version: 4, projects: [], settings: { ...settings, inputShortcutsVersion: 1 }, archivedSessions: [], dismissedProjectPaths: [], schedules: [] }))
+    const migrated = new JsonStateStore(path).snapshot().settings
+    expect(migrated.messageEnterAction).toBe('queue')
+    expect(migrated.inputShortcutsVersion).toBe(1)
   })
 
   it('defaults missing or invalid checkout strategies to worktrees', () => {
@@ -463,42 +477,27 @@ describe('JsonStateStore', () => {
     expect(state.settings.activeHarness).toBe('omp')
   })
 
-  it('bounds ompDisabledProviders and defaults the field when absent', () => {
+  it('discards the removed provider visibility fields from legacy state', () => {
     const dir = makeDirectory()
     const path = join(dir, 'state.json')
     writeFileSync(path, JSON.stringify({
-      version: 3,
+      version: 4,
       projects: [],
-      settings: { ...defaultSettings(), ompDisabledProviders: ['openai', 'openai', '../evil', 42, 'anthropic'] },
-      archivedSessions: [],
-      dismissedProjectPaths: [],
-      schedules: [],
-    }))
-    expect(new JsonStateStore(path).snapshot().settings.ompDisabledProviders).toEqual(['openai', 'anthropic'])
-
-    writeFileSync(path, JSON.stringify({
-      version: 3,
-      projects: [],
-      settings: { ...defaultSettings(), ompDisabledProviders: Array.from({ length: 400 }, (_, index) => `provider-${index}`) },
-      archivedSessions: [],
-      dismissedProjectPaths: [],
-      schedules: [],
-    }))
-    expect(new JsonStateStore(path).snapshot().settings.ompDisabledProviders).toHaveLength(256)
-
-    // A version-3 state written before the field existed keeps its version and gains the default.
-    const { ompDisabledProviders: _ompDisabledProviders, ...preFieldSettings } = defaultSettings()
-    writeFileSync(path, JSON.stringify({
-      version: 3,
-      projects: [],
-      settings: preFieldSettings,
+      settings: {
+        ...defaultSettings(),
+        ompDisabledProviders: ['anthropic'],
+        ompEnabledProviders: ['apple'],
+        ompDisabledModels: ['anthropic/claude-sonnet'],
+      },
       archivedSessions: [],
       dismissedProjectPaths: [],
       schedules: [],
     }))
     const state = new JsonStateStore(path).snapshot()
     expect(state.version).toBe(4)
-    expect(state.settings.ompDisabledProviders).toEqual([])
+    expect(state.settings).not.toHaveProperty('ompDisabledProviders')
+    expect(state.settings).not.toHaveProperty('ompEnabledProviders')
+    expect(state.settings).not.toHaveProperty('ompDisabledModels')
   })
 
   it('preserves an unsupported future state byte-for-byte and refuses updates', async () => {

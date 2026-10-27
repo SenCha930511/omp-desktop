@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { performance } from 'node:perf_hooks'
-import type { PrimeContextUsage, PrimeEventEnvelope, PrimeModelDescriptor, PrimeServiceTier, RuntimeInfo } from '../../../src/types/api'
+import type { PrimeContextUsage, PrimeEventEnvelope, PrimeModelDescriptor, PrimeServiceTier, RuntimeInfo, SessionCacheWarmingMode, SessionInterruptMode, SessionQueueMode, SessionSettingsSnapshot } from '../../../src/types/api'
 import { emptySessionActionSnapshot, parseSessionActionSnapshot } from '../../../src/lib/session-actions'
 import { parseSlashCommands } from '../../../src/lib/slash-commands'
 import { RPC_READ_FRAME_LIMIT_BYTES } from '../jsonl-limits'
@@ -14,6 +14,7 @@ import { OMP_RPC_ADAPTER, parseContextUsage, parseSessionUsage, type HarnessRpcA
 import { LiveContextUsageTracker, withLiveContextUsage } from './context-usage'
 import { FramedRpcTransport, type QueuedRpcWrite } from './transport'
 import type { RpcObject } from './types'
+import { recordSessionDiagnostic } from './session-diagnostics'
 
 interface PendingRequest {
   resolve(value: RpcObject): void
@@ -82,6 +83,21 @@ const DEFAULT_RPC_CHUNK_ASSEMBLY_TIMING: RpcChunkAssemblyTiming = {
 const SESSION_HELD_ELSEWHERE = /is open for writing in another (?:omp )?process/
 const SESSION_HELD_ELSEWHERE_MESSAGE = 'This session is open in another OMP process (for example, a terminal or another OMP Desktop window). Close it there, then try again.'
 
+// Extension UI methods whose requests block until an extension_ui_response
+// (or OMP's own cancel frame) settles them. Presentation methods are
+// fire-and-forget and never tracked.
+const DIALOG_REQUEST_METHODS: ReadonlySet<string> = new Set(['select', 'confirm', 'input', 'editor', 'ask'])
+// Commands that can start or redirect agent work: admitting one means the
+// session is no longer settled even before the next authoritative state.
+const WORK_INITIATING_COMMANDS: ReadonlySet<string> = new Set(['prompt', 'steer', 'follow_up', 'compact', 'abort', 'abort_retry', 'new_session', 'switch_session', 'clone', 'fork', 'branch'])
+// Session 設定六件組(上游 18.13 wire 實測皆有):成功後一律回讀 get_state
+// 讓權威快照說話;get_state 不回報的項目(autoRetry、cacheWarming)採用
+// 命令/回應回聲,直到未來上游開始回報。
+const SESSION_SETTING_COMMANDS: ReadonlySet<string> = new Set(['set_auto_compaction', 'set_auto_retry', 'set_steering_mode', 'set_follow_up_mode', 'set_interrupt_mode', 'set_cache_warming'])
+const isSessionQueueMode = (value: unknown): value is SessionQueueMode => value === 'all' || value === 'one-at-a-time'
+const isSessionInterruptMode = (value: unknown): value is SessionInterruptMode => value === 'immediate' || value === 'wait'
+const isSessionCacheWarmingMode = (value: unknown): value is SessionCacheWarmingMode => value === 'off' || value === 'streaming' || value === 'idle'
+
 export class RpcRuntime {
   readonly runtimeId = randomUUID()
   private readonly pending = new Map<string, PendingRequest>()
@@ -115,8 +131,8 @@ export class RpcRuntime {
   // until the surrounding RPC command settles, so the desktop would learn
   // about a compaction only after it finished. get_state responses are never
   // buffered, so polling the compacting flag while the runtime is active lets
-  // the desktop synthesize the missing lifecycle events; real events take
-  // precedence and duplicates are swallowed.
+  // the desktop expose running/unknown state; only authoritative completion
+  // events can establish a result. Real events take precedence.
   private readonly watchdogTimings: CompactionWatchdogTimings
   private compactionEpisode: 'none' | 'real' | 'synthetic' = 'none'
   private compactionEndFallback: NodeJS.Timeout | null = null
@@ -130,6 +146,15 @@ export class RpcRuntime {
   private readonly chunkAssemblies = new Map<string, ChunkAssembly>()
   private chunkAssemblySweepTimer: RpcChunkAssemblyTimer | null = null
   private acceptingChunkFrames = true
+  // Safe-retirement tracking for automatic reclamation. OMP 18.13+ reports
+  // settlement authoritatively (get_state isSettled/hasPendingAsyncWork and
+  // the session_settled frame); until it does, or while background work may
+  // still re-wake the session, the child must not be reclaimed. Extension
+  // dialogs are tracked by request id only — never titles, prefill, options,
+  // or answers — so no prompt content or secret is retained here.
+  private readonly pendingExtensionDialogs = new Set<string>()
+  private settlement: 'unknown' | 'settled' | 'unsettled' = 'unknown'
+  private settlementEpoch = 0
 
   constructor(
     executable: string,
@@ -175,6 +200,33 @@ export class RpcRuntime {
     return Object.freeze(this.continuationPending || this.retryPending ? { ...this.info, isStreaming: true } : { ...this.info })
   }
 
+  /**
+   * Whether automatic retirement may reclaim this child: OMP has
+   * authoritatively reported the session settled (no live run, queued
+   * message, or background work that could re-wake it) and no extension
+   * dialog is still waiting for an answer. Unknown settlement fails safe.
+   */
+  canRetireSafely(): boolean {
+    return this.settlement === 'settled' && this.pendingExtensionDialogs.size === 0
+  }
+
+  /**
+   * 直接向 OMP 查詢權威 leafId（唯讀 get_tree；不需要選 cursor，也不載入
+   * history）。僅供診斷時點呼叫——不併入每次 get_state，避免多餘負擔。
+   * 失敗、逾時或回應形狀不符一律降級為 undefined，絕不 throw。
+   */
+  async readLeafId(): Promise<string | undefined> {
+    try {
+      const response = await this.request({ type: 'get_tree' }, 5_000)
+      if (response.success === true && isRecord(response.data) && typeof response.data.leafId === 'string' && response.data.leafId.length > 0) {
+        return response.data.leafId
+      }
+      return undefined
+    } catch {
+      return undefined
+    }
+  }
+
   async handshake(): Promise<RuntimeInfo> {
     // Harnesses with a versioned protocol must agree on the version before any
     // other request; unsolicited frames (ready, available_commands_update) may
@@ -187,11 +239,15 @@ export class RpcRuntime {
         throw new Error(`${this.adapter.agentName} does not support RPC protocol v${this.adapter.negotiateProtocolVersion} (${reason}). Update the ${this.adapter.agentName} CLI and try again.`)
       }
     }
+    const stateEpoch = this.settlementEpoch
     const response = await this.request({ type: 'get_state' }, 60_000)
-    this.updateFromState(response.data)
+    this.updateFromState(response.data, stateEpoch)
     if (this.resumedSession) await this.assertSessionNotHeldElsewhere()
     // Optional on older OMP builds; observability must not prevent startup.
     void this.request({ type: 'set_subagent_subscription', level: 'events' }, 5_000).catch(() => undefined)
+    // The desktop now renders native ask requests and validates their answer
+    // shape. Older engines can retain their select/editor fallback.
+    void this.request({ type: 'set_ask_dialog', enabled: true }, 5_000).catch(() => undefined)
     const contextDeadline = new Promise<void>((resolve) => {
       const timer = setTimeout(resolve, 250)
       timer.unref()
@@ -264,62 +320,86 @@ export class RpcRuntime {
     this.scheduleCompactionPoll()
     if (this.resumedSession && SESSION_HELD_ELSEWHERE.test(this.transport.stderrTail())) throw new Error(SESSION_HELD_ELSEWHERE_MESSAGE)
     if (command.type === 'extension_ui_response') {
+      // Fire-and-forget on the wire: the dialog id may only be forgotten
+      // once the line has actually been flushed to the child.
       await this.transport.enqueue(`${JSON.stringify(command)}\n`).done
+      if (typeof command.id === 'string') this.pendingExtensionDialogs.delete(command.id)
       return { type: 'response', command: 'extension_ui_response', success: true }
     }
-    const timeout = command.type === 'compact' ? 10 * 60_000 : 60_000
+    const stateEpoch = this.settlementEpoch
+    // Admitted work invalidates settlement before the first event or state
+    // refresh can report it, closing the reclamation gap after the response.
+    if (WORK_INITIATING_COMMANDS.has(String(command.type))) this.markUnsettled()
+    // 使用者 `!` bash 由上游以 session 的 bash timeout 執行(預設 300 秒,
+    // tools 上限見上游 tool-timeouts);回應在命令結束時才送達,所以用戶端
+    // 逾時必須蓋過預設的 300 秒。超過 10 分鐘的命令不中斷執行,只回報
+    // 「已送達、可能仍在執行」;abort_bash 仍是使用者明確中止的入口。
+    // login 的 OAuth 流程讓使用者在瀏覽器完成授權並回填授權碼,上游
+    // timeoutMs 是 600_000(rpc.md);用戶端逾時必須蓋過整個流程,否則
+    // 「已送達、可能仍在執行」的錯誤會誤導面板狀態。取消入口是
+    // extension_ui input dialog 的 cancel(上游中止 flow)。
+    const timeout = command.type === 'compact' || command.type === 'bash' || command.type === 'login' ? 10 * 60_000 : 60_000
     const response = await this.request(command, timeout)
     if (command.type === 'set_thinking_level' && response.success === true) {
       this.info.configuredThinkingLevel = command.level as RuntimeInfo['configuredThinkingLevel']
       if (command.level !== 'auto') this.info.autoThinkingResolved = false
     }
-    if (command.type === 'get_state') this.updateFromState(response.data)
+    if (command.type === 'get_state' && response.success === true && isRecord(response.data)) {
+      this.updateFromState(response.data, stateEpoch)
+      this.emit({ type: 'runtime_state', state: this.snapshot() })
+    }
+    if (response.success === true && SESSION_SETTING_COMMANDS.has(String(command.type))) {
+      // Session 設定:先採用 get_state 不回報的回聲(autoRetry / cacheWarming
+      // 的生效 mode),再回讀權威快照刷新四項有回報的設定,一次 runtime_state
+      // 全部推送——GUI 與 TUI 之後讀 get_state 會得到同一份真相。
+      this.adoptSessionSettingEcho(command, response)
+      const followUpEpoch = this.settlementEpoch
+      try {
+        const state = await this.request({ type: 'get_state' }, 60_000)
+        this.updateFromState(state.data, followUpEpoch)
+      } catch { /* 設定已生效;快照交給下一次 runtime_state */ }
+      this.emit({ type: 'runtime_state', state: this.snapshot() })
+    }
     if (response.success === true && ['set_model', 'cycle_model', 'set_thinking_level', 'cycle_thinking_level'].includes(String(command.type))) {
+      const followUpEpoch = this.settlementEpoch
+      // 模型/層級變更後 serviceTier 等真值在 get_state,立刻回讀,
+      // GUI 徽章即時更新(不靠等待下次事件)。
       const state = await this.request({ type: 'get_state' }, 60_000)
-      this.updateFromState(state.data)
+      this.updateFromState(state.data, followUpEpoch)
       void this.refreshContextUsage()
     } else if (response.success === true && command.type === 'prompt') {
       // get_state discovers the new session file promptly. Its mid-stream
       // context snapshot does not include the active assistant message, so a
       // usage refresh waits for message/tool boundaries below.
+      const followUpEpoch = this.settlementEpoch
       void this.request({ type: 'get_state' }, 60_000).then((state) => {
-        this.updateFromState(state.data)
+        this.updateFromState(state.data, followUpEpoch)
         this.emit({ type: 'runtime_state', state: this.snapshot() })
       }).catch(() => undefined)
     } else if (response.success === true && ['new_session', 'switch_session', 'clone', 'fork', 'branch'].includes(String(command.type))) {
-      void this.request({ type: 'get_state' }, 60_000).then((state) => {
-        this.updateFromState(state.data)
-        return this.refreshContextUsage()
-      }).catch(() => undefined)
+      // Native session boundaries can materialize an empty durable file
+      // before any prompt. Publish the authoritative state so the manager
+      // can bind initially file-less capability claims at that boundary.
+      void this.refreshState().then(() => this.refreshContextUsage()).catch(() => undefined)
     }
     return response
   }
 
-  /** Refresh harness state (get_state) and publish the snapshot. Called after
-   * commands that can move the session file — a compact rolls the session
-   * forward to a successor file (experimental-context rollover), and both the
-   * manager's compaction-record read and the renderer's session binding must
-   * follow the new path instead of stranding on the pre-roll file. */
+  /** Publish OMP's authoritative identity and execution state. Compaction
+   * normally appends in place; only the returned state can establish an
+   * actual path change (for example a move or lock-conflict fork). */
   async refreshState(): Promise<RuntimeInfo> {
+    const stateEpoch = this.settlementEpoch
     const state = await this.request({ type: 'get_state' }, 60_000)
-    this.updateFromState(state.data)
+    if (state.success !== true || !isRecord(state.data)) {
+      throw new Error('OMP session state could not be synchronized')
+    }
+    this.updateFromState(state.data, stateEpoch)
     const snapshot = this.snapshot()
     this.emit({ type: 'runtime_state', state: snapshot })
     return snapshot
   }
 
-  /** Adopt a successor session file discovered by the desktop's lineage
-   * scan. A runtime parked on a file another OMP process rolled forward
-   * cannot learn the new path through get_state (its commands fail on the
-   * session lock), so the caller supplies it; this retargets the bookkeeping
-   * and republishes the state so bound workspaces follow the roll. The
-   * caller owns stopping the stale transport. */
-  adoptSessionFile(filePath: string): void {
-    const canonical = canonicalSessionPath(filePath)
-    if (!canonical || canonical === this.info.sessionFile) return
-    this.info.sessionFile = canonical
-    this.emit({ type: 'runtime_state', state: this.snapshot() })
-  }
 
   stop(): Promise<boolean> {
     if (!this.stopPromise) {
@@ -418,15 +498,15 @@ export class RpcRuntime {
     }
     this.info.isCompacting = false
     if (this.compactionEpisode === 'none' || this.compactionEndFallback) return
-    // The agent stopped compacting but its own compaction_end has not arrived;
-    // give the real event a grace window before closing the row ourselves.
+    // Polling proves only that compaction stopped, not whether it succeeded,
+    // failed or was cancelled. Keep the result explicitly pending synchronization.
     this.compactionEndFallback = setTimeout(() => {
       this.compactionEndFallback = null
       if (this.watchdogDisposed || this.compactionEpisode === 'none') return
       this.compactionEpisode = 'none'
-      this.emit({ type: 'compaction_end', synthetic: true, aborted: false, willRetry: false })
+      this.emit({ type: 'compaction_sync_pending', synthetic: true })
       void this.refreshContextUsage()
-      // Follow the rolled successor file — see compaction_end in handleFrame.
+      // Synchronize the actual identity; compaction does not imply a new file.
       void this.refreshState().catch(() => undefined)
     }, this.watchdogTimings.endGraceMs)
     this.compactionEndFallback.unref()
@@ -536,6 +616,10 @@ export class RpcRuntime {
     }
     const value = this.adapter.normalizeEvent(raw)
     if (!value) return
+    if (value.type === 'notice' && value.source === 'session-persistence'
+      && (value.level === 'info' || value.level === 'warning' || value.level === 'error')) {
+      recordSessionDiagnostic('persistence-notice', this.snapshot(), value.level)
+    }
     if (value.type === 'thinking_level_changed') {
       this.info.configuredThinkingLevel = (value.configured ?? value.thinkingLevel) as RuntimeInfo['configuredThinkingLevel']
       if (this.info.configuredThinkingLevel === 'auto') {
@@ -552,6 +636,13 @@ export class RpcRuntime {
       this.contextUsageActivityBaseline = 0
       this.contextUsageGeneration += 1
     }
+    if (value.type === 'extension_ui_request') this.trackExtensionDialog(value)
+    if (value.type === 'session_settled') this.settlement = 'settled'
+    if (value.type === 'prompt_result' && typeof value.sessionSettled === 'boolean') {
+      // The terminal frame of an accepted prompt carries OMP's own
+      // settlement verdict for the work it caused.
+      this.settlement = value.sessionSettled ? 'settled' : 'unsettled'
+    }
     if (value.type === 'session_action_update') {
       const actions = parseSessionActionSnapshot(value.actions)
       if (actions) this.info.sessionActions = actions
@@ -561,13 +652,14 @@ export class RpcRuntime {
       this.retryPending = false
       this.info.isStreaming = true
       this.info.isCompacting = false
+      this.markUnsettled()
       if (this.compactionEpisode !== 'none') {
-        // The compaction's end event never arrived (or was lost); close the
-        // renderer's running row before the new turn opens.
+        // A new turn proves compaction is no longer running, but says nothing
+        // about its outcome. Preserve that uncertainty until a real end arrives.
         this.compactionEpisode = 'none'
         this.clearCompactionEndFallback()
-        this.emit({ type: 'compaction_end', synthetic: true, aborted: false, willRetry: true })
-        // Follow the rolled successor file — see compaction_end in handleFrame.
+        this.emit({ type: 'compaction_sync_pending', synthetic: true })
+        // Synchronize the actual identity without assuming the file changed.
         void this.refreshState().catch(() => undefined)
       }
     } else if (value.type === 'agent_end') {
@@ -585,7 +677,9 @@ export class RpcRuntime {
       this.info.isCompacting = false
       this.bakeLiveContextUsage()
     } else if (value.type === 'compaction_start') {
+      recordSessionDiagnostic('compaction-start', this.snapshot())
       this.info.isCompacting = true
+      this.markUnsettled()
       this.lastRealCompactionEventAt = Date.now()
       this.clearCompactionEndFallback()
       // A late real start after the watchdog already announced this compaction
@@ -593,6 +687,7 @@ export class RpcRuntime {
       if (this.compactionEpisode === 'synthetic') return
       this.compactionEpisode = 'real'
     } else if (value.type === 'compaction_end') {
+      recordSessionDiagnostic('compaction-end', this.snapshot())
       this.continuationPending = value.willRetry === true
       this.info.isCompacting = false
       this.lastRealCompactionEventAt = Date.now()
@@ -609,12 +704,8 @@ export class RpcRuntime {
       void this.refreshContextUsage(this.liveContextUsage.tokens)
     } else if (value.type === 'compaction_end') {
       void this.refreshContextUsage()
-      // A compact rolls the session file forward (experimental-context
-      // rollover) and emits no path change of its own: refresh so this
-      // runtime points at the successor. A streaming runtime still parked
-      // on the sealed predecessor "actively writes" it for the sidebar's
-      // supersession scan, which shields the stale row from hiding and
-      // lists one logical conversation as two sessions.
+      // Query the engine's actual identity after compaction. It normally keeps
+      // the same file; a move or persistence conflict may legitimately change it.
       void this.refreshState().catch(() => undefined)
     }
   }
@@ -850,7 +941,7 @@ export class RpcRuntime {
     this.contextUsageRefreshRequest = null
   }
 
-  private updateFromState(raw: unknown): void {
+  private updateFromState(raw: unknown, stateEpoch = this.settlementEpoch): void {
     if (!isRecord(raw)) return
     if (typeof raw.sessionId === 'string') {
       if (this.info.sessionId !== undefined && raw.sessionId !== this.info.sessionId) {
@@ -871,12 +962,16 @@ export class RpcRuntime {
     if (typeof raw.isStreaming === 'boolean') this.info.isStreaming = raw.isStreaming
     if (typeof raw.isCompacting === 'boolean') this.info.isCompacting = raw.isCompacting
     if (typeof raw.thinkingLevel === 'string') this.info.thinkingLevel = raw.thinkingLevel
+    this.mergeSessionSettingsFromState(raw)
     const reading = this.adapter.readState(raw)
     if (reading.serviceTier) {
       this.info.serviceTier = reading.serviceTier
       this.info.fastModeAvailable = true
       this.requestedServiceTier = reading.serviceTier
     }
+    // state dump 以欄位缺席表達「未限流」;據此清除。
+    if (reading.usageLimit !== undefined) this.info.usageLimit = reading.usageLimit
+    else delete this.info.usageLimit
     if (reading.contextUsage) {
       // Harnesses that report usage inside get_state feed the same authoritative
       // path as the get_session_stats refresh.
@@ -891,6 +986,73 @@ export class RpcRuntime {
         name: typeof raw.model.name === 'string' ? raw.model.name : undefined,
       }
     } else if (raw.model === null) this.info.model = null
+    // OMP 18.13+ reports settlement authoritatively: isSettled is the same
+    // predicate as the session_settled frame and hasPendingAsyncWork names
+    // background work that can still re-wake the session. Both fields must
+    // agree before the session counts as settled; anything else (absent,
+    // partial, or failed) leaves the previous knowledge in place, and the
+    // initial unknown state blocks automatic retirement.
+    if (raw.isSettled === true && raw.hasPendingAsyncWork === false) {
+      // A get_state requested before later work was admitted must not
+      // resurrect safety with a stale settled snapshot.
+      if (stateEpoch === this.settlementEpoch) this.settlement = 'settled'
+    } else if (raw.isSettled === false || raw.hasPendingAsyncWork === true) {
+      this.settlement = 'unsettled'
+    }
+  }
+
+  /**
+   * Session 設定的 get_state 讀入(OMP 18.13 實測回報 steeringMode /
+   * followUpMode / interruptMode / autoCompactionEnabled;autoRetryEnabled 與
+   * cacheWarming 屬前瞻解析,上游開始回報即自動生效)。缺席欄位一律不清除:
+   * autoRetry / cacheWarming 的已知值來自 set_* 回聲,權威快照不回報不代表失效。
+   */
+  private mergeSessionSettingsFromState(raw: Record<string, unknown>): void {
+    const next: SessionSettingsSnapshot = { ...this.info.sessionSettings }
+    let changed = false
+    const apply = <K extends keyof SessionSettingsSnapshot>(key: K, value: SessionSettingsSnapshot[K]): void => {
+      if (value === undefined || next[key] === value) return
+      next[key] = value
+      changed = true
+    }
+    apply('autoCompaction', typeof raw.autoCompactionEnabled === 'boolean' ? raw.autoCompactionEnabled : undefined)
+    apply('autoRetry', typeof raw.autoRetryEnabled === 'boolean' ? raw.autoRetryEnabled : undefined)
+    apply('steeringMode', isSessionQueueMode(raw.steeringMode) ? raw.steeringMode : undefined)
+    apply('followUpMode', isSessionQueueMode(raw.followUpMode) ? raw.followUpMode : undefined)
+    apply('interruptMode', isSessionInterruptMode(raw.interruptMode) ? raw.interruptMode : undefined)
+    apply('cacheWarming', isSessionCacheWarmingMode(raw.cacheWarming) ? raw.cacheWarming : undefined)
+    if (changed) this.info.sessionSettings = next
+  }
+
+  /**
+   * get_state(18.13)不回報的 session 設定,在 set_* 成功後採用回聲:
+   * set_auto_retry 無 data(以送出的 enabled 為準);set_cache_warming 回傳
+   * 生效 mode(data.mode,本 session 覆寫)。RPC 成功才算數——不寫 GUI 自有檔。
+   */
+  private adoptSessionSettingEcho(command: RpcObject, response: RpcObject): void {
+    const type = String(command.type)
+    let patch: SessionSettingsSnapshot | undefined
+    if (type === 'set_auto_retry' && typeof command.enabled === 'boolean') patch = { autoRetry: command.enabled }
+    else if (type === 'set_cache_warming' && isRecord(response.data) && isSessionCacheWarmingMode(response.data.mode)) patch = { cacheWarming: response.data.mode }
+    if (patch) this.info.sessionSettings = { ...this.info.sessionSettings, ...patch }
+  }
+
+  /** Tracks dialog lifecycles by request id only; OMP's own cancel frames settle dialogs the host never answered. */
+  private trackExtensionDialog(value: RpcObject): void {
+    if (value.method === 'cancel') {
+      if (typeof value.targetId === 'string' && value.targetId) this.pendingExtensionDialogs.delete(value.targetId)
+      return
+    }
+    if (typeof value.method === 'string' && DIALOG_REQUEST_METHODS.has(value.method)
+      && typeof value.id === 'string' && value.id) {
+      this.pendingExtensionDialogs.add(value.id)
+    }
+  }
+
+  /** Local unsettled knowledge outranks any get_state response already in flight. */
+  private markUnsettled(): void {
+    this.settlementEpoch += 1
+    this.settlement = 'unsettled'
   }
 
   private emit(event: RpcObject): void { this.eventForwarder.emit(event) }

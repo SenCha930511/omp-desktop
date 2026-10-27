@@ -86,15 +86,13 @@ const api: DesktopApi = {
   agent: {
     start: (options) => invoke(IPC_CHANNELS.agent.start, options),
     command: (runtimeId, command) => invoke(IPC_CHANNELS.agent.command, runtimeId, command),
+    refreshState: (runtimeId) => invoke(IPC_CHANNELS.agent.refreshState, runtimeId),
     stop: (runtimeId) => invoke(IPC_CHANNELS.agent.stop, runtimeId),
     list: () => invoke(IPC_CHANNELS.agent.list),
     onEvent: (callback) => subscribe<PrimeEventEnvelope>(IPC_CHANNELS.agent.onEvent, callback),
   },
   providers: {
     catalog: (force, harness) => invoke(IPC_CHANNELS.providers.catalog, force, harness),
-    setEnabled: (providerId, enabled, harness) => invoke(IPC_CHANNELS.providers.setEnabled, providerId, enabled, harness),
-    setDisabled: (providerIds, harness) => invoke(IPC_CHANNELS.providers.setDisabled, providerIds, harness),
-    setModelEnabled: (modelKey, enabled, harness) => invoke(IPC_CHANNELS.providers.setModelEnabled, modelKey, enabled, harness),
   },
   voice: {
     credentialStatus: () => invoke(IPC_CHANNELS.voice.credentialStatus),

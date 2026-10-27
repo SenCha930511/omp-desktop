@@ -108,13 +108,12 @@ describe('OMP model catalog service', () => {
     expect(anthropic.authLabel).toBe('Credentials managed by the omp CLI')
     expect(anthropic.modelCount).toBe(2)
     expect(anthropic.availableModelCount).toBe(2)
-    expect(anthropic.enabled).toBe(true)
     const cached = await service.catalog()
     expect(cached.models).toEqual(catalog.models)
     expect(cached.providers).toEqual(catalog.providers)
   })
 
-  it('resolves availability, capabilities, and desktop provider enablement', async () => {
+  it('resolves availability and capabilities', async () => {
     const service = new OmpModelCatalogService(fakeOmpWithCatalog(sampleCatalog))
 
     const model = await service.requireAvailableModel('openai-codex/gpt-5.6-luna')
@@ -122,12 +121,6 @@ describe('OMP model catalog service', () => {
     expect(model.id).toBe('gpt-5.6-luna')
 
     await expect(service.requireAvailableModel('nope/none')).rejects.toThrow(/not found in the OMP catalog/)
-    await expect(service.requireAvailableModel('anthropic/claude-fable-5', new Set(['anthropic']))).rejects.toThrow(/disabled/)
-    await expect(service.requireAvailableModel('openai-codex/gpt-5.6-luna', new Set(), new Set(['openai-codex/gpt-5.6-luna']))).rejects.toThrow(/disabled/)
-    const disabledView = await service.catalog(false, new Set(['anthropic']))
-    expect(disabledView.providers.find((provider) => provider.id === 'anthropic')?.enabled).toBe(false)
-    expect(disabledView.providers.find((provider) => provider.id === 'openai-codex')?.enabled).toBe(true)
-    expect((await service.catalog(false, new Set(), new Set(['openai-codex/gpt-5.6-luna']))).models.find((candidate) => candidate.key === 'openai-codex/gpt-5.6-luna')?.enabled).toBe(false)
 
     expect(await service.capabilities('anthropic', 'claude-fable-5')).toMatchObject({ key: 'anthropic/claude-fable-5' })
     expect(await service.capabilities('anthropic', undefined)).toBeUndefined()
@@ -192,12 +185,11 @@ setTimeout(() => { process.stdout.write(${JSON.stringify(JSON.stringify(sampleCa
     const [first, second, third] = await Promise.all([
       service.catalog(true),
       service.catalog(true),
-      service.catalog(true, new Set(['anthropic'])),
+      service.catalog(true),
     ])
     expect(runs()).toBe(1)
     expect(first.models.length).toBe(second.models.length)
-    expect(third.providers.find((provider) => provider.id === 'anthropic')?.enabled).toBe(false)
-    expect(first.providers.find((provider) => provider.id === 'anthropic')?.enabled).toBe(true)
+    expect(third.models.length).toBe(first.models.length)
 
     // Within the TTL an unforced call serves the cache without a new spawn.
     await service.catalog()
@@ -319,19 +311,18 @@ process.stdout.write(${JSON.stringify(JSON.stringify({ models: overflowModels })
     expect(await service.capabilities('provider-256', 'model')).toBeUndefined()
   })
 
-  it('caps model-only overflow while keeping visibility and launch validation aligned', async () => {
+  it('caps model-only overflow while keeping the catalog and launch validation aligned', async () => {
     const models = Array.from({ length: 5_001 }, (_, index) => ompModel('provider-000', `model-${index}`))
     const service = new OmpModelCatalogService(fakeOmpWithCatalog({ models }))
-    const catalog = await service.catalog(true, new Set(), new Set(['provider-000/model-0']))
+    const catalog = await service.catalog(true)
 
     expect(catalog.providers).toHaveLength(1)
     expect(catalog.models).toHaveLength(5_000)
-    expect(catalog.models[0]?.enabled).toBe(false)
     expect(catalog.warning).toMatch(/5,001 valid unique models.*retained 5,000.*1 omitted/)
     expect(catalog.warning).toContain('1 omitted by catalog limits: 0 with omitted providers and 1 beyond the model limit')
     expectRelationalIntegrity(catalog)
     await expect(service.requireAvailableModel('provider-000/model-5000')).rejects.toThrow(/not found/)
-    await expect(service.requireAvailableModel('provider-000/model-0', new Set(), new Set(['provider-000/model-0']))).rejects.toThrow(/disabled/)
+    await expect(service.requireAvailableModel('provider-000/model-0')).resolves.toMatchObject({ key: 'provider-000/model-0' })
   })
 
   it('applies simultaneous model and provider caps as one relational operation', async () => {

@@ -3,6 +3,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto'
 import type { AddressInfo } from 'node:net'
 import type { HarnessId } from '../../../src/types/api'
 import { requireRecord, requireString } from '../validation'
+import { canonicalSessionPath } from '../session-paths'
 
 const MAX_BODY_BYTES = 1_100_000
 const TOKEN_TTL_MS = 24 * 60 * 60_000
@@ -95,6 +96,27 @@ export abstract class CapabilityBridge {
 
   /** Subclasses may release token-keyed bindings when their base claim is removed. */
   protected onClaimRevoked(_claim: CapabilityClaim): void {}
+
+  /**
+   * 同一 session identity 只換檔案(path-only move,sessionId 不變)時,把既有
+   * claim 的 scope 顯式挪到新檔。與 fill-only 的初次繫結不同,這是由 manager
+   * 的 identity 觀測點明確授意的改寫:expectedOldPath 必須與目前
+   * claim.sessionPath(規範化後)一致才改寫,否則視為非本次觀測的路由,no-op
+   * 回 false。token 絕不換發、claim 也不會被撤銷。
+   */
+  rebindSession(token: string | undefined, expectedOldPath: string | undefined, newPath: string | undefined): boolean {
+    if (!token || !expectedOldPath || !newPath) return false
+    const claim = this.claims.get(token)
+    if (!claim?.sessionPath) return false
+    if (canonicalSessionPath(claim.sessionPath) !== canonicalSessionPath(expectedOldPath)) return false
+    const previousPath = claim.sessionPath
+    claim.sessionPath = newPath
+    this.onSessionRebound(claim, previousPath, newPath)
+    return true
+  }
+
+  /** Subclasses may release cached scope state resolved from the previous session path. */
+  protected onSessionRebound(_claim: CapabilityClaim, _previousPath: string, _newPath: string): void {}
 
   async stop(): Promise<void> {
     for (const token of [...this.claims.keys()]) this.revoke(token)

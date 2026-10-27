@@ -6,8 +6,10 @@ import { boundText } from '@/lib/render-bounds'
 import type { MessagePart, TranscriptMessage } from '@/types/api'
 import { MarkdownText } from '../MarkdownText'
 import { ReasoningDisclosure, ReasoningExpandedContext } from '../ReasoningDisclosure'
+import { ImagePart, UnsupportedAttachment } from './attachment-part'
 import { SyntaxText } from './syntax'
 import { SearchRevealContext } from '../TranscriptSearch'
+import { CompactionSyncRetry } from './compaction-sync-retry'
 
 
 function timestamp(value?: string | number): number | undefined {
@@ -231,6 +233,12 @@ const ToolPart = memo(function ToolPart({ part, next, streaming }: { part: Extra
   )
 })
 
+/** 工具輸出的圖片 part（alt 走 i18n，與使用者附件區分來源）。 */
+function ToolImagePart({ part }: { part: Extract<MessagePart, { type: 'image' }> }) {
+  const { t } = useI18n()
+  return <ImagePart part={part} alt={t('transcript.image.toolOutput')} />
+}
+
 function StandaloneToolResult({ part }: { part: Extract<MessagePart, { type: 'toolResult' }> }) {
   return (
     <div className={`activity-line activity-line--result ${part.isError ? 'is-error' : ''}`}>
@@ -272,9 +280,11 @@ function CompactionPart({ part }: { part: Extract<MessagePart, { type: 'compacti
   const label =
     part.status === 'running'
       ? t('transcript.compaction.running')
-      : part.status === 'done'
-        ? part.outcome === 'skipped' ? t('transcript.compaction.skipped') : t('transcript.compaction.done')
-        : part.status === 'cancelled' ? t('transcript.compaction.cancelled') : t('transcript.compaction.failed')
+      : part.status === 'sync_pending'
+        ? t('transcript.compaction.syncPending')
+        : part.status === 'done'
+          ? part.outcome === 'skipped' ? t('transcript.compaction.skipped') : t('transcript.compaction.done')
+          : part.status === 'cancelled' ? t('transcript.compaction.cancelled') : t('transcript.compaction.failed')
   const tokenLabel = part.tokensBefore === undefined
     ? ''
     : part.tokensAfter !== undefined
@@ -290,6 +300,7 @@ function CompactionPart({ part }: { part: Extract<MessagePart, { type: 'compacti
       <span className="compaction-divider__label">
         {part.status === 'running' ? <LoaderCircle className="spin" size={11} /> : <Sparkles size={11} />}
         {label}{tokenLabel ? ` · ${tokenLabel}` : ''}
+        {part.status === 'sync_pending' ? <CompactionSyncRetry /> : null}
       </span>
       <span className="compaction-divider__rule" aria-hidden="true" />
     </div>
@@ -335,6 +346,9 @@ export function WorkTimeline({ parts, showReasoning, showTools, streaming = fals
         }
         if (part.type === 'toolResult') return showTools ? <StandaloneToolResult key={key} part={part} /> : null
         if (part.type === 'agentMessage') return <AgentActivityPart key={key} part={part} />
+        // 工具結果的圖片輸出與未知附件保持可見；先前無分支會回 null 直接消失。
+        if (part.type === 'image') return showTools ? <ToolImagePart key={key} part={part} /> : null
+        if (part.type === 'unsupported') return <UnsupportedAttachment key={key} contentType={part.contentType} data={part.data} />
         if (part.type === 'text') {
           // Punctuation-only chatter (a stray "·" or "…" the model emits
           // between tool calls) is a stray glyph, not narration — drop it.
@@ -357,7 +371,7 @@ function liveWorkStatus(parts: MessagePart[], showReasoning: boolean, showTools:
     const part = parts[index]
     const next = parts[index + 1]
     if (part.type === 'toolCall' && (next?.type !== 'toolResult' || next.streaming)) return 'Working'
-    if (status || part.type === 'image') continue
+    if (status || part.type === 'image' || part.type === 'unsupported') continue
     if (part.type === 'thinking') status = showReasoning ? 'Thinking' : undefined
     else if (showTools || (part.type !== 'toolCall' && part.type !== 'toolResult')) status = 'Working'
   }

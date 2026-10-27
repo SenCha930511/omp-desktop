@@ -359,6 +359,37 @@ export class AgentBrowserService {
     return true
   }
 
+  /**
+   * Path-only move(同一 session identity 只換檔案,sessionId 不變)時,把註冊表裡
+   * 屬於舊 sessionKey 的分頁、active 指標與 preview 所有權整組移到新 key。分頁
+   * 生命周期不重建,guest 也不會重新掛載;舊 key 若沒有任何擁有物則 no-op 回 false。
+   */
+  rekeySession(oldKeyValue: string, newKeyValue: string): boolean {
+    if (this.closed) return false
+    const oldKey = canonicalSessionPath(oldKeyValue)
+    const newKey = canonicalSessionPath(newKeyValue)
+    if (oldKey === newKey) return false
+    let moved = false
+    for (const tab of this.tabs.values()) {
+      if (tab.sessionKey !== oldKey) continue
+      tab.sessionKey = newKey
+      moved = true
+    }
+    const activeTabId = this.activeBySession.get(oldKey)
+    if (activeTabId !== undefined) {
+      this.activeBySession.delete(oldKey)
+      this.activeBySession.set(newKey, activeTabId)
+      moved = true
+    }
+    if (this.previewTab?.sessionKey === oldKey) {
+      this.previewTab.sessionKey = newKey
+      moved = true
+    }
+    if (!moved) return false
+    this.push()
+    return true
+  }
+
   // ---- agent-facing API (always scoped to a session key) -------------------
 
   async openTab(sessionKey: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {

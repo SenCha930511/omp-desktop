@@ -1,5 +1,5 @@
 import { type KeyboardEvent, useEffect, useRef, useState } from 'react'
-import type { ExtensionUiQuestion, ExtensionUiRequest } from '@/lib/extension-ui'
+import type { ExtensionUiAskAnswer, ExtensionUiAskQuestion, ExtensionUiQuestion, ExtensionUiRequest } from '@/lib/extension-ui'
 import { useI18n } from '@/lib/i18n'
 import { shortcutLabel } from '@/lib/platform-shortcuts'
 import { commandOutputText } from '@/lib/command-output'
@@ -7,7 +7,31 @@ import { Modal } from './ui'
 
 const OTHER_OPTION = 'Other (type your own answer)'
 
-export type ExtensionUiResponse = { cancelled: true } | { value: string } | { confirmed: boolean } | { values: Record<string, string> }
+// Upstream approval prompts put the whole multi-line prompt in the title.
+// Beyond this size the header keeps a one-line summary and the complete text
+// moves into a bounded scrollable region so nothing is truncated.
+const LONG_CONTENT_THRESHOLD = 240
+const HEADER_SUMMARY_LIMIT = 120
+
+function isLongContent(text: string): boolean {
+  return text.length > LONG_CONTENT_THRESHOLD || text.includes('\n')
+}
+
+function summarizeContent(text: string): string {
+  const firstLine = text.split('\n').find((line) => line.trim().length > 0) ?? text
+  const summary = firstLine.trim().slice(0, HEADER_SUMMARY_LIMIT).trimEnd()
+  return firstLine.trim().length > HEADER_SUMMARY_LIMIT ? `${summary}…` : summary
+}
+
+function LongContent({ text }: { text: string }) {
+  return (
+    <div className="extension-question__long">
+      <p className="extension-question__long-text">{text}</p>
+    </div>
+  )
+}
+
+export type ExtensionUiResponse = { cancelled: true } | { value: string } | { confirmed: boolean } | { values: Record<string, string> } | { answers: ExtensionUiAskAnswer[] }
 
 interface ExtensionUiModalProps {
   request: ExtensionUiRequest
@@ -45,6 +69,9 @@ export function ExtensionUiModal({ request, onRespond, platform = 'darwin' }: Ex
   const [remainingMs, setRemainingMs] = useState<number | undefined>(questionnaireTimeout)
   const contextInputRefs = useRef<Record<string, HTMLInputElement | null>>({})
   const questionnaireRef = useRef<HTMLDivElement | null>(null)
+  const [askSelection, setAskSelection] = useState<Record<string, string[]>>({})
+  const [askCustom, setAskCustom] = useState<Record<string, string>>({})
+  const [openPreviews, setOpenPreviews] = useState<Record<string, boolean>>({})
 
   useEffect(() => {
     setValue(prefill ?? '')
@@ -69,6 +96,13 @@ export function ExtensionUiModal({ request, onRespond, platform = 'darwin' }: Ex
     setContexts({})
   }, [request.id])
 
+
+  useEffect(() => {
+    if (request.method !== 'ask') return
+    setAskSelection({})
+    setAskCustom({})
+    setOpenPreviews({})
+  }, [request.id, request.method])
   useEffect(() => {
     if (request.method !== 'questionnaire' || !request.complete) return
     const container = questionnaireRef.current
@@ -92,6 +126,47 @@ export function ExtensionUiModal({ request, onRespond, platform = 'darwin' }: Ex
   const cancel = () => onRespond({ cancelled: true })
 
   const questionnaire = request.method === 'questionnaire' ? request : undefined
+
+  const ask = request.method === 'ask' ? request : undefined
+
+  const toggleAskOption = (question: ExtensionUiAskQuestion, label: string) => {
+    setAskSelection((current) => {
+      const selectedOptions = current[question.id] ?? []
+      if (question.multi) {
+        return { ...current, [question.id]: selectedOptions.includes(label) ? selectedOptions.filter((item) => item !== label) : [...selectedOptions, label] }
+      }
+      return { ...current, [question.id]: selectedOptions.length === 1 && selectedOptions[0] === label ? [] : [label] }
+    })
+    if (!question.multi) setAskCustom((current) => ({ ...current, [question.id]: '' }))
+  }
+
+  const setAskCustomValue = (question: ExtensionUiAskQuestion, text: string) => {
+    setAskCustom((current) => ({ ...current, [question.id]: text }))
+    // A single-select answer is exactly one of an option or custom text.
+    if (!question.multi) setAskSelection((current) => ({ ...current, [question.id]: [] }))
+  }
+
+  const askQuestionAnswered = (question: ExtensionUiAskQuestion): boolean => {
+    if (question.multi) return true
+    const selectedOptions = askSelection[question.id] ?? []
+    if (selectedOptions.length === 1) return true
+    return Boolean((askCustom[question.id] ?? '').trim())
+  }
+
+  const askAllAnswered = Boolean(ask && ask.questions.length > 0 && ask.questions.every(askQuestionAnswered))
+
+  const submitAsk = () => {
+    if (!ask || !askAllAnswered) return
+    const answers: ExtensionUiAskAnswer[] = ask.questions.map((question) => {
+      const customInput = (askCustom[question.id] ?? '').trim()
+      return {
+        id: question.id,
+        selectedOptions: askSelection[question.id] ?? [],
+        ...(customInput ? { customInput } : {}),
+      }
+    })
+    onRespond({ answers })
+  }
   const activeQuestion = questionnaire && questionIndex < questionnaire.questions.length ? questionnaire.questions[questionIndex] : undefined
   const activeSelected = activeQuestion ? (selectedByQuestion[activeQuestion.id] ?? 0) : 0
   const allAnswered = Boolean(questionnaire?.complete && questionnaire.questions.length > 0 && questionnaire.questions.every((question) => answeredByQuestion[question.id]))
@@ -188,9 +263,14 @@ export function ExtensionUiModal({ request, onRespond, platform = 'darwin' }: Ex
     // native key handling and typing context happens in the context field.
   }
 
+  const plainTitle = commandOutputText(request.title)
+  const titleIsLong = isLongContent(plainTitle)
+  const plainMessage = request.method === 'confirm' ? commandOutputText(request.message) : ''
+  const activeQuestionTitle = activeQuestion ? commandOutputText(activeQuestion.title) : ''
+
   return (
     <Modal
-      title={commandOutputText(request.title)}
+      title={titleIsLong ? summarizeContent(plainTitle) : plainTitle}
       onClose={cancel}
       footer={
         <>
@@ -212,9 +292,15 @@ export function ExtensionUiModal({ request, onRespond, platform = 'darwin' }: Ex
               {t('extensionUi.submitAnswers')}
             </button>
           ) : null}
+          {request.method === 'ask' ? (
+            <button type="button" className="button button--primary" disabled={!askAllAnswered} onClick={submitAsk}>
+              {t('extensionUi.submitAnswers')}
+            </button>
+          ) : null}
         </>
       }
     >
+      {titleIsLong ? <LongContent text={plainTitle} /> : null}
       {request.method === 'questionnaire' ? (
         <div ref={questionnaireRef} className="extension-questionnaire" onKeyDown={handleQuestionnaireKeyDown}>
           {!request.complete ? <p className="modal-intro">{t('extensionUi.preparing')}</p> : null}
@@ -250,7 +336,7 @@ export function ExtensionUiModal({ request, onRespond, platform = 'darwin' }: Ex
               {activeQuestion ? (
                 <div className="extension-questionnaire__question">
                   <p className="modal-intro">{t('extensionUi.questionOf', { index: questionIndex + 1, total: request.questions.length })}</p>
-                  <h3>{commandOutputText(activeQuestion.title)}</h3>
+                  {isLongContent(activeQuestionTitle) ? <LongContent text={activeQuestionTitle} /> : <h3>{activeQuestionTitle}</h3>}
                   <div className="extension-question__options" role="listbox" aria-label={commandOutputText(activeQuestion.title)}>
                     {activeQuestion.options.map((option, index) => {
                       const isSelected = activeSelected === index
@@ -301,27 +387,90 @@ export function ExtensionUiModal({ request, onRespond, platform = 'darwin' }: Ex
         <div className="extension-question">
           <p className="modal-intro">{t('extensionUi.choose')}</p>
           <div className="extension-question__options" role="listbox" aria-label={commandOutputText(request.title)}>
-            {request.options.map((option, index) => (
-              <button
-                type="button"
-                role="option"
-                aria-selected={selected === index}
-                className={selected === index ? 'is-selected' : ''}
-                key={`${option}-${index}`}
-                onClick={() => {
-                  setSelected(index)
-                  onRespond({ value: option })
-                }}
-                onFocus={() => setSelected(index)}
-              >
-                <span className="extension-question__option-index">{index + 1}</span>
-                <span>{commandOutputText(option)}</span>
-              </button>
-            ))}
+            {request.options.map((option, index) => {
+              const description = request.optionDetails?.[index]?.description
+              return (
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={selected === index}
+                  className={selected === index ? 'is-selected' : ''}
+                  key={`${option}-${index}`}
+                  onClick={() => {
+                    setSelected(index)
+                    onRespond({ value: option })
+                  }}
+                  onFocus={() => setSelected(index)}
+                >
+                  <span className="extension-question__option-index">{index + 1}</span>
+                  <span className="extension-question__option-body">
+                    <span>{commandOutputText(option)}</span>
+                    {description ? <small className="extension-question__option-detail">{commandOutputText(description)}</small> : null}
+                  </span>
+                </button>
+              )
+            })}
           </div>
         </div>
       ) : null}
-      {request.method === 'confirm' ? <p className="modal-intro extension-question__message">{commandOutputText(request.message)}</p> : null}
+      {ask ? (
+        <div className="extension-ask">
+          {ask.questions.map((question) => {
+            const plainQuestion = commandOutputText(question.question)
+            const selectedOptions = askSelection[question.id] ?? []
+            return (
+              <div className="extension-ask__question" key={question.id}>
+                {question.header ? <p className="extension-ask__header">{commandOutputText(question.header)}</p> : null}
+                {isLongContent(plainQuestion) ? <LongContent text={plainQuestion} /> : <h3>{plainQuestion}</h3>}
+                <div className="extension-question__options" role="listbox" aria-multiselectable={question.multi === true} aria-label={plainQuestion}>
+                  {question.options.map((option, index) => {
+                    const isSelected = selectedOptions.includes(option.label)
+                    const previewKey = `${question.id}:${option.label}`
+                    return (
+                      <div className="extension-ask__option-row" key={`${option.label}-${index}`}>
+                        <button
+                          type="button"
+                          role="option"
+                          aria-selected={isSelected}
+                          className={isSelected ? 'is-selected' : ''}
+                          onClick={() => toggleAskOption(question, option.label)}
+                        >
+                          <span className="extension-ask__option-marker">{question.multi ? (isSelected ? '☑' : '☐') : isSelected ? '●' : '○'}</span>
+                          <span className="extension-question__option-body">
+                            <span>
+                              {commandOutputText(option.label)}
+                              {question.recommended === index ? <em className="extension-ask__recommended">{t('extensionUi.recommended')}</em> : null}
+                            </span>
+                            {option.description ? <small className="extension-question__option-detail">{commandOutputText(option.description)}</small> : null}
+                          </span>
+                        </button>
+                        {option.preview ? (
+                          <div className="extension-ask__preview">
+                            <button type="button" className="extension-ask__preview-toggle" onClick={() => setOpenPreviews((current) => ({ ...current, [previewKey]: !current[previewKey] }))}>
+                              {openPreviews[previewKey] ? t('extensionUi.hidePreview') : t('extensionUi.preview')}
+                            </button>
+                            {openPreviews[previewKey] ? <pre className="extension-ask__preview-text">{commandOutputText(option.preview)}</pre> : null}
+                          </div>
+                        ) : null}
+                      </div>
+                    )
+                  })}
+                </div>
+                <label className="field extension-ask__custom">
+                  <span>{t('extensionUi.customAnswer')}</span>
+                  <input
+                    value={askCustom[question.id] ?? ''}
+                    onChange={(event) => setAskCustomValue(question, event.target.value)}
+                  />
+                </label>
+              </div>
+            )
+          })}
+        </div>
+      ) : null}
+      {request.method === 'confirm' ? (
+        isLongContent(plainMessage) ? <LongContent text={plainMessage} /> : <p className="modal-intro extension-question__message">{plainMessage}</p>
+      ) : null}
       {request.method === 'input' ? (
         <label className="field extension-question__field">
           <span>{t('extensionUi.response')}</span>

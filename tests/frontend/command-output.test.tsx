@@ -57,6 +57,32 @@ it('lets the history chip be cleared entirely so nothing lingers', () => {
   } finally { act(() => root.unmount()) }
 })
 
+it('offers a stop button for abortable commands while they run', () => {
+  const host = document.createElement('div')
+  const root = createRoot(host)
+  let output: CommandOutputView
+  let aborted = 0
+  function Harness() {
+    output = useCommandOutput(1)
+    return <I18nProvider preference="zh-TW"><CommandOutputPanel text={output.text} command={output.command} status={output.status} onAbort={output.onAbort} onClose={output.dismiss} /></I18nProvider>
+  }
+  try {
+    act(() => root.render(<Harness />))
+    // 無 onAbort 的指令:不顯示停止鈕。
+    act(() => output.begin('/context'))
+    expect(host.querySelector('[aria-label="停止指令"]')).toBeNull()
+    act(() => output.finish())
+    // 帶 onAbort 的使用者 bash:執行中顯示停止鈕,點擊觸發回呼。
+    act(() => output.begin('!sleep 999', () => { aborted += 1 }))
+    const stop = host.querySelector<HTMLButtonElement>('[aria-label="停止指令"]')
+    expect(stop).not.toBeNull()
+    act(() => stop!.click())
+    expect(aborted).toBe(1)
+    act(() => output.finish('[cancelled]'))
+    expect(host.querySelector('[aria-label="停止指令"]')).toBeNull()
+  } finally { act(() => root.unmount()) }
+})
+
 it('shows localized, dismissible command results and isolates workspaces', () => {
   const host = document.createElement('div')
   const root = createRoot(host)

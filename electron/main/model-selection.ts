@@ -78,8 +78,7 @@ export function resolveReasoning(value: string, available: readonly PrimeThinkin
   })[0]
 }
 
-export async function availableModels(catalog: ModelCatalogProvider, disabledProviders: ReadonlySet<string>, disabledModels: ReadonlySet<string> = new Set()): Promise<PrimeModelDescriptor[]> {
-  const snapshot = await catalog.catalog(false, disabledProviders, disabledModels)
-  const enabledProviders = new Set(snapshot.providers.filter((provider) => provider.enabled).map((provider) => provider.id))
-  return snapshot.models.filter((model) => model.available && model.enabled !== false && enabledProviders.has(model.provider))
+export async function availableModels(catalog: ModelCatalogProvider): Promise<PrimeModelDescriptor[]> {
+  const snapshot = await catalog.catalog(false)
+  return snapshot.models.filter((model) => model.available)
 }

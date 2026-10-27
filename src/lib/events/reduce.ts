@@ -1,10 +1,13 @@
 import { HARNESS_AGENT_NAMES } from '@/lib/harness'
 import { EVENT_REPLAY_MAX_BYTES, EVENT_REPLAY_MAX_EVENTS, eventPayloadBytes } from '@/lib/event-buffer'
+import { formatGoalEventUpdateText, parseGoalModeState, parseGoalSnapshot } from '@/lib/goal-rpc'
+import { translate } from '@/lib/i18n'
 import type { MessagePart, QueuedPrompt, TranscriptMessage } from '@/types/api'
 import { applyCompactionEvent, isCompactionEvent } from './compaction'
 import { nextTranscriptId, withPartId } from './ids'
+import { customMessageShape, supplementaryPartsFromResult } from './message-content'
 import { fallbackModelFromRecord, fallbackNoticeText } from './model-fallback'
-import { agentMessagePart, record, resultText, string } from './parse'
+import { record, resultText, string } from './parse'
 
 export interface PrimeEventReplayStats {
   messageScans: number
@@ -24,6 +27,44 @@ interface PartDraft {
   tail?: PartNode
   length: number
   firstToolById: Map<string | undefined, PartNode>
+}
+
+export interface AgentNotice {
+  level: 'info' | 'warning' | 'error'
+  message: string
+  source?: string
+}
+
+/** Notice row kinds: the upstream `level` picks the kind so severity chrome stays i18n-side. */
+export type AgentNoticeKind = 'agent-notice' | 'agent-notice-warning' | 'agent-notice-error'
+
+/**
+ * Parses the upstream `notice` agent event (OMP ≥18.12). Severity rides `level`
+ * ('info' | 'warning' | 'error') and origin rides the optional `source`; any
+ * other shape is malformed and yields undefined rather than a guessed level.
+ */
+export function agentNoticeFromEvent(raw: Record<string, unknown>): AgentNotice | undefined {
+  if (string(raw.type) !== 'notice') return undefined
+  const message = string(raw.message)
+  const level = string(raw.level)
+  if (!message) return undefined
+  if (level !== 'info' && level !== 'warning' && level !== 'error') return undefined
+  const source = string(raw.source)
+  return source ? { level, message, source } : { level, message }
+}
+
+/** Display body: source and message are raw agent data, not translatable chrome. */
+export function agentNoticeBody(notice: AgentNotice): string {
+  return notice.source ? `${notice.source}: ${notice.message}` : notice.message
+}
+
+/**
+ * 上游 config_warnings_changed(OMP ≥18.9 agent-session-events):設定警告
+ * 集合改變(reload、.broken-* 隔離、fallbackChains revalidate 後)。事件沒有
+ * payload,警告細節由上游留在 session;GUI 只用它觸發提示與功能目錄重整。
+ */
+export function isConfigWarningsChangedEvent(raw: Record<string, unknown>): boolean {
+  return raw.type === 'config_warnings_changed'
 }
 
 /** Applies a frame batch with one transcript scan and one scan of each drafted part list. */
@@ -294,6 +335,28 @@ export function replayPrimeEvents(
       rebase(applyCompactionEvent(next, raw) ?? next)
       continue
     }
+    if (type === 'goal_updated') {
+      // 上游 GoalRuntime 的目標狀態事件(rpc 模式原樣沿用給 RPC 主機)。
+      // GUI 主動下的操作已由命令結果列呈現,create/resume 另有 goal_context
+      // 列;這裡只承接「沒有其他顯示管道」的終態與退出(預算耗盡、完成、
+      // 被捨棄、模式結束),其餘轉移由 formatGoalEventUpdateText 回 undefined 略過。
+      const goalValue = raw.goal === null ? undefined : raw.goal
+      const stateValue = raw.state === null ? undefined : raw.state
+      const goal = parseGoalSnapshot(goalValue)
+      const state = parseGoalModeState(stateValue)
+      // 異形的 goal/state 是造型不符而非「目標已結束」,略過不猜。
+      if ((goalValue !== undefined && !goal) || (stateValue !== undefined && !state)) continue
+      const text = formatGoalEventUpdateText(goal, state, (key, values) => translate('en', key, values))
+      if (!text) continue
+      // replay buffer 可能重播同一事件,以目標+狀態+時戳去重;目標與狀態
+      // 皆空的模式退出只擋住緊鄰的重複列。
+      const markerId = goal ? `goal-update-${goal.id}-${goal.status}-${goal.updatedAt}` : 'goal-update-ended'
+      if (next.some((message) => message.id === markerId) || next.at(-1)?.id === markerId) continue
+      finalizeStreaming(Date.now(), false)
+      copyTranscript()
+      next.push({ id: markerId, role: 'system', timestamp: Date.now(), parts: [{ type: 'text', text }] })
+      continue
+    }
     if (type === 'agent_start' || type === 'turn_start') {
       // Gate on a streaming *assistant* to match the sequential reducer: a
       // compaction system row carried over from a previous batch may still be
@@ -351,16 +414,55 @@ export function replayPrimeEvents(
       const draft = draftParts(index)
       const call = draft.firstToolById.get(id)
       const resultPart: MessagePart = { type: 'toolResult', name, text: resultText(raw.result), isError: raw.isError === true }
-      if (call) setToolResult(draft, call, resultPart)
-      else {
+      // 圖片與無 GUI adapter 的非文字輸出以資料視圖緊接在 toolResult 之後
+      // 保留（GAP 2 + 階段 6.2）；持久化讀取時同樣保留這些 part，
+      // reload／fork 前後都不靜默消失。無補充內容時為共用凍結空陣列。
+      const supplementary = supplementaryPartsFromResult(raw.result)
+      if (call) {
+        setToolResult(draft, call, resultPart)
+        let anchor = call.next
+        for (const part of supplementary) {
+          anchor = anchor ? insertAfter(draft, anchor, withPartId(part)) : appendNode(draft, withPartId(part))
+        }
+      } else {
         appendNode(draft, withPartId({ type: 'toolCall', id, name }))
         appendNode(draft, withPartId(resultPart))
+        for (const part of supplementary) appendNode(draft, withPartId(part))
       }
       continue
     }
     if (type === 'custom_message') {
-      const part = agentMessagePart(raw)
-      if (part) appendNode(draftParts(assistantIndex()), withPartId(part))
+      // 持久化只收 display:true 的 custom_message；live 比照略過明確標示不顯示者，
+      // 否則 session_note 之類內部紀錄會 live 可見、reload 後消失。
+      if (raw.display === false) continue
+      // 與持久化共用 customMessageShape：goal_context→goal 列、agent_message→
+      // agentMessage part、其餘 display:true 的 customType→具名活動 part（GAP 1）。
+      const shape = customMessageShape(raw)
+      if (!shape) continue
+      const tailAssistantActive = lastStreamingAssistant >= 0 || next.at(-1)?.role === 'assistant'
+      if (shape.kind !== 'goal' && tailAssistantActive) {
+        const draft = draftParts(assistantIndex())
+        if (shape.kind === 'activity') {
+          appendNode(draft, withPartId({ type: 'toolCall', name: shape.name }))
+          appendNode(draft, withPartId({ type: 'toolResult', name: shape.name, text: shape.text }))
+        } else {
+          appendNode(draft, withPartId({ type: 'agentMessage', text: shape.text, agentName: shape.agentName }))
+        }
+        continue
+      }
+      // 無活動助理回合，或目標摘要：比照持久化語意產生獨立列。
+      finalizeStreaming(Date.now(), false)
+      copyTranscript()
+      const timestamp = Date.now()
+      next.push({
+        id: nextTranscriptId(shape.kind === 'agentMessage' ? 'agent' : shape.kind === 'goal' ? 'goal' : 'tool'),
+        role: shape.kind === 'agentMessage' ? 'agent' : shape.kind === 'goal' ? 'goal' : 'tool',
+        timestamp,
+        agentName: shape.kind === 'agentMessage' ? shape.agentName : undefined,
+        parts: shape.kind !== 'activity'
+          ? [withPartId({ type: 'text', text: shape.text })]
+          : [withPartId({ type: 'toolCall', name: shape.name }), withPartId({ type: 'toolResult', name: shape.name, text: shape.text })],
+      })
       continue
     }
     if (type === 'agent_end') {
@@ -383,6 +485,24 @@ export function replayPrimeEvents(
       finalizeStreaming(timestamp, false)
       copyTranscript()
       next.push({ id: nextTranscriptId('fallback'), role: 'system', timestamp, parts: [withPartId({ type: 'text', text })] })
+      continue
+    }
+    if (type === 'notice') {
+      const notice = agentNoticeFromEvent(raw)
+      if (!notice) continue
+      const kind: AgentNoticeKind = notice.level === 'error'
+        ? 'agent-notice-error'
+        : notice.level === 'warning' ? 'agent-notice-warning' : 'agent-notice'
+      const text = agentNoticeBody(notice)
+      const last = next.at(-1)
+      if (last?.role === 'system' && last.kind === kind && last.parts.length === 1 && last.parts[0]?.type === 'text' && last.parts[0].text === text) continue
+      const timestamp = Date.now()
+      // Like queued rows and fallback notices, the row lands below the
+      // streamed segment; later deltas open a fresh assistant segment so the
+      // transcript keeps chronological order without ending the turn.
+      finalizeStreaming(timestamp, false)
+      copyTranscript()
+      next.push({ id: nextTranscriptId('notice'), role: 'system', kind, timestamp, parts: [withPartId({ type: 'text', text })] })
       continue
     }
     if (type === 'extension_error' || type === 'error' || type === 'transport_error') {

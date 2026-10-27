@@ -2,7 +2,7 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { LOCAL_MCP_STATE_UNAVAILABLE_DETAIL, NETWORK_MCP_UNAVAILABLE_DETAIL } from '../../src/lib/mcp-policy'
+import { EXTERNALLY_MANAGED_MCP_DETAIL, LOCAL_MCP_STATE_UNAVAILABLE_DETAIL } from '../../src/lib/mcp-policy'
 import { PluginsPage } from '../../src/pages/PluginsPage'
 import type { SkillRecord } from '../../src/types/api'
 
@@ -20,6 +20,10 @@ const computerUse: SkillRecord = {
 function changeInput(input: HTMLInputElement, value: string): void {
   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value)
   input.dispatchEvent(new Event('input', { bubbles: true }))
+}
+function changeSelect(select: HTMLSelectElement, value: string): void {
+  Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!.call(select, value)
+  select.dispatchEvent(new Event('change', { bubbles: true }))
 }
 
 describe('PluginsPage bundled capability controls', () => {
@@ -98,7 +102,7 @@ describe('PluginsPage bundled capability controls', () => {
     const refresh = vi.fn(async () => undefined)
     const notion: SkillRecord = {
       id: 'mcp:bundled:notion', name: 'Notion', description: 'Official MCP.', kind: 'mcp', location: 'bundled', enabled: false,
-      availability: { available: false, detail: NETWORK_MCP_UNAVAILABLE_DETAIL },
+      availability: { available: false, detail: EXTERNALLY_MANAGED_MCP_DETAIL },
     }
     const render = async (enabled: boolean) => act(async () => {
       root.render(<PluginsPage
@@ -114,7 +118,8 @@ describe('PluginsPage bundled capability controls', () => {
     })
     await render(false)
     const notionStatus = container.querySelector('[role="img"][aria-label="Externally managed Notion"]')
-    expect(container.querySelector(`#${notionStatus?.getAttribute('aria-describedby')}`)?.textContent).toContain('Network MCP servers are managed outside OMP Desktop.')
+    expect(container.querySelector(`#${notionStatus?.getAttribute('aria-describedby')}`)?.textContent).toContain('installed OMP plugin package')
+    expect(container.querySelector(`#${notionStatus?.getAttribute('aria-describedby')}`)?.textContent).toContain('Authorization is never inspected or changed')
     expect(container.querySelector('button[aria-label="Enable Notion"]')).toBeNull()
     expect(container.querySelector('button[aria-label="Forget authorization for Notion"]')).toBeNull()
     expect(mutateCapability).not.toHaveBeenCalled()
@@ -127,11 +132,40 @@ describe('PluginsPage bundled capability controls', () => {
     expect(mutateCapability).not.toHaveBeenCalled()
   })
 
-  it('renders externally configured network MCPs read-only at either saved state', async () => {
+  it('makes manageable mcp.json network definitions actionable (toggle + editor entry)', async () => {
+    const setMcpEnabled = vi.fn(async () => ({ ok: true, output: '' }))
+    const docs: SkillRecord = {
+      id: 'mcp:user:docs', name: 'docs', description: 'HTTP MCP server at https://docs.example.', kind: 'mcp', location: 'user', enabled: true,
+      mcpDefinition: { transport: 'http', url: 'https://docs.example/mcp', headerNames: ['Authorization'] },
+    }
+    const render = async (enabled: boolean) => act(async () => {
+      root.render(<PluginsPage
+        harness="omp" skills={[{ ...docs, enabled }]} warnings={[]} loading={false}
+        askUserEnabled={true} onSetAskUserEnabled={async () => undefined}
+        browserEnabled={true} onSetBrowserEnabled={async () => undefined}
+        computerUseEnabled={false} onSetComputerUseEnabled={async () => undefined} onOpenExternal={() => undefined}
+        onRefresh={async () => undefined} onInstall={async () => ({ ok: true, output: '' })}
+        onInstallExtension={async () => ({ ok: true, output: '' })} onConnectMcp={async () => ({ ok: true, output: '' })}
+        onSetMcpEnabled={setMcpEnabled}
+      />)
+    })
+    await render(true)
+    expect(container.querySelector('[role="img"][aria-label="Externally managed docs"]')).toBeNull()
+    expect(container.querySelector('button[aria-label="Disable docs"]')).not.toBeNull()
+    expect(container.querySelector('button[aria-label="Edit docs"]')).not.toBeNull()
+    expect(container.querySelector('button[aria-label="Remove docs"]')).not.toBeNull()
+
+    await render(false)
+    expect(container.querySelector('button[aria-label="Enable docs"]')).not.toBeNull()
+    expect(container.querySelector('button[aria-label="Edit docs"]')).not.toBeNull()
+    expect(setMcpEnabled).not.toHaveBeenCalled()
+  })
+
+  it('keeps unaddressable network keys read-only at either saved state', async () => {
     const setMcpEnabled = vi.fn(async () => ({ ok: true, output: '' }))
     const docs: SkillRecord = {
       id: 'mcp:user:docs', name: 'docs', description: 'HTTP MCP.', kind: 'mcp', location: 'user', enabled: true,
-      availability: { available: false, detail: NETWORK_MCP_UNAVAILABLE_DETAIL },
+      availability: { available: false, detail: LOCAL_MCP_STATE_UNAVAILABLE_DETAIL },
     }
     const render = async (enabled: boolean) => act(async () => {
       root.render(<PluginsPage
@@ -148,6 +182,7 @@ describe('PluginsPage bundled capability controls', () => {
     const enabledStatus = container.querySelector('[role="img"][aria-label="Externally managed docs"]')
     expect(container.querySelector(`#${enabledStatus?.getAttribute('aria-describedby')}`)?.textContent).toContain('managed outside OMP Desktop')
     expect(container.querySelector('button[aria-label="Disable docs"]')).toBeNull()
+    expect(container.querySelector('button[aria-label="Edit docs"]')).toBeNull()
     expect(container.querySelector('button[aria-label="Remove docs"]')).not.toBeNull()
     expect(setMcpEnabled).not.toHaveBeenCalled()
 
@@ -162,7 +197,7 @@ describe('PluginsPage bundled capability controls', () => {
     const mutateCapability = vi.fn(async () => ({ ok: true, output: '' }))
     const docs: SkillRecord = {
       id: 'mcp:user:docs', name: 'team docs', description: 'HTTP MCP.', kind: 'mcp', location: 'user', enabled: true,
-      associatedPackageSource: 'npm:prime-docs', availability: { available: false, detail: NETWORK_MCP_UNAVAILABLE_DETAIL },
+      associatedPackageSource: 'npm:prime-docs', availability: { available: false, detail: LOCAL_MCP_STATE_UNAVAILABLE_DETAIL },
       definitionKey: 'team/docs',
     }
     await act(async () => {
@@ -182,7 +217,7 @@ describe('PluginsPage bundled capability controls', () => {
     const actions = remove.closest('.capability-actions')!
     expect(actions.lastElementChild?.getAttribute('role')).toBe('img')
     expect(actions.lastElementChild?.getAttribute('aria-label')).toBe('Externally managed team docs')
-    expect(container.querySelector(`#${actions.lastElementChild?.getAttribute('aria-describedby')}`)?.textContent).toContain('Network MCP servers are managed outside OMP Desktop.')
+    expect(container.querySelector(`#${actions.lastElementChild?.getAttribute('aria-describedby')}`)?.textContent).toContain('cannot safely enable or disable')
     await act(async () => { remove.click() })
     const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]')!
     expect(dialog.textContent).toContain('only the server definition; harness-owned authorization is not changed')
@@ -195,7 +230,7 @@ describe('PluginsPage bundled capability controls', () => {
     const record: SkillRecord = {
       id: 'mcp:user:oversized', name: 'oversized definition', description: 'Externally managed format.',
       kind: 'mcp', location: 'user', enabled: true, definitionRemovalAvailable: false,
-      availability: { available: false, detail: NETWORK_MCP_UNAVAILABLE_DETAIL },
+      availability: { available: false, detail: LOCAL_MCP_STATE_UNAVAILABLE_DETAIL },
     }
     await act(async () => {
       root.render(<PluginsPage
@@ -253,9 +288,8 @@ describe('PluginsPage bundled capability controls', () => {
     await act(async () => { container.querySelector<HTMLButtonElement>('.button--primary')!.click() })
     const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]')!
     await act(async () => { [...dialog.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent?.includes('Add MCP'))!.click() })
-    expect(dialog.textContent).toContain('Add a local stdio server to OMP’s native MCP configuration')
-    expect(dialog.textContent).toContain('HTTP/SSE servers and OAuth are managed directly in OMP, outside OMP Desktop')
-    expect(dialog.textContent).not.toContain('Server URL')
+    expect(dialog.textContent).toContain('Add or edit an MCP server in OMP’s native mcp.json')
+    expect(dialog.textContent).toContain('Sign-in and OAuth stay in OMP, outside OMP Desktop')
     expect(dialog.textContent).not.toContain('Authentication')
     const inputs = dialog.querySelectorAll<HTMLInputElement>('input')
     await act(async () => { changeInput(inputs[0], 'files'); changeInput(inputs[1], 'npx') })
@@ -264,7 +298,7 @@ describe('PluginsPage bundled capability controls', () => {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(args, '-y\nserver-files')
       args.dispatchEvent(new Event('input', { bubbles: true }))
     })
-    const save = [...dialog.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Save local server')!
+    const save = [...dialog.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Save server')!
     await act(async () => { save.click(); await Promise.resolve(); await Promise.resolve() })
     expect(connect).toHaveBeenCalledWith({ name: 'files', scope: 'user', projectPath: undefined, type: 'stdio', command: 'npx', args: ['-y', 'server-files'] })
     expect(refresh).toHaveBeenCalledOnce()
@@ -349,5 +383,116 @@ describe('PluginsPage bundled capability controls', () => {
     expect(container.querySelector('button[aria-label="Remove oversized local MCP"]')).toBeNull()
     expect(setMcpEnabled).not.toHaveBeenCalled()
     expect(mutateCapability).not.toHaveBeenCalled()
+  })
+
+  it('requires https for public MCP endpoints and warns for private-network and shell-expansion values', async () => {
+    const connect = vi.fn(async () => ({ ok: true, output: 'saved server' }))
+    await act(async () => {
+      root.render(<PluginsPage
+        harness="omp" skills={[]} warnings={[]} loading={false} activeProjectPath="/repo"
+        askUserEnabled={true} onSetAskUserEnabled={async () => undefined}
+        browserEnabled={true} onSetBrowserEnabled={async () => undefined}
+        computerUseEnabled={false} onSetComputerUseEnabled={async () => undefined} onOpenExternal={() => undefined}
+        onRefresh={async () => undefined} onInstall={async () => ({ ok: true, output: '' })}
+        onInstallExtension={async () => ({ ok: true, output: '' })}
+        onConnectMcp={connect} onSetMcpEnabled={async () => ({ ok: true, output: '' })}
+      />)
+    })
+    await act(async () => { container.querySelector<HTMLButtonElement>('.button--primary')!.click() })
+    const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]')!
+    await act(async () => { [...dialog.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent?.includes('Add MCP'))!.click() })
+    // http 是表單第二個欄位:Transport 選擇器。
+    await act(async () => { changeSelect(dialog.querySelector<HTMLSelectElement>('select')!, 'http') })
+    const nameInput = dialog.querySelector<HTMLInputElement>('input')!
+    const urlInput = [...dialog.querySelectorAll<HTMLInputElement>('input')][1]
+    const saveButton = () => [...dialog.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Save server')!
+    await act(async () => { changeInput(nameInput, 'remote') })
+
+    // 公網純 http:顯示錯誤且不可儲存。
+    await act(async () => { changeInput(urlInput, 'http://public.example/mcp') })
+    expect(dialog.textContent).toContain('must use https')
+    expect(saveButton().disabled).toBe(true)
+    expect(connect).not.toHaveBeenCalled()
+
+    // loopback 純 http:顯示私有網段警告與明示勾選框;勾選後可儲存。
+    await act(async () => { changeInput(urlInput, 'http://127.0.0.1:8080/mcp') })
+    expect(dialog.textContent).toContain('loopback or private-network address')
+    expect(saveButton().disabled).toBe(true)
+    const checkbox = dialog.querySelector<HTMLInputElement>('input[type="checkbox"]')!
+    await act(async () => { checkbox.click() })
+    expect(saveButton().disabled).toBe(false)
+
+    // headers 帶 ${...}:標示上游 shell 展開語意(10s shell)。
+    const headers = dialog.querySelector<HTMLTextAreaElement>('textarea')!
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(headers, 'Authorization: Bearer ${MCP_TOKEN}')
+      headers.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    expect(dialog.textContent).toContain('shell commands (10s timeout)')
+
+    await act(async () => { saveButton().click(); await Promise.resolve(); await Promise.resolve() })
+    expect(connect).toHaveBeenCalledWith({
+      name: 'remote', scope: 'user', projectPath: undefined, type: 'http',
+      url: 'http://127.0.0.1:8080/mcp', headers: { Authorization: 'Bearer ${MCP_TOKEN}' }, allowInsecureHttp: true,
+    })
+  })
+
+  it('edits an mcp.json definition through replace mode with preserved headers', async () => {
+    const connect = vi.fn(async (_input: unknown) => ({ ok: true, output: 'saved server' }))
+    const docs: SkillRecord = {
+      id: 'mcp:user:docs', name: 'docs', description: 'HTTP MCP server at https://docs.example.', kind: 'mcp', location: 'user', enabled: true,
+      mcpDefinition: { transport: 'http', url: 'https://docs.example/mcp', headerNames: ['Authorization'] },
+    }
+    await act(async () => {
+      root.render(<PluginsPage
+        harness="omp" skills={[docs]} warnings={[]} loading={false} activeProjectPath="/repo"
+        askUserEnabled={true} onSetAskUserEnabled={async () => undefined}
+        browserEnabled={true} onSetBrowserEnabled={async () => undefined}
+        computerUseEnabled={false} onSetComputerUseEnabled={async () => undefined} onOpenExternal={() => undefined}
+        onRefresh={async () => undefined} onInstall={async () => ({ ok: true, output: '' })}
+        onInstallExtension={async () => ({ ok: true, output: '' })}
+        onConnectMcp={connect} onSetMcpEnabled={async () => ({ ok: true, output: '' })}
+      />)
+    })
+    await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-label="Edit docs"]')!.click() })
+    const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]')!
+    expect(dialog.textContent).toContain('Edit MCP server')
+    // 名稱(map key)鎖定;既有 headers 只顯示名稱,值不回流(secret 不經 renderer)。
+    const nameInput = dialog.querySelector<HTMLInputElement>('input')!
+    expect(nameInput.disabled).toBe(true)
+    expect(nameInput.value).toBe('docs')
+    expect(dialog.textContent).toContain('Authorization')
+    expect(dialog.textContent).toContain('Existing headers are kept unless you enter replacements')
+
+    const urlInput = [...dialog.querySelectorAll<HTMLInputElement>('input')][1]
+    expect(urlInput.value).toBe('https://docs.example/mcp')
+    await act(async () => { changeInput(urlInput, 'https://v2.docs.example/mcp') })
+    const save = [...dialog.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Save server')!
+    await act(async () => { save.click(); await Promise.resolve(); await Promise.resolve() })
+    const submitted = connect.mock.calls[0]?.[0]
+    expect(submitted).toMatchObject({ name: 'docs', scope: 'user', mode: 'replace', type: 'http', url: 'https://v2.docs.example/mcp' })
+    expect(submitted).not.toHaveProperty('headers')
+  })
+
+  it('forwards capability reload commands through the reload buttons', async () => {
+    const reload = vi.fn()
+    await act(async () => {
+      root.render(<PluginsPage
+        harness="omp" skills={[]} warnings={[]} loading={false}
+        askUserEnabled={true} onSetAskUserEnabled={async () => undefined}
+        browserEnabled={true} onSetBrowserEnabled={async () => undefined}
+        computerUseEnabled={false} onSetComputerUseEnabled={async () => undefined} onOpenExternal={() => undefined}
+        onRefresh={async () => undefined} onInstall={async () => ({ ok: true, output: '' })}
+        onInstallExtension={async () => ({ ok: true, output: '' })}
+        onConnectMcp={async () => ({ ok: true, output: '' })}
+        onSetMcpEnabled={async () => ({ ok: true, output: '' })}
+        onReloadCapabilities={reload}
+      />)
+    })
+    const buttons = [...container.querySelectorAll<HTMLButtonElement>('.plugin-header button')]
+    await act(async () => { buttons.find((button) => button.textContent?.trim() === 'Reload MCP')!.click() })
+    await act(async () => { buttons.find((button) => button.textContent?.trim() === 'Reload plugins')!.click() })
+    expect(reload).toHaveBeenNthCalledWith(1, 'mcp')
+    expect(reload).toHaveBeenNthCalledWith(2, 'plugins')
   })
 })

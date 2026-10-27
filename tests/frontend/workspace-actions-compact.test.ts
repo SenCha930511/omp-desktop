@@ -103,7 +103,7 @@ function fixture({ runtime: configuredRuntime = null, sessionStatus = 'idle', ow
     activeProject: project,
     workspace,
     settingsState: { settings: { activeHarness: 'omp', locale: 'en' } },
-    provider: { model: 'auto', effort: 'medium', fast: false },
+    provider: { model: 'auto', effort: 'medium', fast: false, selectedModel: { input: ['text', 'image'] } },
     submissionAdmissionRef: { current: createSingleFlightAdmission() },
     initialized: true,
     layout: {},
@@ -262,5 +262,68 @@ describe('/compact dispatch', () => {
     expect(fixtureState.followUp).not.toHaveBeenCalled()
     expect(fixtureState.queuePrompt).toHaveBeenCalledWith('/compact', 'queue')
     expect(fixtureState.setToast).toHaveBeenCalledWith('Compaction will run when the current turn finishes.')
+  })
+
+  it('routes uppercase mode compacts to the upstream slash dispatcher instead of custom instructions', async () => {
+    // 上游 compact 模式不分大小寫(Yke):/compact SOFT 须視為模式命令,
+    // 原样交給 prompt 路径,不能当 custom instructions 走 compact RPC。
+    for (const prompt of ['/compact soft', '/compact SOFT', '/compact Soft keep the auth bits', '/compact REMOTE']) {
+      const fixtureState = fixture({ runtime: runtime() })
+
+      await fixtureState.actions.sendPrompt(prompt)
+
+      expect(fixtureState.command).toHaveBeenCalledWith('idle-runtime', expect.objectContaining({ type: 'prompt', message: prompt }))
+      expect(fixtureState.command).not.toHaveBeenCalledWith('idle-runtime', expect.objectContaining({ type: 'compact' }))
+    }
+  })
+
+  it('rejects snapcompact focus instructions in place instead of starting a runtime for the error', async () => {
+    // 上游 rejectsFocus:snapcompact 只做點陣圖歸檔,不接受指示;错过会起一
+    // 个 runtime 只为回一句错误,在地稿栏直接拒絕。
+    const fixtureState = fixture({ runtime: runtime() })
+
+    await fixtureState.actions.sendPrompt('/compact snapcompact focus on tests')
+
+    expect(fixtureState.reportError).toHaveBeenCalledWith('/compact snapcompact archives history onto bitmaps without an LLM summary and does not take focus instructions. Remove the instructions and try again.')
+    expect(fixtureState.command).not.toHaveBeenCalled()
+    expect(fixtureState.start).not.toHaveBeenCalled()
+  })
+
+  it('forwards a skill command with its images to the agent', async () => {
+    // 上游 runRpcSkillCommand 把图片并入 skill prompt;依 catalog(source
+    // 'skill')放行的命令攜圖直送 prompt RPC,labels: 與上游一起排隊。
+    const skillRuntime: RuntimeInfo = { ...runtime(), availableCommands: [{ name: 'commit', source: 'skill' }] }
+    const fixtureState = fixture({ runtime: skillRuntime })
+    const images = [{ type: 'image' as const, mimeType: 'image/png', data: 'iVBORw0KGgo=' }]
+
+    await fixtureState.actions.sendPrompt('/commit make it good', images)
+
+    expect(fixtureState.reportError).not.toHaveBeenCalled()
+    expect(fixtureState.command).toHaveBeenCalledWith('idle-runtime', expect.objectContaining({ type: 'prompt', message: '/commit make it good', images }))
+    expect(fixtureState.followUp).not.toHaveBeenCalled()
+  })
+
+  it('queues a busy skill command with its images in the local entry', async () => {
+    // 忙碌时本地排隊:图片隨條目保存,flush 时原样恢復,不静默成纯文字。
+    const skillRuntime: RuntimeInfo = { ...runtime('busy', true), availableCommands: [{ name: 'commit', source: 'skill' }] }
+    const fixtureState = fixture({ runtime: skillRuntime, ownsStreaming: true })
+    const images = [{ type: 'image' as const, mimeType: 'image/png', data: 'iVBORw0KGgo=' }]
+
+    await fixtureState.actions.sendPrompt('/commit', images)
+
+    expect(fixtureState.command).not.toHaveBeenCalled()
+    expect(fixtureState.queuePrompt).toHaveBeenCalledWith('/commit', 'queue', [{ type: 'text', text: '/commit' }, ...images])
+  })
+
+  it('still rejects images for slash commands outside the image-capable sources', async () => {
+    // builtin/extension 上游本地消化会静默丟棄圖片;GUI 原地拒絕(Composer 层
+    // 同样挡住,这里是 sendPrompt 防禦)。
+    const builtinRuntime: RuntimeInfo = { ...runtime(), availableCommands: [{ name: 'context', source: 'builtin' }] }
+    const fixtureState = fixture({ runtime: builtinRuntime })
+
+    await fixtureState.actions.sendPrompt('/context', [{ type: 'image', mimeType: 'image/png', data: 'iVBORw0KGgo=' }])
+
+    expect(fixtureState.reportError).toHaveBeenCalledWith('This command does not accept image attachments. Remove the attachment and try again.')
+    expect(fixtureState.command).not.toHaveBeenCalled()
   })
 })

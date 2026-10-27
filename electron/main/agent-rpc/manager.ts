@@ -10,19 +10,20 @@ import { OMP_RPC_ADAPTER, type HarnessRpcAdapter } from './harness-adapter'
 import { RpcRuntime } from './runtime'
 import type { RpcObject } from './types'
 import type { WorkspaceUseLease, WorkspaceUseOwner } from '../repository-use-gate'
+import { recordSessionDiagnostic } from './session-diagnostics'
 
 /**
  * Structural slice of the provider catalog the manager needs; PrimeProviderService
  * satisfies it today and a future OMP model catalog can be injected in its place.
  */
 export interface ProviderCatalog {
-  requireAvailableModel(rawKey: unknown, disabledProviders?: ReadonlySet<string>, disabledModels?: ReadonlySet<string>): Promise<PrimeModelDescriptor>
+  requireAvailableModel(rawKey: unknown): Promise<PrimeModelDescriptor>
   capabilities(provider: string | undefined, modelId: string | undefined): Promise<PrimeModelDescriptor | undefined>
-  catalog(force?: boolean, disabledProviders?: ReadonlySet<string>, disabledModels?: ReadonlySet<string>): Promise<PrimeModelCatalog>
+  catalog(force?: boolean): Promise<PrimeModelCatalog>
 }
 
 export interface RuntimeRetentionOptions { idleMs?: number; warmCount?: number }
-const RETENTION_EVENTS = new Set(['agent_start', 'agent_end', 'runtime_state', 'session_action_update', 'compaction_start', 'compaction_end', 'auto_retry_end', 'prompt_result', 'runtime_exit'])
+const RETENTION_EVENTS = new Set(['agent_start', 'agent_end', 'runtime_state', 'session_action_update', 'compaction_start', 'compaction_end', 'auto_retry_end', 'prompt_result', 'runtime_exit', 'session_settled', 'extension_ui_request'])
 
 export class AgentRpcManager {
   private readonly runtimes = new Map<string, RpcRuntime>()
@@ -31,12 +32,16 @@ export class AgentRpcManager {
   private readonly runtimeEnvironmentRevisions = new Map<string, number>()
   /** Requested resume path per runtime id, valid until the handshake reports the authoritative session file. */
   private readonly startSessionPathById = new Map<string, string>()
+  /** 每支 runtime 最後一次 durable 綁定過 capability claim 的 session 身分(sessionId + 規範化 sessionFile)。 */
+  private readonly durableIdentityByRuntimeId = new Map<string, { sessionId?: string; sessionFile: string }>()
+  /** sessionId 滾動(true identity change)後遭隔離的 runtime:舊 token 的 claim 已撤,不得再承載任何命令,只等安全退役。 */
+  private readonly quarantinedRuntimes = new Set<string>()
   private runtimeEnvironmentRevision = 0
-  private disabledModels: () => ReadonlySet<string> = () => new Set()
   private eventSink: (envelope: PrimeEventEnvelope) => void = () => undefined
   private runtimeEnvironmentProvider: (scope: { cwd: string; sessionPath?: string; interactive: boolean }) => NodeJS.ProcessEnv = () => ({})
   private runtimeStartListener: (environment: NodeJS.ProcessEnv, info: RuntimeInfo) => void = () => undefined
   private runtimeEndListener: (environment: NodeJS.ProcessEnv, info?: RuntimeInfo) => void = () => undefined
+  private runtimeSessionReboundListener: (environment: NodeJS.ProcessEnv, previousInfo: RuntimeInfo, nextInfo: RuntimeInfo) => void = () => undefined
   private runtimeAdmission: Promise<void> = Promise.resolve()
   private beginWorkspaceUse: (
     cwd: string,
@@ -45,6 +50,7 @@ export class AgentRpcManager {
   ) => Promise<WorkspaceUseLease> = async () => ({ release: () => undefined })
   private closed = false
   private readonly commandsInFlight = new Map<string, number>()
+  private readonly sessionMutations = new Set<string>()
   private readonly idleSince = new Map<string, number>()
   private idleTimer: NodeJS.Timeout | null = null
 
@@ -53,7 +59,6 @@ export class AgentRpcManager {
     private readonly authorizeCwd: (cwd: string) => Promise<string>,
     private readonly validateSessionPath: (path: string) => Promise<string>,
     private readonly providers?: ProviderCatalog,
-    private readonly disabledProviders: () => ReadonlySet<string> = () => new Set(),
     private readonly adapter: HarnessRpcAdapter = OMP_RPC_ADAPTER,
     /** OMP approval-mode override consumed by the harness arg builder. */
     private readonly approvalMode: () => string | undefined = () => undefined,
@@ -63,8 +68,6 @@ export class AgentRpcManager {
   ) {}
 
   setEventSink(sink: (envelope: PrimeEventEnvelope) => void): void { this.eventSink = sink }
-
-  setDisabledModelsProvider(provider: () => ReadonlySet<string>): void { this.disabledModels = provider }
 
   setWorkspaceUseProvider(provider: (
     cwd: string,
@@ -78,7 +81,7 @@ export class AgentRpcManager {
     this.runtimeEnvironmentProvider = provider
   }
 
-  /** Called once per successfully started runtime with the environment it was spawned with, so capability bridges can bind their claims to the runtime's session. */
+  /** Called after startup, on the first durable session binding of an initially file-less runtime, and again on a same-identity path-only move (sessionId unchanged, file changed). Never rebinds claims to a different sessionId — that transition revokes instead. */
   setRuntimeStartListener(listener: (environment: NodeJS.ProcessEnv, info: RuntimeInfo) => void): void {
     this.runtimeStartListener = listener
   }
@@ -86,6 +89,16 @@ export class AgentRpcManager {
   /** Called once when ownership of a spawned environment ends, including starts that fail before a runtime can be created. */
   setRuntimeEndListener(listener: (environment: NodeJS.ProcessEnv, info?: RuntimeInfo) => void): void {
     this.runtimeEndListener = listener
+  }
+
+  /**
+   * Called on a path-only move: same session identity (sessionId unchanged)
+   * reported under a different session file. The claim-owning wiring moves the
+   * existing token's scope from previousInfo.sessionFile to nextInfo.sessionFile;
+   * the token itself is never rotated or revoked for this transition.
+   */
+  setRuntimeSessionReboundListener(listener: (environment: NodeJS.ProcessEnv, previousInfo: RuntimeInfo, nextInfo: RuntimeInfo) => void): void {
+    this.runtimeSessionReboundListener = listener
   }
 
   beginShutdown(): void {
@@ -116,19 +129,18 @@ export class AgentRpcManager {
       ? undefined
       : await this.validateSessionPath(requireString(options.sessionPath, 'sessionPath', { max: 4096 }))
     if (sessionPath !== undefined) {
-      // A live child already owns this session file. Resuming would fork the
-      // file (OMP resume writes a continuation jsonl with a fresh id) and
-      // double-stream one conversation, which is exactly how a view switch
-      // mid-turn used to spawn "new" duplicate sessions. Reuse the resident
-      // runtime instead; stopping it goes through stop/retire as usual.
+      // Reuse the process that already owns this file. Opening it in a second
+      // OMP process can trigger lock-conflict forking; normal resume itself
+      // does not imply a new session identity.
       const existing = this.getForSession(sessionPath)
+      if (existing && this.sessionMutations.has(existing.runtimeId)) throw new Error('Session identity is being changed')
       if (existing && !this.retiringRuntimes.has(existing.runtimeId)) return existing
     }
     let selectedModel: PrimeModelDescriptor | undefined
     let modelId: string | undefined
     if (options.model !== undefined) {
       selectedModel = this.providers
-        ? await this.providers.requireAvailableModel(options.model, this.disabledProviders(), this.disabledModels())
+        ? await this.providers.requireAvailableModel(options.model)
         : undefined
       modelId = selectedModel?.id ?? requireString(options.model, 'model', { min: 1, max: 256, trim: true })
     }
@@ -155,6 +167,7 @@ export class AgentRpcManager {
       },
     )
     let environmentEnded = false
+    let runtimeStartNotified = false
     const notifyRuntimeEnd = (info?: RuntimeInfo): void => {
       if (environmentEnded) return
       environmentEnded = true
@@ -177,6 +190,11 @@ export class AgentRpcManager {
           args,
           cwd,
           (event) => {
+            // 每次 runtime_state 抵達時、snapshot 已是最新:對照看護 durable 身分
+            // (初次 durable 綁定 / path-only move / true identity change)。
+            if (event.event.type === 'runtime_state' && runtimeStartNotified && runtime && !environmentEnded) {
+              this.observeDurableIdentity(runtime, runtimeEnvironment, notifyRuntimeEnd)
+            }
             this.eventSink(event)
             if (RETENTION_EVENTS.has(String(event.event.type))) this.scheduleIdleRetirement()
           },
@@ -185,6 +203,8 @@ export class AgentRpcManager {
             this.runtimes.delete(closed.runtimeId)
             this.retiringRuntimes.delete(closed.runtimeId)
             this.startSessionPathById.delete(closed.runtimeId)
+            this.durableIdentityByRuntimeId.delete(closed.runtimeId)
+            this.quarantinedRuntimes.delete(closed.runtimeId)
             this.idleSince.delete(closed.runtimeId)
             this.scheduleIdleRetirement()
             notifyRuntimeEnd(closed.snapshot())
@@ -203,7 +223,12 @@ export class AgentRpcManager {
       await runtime.handshake()
       await this.decorate(runtime)
       if (runtime.snapshot().fastModeSupported && options.fast === true) await runtime.setServiceTier('priority', true)
-      try { this.runtimeStartListener(runtimeEnvironment, runtime.snapshot()) } catch { /* capability binding must never fail a start */ }
+      try {
+        const state = runtime.snapshot()
+        this.runtimeStartListener(runtimeEnvironment, state)
+        runtimeStartNotified = true
+        if (state.sessionFile) this.durableIdentityByRuntimeId.set(runtime.runtimeId, { sessionId: state.sessionId, sessionFile: canonicalSessionPath(state.sessionFile) })
+      } catch { /* capability binding must never fail a start */ }
       this.startingRuntimes.delete(runtime.runtimeId)
       this.scheduleIdleRetirement()
       return runtime.snapshot()
@@ -216,6 +241,8 @@ export class AgentRpcManager {
         this.runtimes.delete(runtime.runtimeId)
         this.runtimeEnvironmentRevisions.delete(runtime.runtimeId)
         this.startSessionPathById.delete(runtime.runtimeId)
+        this.durableIdentityByRuntimeId.delete(runtime.runtimeId)
+        this.quarantinedRuntimes.delete(runtime.runtimeId)
         await runtime.stop().catch(() => false)
       }
       // Admission/constructor failures have no close event; failed handshakes
@@ -223,6 +250,53 @@ export class AgentRpcManager {
       notifyRuntimeEnd(runtime?.snapshot())
       throw error
     }
+  }
+
+  /**
+   * 每次 runtime_state 抵達時對照看護 durable 身分(snapshot 此刻已是最新):
+   *  1. 尚未 durable 綁定(initially file-less runtime 第一次拿到檔案)→ 視為
+   *     初次綁定,沿用 start listener;listener 拋錯時不記錄,由下一次
+   *     runtime_state 重試。
+   *  2. sessionId 不變但 sessionFile 變 → path-only move:同一組 token 不撤、
+   *     不換發;重觸發 start listener(契約觀察點),並通知 rebind listener 讓
+   *     bridge 真正改寫既有 claim 的 scope。
+   *  3. sessionId 變 → true identity change:撤銷 claims(end listener 的 once
+   *     守護保證每支 runtime 只撤一次),quarantine 該 runtime、自 session 路由
+   *     移除,等 canRetireSafely 退役;新 identity 絕不沿用舊 token,bound 不再
+   *     重觸發。
+   * listener 失敗絕不阻斷事件流或 runtime 清理。
+   */
+  private observeDurableIdentity(runtime: RpcRuntime, environment: NodeJS.ProcessEnv, notifyEnd: (info?: RuntimeInfo) => void): void {
+    if (this.quarantinedRuntimes.has(runtime.runtimeId)) return
+    // Manager 主導的身分操作(fork)由 forkForSession 自己的 retire/claims 路徑
+    // 處理;自發觀測點不得把這種自觸發的換檔誤判成 path-only move 而重複觸發。
+    // 注意不能擋 retiringRuntimes:quarantine 的退役也走那條路,仍須可被觀測。
+    if (this.sessionMutations.has(runtime.runtimeId)) return
+    const state = runtime.snapshot()
+    if (!state.sessionFile) return
+    const record = this.durableIdentityByRuntimeId.get(runtime.runtimeId)
+    if (!record) {
+      try {
+        this.runtimeStartListener(environment, state)
+        this.durableIdentityByRuntimeId.set(runtime.runtimeId, { sessionId: state.sessionId, sessionFile: canonicalSessionPath(state.sessionFile) })
+      } catch { /* a later state update can retry the initial binding */ }
+      return
+    }
+    const sessionFile = canonicalSessionPath(state.sessionFile)
+    if (record.sessionFile === sessionFile && record.sessionId === state.sessionId) return
+    if (record.sessionId !== state.sessionId) {
+      this.quarantinedRuntimes.add(runtime.runtimeId)
+      this.durableIdentityByRuntimeId.delete(runtime.runtimeId)
+      this.startSessionPathById.delete(runtime.runtimeId)
+      notifyEnd(state)
+      if (this.canReclaim(runtime)) void this.retireForCheckout(runtime)
+      else this.scheduleIdleRetirement()
+      return
+    }
+    const previousInfo: RuntimeInfo = { ...state, sessionFile: record.sessionFile }
+    try { this.runtimeStartListener(environment, state) } catch { /* capability rebinding must never break the event stream */ }
+    try { this.runtimeSessionReboundListener(environment, previousInfo, state) } catch { /* capability rebinding must never break the event stream */ }
+    this.durableIdentityByRuntimeId.set(runtime.runtimeId, { sessionId: state.sessionId, sessionFile })
   }
 
   /**
@@ -240,6 +314,8 @@ export class AgentRpcManager {
       this.requireOpen()
       const runtime = this.requireRuntime(runtimeId)
       if (this.retiringRuntimes.has(runtime.runtimeId)) throw new Error('Runtime is being retired')
+      if (this.quarantinedRuntimes.has(runtime.runtimeId)) throw new Error('Runtime is quarantined after a session identity change')
+      if (this.sessionMutations.has(runtime.runtimeId)) throw new Error('Session identity is being changed')
       admittedId = runtime.runtimeId
       this.commandsInFlight.set(admittedId, (this.commandsInFlight.get(admittedId) ?? 0) + 1)
       this.idleSince.delete(admittedId)
@@ -261,10 +337,27 @@ export class AgentRpcManager {
     }
   }
 
+  /**
+   * User-triggered authoritative state refresh — the retry for a compaction
+   * whose post-completion synchronization failed (sync_pending). Mirrors the
+   * command channel's identity guards, then re-reads the state once: a
+   * failure rejects so the caller can surface it without looping, and success
+   * republishes the snapshot through the runtime's runtime_state event.
+   */
+  async refreshState(runtimeId: unknown): Promise<RuntimeInfo> {
+    this.requireOpen()
+    const runtime = this.requireRuntime(runtimeId)
+    if (this.retiringRuntimes.has(runtime.runtimeId)) throw new Error('Runtime is being retired')
+    if (this.quarantinedRuntimes.has(runtime.runtimeId)) throw new Error('Runtime is quarantined after a session identity change')
+    if (this.sessionMutations.has(runtime.runtimeId)) throw new Error('Session identity is being changed')
+    return runtime.refreshState()
+  }
+
   private async dispatchCommand(runtimeId: unknown, rawCommand: unknown): Promise<RpcObject> {
     this.requireOpen()
     const runtime = this.requireRuntime(runtimeId)
     if (this.retiringRuntimes.has(runtime.runtimeId)) throw new Error('Runtime is being retired for a branch checkout')
+    if (this.quarantinedRuntimes.has(runtime.runtimeId)) throw new Error('Runtime is quarantined after a session identity change')
     const command = await validateRpcCommand(rawCommand, this.validateSessionPath)
     this.requireOpen()
     const policyPrompt = command.type === 'prompt' || command.type === 'steer' || command.type === 'follow_up'
@@ -276,7 +369,7 @@ export class AgentRpcManager {
     // interception below routes it via runtime.setServiceTier instead.
     const translated = this.adapter.translateCommand(command)
     if (command.type === 'set_model' && this.providers) {
-      await this.providers.requireAvailableModel(`${String(command.provider)}/${String(command.modelId)}`, this.disabledProviders(), this.disabledModels())
+      await this.providers.requireAvailableModel(`${String(command.provider)}/${String(command.modelId)}`)
     }
     if (command.type === 'set_service_tier') {
       const serviceTier = command.serviceTier === 'priority' ? 'priority' : 'default'
@@ -287,16 +380,50 @@ export class AgentRpcManager {
     if (Array.isArray(command.images) && command.images.length > 0 && runtime.snapshot().imageInputSupported === false) {
       throw new Error('The active model does not accept images. Choose a vision model and try again.')
     }
+    if (this.sessionMutations.has(runtime.runtimeId)) throw new Error('Session identity is being changed')
+    // 診斷用 leaf 查詢是唯讀 get_tree；失敗/逾時降級為未知，不阻擋 compact
+    if (command.type === 'compact') recordSessionDiagnostic('compact-requested', runtime.snapshot(), undefined, await runtime.readLeafId())
+    if (command.type === 'new_session') {
+      // new_session 是 renderer 發起的合法身分切換(durable 空邊界):fileless
+      // runtime 啟動時已佔一個初始 session 檔,切到新邊界會同時改 sessionId 與
+      // 檔案。observeDurableIdentity 對任何 sessionId 變更都視為敵意 drift 而
+      // quarantine+retire,導致後續 get_state 以 "Runtime was not found" 失敗
+      // (僅在有既有 session 的髒專案重現;e2e 的乾淨暫存目錄摸不到)。與 fork
+      // 同模式以 sessionMutations 擋住命令期間的觀測點;成功後撤守前清掉舊
+      // durable record,讓下一個 runtime_state 事件走「初次綁定」路徑——
+      // runtimeStartListener 重綁 capability 並綁上新身分,與 fileless 啟動後
+      // 的第一次事件同語意,絕不觸發敵意身分 quarantine。
+      this.sessionMutations.add(runtime.runtimeId)
+      try {
+        const response = await runtime.command(translated)
+        if (isRecord(response) && response.success === true) this.durableIdentityByRuntimeId.delete(runtime.runtimeId)
+        return response
+      } finally {
+        this.sessionMutations.delete(runtime.runtimeId)
+      }
+    }
     const response = await runtime.command(translated)
     if (command.type === 'compact' && isRecord(response) && response.success === true) {
-      // The harness compact command writes the session file but emits no
-      // lifecycle events over RPC. A compact can also roll the session file
-      // forward (experimental-context rollover): refresh state first so the
-      // runtime points at the successor file, then read the fresh compaction
-      // record back and synthesize the compaction_end so the live transcript
-      // renders the divider immediately instead of after a session re-entry.
-      // The renderer dedupes against the disk-loaded record.
-      try { await runtime.refreshState() } catch { /* the snapshot keeps the pre-compact path */ }
+      // Normal compaction appends to the current file. Read back its record
+      // only after OMP confirms the current identity; never synthesize a
+      // success from an old file when a state query failed.
+      try {
+        await runtime.refreshState()
+        // 同步後重讀權威 leaf（compaction 會改寫 tree 末端）；失敗同樣降級為未知
+        recordSessionDiagnostic('compact-synchronized', runtime.snapshot(), undefined, await runtime.readLeafId())
+      } catch {
+        recordSessionDiagnostic('compact-sync-pending', runtime.snapshot(), undefined, await runtime.readLeafId())
+        this.eventSink({
+          runtimeId: runtime.runtimeId,
+          event: {
+            type: 'notice',
+            level: 'warning',
+            source: 'desktop.compaction-sync',
+            message: 'Compaction completed, but session state could not be synchronized. Refresh the session before continuing; do not repeat compaction.',
+          },
+        })
+        return { ...response, synchronizationPending: true }
+      }
       const sessionFile = runtime.snapshot().sessionFile
       if (sessionFile) {
         const record = await this.manualCompactionReader(sessionFile).catch(() => undefined)
@@ -363,10 +490,18 @@ export class AgentRpcManager {
     const id = requireId(runtimeId, 'runtimeId')
     const runtime = this.runtimes.get(id)
     if (!runtime) return false
+    if (this.sessionMutations.has(id)) throw new Error('Session identity is being changed')
     return runtime.stop()
   }
 
-  list(): RuntimeInfo[] { return [...this.runtimes.values()].map((runtime) => runtime.snapshot()) }
+  /** Renderer-visible runtime list. Retiring/quarantined runtimes are excluded:
+   * commands against them fail by design, so advertising them only invites the
+   * renderer to adopt one inside the ~30s stop window and surface a raw
+   * "Runtime is being retired" error — the idle-prompt path must instead see
+   * them as gone and transparently start a fresh runtime. */
+  list(): RuntimeInfo[] {
+    return [...this.runtimes.values()].filter((runtime) => !this.retiringRuntimes.has(runtime.runtimeId) && !this.quarantinedRuntimes.has(runtime.runtimeId)).map((runtime) => runtime.snapshot())
+  }
 
   /** Cheap ownership probe for IPC routing; requireRuntime keeps the authoritative not-found error. */
   has(runtimeId: string): boolean { return this.runtimes.has(runtimeId) }
@@ -374,11 +509,13 @@ export class AgentRpcManager {
   getForSession(filePath: string): RuntimeInfo | undefined {
     const wanted = canonicalSessionPath(filePath)
     return this.list().find((runtime) => {
+      // 遭 quarantine 的 runtime 只等退役;任何檔案(含滾動後的新檔)都不得再導向它。
+      if (this.quarantinedRuntimes.has(runtime.runtimeId)) return false
       const sessionFile = runtime.sessionFile
       if (sessionFile !== undefined && canonicalSessionPath(sessionFile) === wanted) return true
       // Before the handshake reports the authoritative file, a starting child
       // is known by the resume path it was spawned with.
-      return this.startSessionPathById.get(runtime.runtimeId) === wanted
+      return sessionFile === undefined && this.startSessionPathById.get(runtime.runtimeId) === wanted
     })
   }
 
@@ -388,6 +525,7 @@ export class AgentRpcManager {
       const path = runtime.snapshot().sessionFile
       return path !== undefined && canonicalSessionPath(path) === wanted
     })
+    if (matches.some((runtime) => this.sessionMutations.has(runtime.runtimeId))) throw new Error('Session identity is being changed')
     await Promise.all(matches.map((runtime) => runtime.stop()))
   }
 
@@ -408,24 +546,59 @@ export class AgentRpcManager {
     return response.success === true
   }
 
-  /** Retarget a runtime parked on a session file that a listed successor
-   * superseded. The desktop's lineage scan sees the roll even when the
-   * runtime cannot (its commands fail on another process's session lock):
-   * republish the state so bound workspaces follow the successor, then stop
-   * the stale transport — the next prompt spawns fresh against the successor
-   * instead of forking the predecessor. */
-  async rebindSupersededSession(filePath: string, successorPath: string): Promise<void> {
-    const wanted = canonicalSessionPath(filePath)
-    const runtime = [...this.runtimes.values()].find((candidate) => {
-      const path = candidate.snapshot().sessionFile
-      return path !== undefined && canonicalSessionPath(path) === wanted
-    })
-    if (!runtime) return
-    const snapshot = runtime.snapshot()
-    if (snapshot.isStreaming || snapshot.isCompacting) return
-    runtime.adoptSessionFile(successorPath)
-    await runtime.stop().catch(() => undefined)
+  /** Fork through OMP so its hooks, active branch and artifacts share one owner. */
+  async forkForSession(filePath: string, cwd: string): Promise<string> {
+    const source = await this.validateSessionPath(filePath)
+    const started = await this.start({ cwd, sessionPath: source })
+    let retiringRuntime: RpcRuntime | undefined
+    let retirementFailed = false
+    try {
+      return await this.withRuntimeAdmission(async () => {
+        const runtime = this.requireRuntime(started.runtimeId)
+        if (!this.isIdle(runtime)) throw new Error('Session must be idle before creating a fork')
+        const currentFile = runtime.snapshot().sessionFile
+        if (!currentFile || canonicalSessionPath(currentFile) !== canonicalSessionPath(source)) {
+          throw new Error('Session identity changed before creating a fork')
+        }
+        this.sessionMutations.add(runtime.runtimeId)
+        this.commandsInFlight.set(runtime.runtimeId, 1)
+        try {
+          // Once issued, an unacknowledged mutation may already have changed
+          // identity. Never leave source-scoped capabilities on that process.
+          retiringRuntime = runtime
+          const response = await runtime.command({ type: 'fork' })
+          if (response.success !== true) {
+            retiringRuntime = undefined
+            throw new Error(typeof response.error === 'string' ? response.error : 'OMP could not fork the session')
+          }
+          if (isRecord(response.data) && response.data.cancelled === true) {
+            retiringRuntime = undefined
+            throw new Error('Session fork was cancelled')
+          }
+          const state = await runtime.refreshState()
+          if (!state.sessionFile || canonicalSessionPath(state.sessionFile) === canonicalSessionPath(source)) {
+            throw new Error('OMP did not confirm the forked session path')
+          }
+          return await this.validateSessionPath(state.sessionFile)
+        } finally {
+          // Mark under admission, stop outside it. The close lifecycle revokes
+          // browser/collaboration/schedule claims and a later resume mints new ones.
+          if (retiringRuntime) this.retiringRuntimes.add(runtime.runtimeId)
+          this.sessionMutations.delete(runtime.runtimeId)
+          this.commandsInFlight.delete(runtime.runtimeId)
+          this.scheduleIdleRetirement()
+        }
+      })
+    } finally {
+      // noUnsafeFinally: 不在 finally 內拋出（會遮蔽 try 區塊原本的例外）；
+      // 以旗標記下，離開 finally 後再拋。
+      retirementFailed = retiringRuntime !== undefined && !await retiringRuntime.stop().catch(() => false)
+    }
+    if (retirementFailed) {
+      throw new Error('The fork may have been created, but its runtime could not be safely retired. Refresh the session list before retrying.')
+    }
   }
+
 
   async stopAll(): Promise<void> {
     this.beginShutdown()
@@ -437,7 +610,7 @@ export class AgentRpcManager {
     const wantedRevision = this.runtimeEnvironmentRevision
     if (!this.runtimes.has(runtime.runtimeId)
       || (this.runtimeEnvironmentRevisions.get(runtime.runtimeId) ?? wantedRevision) >= wantedRevision) return
-    if (this.isIdle(runtime)) {
+    if (this.canReclaim(runtime)) {
       if (await this.retireForCheckout(runtime)) return
     }
     const timer = setTimeout(() => { void this.retireWhenIdle(runtime) }, 250)
@@ -447,7 +620,7 @@ export class AgentRpcManager {
   private async retireForCheckout(runtime: RpcRuntime, eligible: () => boolean = () => true): Promise<boolean> {
     const decision = await this.withRuntimeAdmission(async () => {
       if (!this.runtimes.has(runtime.runtimeId)) return 'gone'
-      if (!this.isIdle(runtime) || !eligible()) return 'busy'
+      if (!this.canReclaim(runtime) || !eligible()) return 'busy'
       this.retiringRuntimes.add(runtime.runtimeId)
       return 'retiring'
     })
@@ -475,6 +648,16 @@ export class AgentRpcManager {
       && (actions?.queuedCount ?? 0) === 0
   }
 
+  /**
+   * Automatic reclamation guard: manual mutations (fork) keep the plain idle
+   * predicate, while every automatic retire path additionally requires OMP
+   * to have authoritatively settled the session with no extension dialog
+   * still waiting for a user answer. Unknown settlement fails safe.
+   */
+  private canReclaim(runtime: RpcRuntime): boolean {
+    return this.isIdle(runtime) && runtime.canRetireSafely()
+  }
+
   private requireOpen(): void {
     if (this.closed) throw new Error(`${this.adapter.agentName} manager is shutting down`)
   }
@@ -487,7 +670,7 @@ export class AgentRpcManager {
     const now = Date.now()
     const idle: RpcRuntime[] = []
     for (const runtime of this.runtimes.values()) {
-      if (!this.isIdle(runtime)) { this.idleSince.delete(runtime.runtimeId); continue }
+      if (!this.canReclaim(runtime)) { this.idleSince.delete(runtime.runtimeId); continue }
       if (!this.idleSince.has(runtime.runtimeId)) this.idleSince.set(runtime.runtimeId, now)
       idle.push(runtime)
     }
@@ -508,7 +691,7 @@ export class AgentRpcManager {
             const eligible = () => {
               const recentIdle = [...this.idleSince.keys()].reverse().filter((id) => {
                 const candidate = this.runtimes.get(id)
-                return candidate !== undefined && this.isIdle(candidate)
+                return candidate !== undefined && this.canReclaim(candidate)
               })
               const since = this.idleSince.get(runtime.runtimeId)
               return since !== undefined && Date.now() - since >= idleMs
@@ -531,7 +714,7 @@ export class AgentRpcManager {
       // A new session replaces the oldest safely idle child instead of
       // accumulating resident processes. Busy, queued, compacting, and
       // still-starting runtimes remain alive, with no numeric concurrency cap.
-      const idle = [...this.runtimes.values()].find((runtime) => this.isIdle(runtime))
+      const idle = [...this.runtimes.values()].find((runtime) => this.canReclaim(runtime))
       if (idle) {
         this.retiringRuntimes.add(idle.runtimeId)
         try {

@@ -1,6 +1,5 @@
 import type { PrimeModelCatalog, PrimeModelDescriptor, PrimeProviderDescriptor } from '../../src/types/api'
 import { catalogLimitWarnings, limitCatalogRelations, type ModelCatalogProvider } from './model-catalog'
-import { withModelVisibility } from './model-visibility'
 import { resolveExecutable, runProcess, type ExecutableSource } from './process-utils'
 import { requireString } from './validation'
 
@@ -90,14 +89,11 @@ export interface CliModelCatalogOptions {
   timeoutMs?: number
   /** Combined stdout/stderr byte cap for one catalog fetch. */
   maxOutputBytes?: number
-  /** Live set of opt-in providers the user explicitly enabled. */
-  enabledProviders?: () => ReadonlySet<string>
 }
 
 export abstract class CliModelCatalogService implements ModelCatalogProvider {
   protected readonly timeoutMs: number
   protected readonly maxOutputBytes: number
-  protected readonly enabledProviders: () => ReadonlySet<string>
   private cachedCatalog: PrimeModelCatalog | null = null
   private cachedAt = 0
   private cachedExecutable: string | null = null
@@ -107,7 +103,6 @@ export abstract class CliModelCatalogService implements ModelCatalogProvider {
   constructor(private readonly executable: ExecutableSource, options: CliModelCatalogOptions = {}) {
     this.timeoutMs = options.timeoutMs ?? DEFAULT_CATALOG_TIMEOUT_MS
     this.maxOutputBytes = options.maxOutputBytes ?? DEFAULT_CATALOG_MAX_OUTPUT_BYTES
-    this.enabledProviders = options.enabledProviders ?? (() => new Set<string>())
   }
 
   /** Harness name as it appears in user-facing warnings and errors ('OMP', 'Pi'). */
@@ -125,14 +120,14 @@ export abstract class CliModelCatalogService implements ModelCatalogProvider {
   /** Environment for the `--version` probe; undefined inherits the runProcess default. */
   protected versionEnvironment(): NodeJS.ProcessEnv | undefined { return undefined }
 
-  async catalog(force = false, disabledProviders: ReadonlySet<string> = new Set(), disabledModels: ReadonlySet<string> = new Set()): Promise<PrimeModelCatalog> {
+  async catalog(force = false): Promise<PrimeModelCatalog> {
     const executable = resolveExecutable(this.executable)
     this.prepareExecutable(executable)
     if (!executable) {
       return { primeVersion: 'unknown', refreshedAt: new Date().toISOString(), models: [], providers: [], warning: this.notInstalledWarning }
     }
     if (!force && this.cachedCatalog && Date.now() - this.cachedAt < CATALOG_TTL_MS) {
-      return withModelVisibility(this.cachedCatalog, disabledProviders, disabledModels, this.enabledProviders())
+      return this.cachedCatalog
     }
     // Single-flight: concurrent callers share one CLI run instead of spawning
     // duplicate subprocesses; the in-flight promise is cleared in finally.
@@ -143,28 +138,25 @@ export abstract class CliModelCatalogService implements ModelCatalogProvider {
       this.catalogRefresh = { executable, promise }
     }
     try {
-      return withModelVisibility(await this.catalogRefresh.promise, disabledProviders, disabledModels, this.enabledProviders())
+      return await this.catalogRefresh.promise
     } catch (error) {
       // A failed refresh degrades to the last good catalog instead of an
       // error; first-ever loads still surface the failure.
       if (!this.cachedCatalog) throw error
       const reason = error instanceof Error ? error.message : String(error)
       const staleWarning = `The ${this.harnessLabel} model catalog could not be refreshed (${reason}); showing the last loaded catalog.`
-      return withModelVisibility({
+      return {
         ...this.cachedCatalog,
         warning: this.cachedCatalog.warning ? `${this.cachedCatalog.warning} ${staleWarning}` : staleWarning,
-      }, disabledProviders, disabledModels, this.enabledProviders())
+      }
     }
   }
 
-  async requireAvailableModel(rawKey: unknown, disabledProviders: ReadonlySet<string> = new Set(), disabledModels: ReadonlySet<string> = new Set()): Promise<PrimeModelDescriptor> {
+  async requireAvailableModel(rawKey: unknown): Promise<PrimeModelDescriptor> {
     const key = requireString(rawKey, 'model', { min: 3, max: 512, trim: true })
-    const catalog = await this.catalog(false, disabledProviders, disabledModels)
+    const catalog = await this.catalog(false)
     const model = catalog.models.find((candidate) => candidate.key === key)
     if (!model) throw new Error(`Model was not found in the ${this.harnessLabel} catalog`)
-    const provider = catalog.providers.find((candidate) => candidate.id === model.provider)
-    if (!provider?.enabled) throw new Error(`Provider ${model.provider} is disabled`)
-    if (model.enabled === false) throw new Error(`${model.name} is disabled`)
     if (!model.available) throw new Error(`Provider ${model.provider} is not configured for ${model.name}`)
     return model
   }
@@ -218,7 +210,6 @@ export abstract class CliModelCatalogService implements ModelCatalogProvider {
       authLabel: this.credentialsLabel,
       modelCount: 0,
       availableModelCount: 0,
-      enabled: true,
     })))
 
     const warnings = [

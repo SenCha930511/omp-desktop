@@ -11,6 +11,8 @@ import { agentsFragment } from '@/i18n/keys/agents'
 import { commandsFragment } from '@/i18n/keys/commands'
 import { conversationFragment } from '@/i18n/keys/conversation'
 import { sidechatFragment } from '@/i18n/keys/sidechat'
+import { sessionTreeFragment } from '@/i18n/keys/sessiontree'
+import { sessionSettingsFragment } from '@/i18n/keys/session-settings'
 
 type MessageValues = Record<string, string | number>
 
@@ -25,6 +27,8 @@ const englishCatalog = {
   ...commandsFragment.en,
   ...conversationFragment.en,
   ...sidechatFragment.en,
+  ...sessionTreeFragment.en,
+  ...sessionSettingsFragment.en,
 } satisfies Record<string, Message>
 
 export type MessageKey = keyof typeof englishCatalog
@@ -41,6 +45,8 @@ const simplifiedChineseCatalog: Partial<Record<MessageKey, Message>> = {
   ...commandsFragment['zh-CN'],
   ...conversationFragment['zh-CN'],
   ...sidechatFragment['zh-CN'],
+  ...sessionTreeFragment['zh-CN'],
+  ...sessionSettingsFragment['zh-CN'],
 }
 
 const traditionalChineseCatalog: Partial<Record<MessageKey, Message>> = {
@@ -54,6 +60,8 @@ const traditionalChineseCatalog: Partial<Record<MessageKey, Message>> = {
   ...commandsFragment['zh-TW'],
   ...conversationFragment['zh-TW'],
   ...sidechatFragment['zh-TW'],
+  ...sessionTreeFragment['zh-TW'],
+  ...sessionSettingsFragment['zh-TW'],
 }
 
 function browserLanguages(): readonly string[] {

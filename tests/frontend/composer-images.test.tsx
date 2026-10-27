@@ -16,7 +16,7 @@ const models: PrimeModelDescriptor[] = [{
 }]
 const providers: PrimeProviderDescriptor[] = [{
   id: 'provider', name: 'Provider', authMethod: 'api_key', configured: true,
-  modelCount: 1, availableModelCount: 1, enabled: true,
+  modelCount: 1, availableModelCount: 1,
 }]
 const modelsByProvider = groupModelsByProvider(models)
 

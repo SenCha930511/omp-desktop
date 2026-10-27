@@ -116,9 +116,10 @@ export class SettingsService {
       },
       voiceLocalWhisperExecutable: (value) => requireString(value, 'voiceLocalWhisperExecutable', { max: 4_096, trim: true }),
       voiceLocalWhisperModel: (value) => requireString(value, 'voiceLocalWhisperModel', { max: 4_096, trim: true }),
-      ompDisabledProviders: (value) => this.providerIdList(value, 'ompDisabledProviders'),
-      ompEnabledProviders: (value) => this.providerIdList(value, 'ompEnabledProviders'),
-      ompDisabledModels: (value) => this.disabledModels(value, 'ompDisabledModels'),
+      inputShortcutsVersion: (value) => {
+        if (value !== undefined && (!Number.isInteger(value) || (value as number) < 0)) throw new TypeError('inputShortcutsVersion must be a non-negative integer')
+        return value as number | undefined
+      },
       lastSelectedModels: (value) => {
         if (!isRecord(value)) throw new TypeError('lastSelectedModels must be an object')
         rejectUnknownKeys(value, HARNESS_IDS, 'lastSelectedModels')
@@ -135,7 +136,8 @@ export class SettingsService {
     rejectUnknownKeys(raw, keys, 'settings patch')
     const patch: Partial<AppSettings> = {}
     const applyField = <K extends keyof AppSettings>(key: K): void => {
-      if (raw[key] !== undefined) patch[key] = validators[key](raw[key])
+      const validate = validators[key]
+      if (raw[key] !== undefined && validate) patch[key] = validate(raw[key])
     }
     for (const key of keys) applyField(key)
     let previous: AppSettings | undefined
@@ -153,24 +155,6 @@ export class SettingsService {
     const model = requireString(value, label, { min: 1, max: 128, trim: true })
     if (!/^[a-z0-9][a-z0-9._:-]{0,127}$/i.test(model)) throw new TypeError(`${label} is not valid`)
     return model
-  }
-
-  private providerIdList(value: unknown, label: string): string[] {
-    if (!Array.isArray(value) || value.length > 256) throw new TypeError(`${label} must be a bounded array`)
-    return [...new Set(value.map((entry, index) => {
-      const id = requireString(entry, `${label}[${index}]`, { min: 1, max: 128, trim: true })
-      if (!/^[a-z0-9][a-z0-9._-]{0,127}$/i.test(id)) throw new TypeError(`${label}[${index}] is not a valid provider ID`)
-      return id
-    }))]
-  }
-
-  private disabledModels(value: unknown, label: string): string[] {
-    if (!Array.isArray(value) || value.length > 5_000) throw new TypeError(`${label} must be a bounded array`)
-    return [...new Set(value.map((entry, index) => {
-      const key = requireString(entry, `${label}[${index}]`, { min: 3, max: 385, trim: true })
-      if (!/^[a-z0-9][a-z0-9._-]{0,127}\/[a-z0-9._:/+-]{1,256}$/i.test(key)) throw new TypeError(`${label}[${index}] is not a valid model key`)
-      return key
-    }))]
   }
 
   async resetBrowserData(): Promise<boolean> {

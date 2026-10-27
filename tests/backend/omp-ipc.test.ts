@@ -1,7 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 
 const electronMocks = vi.hoisted(() => ({
   app: {},
@@ -18,33 +15,11 @@ const electronMocks = vi.hoisted(() => ({
 vi.mock('electron', () => electronMocks)
 
 import { registerIpc, type IpcRegistration } from '../../electron/main/ipc'
-import { OmpModelCatalogService, MAX_CATALOG_PROVIDERS } from '../../electron/main/providers-omp'
-import type { PrimeModelCatalog, PrimeModelDescriptor } from '../../src/types/api'
+import type { PrimeModelDescriptor } from '../../src/types/api'
 
 const EXPECTED_URL = 'omp-desktop://app/'
 const OMP_SESSION = '/home/user/.omp/agent/sessions/bucket/session.jsonl'
-const fixtureDirs: string[] = []
 
-function fakeOverflowCatalog(): OmpModelCatalogService {
-  const directory = mkdtempSync(join(tmpdir(), 'gooeypi-omp-ipc-catalog-'))
-  fixtureDirs.push(directory)
-  const executable = join(directory, 'omp.cjs')
-  const models = Array.from({ length: MAX_CATALOG_PROVIDERS + 1 }, (_, index) => ({
-    provider: `provider-${String(index).padStart(3, '0')}`,
-    id: 'model',
-    name: `Provider ${index} model`,
-    reasoning: false,
-    thinking: null,
-    input: ['text'],
-    contextWindow: 1,
-    maxTokens: 1,
-  }))
-  writeFileSync(executable, `#!/usr/bin/env node
-process.stdout.write(JSON.stringify({ models: ${JSON.stringify(models)} }))
-`)
-  chmodSync(executable, 0o755)
-  return new OmpModelCatalogService(executable)
-}
 
 function serviceStub(): Record<string, unknown> {
   return new Proxy({}, { get: () => vi.fn(async () => undefined) })
@@ -52,12 +27,12 @@ function serviceStub(): Record<string, unknown> {
 
 interface TestServices {
   refreshHarnesses: Mock
-  agents: { start: Mock; command: Mock; stop: Mock; list: Mock }
+  agents: { start: Mock; command: Mock; refreshState: Mock; stop: Mock; list: Mock }
   sessions: { list: Mock; read: Mock; rename: Mock; archive: Mock; branch: Mock; setPinned: Mock }
   projects: { list: Mock; grantInferred: Mock }
   checkouts: { list: Mock; execute: Mock }
   plugins: Record<string, Mock>
-  catalog: { catalog: OmpModelCatalogService['catalog'] }
+  catalog: { catalog: Mock }
   settings: { get: Mock; update: Mock }
   schedules: { list: Mock; create: Mock }
   browser: { closeForSession: Mock }
@@ -71,28 +46,20 @@ interface Harness {
   registration: IpcRegistration
 }
 
-function buildServices(options: { includeApple?: boolean } = {}) {
-  const settingsState = { ompDisabledProviders: ['anthropic'], ompDisabledModels: [] as string[], ompEnabledProviders: [] as string[] }
-  const catalog = (from: string, disabled: ReadonlySet<string> = new Set(), disabledModels: ReadonlySet<string> = new Set()) => {
+function buildServices() {
+  const settingsState: Record<string, unknown> = {}
+  const catalog = (from: string) => {
     const models: PrimeModelDescriptor[] = [
       { key: 'anthropic/claude', provider: 'anthropic', id: 'claude', name: 'Claude', reasoning: true, input: ['text'], contextWindow: 128_000, maxTokens: 16_000, availableThinkingLevels: ['low', 'high', 'max'], fastModeSupported: true, available: true },
       { key: 'openai/gpt', provider: 'openai', id: 'gpt', name: 'GPT', reasoning: true, input: ['text'], contextWindow: 128_000, maxTokens: 16_000, availableThinkingLevels: ['low', 'high', 'max'], fastModeSupported: true, available: true },
       { key: 'openai/gpt-mini', provider: 'openai', id: 'gpt-mini', name: 'GPT Mini', reasoning: false, input: ['text'], contextWindow: 128_000, maxTokens: 16_000, availableThinkingLevels: ['off'], fastModeSupported: false, available: true },
     ]
-    if (options.includeApple) {
-      // Mirrors withModelVisibility: apple is an opt-in provider — the
-      // affirmative list, never the disabled list, decides visibility.
-      const appleEnabled = settingsState.ompEnabledProviders.includes('apple') && !disabledModels.has('apple/on-device')
-      models.push({ key: 'apple/on-device', provider: 'apple', id: 'on-device', name: 'On device', reasoning: false, input: ['text'], contextWindow: 8_192, maxTokens: 8_192, availableThinkingLevels: ['off'], fastModeSupported: false, available: true, enabled: appleEnabled })
-    }
-    const providerEnabled = (id: string) => id === 'apple' ? (models.find((model) => model.provider === 'apple')?.enabled ?? false) : !disabled.has(id) && models.some((model) => model.provider === id && !disabledModels.has(model.key))
     return {
       from,
-      models: models.map((model) => model.provider === 'apple' ? model : { ...model, enabled: providerEnabled(model.provider) && !disabledModels.has(model.key) }),
+      models,
       providers: [
-        { id: 'anthropic', name: 'Anthropic', authMethod: 'api_key' as const, configured: true, modelCount: 1, availableModelCount: 1, enabled: providerEnabled('anthropic') },
-        { id: 'openai', name: 'OpenAI', authMethod: 'api_key' as const, configured: true, modelCount: 2, availableModelCount: 2, enabled: providerEnabled('openai') },
-        ...(options.includeApple ? [{ id: 'apple', name: 'Apple', authMethod: 'external' as const, configured: true, modelCount: 1, availableModelCount: 1, enabled: providerEnabled('apple') }] : []),
+        { id: 'anthropic', name: 'Anthropic', authMethod: 'api_key' as const, configured: true, modelCount: 1, availableModelCount: 1 },
+        { id: 'openai', name: 'OpenAI', authMethod: 'api_key' as const, configured: true, modelCount: 2, availableModelCount: 2 },
       ],
       primeVersion: 'test', refreshedAt: '2026-01-01T00:00:00.000Z',
     }
@@ -125,17 +92,18 @@ function buildServices(options: { includeApple?: boolean } = {}) {
       has: vi.fn((id: string) => id === 'omp-runtime'),
       start: vi.fn(async (options: unknown) => ({ started: 'omp', options })),
       command: vi.fn(async () => ({ ok: 'omp' })),
+      refreshState: vi.fn(async () => ({ runtimeId: 'omp-runtime', harness: 'omp', synchronized: true })),
       stop: vi.fn(async () => true),
       list: vi.fn(() => [{ runtimeId: 'omp-runtime', harness: 'omp' }]),
     },
     terminals: { ...serviceStub(), killForSession: vi.fn(async () => undefined) },
     git: serviceStub(),
     plugins: { ...serviceStub(), list: vi.fn(async () => 'omp-plugins'), install: vi.fn(async () => undefined), installExtension: vi.fn(async () => undefined), connectMcp: vi.fn(async () => undefined), setMcpEnabled: vi.fn(async () => undefined), refresh: vi.fn(async () => 'omp-plugins') },
-    catalog: { catalog: vi.fn(async (_force: unknown, disabled: ReadonlySet<string>, disabledModels: ReadonlySet<string>) => catalog('omp', disabled, disabledModels)) },
+    catalog: { catalog: vi.fn(async (_force: unknown) => catalog('omp')) },
     settings: {
       ...serviceStub(),
       get: vi.fn(() => settingsState),
-      update: vi.fn(async (patch: Partial<typeof settingsState>) => { Object.assign(settingsState, patch); return settingsState }),
+      update: vi.fn(async (patch: Record<string, unknown>) => { Object.assign(settingsState, patch); return settingsState }),
     },
     schedules: { ...serviceStub(), onDidChange: vi.fn(() => () => undefined), list: vi.fn(() => 'scheduled'), create: vi.fn(async () => 'created') },
     browser: { ...serviceStub(), closeForSession: vi.fn(() => true), onDidChange: vi.fn(() => vi.fn()), onPointer: vi.fn(() => vi.fn()), onActivity: vi.fn(() => vi.fn()) },
@@ -168,7 +136,6 @@ describe('harness-aware IPC routing', () => {
 
   afterEach(() => {
     harness.registration.dispose()
-    for (const directory of fixtureDirs.splice(0)) rmSync(directory, { recursive: true, force: true })
   })
 
   it('exposes harness refresh through the fixed authorized app channel', async () => {
@@ -204,6 +171,16 @@ describe('harness-aware IPC routing', () => {
 
     await expect(harness.invoke('agent:stop', 'omp-runtime')).resolves.toBe(true)
     expect(harness.services.agents.stop).toHaveBeenCalledWith('omp-runtime')
+  })
+
+  it('routes agent:refresh-state with a validated runtime id for the sync-pending retry', async () => {
+    await expect(harness.invoke('agent:refresh-state', 'omp-runtime')).resolves.toEqual({ runtimeId: 'omp-runtime', harness: 'omp', synchronized: true })
+    expect(harness.services.agents.refreshState).toHaveBeenCalledWith('omp-runtime')
+
+    await expect(async () => harness.invoke('agent:refresh-state', 42)).rejects.toThrow('runtimeId must be a string')
+    await expect(async () => harness.invoke('agent:refresh-state', '')).rejects.toThrow('runtimeId is too short')
+    // Both malformed calls failed validation before reaching the manager.
+    expect(harness.services.agents.refreshState).toHaveBeenCalledTimes(1)
   })
 
   it('returns the single manager list for agent:list', () => {
@@ -265,17 +242,17 @@ describe('harness-aware IPC routing', () => {
   })
 
   it('does not register the removed follow-up, credential, or heartbeat channels', () => {
-    for (const channel of ['sessions:follow-up', 'providers:save-api-key', 'providers:logout', 'providers:start-oauth', 'providers:respond-oauth', 'providers:cancel-oauth', 'plugins:set-mcp-support', 'heartbeats:list', 'heartbeats:manage']) {
+    for (const channel of ['sessions:follow-up', 'providers:save-api-key', 'providers:logout', 'providers:start-oauth', 'providers:respond-oauth', 'providers:cancel-oauth', 'providers:set-enabled', 'providers:set-disabled', 'providers:set-model-enabled', 'plugins:set-mcp-support', 'heartbeats:list', 'heartbeats:manage']) {
       expect(electronMocks.ipcMain.handle).not.toHaveBeenCalledWith(channel, expect.any(Function))
     }
   })
 
-  it('routes providers:catalog with the persisted desktop visibility', async () => {
+  it('routes providers:catalog', async () => {
     await expect(harness.invoke('providers:catalog', true)).resolves.toMatchObject({ from: 'omp' })
-    expect(harness.services.catalog.catalog).toHaveBeenCalledWith(true, new Set(['anthropic']), new Set())
+    expect(harness.services.catalog.catalog).toHaveBeenCalledWith(true)
 
     await expect(harness.invoke('providers:catalog', true, 'omp')).resolves.toMatchObject({ from: 'omp' })
-    expect(harness.services.catalog.catalog).toHaveBeenCalledWith(true, new Set(['anthropic']), new Set())
+    expect(harness.services.catalog.catalog).toHaveBeenCalledWith(true)
   })
 
   it('does not register MCP-specific authentication or credential cleanup channels', () => {
@@ -288,116 +265,6 @@ describe('harness-aware IPC routing', () => {
     await expect(harness.invoke('harnessUpdates:install')).resolves.toEqual({ phase: 'idle' })
     expect(harness.services.harnessUpdates.getState).toHaveBeenCalledTimes(1)
     expect(harness.services.harnessUpdates.install).toHaveBeenCalledTimes(1)
-  })
-
-  it('stores OMP provider visibility in desktop settings', async () => {
-    await expect(harness.invoke('providers:set-enabled', 'openai', false, 'omp')).resolves.toMatchObject({
-      from: 'omp',
-      providers: [{ id: 'anthropic', enabled: false }, { id: 'openai', enabled: false }],
-    })
-    expect(harness.services.settings.update).toHaveBeenCalledWith({ ompDisabledProviders: ['anthropic', 'openai'], ompEnabledProviders: [], ompDisabledModels: [] })
-  })
-
-  it('re-enables an opt-in provider even after its model was hidden individually', async () => {
-    const services = buildServices({ includeApple: true })
-    const state = services.settings.get() as { ompEnabledProviders: string[]; ompDisabledModels: string[]; ompDisabledProviders: string[] }
-    // Apple is an opt-in provider: explicitly enabled → model hidden → toggle again.
-    state.ompEnabledProviders = ['apple']
-    state.ompDisabledModels = ['apple/on-device']
-    state.ompDisabledProviders = []
-    const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>()
-    const registration = registerIpc(services as never, EXPECTED_URL)
-    const mainFrame = { url: EXPECTED_URL }
-    const sender = { id: 2, isDestroyed: () => false, getURL: () => EXPECTED_URL, mainFrame }
-    registration.authorize(sender as never)
-    electronMocks.ipcMain.handle.mock.calls.forEach(([channel, listener]) => {
-      if (typeof channel === 'string' && typeof listener === 'function') handlers.set(channel, listener as never)
-    })
-    const event = { sender, senderFrame: mainFrame }
-    const invoke = (channel: string, ...args: unknown[]) => handlers.get(channel)!(event, ...args)
-
-    try {
-      const result = await invoke('providers:set-enabled', 'apple', true, 'omp') as { providers: Array<{ id: string; enabled: boolean }>; models: Array<{ key: string; enabled: boolean }> }
-      expect(result.providers.find((provider) => provider.id === 'apple')?.enabled).toBe(true)
-      expect(result.models.find((model) => model.key === 'apple/on-device')?.enabled).toBe(true)
-      expect(services.settings.update).toHaveBeenLastCalledWith({
-        ompDisabledProviders: [],
-        ompEnabledProviders: ['apple'],
-        ompDisabledModels: [],
-      })
-    } finally {
-      registration.dispose()
-    }
-  })
-
-  it('applies a bulk provider disable to the desktop visibility lists', async () => {
-    await expect(harness.invoke('providers:set-disabled', ['openai'], 'omp')).resolves.toMatchObject({
-      from: 'omp',
-      providers: [{ id: 'anthropic', enabled: true }, { id: 'openai', enabled: false }],
-    })
-    expect(harness.services.settings.update).toHaveBeenLastCalledWith({ ompDisabledProviders: ['openai'], ompEnabledProviders: [], ompDisabledModels: [] })
-  })
-
-  it('keeps OMP provider and model visibility synchronized in both directions', async () => {
-    await expect(harness.invoke('providers:set-enabled', 'openai', false, 'omp')).resolves.toMatchObject({
-      providers: [{ id: 'anthropic', enabled: false }, { id: 'openai', enabled: false }],
-      models: [
-        { key: 'anthropic/claude', enabled: false },
-        { key: 'openai/gpt', enabled: false },
-        { key: 'openai/gpt-mini', enabled: false },
-      ],
-    })
-
-    await expect(harness.invoke('providers:set-model-enabled', 'openai/gpt', true, 'omp')).resolves.toMatchObject({
-      providers: [{ id: 'anthropic', enabled: false }, { id: 'openai', enabled: true }],
-      models: [
-        { key: 'anthropic/claude', enabled: false },
-        { key: 'openai/gpt', enabled: true },
-        { key: 'openai/gpt-mini', enabled: false },
-      ],
-    })
-    expect(harness.services.settings.update).toHaveBeenLastCalledWith({ ompDisabledProviders: ['anthropic'], ompDisabledModels: ['openai/gpt-mini'] })
-
-    await expect(harness.invoke('providers:set-model-enabled', 'openai/gpt', false, 'omp')).resolves.toMatchObject({
-      providers: [{ id: 'anthropic', enabled: false }, { id: 'openai', enabled: false }],
-      models: [
-        { key: 'anthropic/claude', enabled: false },
-        { key: 'openai/gpt', enabled: false },
-        { key: 'openai/gpt-mini', enabled: false },
-      ],
-    })
-    expect(harness.services.settings.update).toHaveBeenLastCalledWith({ ompDisabledProviders: ['anthropic', 'openai'], ompDisabledModels: ['openai/gpt', 'openai/gpt-mini'] })
-
-    await expect(harness.invoke('providers:set-enabled', 'openai', true, 'omp')).resolves.toMatchObject({
-      providers: [{ id: 'anthropic', enabled: false }, { id: 'openai', enabled: true }],
-      models: [
-        { key: 'anthropic/claude', enabled: false },
-        { key: 'openai/gpt', enabled: true },
-        { key: 'openai/gpt-mini', enabled: true },
-      ],
-    })
-    expect(harness.services.settings.update).toHaveBeenLastCalledWith({ ompDisabledProviders: ['anthropic'], ompEnabledProviders: [], ompDisabledModels: [] })
-  })
-
-  it('applies provider and model toggles only to models retained by a real overflow catalog', async () => {
-    const overflowCatalog = fakeOverflowCatalog()
-    const catalogService = harness.services.catalog as unknown as { catalog: OmpModelCatalogService['catalog'] }
-    catalogService.catalog = overflowCatalog.catalog.bind(overflowCatalog)
-
-    const initial = await harness.invoke('providers:catalog', true, 'omp') as PrimeModelCatalog
-    expect(initial.providers).toHaveLength(MAX_CATALOG_PROVIDERS)
-    expect(initial.models).toHaveLength(MAX_CATALOG_PROVIDERS)
-    expect(initial.models.some((model) => model.key === 'provider-256/model')).toBe(false)
-
-    const disabled = await harness.invoke('providers:set-enabled', 'provider-000', false, 'omp') as PrimeModelCatalog
-    expect(disabled.providers.find((provider) => provider.id === 'provider-000')?.enabled).toBe(false)
-    expect(disabled.models.find((model) => model.key === 'provider-000/model')?.enabled).toBe(false)
-
-    const reenabled = await harness.invoke('providers:set-model-enabled', 'provider-000/model', true, 'omp') as PrimeModelCatalog
-    expect(reenabled.providers.find((provider) => provider.id === 'provider-000')?.enabled).toBe(true)
-    expect(reenabled.models.find((model) => model.key === 'provider-000/model')?.enabled).toBe(true)
-    await expect(async () => harness.invoke('providers:set-enabled', 'provider-256', false, 'omp')).rejects.toThrow('Provider was not found')
-    await expect(async () => harness.invoke('providers:set-model-enabled', 'provider-256/model', false, 'omp')).rejects.toThrow('Model was not found')
   })
 
   it('routes schedules channels with the omp harness argument', async () => {

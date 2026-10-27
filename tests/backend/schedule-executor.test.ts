@@ -30,7 +30,7 @@ describe('ScheduledRunExecutor MCP auth policy', () => {
     const sessions = { harness, list: vi.fn(), requireSessionPath: vi.fn() }
     const agents = { startUnattended: vi.fn() }
     const providers = { requireAvailableModel: vi.fn() }
-    const executor = new ScheduledRunExecutor(projects as never, sessions as never, agents as never, providers as never, () => new Set())
+    const executor = new ScheduledRunExecutor(projects as never, sessions as never, agents as never, providers as never)
 
     const result = executor.run(task(harness, prompt))
     await expect(result).rejects.toBeInstanceOf(ScheduleBlockedError)

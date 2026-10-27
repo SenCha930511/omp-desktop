@@ -1,12 +1,14 @@
-import { ArrowLeft, AudioLines, Bot, Boxes, ChevronRight, Info, LockKeyhole, Settings2, Sun, Terminal } from 'lucide-react'
+import { ArrowLeft, AudioLines, Bot, Boxes, ChevronRight, Info, LockKeyhole, MessagesSquare, Settings2, Sun, Terminal } from 'lucide-react'
 import { type ComponentType, useEffect, useState } from 'react'
 import { BrowserGlobe, Modal } from '@/components/ui'
 import { errorMessage } from '@/lib/errors'
 import { type MessageKey, useI18n } from '@/lib/i18n'
 import { detectRendererPlatform } from '@/lib/platform-shortcuts'
+import type { SessionSettingsApi } from '@/hooks/useSessionSettings'
 import type { AppMeta, AppSettings, AppUpdateState, DesktopApi, LatestReleaseCheck, PrimeModelCatalog } from '@/types/api'
 import { AboutSettings } from './settings/AboutSettings'
 import { AgentSettings } from './settings/AgentSettings'
+import { SessionSettings } from './settings/SessionSettings'
 import { AppearanceSettings } from './settings/AppearanceSettings'
 import { BrowserSettings } from './settings/BrowserSettings'
 import type { SettingsSection, SettingsUpdate } from './settings/contracts'
@@ -20,6 +22,7 @@ const sections: Array<{ id: SettingsSection; label: MessageKey; icon: ComponentT
   { id: 'general', label: 'settings.general', icon: Settings2 },
   { id: 'appearance', label: 'settings.appearance', icon: Sun },
   { id: 'agent', label: 'settings.harness', icon: Bot },
+  { id: 'session', label: 'settings.session', icon: MessagesSquare },
   { id: 'providers', label: 'settings.providers', icon: Boxes },
   { id: 'voice', label: 'settings.voice', icon: AudioLines },
   { id: 'browser', label: 'settings.browser', icon: BrowserGlobe },
@@ -40,12 +43,9 @@ interface SettingsPageProps {
   onClose(): void
   onResetBrowser(): Promise<void> | void
   onOpenDocs(): void
-  onRefreshProviders(): Promise<void>
   onRefreshHarnesses(): Promise<void>
-  onSetProviderEnabled(providerId: string, enabled: boolean): Promise<void>
-  onSetAllProvidersEnabled(): Promise<void>
-  onSetAllProvidersDisabled(): Promise<void>
-  onSetModelEnabled(modelKey: string, enabled: boolean): Promise<void>
+  /** Controller for the active session's runtime-backed settings; absent when no session is open. */
+  sessionSettings?: SessionSettingsApi
   initialSection?: SettingsSection
   /** Re-applies initialSection for repeated navigation requests to the same section. */
   initialSectionRequestId?: number
@@ -55,6 +55,7 @@ export function SettingsPage({
   settings,
   meta,
   providerCatalog,
+  sessionSettings,
   voice,
   updateState,
   onUpdateAction,
@@ -64,12 +65,7 @@ export function SettingsPage({
   onUpdate,
   onResetBrowser,
   onOpenDocs,
-  onRefreshProviders,
   onRefreshHarnesses,
-  onSetProviderEnabled,
-  onSetAllProvidersEnabled,
-  onSetAllProvidersDisabled,
-  onSetModelEnabled,
   initialSection = 'general',
   initialSectionRequestId = 0,
 }: SettingsPageProps) {
@@ -105,16 +101,13 @@ export function SettingsPage({
         return <AppearanceSettings settings={settings} onUpdate={onUpdate} />
       case 'agent':
         return <AgentSettings settings={settings} meta={meta} onUpdate={onUpdate} onRefreshHarnesses={onRefreshHarnesses} />
+      case 'session':
+        return <SessionSettings sessionSettings={sessionSettings} />
       case 'providers':
         return (
           <ProvidersSettings
             harness={settings.activeHarness}
             catalog={providerCatalog}
-            onRefresh={onRefreshProviders}
-            onSetEnabled={onSetProviderEnabled}
-            onSetAllEnabled={onSetAllProvidersEnabled}
-            onSetAllDisabled={onSetAllProvidersDisabled}
-            onSetModelEnabled={onSetModelEnabled}
             onOpenDocs={onOpenDocs}
           />
         )

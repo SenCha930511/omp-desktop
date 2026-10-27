@@ -128,28 +128,26 @@ async function fixture(
     agents: { omp: ompManager as unknown as AgentRpcManager },
     catalogs: {
       omp: {
-        catalog: vi.fn(async (_force = false, disabled: ReadonlySet<string> = new Set(), disabledModels: ReadonlySet<string> = new Set()) => ({
+        catalog: vi.fn(async () => ({
           primeVersion: 'test', refreshedAt: '2026-01-01T00:00:00.000Z',
           providers: [
-            { id: 'openai-codex', name: 'OpenAI Codex', authMethod: 'oauth' as const, configured: true, modelCount: 1, availableModelCount: 1, enabled: !disabled.has('openai-codex') },
-            { id: 'hidden', name: 'Hidden', authMethod: 'api_key' as const, configured: true, modelCount: 1, availableModelCount: 1, enabled: !disabled.has('hidden') },
+            { id: 'openai-codex', name: 'OpenAI Codex', authMethod: 'oauth' as const, configured: true, modelCount: 1, availableModelCount: 1 },
+            { id: 'hidden', name: 'Hidden', authMethod: 'api_key' as const, configured: false, modelCount: 1, availableModelCount: 0 },
           ],
           models: [{
             key: 'openai-codex/gpt-5.6-sol', provider: 'openai-codex', id: 'gpt-5.6-sol', name: 'GPT-5.6 Sol',
             reasoning: true, input: ['text'] as const, contextWindow: 128_000, maxTokens: 16_000,
-            availableThinkingLevels: ['low', 'high', 'max'] as const, fastModeSupported: true, available: true, enabled: !disabledModels.has('openai-codex/gpt-5.6-sol'),
+            availableThinkingLevels: ['low', 'high', 'max'] as const, fastModeSupported: true, available: true,
           }, {
             key: 'hidden/secret', provider: 'hidden', id: 'secret', name: 'Secret', reasoning: true, input: ['text'] as const,
-            contextWindow: 128_000, maxTokens: 16_000, availableThinkingLevels: ['high'] as const, fastModeSupported: false, available: true, enabled: !disabledModels.has('hidden/secret'),
+            contextWindow: 128_000, maxTokens: 16_000, availableThinkingLevels: ['high'] as const, fastModeSupported: false, available: false,
           }, {
             key: 'openai-codex/desktop-hidden', provider: 'openai-codex', id: 'desktop-hidden', name: 'Desktop Hidden', reasoning: false, input: ['text'] as const,
-            contextWindow: 128_000, maxTokens: 16_000, availableThinkingLevels: ['off'] as const, fastModeSupported: false, available: true, enabled: !disabledModels.has('openai-codex/desktop-hidden'),
+            contextWindow: 128_000, maxTokens: 16_000, availableThinkingLevels: ['off'] as const, fastModeSupported: false, available: false,
           }],
         })),
       },
     } as unknown as ConstructorParameters<typeof AgentCollaborationBridge>[0]['catalogs'],
-    disabledProviders: { omp: () => new Set(['hidden']) },
-    disabledModels: { omp: () => new Set(['openai-codex/desktop-hidden']) },
     ...(waitClock ? { waitClock } : {}),
   })
   await bridge.start()

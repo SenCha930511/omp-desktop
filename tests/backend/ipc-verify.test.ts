@@ -158,6 +158,20 @@ describe('registerIpc verify gate', () => {
     registration.dispose()
   })
 
+  it('gates the agent:refresh-state retry behind sender authorization', () => {
+    const unauthorized = fakeEvent({ id: 42 })
+    expect(() => handlers.get('agent:refresh-state')!(unauthorized, 'runtime')).toThrow('IPC sender is not authorized')
+
+    const subFrame = fakeEvent({ subFrame: true })
+    registration.authorize(subFrame.sender as never)
+    expect(() => handlers.get('agent:refresh-state')!(subFrame, 'runtime')).toThrow('IPC sender is not authorized')
+
+    const trusted = fakeEvent()
+    registration.authorize(trusted.sender as never)
+    expect(async () => handlers.get('agent:refresh-state')!(trusted, 'runtime')).not.toThrow()
+    registration.dispose()
+  })
+
   it('reports renderer readiness once the trusted renderer completes its bootstrap invoke', async () => {
     const event = fakeEvent()
     let ready = false

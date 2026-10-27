@@ -730,7 +730,7 @@ describe('extension UI runtime ownership', () => {
     expect(resumeRuntime(runtime)).toMatchObject({ runtimeId: 'runtime', isStreaming: true })
   })
 
-  it('stops the agent when an ask_user questionnaire is dismissed', async () => {
+  it('answers a dismissed ask_user questionnaire cancelled without stopping the agent', async () => {
     const command = vi.fn().mockResolvedValue({})
     const stop = vi.fn().mockResolvedValue(true)
     const bridge = { agent: { command, stop } } as unknown as DesktopApi
@@ -753,8 +753,9 @@ describe('extension UI runtime ownership', () => {
     })
     await act(async () => { await state.respondToExtensionUi({ cancelled: true }) })
 
-    expect(stop).toHaveBeenCalledWith('runtime')
-    expect(command).not.toHaveBeenCalled()
+    expect(stop).not.toHaveBeenCalled()
+    expect(command).toHaveBeenCalledTimes(1)
+    expect(command).toHaveBeenCalledWith('runtime', { type: 'extension_ui_response', id: 'question-1', cancelled: true })
     expect(state.extensionUi).toBeNull()
   })
 

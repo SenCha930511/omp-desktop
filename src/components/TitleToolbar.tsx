@@ -1,4 +1,4 @@
-import { GitBranch, PanelLeft, PanelRight, Terminal } from 'lucide-react'
+import { GitBranch, ListTree, PanelLeft, PanelRight, Terminal } from 'lucide-react'
 import type { MouseEvent } from 'react'
 import { type MessageKey, useI18n } from '@/lib/i18n'
 import { shortcutLabel } from '@/lib/platform-shortcuts'
@@ -42,6 +42,8 @@ interface TitleToolbarProps {
   onToggleInspector(): void
   onToggleTerminal(): void
   onOpenBrowser(): void
+  /** Opens the session tree dialog; only rendered in the session view. */
+  onOpenSessionTree?(): void
   activeProjectScriptKind?: ProjectScriptKind
   onRunProjectScript?(kind: ProjectScriptKind): Promise<void> | void
   onStopProjectScript?(): void
@@ -62,6 +64,7 @@ export function TitleToolbar({
   onToggleInspector,
   onToggleTerminal,
   onOpenBrowser,
+  onOpenSessionTree,
   platform = 'darwin',
 }: TitleToolbarProps) {
   const { t } = useI18n()
@@ -97,6 +100,11 @@ export function TitleToolbar({
         ) : null}
       </div>
       <div className="title-toolbar__actions no-drag">
+        {view === 'session' && onOpenSessionTree ? (
+          <IconButton label={t('toolbar.sessionTree')} onClick={onOpenSessionTree}>
+            <ListTree size={17} />
+          </IconButton>
+        ) : null}
         {view === 'session' ? (
           <IconButton className={terminalOpen ? 'is-active' : ''} label={t('toolbar.toggleTerminal', { shortcut: terminalShortcut })} onClick={onToggleTerminal}>
             <Terminal size={17} />

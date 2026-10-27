@@ -13,9 +13,9 @@ export type JsonRecord = Record<string, unknown>
 /** Per-file metadata snapshot; the owning SessionService stamps the harness when it builds SessionRecords. */
 export interface SessionMetadata extends Omit<SessionRecord, 'harness'> {
   sessionName?: string
-  /** Session-id or absolute path of the session this file rolled/forked from; main-process only, stripped before IPC. */
+  /** Session-id or absolute path of the session this file forked from; main-process only, stripped before IPC. */
   parentSession?: string
-  /** Prior absolute paths of this session (moves, rollovers); main-process only, stripped before IPC. */
+  /** Prior absolute paths of this session (moves); main-process only, stripped before IPC. */
   previousSessionFiles?: string[]
 }
 
@@ -76,6 +76,8 @@ interface MetadataAccumulator {
   sawRecordTimestamp: boolean
   lastUserMessageAt?: string
   depth: number
+  /** Session id or absolute path of the file this session continued (fork / rollover). */
+  parentSession?: string
   model?: string
   provider?: string
   thinkingLevel?: string
@@ -145,7 +147,10 @@ function ingestMetadataLine(state: MetadataAccumulator, line: string): void {
     if (typeof value.cwd === 'string') state.projectPath = value.cwd
     state.createdAt = validTimestamp(value.timestamp, state.createdAt)
     if (typeof value.rlmDepth === 'number' && Number.isInteger(value.rlmDepth) && value.rlmDepth >= 0) state.depth = value.rlmDepth
-    else if (typeof value.parentSession === 'string') state.depth = 1
+    else if (typeof value.parentSession === 'string' && value.parentSession.length > 0 && value.parentSession.length <= 4_096) {
+      state.depth = 1
+      state.parentSession = value.parentSession
+    }
   } else if (value.type === 'model_change') {
     if (typeof value.modelId === 'string') state.model = value.modelId
     if (typeof value.provider === 'string') state.provider = value.provider
@@ -183,6 +188,7 @@ function metadataFromAccumulator(state: MetadataAccumulator, filePath: string, f
     provider: state.provider,
     thinkingLevel: state.thinkingLevel,
     depth: state.depth,
+    parentSession: state.parentSession,
     pinned: false,
     unread: false,
     preview: compactText(state.preview || state.firstUser),

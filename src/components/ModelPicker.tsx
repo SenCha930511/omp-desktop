@@ -34,7 +34,7 @@ export const ModelPicker = memo(function ModelPicker({ value, modelsByProvider, 
   const listId = useId()
 
   const groups = useMemo<ModelGroup[]>(
-    () => providers.filter((provider) => provider.enabled && (modelsByProvider.get(provider.id)?.length ?? 0) > 0).map((provider) => ({ provider, models: modelsByProvider.get(provider.id) ?? [] })),
+    () => providers.filter((provider) => (modelsByProvider.get(provider.id)?.length ?? 0) > 0).map((provider) => ({ provider, models: modelsByProvider.get(provider.id) ?? [] })),
     [modelsByProvider, providers],
   )
   const selected = useMemo(() => groups.flatMap((group) => group.models).find((model) => model.key === value), [groups, value])

@@ -107,3 +107,116 @@ describe('subagent observability', () => {
     expect(restarted[0].revision).toBe(1)
   })
 })
+
+describe('subagent control and history UI', () => {
+  function renderPanel(state: Parameters<typeof SubagentsPanel>[0]['state'], host = document.createElement('div')) {
+    const root = createRoot(host)
+    act(() => root.render(<SubagentsPanel connected pinned state={state} />))
+    return { host, root }
+  }
+
+  it('shows a cancel button only for running roster entries and reports a not-running reply', async () => {
+    const cancel = vi.fn(async () => false)
+    const agents: SubagentView[] = [
+      { id: 'a', agent: 'Runner', status: 'running', messages: [] },
+      { id: 'b', agent: 'Done', status: 'completed', messages: [] },
+    ]
+    const { host, root } = renderPanel({ agents, selectedId: undefined, select: vi.fn(), error: undefined, cancel, pendingActions: new Set() })
+    try {
+      const cancelButtons = host.querySelectorAll('button.subagents__cancel')
+      expect(cancelButtons).toHaveLength(1)
+      expect(cancelButtons[0].getAttribute('aria-label')).toBe('Stop Runner')
+      await act(async () => { (cancelButtons[0] as HTMLButtonElement).click() })
+      expect(cancel).toHaveBeenCalledWith('a')
+      expect(host.textContent).toContain('no longer running')
+    } finally { act(() => root.unmount()) }
+  })
+
+  it('disables the cancel button while a cancel for that agent is in flight', () => {
+    const agents: SubagentView[] = [{ id: 'a', agent: 'Runner', status: 'running', messages: [] }]
+    const { host, root } = renderPanel({ agents, selectedId: undefined, select: vi.fn(), error: undefined, cancel: vi.fn(), pendingActions: new Set(['cancel:a']) })
+    try {
+      const button = host.querySelector<HTMLButtonElement>('button.subagents__cancel')!
+      expect(button.disabled).toBe(true)
+      expect(button.getAttribute('aria-label')).toBe('Stopping Runner…')
+    } finally { act(() => root.unmount()) }
+  })
+
+  it('blocks the cancel path from opening a selector for finished agents', () => {
+    const agents: SubagentView[] = [{ id: 'a', agent: 'Done', status: 'failed', messages: [] }]
+    const { host, root } = renderPanel({ agents, selectedId: undefined, select: vi.fn(), error: undefined, cancel: vi.fn(), pendingActions: new Set() })
+    try {
+      expect(host.querySelectorAll('button.subagents__cancel')).toHaveLength(0)
+    } finally { act(() => root.unmount()) }
+  })
+
+  it('sends a steering message for a running agent and shows the upstream failure unchanged', async () => {
+    const steer = vi.fn(async () => { throw new Error('subagent is not running') })
+    const agents: SubagentView[] = [{ id: 'a', agent: 'Runner', status: 'running', messages: [] }]
+    const { host, root } = renderPanel({ agents, selectedId: 'a', select: vi.fn(), error: undefined, steer, pendingActions: new Set() })
+    try {
+      const form = host.querySelector<HTMLFormElement>('.subagents__steer')!
+      const input = form.querySelector('input')!
+      act(() => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, '  steer here  ')
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+      await act(async () => { form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) })
+      expect(steer).toHaveBeenCalledWith('a', 'steer here')
+      expect(form.querySelector('.subagents__steer-error')?.textContent).toBe('subagent is not running')
+      // 失敗不清空草稿,讓使用者可以修正後重送(草稿保留原始空白)
+      expect(input.value).toBe('  steer here  ')
+      // 收斂後不再提供導引輸入
+      act(() => root.render(<SubagentsPanel connected pinned state={{ agents: [{ id: 'a', agent: 'Runner', status: 'completed', messages: [] }], selectedId: 'a', select: vi.fn(), error: undefined, steer, pendingActions: new Set() }} />))
+      expect(host.querySelector('.subagents__steer')).toBeNull()
+    } finally { act(() => root.unmount()) }
+  })
+
+  it('clears the steer draft after the message was accepted', async () => {
+    const steer = vi.fn(async () => undefined)
+    const agents: SubagentView[] = [{ id: 'a', agent: 'Runner', status: 'running', messages: [] }]
+    const { host, root } = renderPanel({ agents, selectedId: 'a', select: vi.fn(), error: undefined, steer, pendingActions: new Set() })
+    try {
+      const form = host.querySelector<HTMLFormElement>('.subagents__steer')!
+      const input = form.querySelector('input')!
+      act(() => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'focus the parser')
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+      await act(async () => { form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) })
+      expect(steer).toHaveBeenCalledWith('a', 'focus the parser')
+      expect(input.value).toBe('')
+    } finally { act(() => root.unmount()) }
+  })
+
+  it('offers loading earlier history until the cursor is complete and shows the failure unchanged', async () => {
+    const loadEarlier = vi.fn(async () => { throw new Error('transcript unavailable') })
+    const messages = [{ role: 'assistant', timestamp: 7, content: [{ type: 'text', text: 'done' }] }]
+    const agents: SubagentView[] = [{ id: 'a', agent: 'Worker', status: 'completed', messages, history: [{ role: 'user', timestamp: 1, content: [{ type: 'text', text: 'start' }] }] }]
+    const { host, root } = renderPanel({ agents, selectedId: 'a', select: vi.fn(), error: undefined, loadEarlier, pendingActions: new Set() })
+    try {
+      const button = [...host.querySelectorAll<HTMLButtonElement>('button')].find((candidate) => candidate.textContent === 'Load earlier messages')!
+      await act(async () => { button.click() })
+      expect(loadEarlier).toHaveBeenCalledWith('a')
+      expect(host.textContent).toContain('transcript unavailable')
+      // 歷史補齊後按鈕消失
+      act(() => root.render(<SubagentsPanel connected pinned state={{ agents: [{ ...agents[0], historyDone: true }], selectedId: 'a', select: vi.fn(), error: undefined, loadEarlier, pendingActions: new Set() }} />))
+      expect([...host.querySelectorAll<HTMLButtonElement>('button')].find((candidate) => candidate.textContent === 'Load earlier messages')).toBeUndefined()
+    } finally { act(() => root.unmount()) }
+  })
+
+  it('switches the live subscription level through the roster control', async () => {
+    const setSubscriptionLevel = vi.fn(async () => undefined)
+    const agents: SubagentView[] = [{ id: 'a', agent: 'Worker', status: 'running', messages: [] }]
+    const { host, root } = renderPanel({ agents, selectedId: undefined, select: vi.fn(), error: undefined, setSubscriptionLevel, pendingActions: new Set(), subscriptionLevel: 'events' })
+    try {
+      const select = [...host.querySelectorAll('select')].find((candidate) => candidate.getAttribute('aria-label') === 'Agent update level')!
+      expect((select as HTMLSelectElement).value).toBe('events')
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!.call(select, 'progress')
+        select.dispatchEvent(new Event('change', { bubbles: true }))
+      })
+      expect(setSubscriptionLevel).toHaveBeenCalledWith('progress')
+    } finally { act(() => root.unmount()) }
+  })
+})

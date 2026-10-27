@@ -1,8 +1,17 @@
 import { createReadStream } from 'node:fs'
-import { readFile, stat } from 'node:fs/promises'
+import { open, readFile, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { MessagePart, TranscriptMessage } from '../../../src/types/api'
+import {
+  boundedString,
+  contentText,
+  customMessageShape,
+  MAX_PART_IMAGE_CHARS,
+  MAX_PART_TEXT_CHARS,
+  textFromContent,
+  unsupportedPartFromBlock,
+} from '../../../src/lib/events/message-content'
 import { SESSION_FILE_RECORD_LIMIT_BYTES } from '../jsonl-limits'
 import { strictJsonLines } from '../jsonl'
 import { isRecord } from '../validation'
@@ -22,48 +31,17 @@ const MAX_TRANSCRIPT_ARGS_CHARS = 256 * 1024
 // "圖片附件無法使用" after reload. The budget only exists to bound renderer
 // memory, so keep it generous: 8 MiB per part and 24 MiB across the transcript.
 const MAX_TRANSCRIPT_IMAGE_CHARS = 24 * 1024 * 1024
-export const MAX_PART_TEXT_CHARS = 256 * 1024
 const MAX_PART_TOOL_CHARS = 128 * 1024
 const MAX_PART_ARGS_CHARS = 128 * 1024
-// See MAX_TRANSCRIPT_IMAGE_CHARS: per-part cap sized so multi-MB screenshots
-// survive the partsFromMessage path without dataTruncated.
-const MAX_PART_IMAGE_CHARS = 8 * 1024 * 1024
 const MAX_PARTS_PER_RECORD = 200
-const TRUNCATION_MARKER = '\n… [truncated] …\n'
 
-export function boundedString(value: string, max: number): string {
-  if (max <= 0) return ''
-  if (value.length <= max) return value
-  if (max <= TRUNCATION_MARKER.length) return value.slice(-max)
-  const available = max - TRUNCATION_MARKER.length
-  const head = Math.floor(available / 3)
-  return `${value.slice(0, head)}${TRUNCATION_MARKER}${value.slice(-(available - head))}`
-}
-
-export function textFromContent(content: unknown, max = MAX_PART_TEXT_CHARS): string {
-  if (typeof content === 'string') return boundedString(content, max)
-  if (!Array.isArray(content)) return ''
-  let text = ''
-  for (const part of content) {
-    if (!isRecord(part)) continue
-    const addition = part.type === 'text' && typeof part.text === 'string' ? part.text
-      : part.type === 'thinking' && typeof part.thinking === 'string' ? part.thinking : ''
-    if (!addition) continue
-    text += `${text ? '\n' : ''}${addition}`
-    if (text.length > max) return boundedString(text, max)
-  }
-  return text
-}
+// 文字抽取與 bounding 的純語意已搬至 src/lib/events/message-content.ts，
+// 讓 renderer 的 live reducer 與此處共用；保留同名 re-export 供既有 importer 使用。
+export { boundedString, MAX_PART_TEXT_CHARS, textFromContent }
 
 export function compactText(value: string, max = 160): string {
   const oneLine = value.replace(/\s+/g, ' ').trim()
   return oneLine.length > max ? `${oneLine.slice(0, max - 1)}…` : oneLine
-}
-
-function customActivityName(value: string): string {
-  return value.split(/[_-]+/).filter(Boolean).map((word) => word.toLowerCase() === 'ipython'
-    ? 'IPython'
-    : `${word.slice(0, 1).toUpperCase()}${word.slice(1)}`).join(' ') || 'Activity'
 }
 
 export function validTimestamp(value: unknown, fallback: string): string {
@@ -116,25 +94,54 @@ function partsFromMessage(message: JsonRecord): MessagePart[] {
           data: typeof raw.data === 'string' ? boundedString(raw.data, MAX_PART_IMAGE_CHARS) : undefined,
           dataTruncated: typeof raw.data === 'string' && raw.data.length > MAX_PART_IMAGE_CHARS || undefined,
         })
+      } else {
+        // GAP 3 + 階段 6.2：未知的 content block（file/audio、provider 專屬
+        // block 等）連同原始資料保留讓渲染層顯示可讀資料視圖，不再靜默消失。
+        // 與 live reducer 共用 unsupportedPartFromBlock，兩側資料視圖一致。
+        // 非結構化的 block 仍略過。
+        parts.push(unsupportedPartFromBlock(raw))
       }
     }
   }
   if (message.role === 'toolResult' || message.role === 'tool') {
-    const text = parts.filter((part): part is Extract<MessagePart, { type: 'text' }> => part.type === 'text').map((part) => part.text).join('\n')
+    // GAP 2/5：文字以外的 part（圖片、未知的附件）保留在 toolResult 之後；
+    // 純物件內容以 pretty JSON 呈現，與 live reducer 的 contentText 一致。
+    const textParts = parts.filter((part): part is Extract<MessagePart, { type: 'text' }> => part.type === 'text')
+    const keptParts = parts.filter((part) => part.type === 'image' || part.type === 'unsupported')
+    const joined = textParts.map((part) => part.text).join('\n')
+    const text = joined || (typeof content === 'string' || Array.isArray(content) ? '' : contentText(content))
     return [{
       type: 'toolResult',
       name: typeof message.toolName === 'string' ? boundedString(message.toolName, 512) : undefined,
       text: boundedString(text, MAX_PART_TOOL_CHARS),
       isError: message.isError === true,
-    }]
+    }, ...keptParts]
   }
   if (message.role === 'bashExecution') {
-    return [{
+    // 使用者 `!` bash 的歷史列:與 live 結果列(src/lib/bash-result.ts)同形狀
+    // (toolCall bash → toolResult bash → 非文字 kept-parts)。狀態註記
+    // (cancelled/truncated)附在輸出尾;exitCode≠0 走 isError 樣式。磁碟上
+    // 的歷史不含 i18n,狀態保留上游欄位原文([cancelled]/[truncated])。
+    const parts: MessagePart[] = []
+    if (typeof message.command === 'string' && message.command) {
+      parts.push({ type: 'toolCall', name: 'bash', args: boundedArgs({ command: boundedString(message.command, MAX_PART_ARGS_CHARS) }) })
+    }
+    const status = [message.cancelled === true ? '[cancelled]' : '', message.truncated === true ? '[truncated]' : ''].filter(Boolean).join(' ')
+    const output = typeof message.output === 'string' ? boundedString(message.output, MAX_PART_TOOL_CHARS) : ''
+    parts.push({
       type: 'toolResult',
       name: 'bash',
-      text: typeof message.output === 'string' ? boundedString(message.output, MAX_PART_TOOL_CHARS) : '',
-      isError: typeof message.exitCode === 'number' && message.exitCode !== 0,
-    }]
+      text: [output, status].filter(Boolean).join('\n'),
+      isError: message.cancelled === true || (typeof message.exitCode === 'number' && message.exitCode !== 0),
+    })
+    // 非文字內容(圖片)比照 toolResult 的 kept-parts 管線,不靜默丟棄。
+    if (Array.isArray(message.images)) {
+      for (const raw of message.images) {
+        if (!isRecord(raw) || typeof raw.data !== 'string' || typeof raw.mimeType !== 'string') continue
+        parts.push({ type: 'image', data: raw.data, mimeType: raw.mimeType })
+      }
+    }
+    return parts
   }
   return parts.length ? parts : [{ type: 'text', text: '' }]
 }
@@ -195,6 +202,15 @@ function boundedTranscript(transcript: TranscriptMessage[]): TranscriptMessage[]
           imageBudget -= Math.min(part.data.length, imageBudget)
         }
         next = { ...part, data, dataTruncated: part.dataTruncated || Boolean(part.data && data !== part.data) || undefined }
+      } else if (part.type === 'unsupported') {
+        // 未知附件的 placeholder 體積小（型別字串）加上資料視圖文字；
+        // data 走文字預算，整支 transcript 的渲染記憶體仍有界。
+        let data: string | undefined
+        if (part.data && textBudget > 0) {
+          data = boundedString(part.data, textBudget)
+          textBudget -= Math.min(part.data.length, textBudget)
+        }
+        next = { ...part, contentType: boundedString(part.contentType, 200), data }
       }
       if (next) {
         parts.push(next)
@@ -208,10 +224,10 @@ function boundedTranscript(transcript: TranscriptMessage[]): TranscriptMessage[]
 
 /**
  * Harness-specific transcript rendering over the shared branch machinery.
- * `isRenderable` selects which records enter the retained graph (and can be
- * selected as the active leaf); `renderEntry` renders retained record types the
- * shared walk does not handle itself (anything other than `message`,
- * `compaction`, and `custom_message`).
+ * `isRenderable` selects which payloads enter the retained graph; leaf
+ * selection and ancestry include non-renderable records. `renderEntry` renders
+ * retained record types the shared walk does not handle itself (anything other
+ * than `message`, `compaction`, and `custom_message`).
  */
 export interface TranscriptDialect {
   isRenderable(entry: JsonRecord): boolean
@@ -270,6 +286,90 @@ export function createTranscriptReader(dialect: TranscriptDialect = primeTranscr
   return (filePath, isStreaming) => readTranscriptWithDialect(dialect, filePath, isStreaming, blobsRoot)
 }
 
+/** Yields complete LF-delimited lines from the end of the file toward the
+ * start. Lines are cut on newline boundaries only (matching strictJsonLines,
+ * which keeps U+2028/U+2029 inside JSON strings), so multi-byte UTF-8
+ * sequences never split. A newline-free region (a long record spanning many
+ * chunks) buffers its chunks and assembles each line exactly once when its
+ * start delimiter arrives — linear, never quadratic. */
+async function* jsonLinesReverse(filePath: string): AsyncGenerator<Buffer> {
+  const handle = await open(filePath, 'r')
+  try {
+    let position = (await handle.stat()).size
+    if (position > 256 * 1024 * 1024) throw new Error('Session transcript is too large to display')
+    // Fragments are appended in reverse file order and reversed only when
+    // assembling a complete line, avoiding both byte copies and array shifts.
+    let pending: Buffer[] = []
+    let pendingLength = 0
+    const chunkSize = 64 * 1024
+    while (position > 0) {
+      const readSize = Math.min(chunkSize, position)
+      position -= readSize
+      const chunk = Buffer.alloc(readSize)
+      let filled = 0
+      while (filled < readSize) {
+        const { bytesRead } = await handle.read(chunk, filled, readSize - filled, position + filled)
+        if (bytesRead === 0) throw new Error('Session transcript changed while reading ancestry')
+        filled += bytesRead
+      }
+      if (!chunk.includes(0x0a)) {
+        pending.push(chunk)
+        pendingLength += chunk.length
+        if (pendingLength > SESSION_FILE_RECORD_LIMIT_BYTES) throw new Error('Session transcript record is too large to display')
+        continue
+      }
+      const data = pendingLength > 0 ? Buffer.concat([chunk, ...pending.reverse()]) : chunk
+      pending = []
+      pendingLength = 0
+      let end = data.length
+      while (end > 0) {
+        const delimiter = data.lastIndexOf(0x0a, end - 1)
+        if (delimiter === -1) break
+        if (delimiter + 1 < end) yield data.subarray(delimiter + 1, end)
+        end = delimiter
+      }
+      if (end > 0) {
+        pending = [data.subarray(0, end)]
+        pendingLength = end
+      }
+    }
+    if (pendingLength > 0) yield Buffer.concat(pending.reverse())
+  } finally {
+    await handle.close()
+  }
+}
+
+/** Load global last-occurrence edges only after the normal bounded window
+ * misses. Positional ancestor matching cannot resolve out-of-order records or
+ * rewritten ancestors reliably: the authoritative occurrence may already have
+ * passed before its id becomes needed. A reverse scan keeps each id's first
+ * occurrence, which is its global last write, before walking any ancestry.
+ * The temporary edge index has explicit record/byte budgets; exhaustion is an
+ * error, never permission to guess another active branch. Renderable payloads
+ * still come exclusively from the original bounded entries map. */
+async function recoverTranscriptEdges(filePath: string): Promise<Map<string, string | null>> {
+  const edges = new Map<string, string | null>()
+  let edgeBytes = 0
+  let recordCount = 0
+  for await (const line of jsonLinesReverse(filePath)) {
+    if (++recordCount > 200_000) throw new Error('Session transcript has too many records')
+    // A live append after the forward pass has not passed its record-size
+    // validation yet. Never decode or parse oversized recovery records.
+    if (line.length > SESSION_FILE_RECORD_LIMIT_BYTES) throw new Error('Session transcript record is too large to display')
+    let entry: unknown
+    try { entry = JSON.parse(line.toString('utf8')) } catch { continue }
+    if (!isRecord(entry) || entry.type === 'session' || typeof entry.id !== 'string' || entry.id.length > 1_024) continue
+    if (edges.has(entry.id)) continue
+    const parentId = typeof entry.parentId === 'string' && entry.parentId.length <= 1_024 ? entry.parentId : null
+    // Charge retained UTF-16 strings plus a fixed per-edge allowance, keeping
+    // recovery independently bounded by the existing graph byte budget.
+    edgeBytes += (entry.id.length + (parentId?.length ?? 0)) * 2 + 64
+    if (edgeBytes > MAX_TRANSCRIPT_GRAPH_BYTES) throw new Error('Session transcript ancestry is too large to display')
+    edges.set(entry.id, parentId)
+  }
+  return edges
+}
+
 async function readTranscriptWithDialect(dialect: TranscriptDialect, filePath: string, isStreaming: boolean, blobsRoot: string): Promise<TranscriptMessage[]> {
   if ((await stat(filePath)).size > 256 * 1024 * 1024) throw new Error('Session transcript is too large to display')
   const entries = new Map<string, { id: string; parentId: string | null; entry: JsonRecord; bytes: number }>()
@@ -277,7 +377,18 @@ async function readTranscriptWithDialect(dialect: TranscriptDialect, filePath: s
   // still traverses nodes that never render (and never charge the budgets).
   const parentEdges = new Map<string, string | null>()
   let graphBytes = 0
-  let leafId: string | null = null
+  // True once the renderable payload FIFO ever evicts: the retained graph no
+  // longer covers the full file, so a confirmed capture whose branch yields
+  // no retained payload must fail closed instead of rendering another branch.
+  let payloadEvictionOccurred = false
+  // Upstream v18.12.6 session-entries.ts parity: the active leaf replays the
+  // LAST record's captured `activeLeafId` (an off-branch record — late usage,
+  // a routed background result — restores the branch it interrupted) instead
+  // of defaulting to the newest renderable record. `null` records a cleared
+  // leaf; absence keeps ordinary last-entry semantics.
+  let lastRecordId: string | null = null
+  let lastRecordActiveLeaf: string | null | undefined
+  let selfSelectedLeafId: string | null = null
   let recordCount = 0
   // The metadata reader of the same file MUST share this per-record tolerance:
   // a record the catalog accepts must never make the transcript unopenable.
@@ -295,45 +406,95 @@ async function readTranscriptWithDialect(dialect: TranscriptDialect, filePath: s
       if (oldestEdge === undefined) break
       parentEdges.delete(oldestEdge)
     }
-    if (!dialect.isRenderable(entry)) continue
+    const rawActiveLeaf: unknown = entry.activeLeafId
+    lastRecordId = entry.id
+    // sessionEntryLeafId parity: a string leaf restores the captured branch,
+    // null clears it, and only an absent (or self-pointing) value lets the
+    // record select itself. Corrupt non-string values read as absent so one
+    // bad record cannot make the transcript unopenable.
+    lastRecordActiveLeaf = rawActiveLeaf === null ? null
+      : typeof rawActiveLeaf === 'string' ? boundedString(rawActiveLeaf, 1_024)
+      : undefined
+    if (lastRecordActiveLeaf === undefined || lastRecordActiveLeaf === entry.id) selfSelectedLeafId = entry.id
+    // Payload is last-write-wins like the edges: a rewrite that flips an id
+    // from renderable to non-renderable must drop the stale retained payload
+    // (and refund its byte charge) instead of leaving the old message in place.
     const existing = entries.get(entry.id)
     if (existing) {
       graphBytes -= existing.bytes
       entries.delete(entry.id)
     }
+    if (!dialect.isRenderable(entry)) continue
     const bytes = Buffer.byteLength(line, 'utf8')
     entries.set(entry.id, { id: entry.id, parentId, entry, bytes })
     graphBytes += bytes
-    // The leaf is the last *renderable* record: a trailing non-renderable
-    // record (for example one with parentId: null) must not select the branch.
-    leafId = entry.id
     while (entries.size > MAX_TRANSCRIPT_GRAPH_RECORDS || graphBytes > MAX_TRANSCRIPT_GRAPH_BYTES) {
       const oldestId = entries.keys().next().value as string | undefined
       if (oldestId === undefined) break
+      payloadEvictionOccurred = true
       graphBytes -= entries.get(oldestId)?.bytes ?? 0
       entries.delete(oldestId)
     }
   }
-  const walkBranch = (startId: string | null): Array<{ id: string; entry: JsonRecord }> => {
+  let recoveredParentEdges: Map<string, string | null> | undefined
+  const walkBranch = (startId: string | null): { branch: Array<{ id: string; entry: JsonRecord }>; missingEdgeId: string | null } => {
     const collected: Array<{ id: string; entry: JsonRecord }> = []
     const visited = new Set<string>()
     let currentId = startId
+    let missingEdgeId: string | null = null
     while (currentId && !visited.has(currentId)) {
       visited.add(currentId)
       const node = entries.get(currentId)
       if (node) collected.push(node)
-      currentId = parentEdges.get(currentId) ?? null
+      const parent = (recoveredParentEdges ?? parentEdges).get(currentId)
+      // undefined = the edge fell outside the retained window (recoverable);
+      // null = a genuine root.
+      if (parent === undefined) { missingEdgeId = currentId; break }
+      currentId = parent
     }
-    return collected
+    return { branch: collected, missingEdgeId }
   }
-  let branch = walkBranch(leafId)
-  if (!branch.length && entries.size) {
+  // Normal reads walk the small FIFO window. On its first miss, load one
+  // bounded global last-occurrence index and reuse it for every subsequent
+  // walk, regardless of how many interleaved eviction gaps the branch has.
+  const walkBranchWithRecovery = async (startId: string | null): Promise<Array<{ id: string; entry: JsonRecord }>> => {
+    const walked = walkBranch(startId)
+    if (walked.missingEdgeId === null || recoveredParentEdges !== undefined) return walked.branch
+    recoveredParentEdges = await recoverTranscriptEdges(filePath)
+    return walkBranch(startId).branch
+  }
+  // resolveSessionLeafId parity: the last record decides. An explicit null is
+  // a cleared session (empty branch, never the dead-end fallback). A captured
+  // id missing from the FIFO window requires the complete bounded index to
+  // distinguish an evicted valid leaf from an actually nonexistent capture;
+  // only the latter uses the upstream newest-self-selecting fallback.
+  let leafId: string | null
+  if (lastRecordId === null) leafId = null
+  else {
+    const captured = lastRecordActiveLeaf !== undefined ? lastRecordActiveLeaf : lastRecordId
+    if (captured === null) leafId = null
+    else if (captured === lastRecordId || parentEdges.has(captured)) leafId = captured
+    else {
+      recoveredParentEdges = await recoverTranscriptEdges(filePath)
+      leafId = recoveredParentEdges.has(captured) ? captured : selfSelectedLeafId
+    }
+  }
+  let branch = leafId === null ? [] : await walkBranchWithRecovery(leafId)
+  if (!branch.length && entries.size && leafId !== null) {
+    if (payloadEvictionOccurred && leafId !== selfSelectedLeafId) {
+      // A confirmed capture whose branch retained no payload after FIFO
+      // eviction: rendering any other branch would silently switch the
+      // conversation, so fail closed like every other budget exhaustion
+      // instead of guessing. The self-selected fallback keeps the legacy
+      // dead-branch behavior because it never promised another branch.
+      throw new Error('Session transcript active branch is too large to display')
+    }
     // The active branch dead-ended before reaching any retained record; fall
     // back to the most recently retained renderable record instead of
     // rendering an empty transcript.
     let fallbackId: string | null = null
     for (const id of entries.keys()) fallbackId = id
-    branch = walkBranch(fallbackId)
+    branch = await walkBranchWithRecovery(fallbackId)
   }
   branch.reverse()
   const transcript: TranscriptMessage[] = []
@@ -377,7 +538,6 @@ async function readTranscriptWithDialect(dialect: TranscriptDialect, filePath: s
     }
     if (entry.type === 'custom_message') {
       const details = isRecord(entry.details) ? entry.details : undefined
-      const from = isRecord(details?.from) ? details.from : undefined
       const customType = typeof entry.customType === 'string' ? boundedString(entry.customType, 200) : 'activity'
       if (customType === 'compaction_outcome') {
         const outcome = details?.outcome === 'cancelled' ? 'cancelled' : details?.outcome === 'skipped' ? 'skipped' : 'failed'
@@ -397,33 +557,31 @@ async function readTranscriptWithDialect(dialect: TranscriptDialect, filePath: s
         activeAssistant = undefined
         continue
       }
-      const isAgentMessage = customType === 'agent_message'
-      const isGoalSummary = customType === 'goal_context'
-      const detailMessage = typeof details?.message === 'string' ? details.message : undefined
-      const goalObjective = typeof details?.objective === 'string' ? details.objective : undefined
-      const agentName = typeof from?.sessionName === 'string' ? boundedString(from.sessionName, 200) : undefined
-      const readableText = isGoalSummary ? goalObjective ?? detailMessage : detailMessage
-      const text = boundedString(readableText ?? textFromContent(entry.content), MAX_PART_TEXT_CHARS)
-      const timestamp = typeof entry.timestamp === 'string' ? boundedString(entry.timestamp, 128) : undefined
-      if (isAgentMessage && activeAssistant) {
-        appendAssistantParts([{ type: 'agentMessage', text, agentName }])
-        activeAssistant.completedAt = timestamp ?? activeAssistant.completedAt
-      } else if (!isAgentMessage && !isGoalSummary && activeAssistant) {
-        const name = customActivityName(customType)
-        appendAssistantParts([{ type: 'toolCall', id: safeId, name }, { type: 'toolResult', name, text }])
-        activeAssistant.completedAt = timestamp ?? activeAssistant.completedAt
-      } else {
-        const name = customActivityName(customType)
-        transcript.push({
-          id: safeId,
-          role: isAgentMessage ? 'agent' : isGoalSummary ? 'goal' : 'tool',
-          timestamp,
-          agentName: isAgentMessage ? agentName : undefined,
-          parts: isAgentMessage || isGoalSummary
-            ? [{ type: 'text', text }]
-            : [{ type: 'toolCall', id: safeId, name }, { type: 'toolResult', name, text }],
-        })
-        activeAssistant = undefined
+      // customType/details/content 的形狀決策與 live reducer 共用
+      // （src/lib/events/message-content.ts 的 customMessageShape），此處只做 bounding 與落點。
+      const shape = customMessageShape(entry)
+      if (shape) {
+        const text = boundedString(shape.text, MAX_PART_TEXT_CHARS)
+        const agentName = shape.kind === 'agentMessage' && shape.agentName !== undefined ? boundedString(shape.agentName, 200) : undefined
+        const timestamp = typeof entry.timestamp === 'string' ? boundedString(entry.timestamp, 128) : undefined
+        if (shape.kind === 'agentMessage' && activeAssistant) {
+          appendAssistantParts([{ type: 'agentMessage', text, agentName }])
+          activeAssistant.completedAt = timestamp ?? activeAssistant.completedAt
+        } else if (shape.kind === 'activity' && activeAssistant) {
+          appendAssistantParts([{ type: 'toolCall', id: safeId, name: shape.name }, { type: 'toolResult', name: shape.name, text }])
+          activeAssistant.completedAt = timestamp ?? activeAssistant.completedAt
+        } else {
+          transcript.push({
+            id: safeId,
+            role: shape.kind === 'agentMessage' ? 'agent' : shape.kind === 'goal' ? 'goal' : 'tool',
+            timestamp,
+            agentName,
+            parts: shape.kind !== 'activity'
+              ? [{ type: 'text', text }]
+              : [{ type: 'toolCall', id: safeId, name: shape.name }, { type: 'toolResult', name: shape.name, text }],
+          })
+          activeAssistant = undefined
+        }
       }
       continue
     }

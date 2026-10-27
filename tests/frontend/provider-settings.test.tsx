@@ -4,7 +4,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { type ProviderCatalog, useProviderCatalog } from '../../src/hooks/useProviderCatalog'
 import { ProviderSettings } from '../../src/pages/settings/ProviderSettings'
-import type { HarnessId, PrimeModelCatalog, DesktopApi, RuntimeInfo } from '../../src/types/api'
+import type { PrimeModelCatalog, DesktopApi, RuntimeInfo } from '../../src/types/api'
 
 const model = {
   key: 'openai-codex/gpt-5.6', provider: 'openai-codex', id: 'gpt-5.6', name: 'GPT-5.6', reasoning: true,
@@ -15,13 +15,13 @@ const catalog: PrimeModelCatalog = {
   primeVersion: '0.7.0',
   refreshedAt: '2026-08-06T00:00:00.000Z',
   models: [
-    { ...model, key: 'anthropic/claude-sonnet', provider: 'anthropic', id: 'claude-sonnet', name: 'Claude Sonnet', input: [...model.input], availableThinkingLevels: ['low', 'high'], enabled: false },
-    { ...model, key: 'openai-codex/gpt-5.5', id: 'gpt-5.5', name: 'GPT-5.5', input: [...model.input], availableThinkingLevels: ['low', 'high'], enabled: false },
-    { ...model, input: [...model.input], availableThinkingLevels: [...model.availableThinkingLevels], enabled: true },
+    { ...model, key: 'anthropic/claude-sonnet', provider: 'anthropic', id: 'claude-sonnet', name: 'Claude Sonnet', input: [...model.input], availableThinkingLevels: ['low', 'high'] },
+    { ...model, key: 'openai-codex/gpt-5.5', id: 'gpt-5.5', name: 'GPT-5.5', input: [...model.input], availableThinkingLevels: ['low', 'high'] },
+    { ...model, input: [...model.input], availableThinkingLevels: [...model.availableThinkingLevels] },
   ],
   providers: [
-    { id: 'anthropic', name: 'Anthropic', authMethod: 'api_key', configured: false, modelCount: 14, availableModelCount: 0, enabled: false },
-    { id: 'openai-codex', name: 'ChatGPT Plus/Pro', authMethod: 'oauth', configured: true, authSource: 'stored', modelCount: 8, availableModelCount: 8, enabled: true },
+    { id: 'anthropic', name: 'Anthropic', authMethod: 'api_key', configured: false, modelCount: 14, availableModelCount: 0 },
+    { id: 'openai-codex', name: 'ChatGPT Plus/Pro', authMethod: 'oauth', configured: true, authSource: 'stored', modelCount: 8, availableModelCount: 8 },
   ],
 }
 const runtime: RuntimeInfo = {
@@ -68,37 +68,19 @@ function deferred<T = void>() {
 }
 
 describe('provider settings behavior and accessibility', () => {
-  it('gives each enable checkbox a provider-specific accessible name and reports toggle failure', async () => {
-    const onSetEnabled = vi.fn().mockRejectedValue(new Error('Provider policy was not saved'))
-    await render(<ProviderSettings catalog={catalog} onRefresh={noop} onSetEnabled={onSetEnabled} onSetAllEnabled={noop} onSetAllDisabled={noop} onSetModelEnabled={noop} onOpenDocs={() => undefined} />)
-
-    const checkbox = container.querySelector<HTMLInputElement>('input[aria-label="Show Anthropic provider"]')
-    expect(checkbox).not.toBeNull()
-    await click(checkbox!)
-
-    expect(onSetEnabled).toHaveBeenCalledWith('anthropic', true)
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain('Provider policy was not saved')
-  })
-
-  it('uses one bulk mutation and exposes the provider and model catalogue UI', async () => {
-    const onSetEnabled = vi.fn().mockResolvedValue(undefined)
-    const onSetAllEnabled = vi.fn().mockResolvedValue(undefined)
-    const onSetAllDisabled = vi.fn().mockResolvedValue(undefined)
-    await render(<ProviderSettings catalog={catalog} onRefresh={noop} onSetEnabled={onSetEnabled} onSetAllEnabled={onSetAllEnabled} onSetAllDisabled={onSetAllDisabled} onSetModelEnabled={noop} onOpenDocs={() => undefined} />)
+  it('exposes the provider and model catalogue without visibility toggles', async () => {
+    await render(<ProviderSettings catalog={catalog} onOpenDocs={() => undefined} />)
 
     expect(container.textContent).toContain('2 providers · 3 models')
     expect(container.textContent).toContain('ChatGPT Plus/Pro')
     expect(container.textContent).toContain('Anthropic')
     const providerRows = [...container.querySelectorAll('.provider-row')]
-    expect(providerRows[0]?.textContent).toContain('ChatGPT Plus/Pro')
-    expect(providerRows[1]?.textContent).toContain('Anthropic')
+    expect(providerRows[0]?.textContent).toContain('Anthropic')
+    expect(providerRows[1]?.textContent).toContain('ChatGPT Plus/Pro')
     expect(button('Credential setup')).toBeTruthy()
-    await click(button('Show all'))
-    expect(onSetAllEnabled).toHaveBeenCalledTimes(1)
-    expect(onSetEnabled).not.toHaveBeenCalled()
-    await click(button('Hide all'))
-    expect(onSetAllDisabled).toHaveBeenCalledTimes(1)
-    expect(onSetEnabled).not.toHaveBeenCalled()
+    // Provider visibility management is gone: no toolbar, no per-row switches.
+    expect(container.querySelector('.provider-heading-actions')).toBeNull()
+    expect(container.querySelectorAll('.provider-row input[type="checkbox"]')).toHaveLength(0)
 
     expect(container.textContent).toContain('OMP catalogue')
 
@@ -109,15 +91,16 @@ describe('provider settings behavior and accessibility', () => {
     expect(container.querySelector('input[aria-label="Search models"]')).not.toBeNull()
     const groups = [...container.querySelectorAll('.provider-model-group')]
     expect(groups).toHaveLength(2)
-    expect(groups[0]?.querySelector('.provider-model-group__heading')?.textContent).toContain('ChatGPT Plus/Pro')
-    expect(groups[0]?.querySelector('.provider-model-group__heading')?.textContent).toContain('1 of 2 on')
-    expect(groups[1]?.querySelector('.provider-model-group__heading')?.textContent).toContain('Anthropic')
-    expect(groups[1]?.querySelector('.provider-model-group__heading')?.textContent).toContain('0 of 1 on')
-    const openAiModels = [...groups[0]!.querySelectorAll('.provider-model-row')]
-    expect(openAiModels[0]?.textContent).toContain('GPT-5.6')
-    expect(openAiModels[1]?.textContent).toContain('GPT-5.5')
-    const openAiHeader = groups[0]!.querySelector<HTMLButtonElement>('.provider-model-group__heading')
-    const openAiContent = groups[0]!.querySelector<HTMLElement>('.provider-model-group__models')
+    expect(groups[0]?.querySelector('.provider-model-group__heading')?.textContent).toContain('Anthropic')
+    expect(groups[0]?.querySelector('.provider-model-group__heading')?.textContent).toContain('1 models')
+    expect(groups[1]?.querySelector('.provider-model-group__heading')?.textContent).toContain('ChatGPT Plus/Pro')
+    expect(groups[1]?.querySelector('.provider-model-group__heading')?.textContent).toContain('2 models')
+    const openAiModels = [...groups[1]!.querySelectorAll('.provider-model-row')]
+    expect(openAiModels[0]?.textContent).toContain('GPT-5.5')
+    expect(openAiModels[1]?.textContent).toContain('GPT-5.6')
+    expect(container.querySelectorAll('.provider-model-row input[type="checkbox"]')).toHaveLength(0)
+    const openAiHeader = groups[1]!.querySelector<HTMLButtonElement>('.provider-model-group__heading')
+    const openAiContent = groups[1]!.querySelector<HTMLElement>('.provider-model-group__models')
     expect(openAiHeader?.getAttribute('aria-expanded')).toBe('true')
     expect(openAiContent?.hidden).toBe(false)
     await click(openAiHeader!)
@@ -127,18 +110,17 @@ describe('provider settings behavior and accessibility', () => {
     expect(openAiHeader?.getAttribute('aria-expanded')).toBe('true')
     expect(openAiContent?.hidden).toBe(false)
   })
+  it('filters providers and models by the search query', async () => {
+    await render(<ProviderSettings catalog={catalog} onOpenDocs={() => undefined} />)
 
-  it('puts each model switch at the far right and sends the model key', async () => {
-    const onSetModelEnabled = vi.fn().mockResolvedValue(undefined)
-    await render(<ProviderSettings catalog={catalog} onRefresh={noop} onSetEnabled={noop} onSetAllEnabled={noop} onSetAllDisabled={noop} onSetModelEnabled={onSetModelEnabled} onOpenDocs={() => undefined} />)
-
-    await click(button('Models'))
-    const row = container.querySelector('.provider-model-row')
-    const toggle = row?.querySelector<HTMLInputElement>('input[aria-label="Show GPT-5.6 model"]')
-    expect(toggle).not.toBeNull()
-    expect(row?.lastElementChild?.classList.contains('provider-model-row__toggle')).toBe(true)
-    await click(toggle!)
-    expect(onSetModelEnabled).toHaveBeenCalledWith('openai-codex/gpt-5.6', false)
+    const search = container.querySelector<HTMLInputElement>('input[aria-label="Search providers"]')
+    expect(search).not.toBeNull()
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(search, 'anthropic')
+      search!.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    expect([...container.querySelectorAll('.provider-row')]).toHaveLength(1)
+    expect(container.textContent).not.toContain('No providers match your search.')
   })
 })
 
@@ -164,9 +146,6 @@ describe('provider runtime mutations', () => {
   function mountCatalogHook(options: {
     command: DesktopApi['agent']['command']
     syncRuntime?: (runtimeId: string) => Promise<void>
-    setEnabled?: DesktopApi['providers']['setEnabled']
-    setDisabled?: DesktopApi['providers']['setDisabled']
-    harness?: HarnessId
     reportError?: (error: unknown) => void
   }) {
     let value: ProviderCatalog | undefined
@@ -175,18 +154,15 @@ describe('provider runtime mutations', () => {
       agent: { command: options.command },
       providers: {
         catalog: catalogMock,
-        onAuthEvent: vi.fn().mockReturnValue(() => undefined),
-        setEnabled: options.setEnabled ?? vi.fn().mockResolvedValue(catalog),
-        setDisabled: options.setDisabled ?? vi.fn().mockResolvedValue(catalog),
       },
     } as unknown as DesktopApi
     const syncRuntime = options.syncRuntime ?? vi.fn().mockResolvedValue(undefined)
     const reportError = options.reportError ?? vi.fn()
     function Harness() {
-      value = useProviderCatalog({ bridge, harness: options.harness, runtime, syncRuntime, reportError })
+      value = useProviderCatalog({ bridge, runtime, syncRuntime, reportError })
       return null
     }
-    return render(<Harness />).then(() => ({ get value() { return value! }, catalogMock, syncRuntime, setDisabled: bridge.providers.setDisabled, reportError }))
+    return render(<Harness />).then(() => ({ get value() { return value! }, catalogMock, syncRuntime, reportError }))
   }
 
   it('serializes rapid reasoning changes and rolls back/synchronizes the latest rejection', async () => {
@@ -227,23 +203,6 @@ describe('provider runtime mutations', () => {
     expect(command).toHaveBeenCalledTimes(1)
   })
 
-  it('accepts main-owned provider enable persistence without writing settings again', async () => {
-    const next = { ...catalog, providers: catalog.providers.map((provider) => provider.id === 'anthropic' ? { ...provider, enabled: true } : provider) }
-    const setEnabled = vi.fn().mockResolvedValue(next)
-    const hook = await mountCatalogHook({ command: vi.fn(), setEnabled })
-
-    await act(async () => { await hook.value.setEnabled('anthropic', true) })
-    expect(setEnabled).toHaveBeenCalledWith('anthropic', true, 'omp')
-    expect(hook.value.catalog?.providers.find((provider) => provider.id === 'anthropic')?.enabled).toBe(true)
-  })
-
-  it('enables every provider with one atomic main-process mutation', async () => {
-    const hook = await mountCatalogHook({ command: vi.fn() })
-
-    await act(async () => { await hook.value.setAllEnabled() })
-    expect(hook.setDisabled).toHaveBeenCalledWith([], 'omp')
-  })
-
   it('keeps an optimistic fast-mode toggle across a catalog refresh', async () => {
     const hook = await mountCatalogHook({ command: vi.fn().mockResolvedValue({}) })
     await act(async () => { await Promise.resolve() })
@@ -256,27 +215,5 @@ describe('provider runtime mutations', () => {
     await act(async () => { await hook.value.refresh(true) })
 
     expect(hook.value.fast).toBe(true)
-  })
-
-  it('disables every provider and clears an explicitly selected model in one atomic mutation', async () => {
-    const hook = await mountCatalogHook({ command: vi.fn() })
-    await act(async () => { await Promise.resolve() })
-
-    await act(async () => { await hook.value.setAllDisabled() })
-    expect(hook.setDisabled).toHaveBeenCalledWith(['anthropic', 'openai-codex'], 'omp')
-    expect(hook.value.model).toBe('')
-    expect(hook.value.fast).toBe(false)
-  })
-
-  it('routes OMP provider visibility to the OMP desktop-settings bucket', async () => {
-    const next = { ...catalog, providers: catalog.providers.map((provider) => provider.id === 'anthropic' ? { ...provider, enabled: true } : provider) }
-    const setEnabled = vi.fn().mockResolvedValue(next)
-    const setDisabled = vi.fn().mockResolvedValue(next)
-    const hook = await mountCatalogHook({ command: vi.fn(), harness: 'omp', setEnabled, setDisabled })
-
-    await act(async () => { await hook.value.setEnabled('anthropic', true) })
-    expect(setEnabled).toHaveBeenCalledWith('anthropic', true, 'omp')
-    await act(async () => { await hook.value.setAllEnabled() })
-    expect(setDisabled).toHaveBeenCalledWith([], 'omp')
   })
 })

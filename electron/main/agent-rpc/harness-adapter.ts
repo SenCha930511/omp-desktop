@@ -1,4 +1,4 @@
-import type { HarnessId, PrimeContextUsage, SessionActionSnapshot, SessionUsage, SessionUsageTokens } from '../../../src/types/api'
+import type { HarnessId, PrimeContextUsage, SessionActionSnapshot, SessionUsage, SessionUsageTokens, UsageLimitState } from '../../../src/types/api'
 import { MAX_QUEUED_ACTIONS, parseSessionActionSnapshot } from '../../../src/lib/session-actions'
 import { extensionInjections } from '../extension-manifest'
 import { HARNESSES } from '../harness'
@@ -22,8 +22,35 @@ export interface HarnessStartArgsInput {
 /** Harness-specific fields read from get_state data, normalized to Prime vocabulary. */
 export interface HarnessStateReading {
   serviceTier?: 'default' | 'priority'
+  /** 回報表示帳號進入限流;state dump 缺席該欄代表未限流(讀取方清除)。 */
+  usageLimit?: UsageLimitState
   contextUsage?: PrimeContextUsage
   sessionActions?: SessionActionSnapshot
+}
+
+/** 上游 UsageLimitState(stage 判別聯集);形狀不符時回傳 null,絕不部分放行。 */
+export function parseUsageLimitState(raw: unknown): UsageLimitState | null {
+  if (!isRecord(raw)) return null
+  if (raw.stage === 'low_priority') {
+    if (typeof raw.resetsAtSec !== 'number' || !Number.isFinite(raw.resetsAtSec)) return null
+    const allowanceLeftPercent = raw.allowanceLeftPercent
+    if (allowanceLeftPercent !== undefined && (!Number.isSafeInteger(allowanceLeftPercent) || Number(allowanceLeftPercent) < 0 || Number(allowanceLeftPercent) > 100)) return null
+    return {
+      stage: 'low_priority',
+      resetsAtSec: raw.resetsAtSec,
+      ...(allowanceLeftPercent !== undefined ? { allowanceLeftPercent: Number(allowanceLeftPercent) } : {}),
+    }
+  }
+  if (raw.stage === 'wrap_up') {
+    if (typeof raw.extraUsage !== 'boolean') return null
+    if (raw.resetsAtSec !== undefined && (typeof raw.resetsAtSec !== 'number' || !Number.isFinite(raw.resetsAtSec))) return null
+    return {
+      stage: 'wrap_up',
+      extraUsage: raw.extraUsage,
+      ...(raw.resetsAtSec !== undefined ? { resetsAtSec: Number(raw.resetsAtSec) } : {}),
+    }
+  }
+  return null
 }
 
 /**
@@ -87,12 +114,6 @@ export function parseSessionUsage(raw: unknown): SessionUsage | null {
 
 const unsafeArgValue = (value: string): boolean => value.startsWith('-') || /[\r\n]/.test(value)
 
-const stripStreamingBehavior = (command: RpcObject): RpcObject => {
-  if (command.type !== 'prompt' || command.streamingBehavior === undefined) return command
-  // OMP drops streamingBehavior pending compatibility verification.
-  const { streamingBehavior: _, ...rest } = command
-  return rest
-}
 
 
 const OMP_UNSUPPORTED_COMMANDS = new Set([
@@ -102,6 +123,11 @@ const OMP_UNSUPPORTED_COMMANDS = new Set([
 ])
 
 const OMP_APPROVAL_MODES = new Set(['always-ask', 'write', 'yolo'])
+
+// 上游 LivePhase(v18.12.6 packages/tui/src/apps/live-visualizer.ts:15)。
+const LIVE_PHASES: ReadonlySet<string> = new Set(['connecting', 'listening', 'working', 'speaking', 'muted', 'error'])
+const MAX_LIVE_TRANSCRIPT_TEXT_CHARS = 64 * 1024
+const clampLiveLevel = (value: number): number => (value <= 0 ? 0 : Math.min(1, value))
 
 export const OMP_RPC_ADAPTER: HarnessRpcAdapter = {
   id: 'omp',
@@ -136,8 +162,6 @@ export const OMP_RPC_ADAPTER: HarnessRpcAdapter = {
   translateCommand: (command) => {
     const type = String(command.type)
     if (OMP_UNSUPPORTED_COMMANDS.has(type)) throw new Error(`RPC command ${type} is not supported by the OMP harness`)
-    if (type === 'fork') return { ...command, type: 'branch' }
-    if (type === 'get_fork_messages') return { ...command, type: 'get_branch_messages' }
     // Side questions ride the OMP /btw protocol; the renderer never sees harness names.
     if (type === 'side_question') {
       const { topicId, ...rest } = command
@@ -148,7 +172,7 @@ export const OMP_RPC_ADAPTER: HarnessRpcAdapter = {
       return { ...rest, type: 'btw_cancel', ...(topicId !== undefined ? { recordId: topicId } : {}) }
     }
     if (type === 'side_question_history') return { ...command, type: 'get_btw_history' }
-    return stripStreamingBehavior(command)
+    return command
   },
   normalizeEvent: (event) => {
     if (event.type === 'auto_compaction_start') return { ...event, type: 'compaction_start' }
@@ -182,12 +206,44 @@ export const OMP_RPC_ADAPTER: HarnessRpcAdapter = {
         ? { type: 'side_question_delta', topicId: event.recordId, delta: event.delta }
         : null
     }
+    // Live voice frames(上游 v18.12.6 rpc-types.ts Live Voice Frames;非
+    // session event,set_event_filter 不攔截,上游保證送達)。白名單驗證後
+    // 轉發;形狀不符整幀丟棄,renderer 只能在此類幀上出錯。live_levels 上游
+    // 已限流到最多每 100ms 一幀且只攜最新值(rpc-live.ts
+    // RPC_LIVE_LEVELS_INTERVAL_MS + #queueLevels),此處不再聚合;renderer
+    // 以獨立 hook 訂閱,不進 transcript store。
+    if (event.type === 'live_phase') {
+      return typeof event.phase === 'string' && LIVE_PHASES.has(event.phase) ? { type: 'live_phase', phase: event.phase } : null
+    }
+    if (event.type === 'live_levels') {
+      const { input, output } = event
+      if (typeof input !== 'number' || !Number.isFinite(input) || typeof output !== 'number' || !Number.isFinite(output)) return null
+      return { type: 'live_levels', input: clampLiveLevel(input), output: clampLiveLevel(output) }
+    }
+    if (event.type === 'live_transcript') {
+      // role+turn 是合併鍵(上游 LiveTranscript 語意,controller.ts);final
+      // 標記該輪定稿。超長或形狀不符的幀丟棄,不送部分資料。
+      if ((event.role !== 'user' && event.role !== 'assistant')) return null
+      if (!Number.isSafeInteger(event.turn) || (event.turn as number) < 0) return null
+      if (typeof event.text !== 'string' || event.text.length > MAX_LIVE_TRANSCRIPT_TEXT_CHARS) return null
+      if (event.final !== true && event.final !== false) return null
+      return { type: 'live_transcript', role: event.role, turn: event.turn as number, text: event.text, final: event.final }
+    }
+    if (event.type === 'live_end') {
+      // 每個 live session 恰送一次(rpc-live.ts onTerminal);error 是失敗
+      // 原因,成功結束時缺席。
+      if (event.error !== undefined && typeof event.error !== 'string') return null
+      return event.error === undefined ? { type: 'live_end' } : { type: 'live_end', error: event.error.slice(0, 4_000) }
+    }
     return event
   },
   buildServiceTierCommand: (serviceTier) => ({ type: 'set_fast_mode', enabled: serviceTier === 'priority' }),
   readState: (data) => {
     const reading: HarnessStateReading = {}
     if (typeof data.fastModeEnabled === 'boolean') reading.serviceTier = data.fastModeEnabled ? 'priority' : 'default'
+    // state dump 以欄位缺席表達「未限流」;讀取方據此清除。
+    const usageLimit = parseUsageLimitState(data.usageLimit)
+    if (usageLimit) reading.usageLimit = usageLimit
     const usage = parseContextUsage(data.contextUsage)
     if (usage) reading.contextUsage = usage
     if (Number.isSafeInteger(data.queuedMessageCount) && Number(data.queuedMessageCount) >= 0 && Number(data.queuedMessageCount) <= MAX_QUEUED_ACTIONS) {

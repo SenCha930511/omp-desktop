@@ -608,26 +608,20 @@ async function bootstrap(): Promise<void> {
   // This matches the renderer's startup query so both consumers share SessionService's coalesced catalog scan.
   const listCatalogSessions = (): ReturnType<SessionService['list']> => sessions.list(undefined, true)
 
-  const ompDisabledProviders = () => new Set(stateStore.getSettings().ompDisabledProviders)
-  const ompDisabledModels = () => new Set(stateStore.getSettings().ompDisabledModels)
-  const catalog = new OmpModelCatalogService(ompExecutable, { enabledProviders: () => new Set(stateStore.getSettings().ompEnabledProviders) })
+  const catalog = new OmpModelCatalogService(ompExecutable)
   // The OMP manager exists whether or not the omp CLI is installed; starting a
-  // runtime without it fails with the adapter's not-found error. OMP provider
-  // visibility is desktop-owned and independent from OMP's own CLI
-  // configuration.
+  // runtime without it fails with the adapter's not-found error.
   const ompManager = new AgentRpcManager(
     ompExecutable,
     (cwd) => projects.authorizeCwd(cwd),
     (path) => sessions.requireSessionPath(path),
     catalog,
-    ompDisabledProviders,
     OMP_RPC_ADAPTER,
     () => {
       const mode = stateStore.getSettings().ompApprovalMode
       return mode === 'inherit' ? undefined : mode
     },
   )
-  ompManager.setDisabledModelsProvider(ompDisabledModels)
   ompManager.setWorkspaceUseProvider((cwd, owner, retireIfIdle) => repositoryUseGate.beginWorkspaceUse(cwd, owner, retireIfIdle))
   agents = ompManager
   sessions.bindRuntimeHooks({
@@ -635,8 +629,8 @@ async function bootstrap(): Promise<void> {
     all: () => agents?.list() ?? [],
     stop: async (path) => { await agents?.stopForSession(path) },
     rename: async (path, title) => agents?.renameForSession(path, title) ?? false,
-    adoptSuperseded: (path, successorPath) => { void agents?.rebindSupersededSession(path, successorPath) },
   })
+  sessions.setRuntimeForker((filePath, cwd) => ompManager.forkForSession(filePath, cwd))
   terminals = new TerminalService(
     (cwd) => projects.authorizeCwd(cwd),
     () => stateStore.getSettings().terminalShell,
@@ -724,8 +718,6 @@ async function bootstrap(): Promise<void> {
     sessions,
     ompManager,
     catalog,
-    ompDisabledProviders,
-    ompDisabledModels,
   )
   const schedules = new AutomationService(stateStore, {
     validateTarget: (target) => scheduledRuns.validateTarget(target),
@@ -765,8 +757,6 @@ async function bootstrap(): Promise<void> {
     sessions: { omp: sessions },
     agents: { omp: ompManager },
     catalogs: { omp: catalog },
-    disabledProviders: { omp: ompDisabledProviders },
-    disabledModels: { omp: ompDisabledModels },
   })
   await Promise.all([
     scheduleBridge.start(),
@@ -805,6 +795,21 @@ async function bootstrap(): Promise<void> {
   ompManager.setRuntimeStartListener((environment, info) => {
     browserBridge.bindSession(environment.OMP_DESKTOP_BROWSER_TOKEN, info.sessionFile)
     collaborationBridge.bindSession(environment.GOOEYPI_COLLABORATION_TOKEN, info.sessionFile, info.runtimeId)
+  })
+  // Path-only move(同一 sessionId 只換檔)時,把既有 token claim 的 scope 從舊檔
+  // 挪到新檔;token 不換發、claim 不撤銷。fill-only 的 bindSession 無法處理這種
+  // 改寫,所以必須走獨立的 rebind 通道。
+  ompManager.setRuntimeSessionReboundListener((environment, previousInfo, nextInfo) => {
+    const rebinds: Array<[string, { rebindSession(token: string | undefined, expectedOldPath: string | undefined, newPath: string | undefined): boolean }, string | undefined]> = [
+      ['schedule', scheduleBridge, environment.OMP_DESKTOP_SCHEDULE_TOKEN],
+      ['browser', browserBridge, environment.OMP_DESKTOP_BROWSER_TOKEN],
+      ['collaboration', collaborationBridge, environment.GOOEYPI_COLLABORATION_TOKEN],
+    ]
+    for (const [name, bridge, token] of rebinds) {
+      try { bridge.rebindSession(token, previousInfo.sessionFile, nextInfo.sessionFile) } catch (error) {
+        console.error(`OMP Desktop failed to rebind ${name} runtime capability: ${boundedErrorMessage(error)}`)
+      }
+    }
   })
   ompManager.setRuntimeEndListener((environment) => revokeRuntimeCapabilities(environment))
   if (shutdownStarted) return

@@ -127,14 +127,11 @@ async function fixture() {
               availableThinkingLevels: ['low', 'high', 'max'] as const,
               fastModeSupported: true,
               available: true,
-              enabled: true,
             },
           ],
         })),
       },
     } as unknown as ConstructorParameters<typeof AgentCollaborationBridge>[0]['catalogs'],
-    disabledProviders: { omp: () => new Set() },
-    disabledModels: { omp: () => new Set() },
   })
   await bridge.start()
   bridges.push(bridge)

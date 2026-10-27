@@ -191,20 +191,22 @@ describe('persisted settings parsing', () => {
     })
   })
 
-  it('filters disabled provider and model identifiers to their documented shapes', () => {
+  it('drops legacy provider and model visibility identifiers', () => {
     const { settings } = loadState({
       version: 3,
       settings: {
-        disabledProviders: ['openai', 'openai', '-bad', 42],
-        disabledModels: ['openai/gpt-5', 'gpt-5', 7],
+        disabledProviders: ['openai'],
+        disabledModels: ['openai/gpt-5'],
         piDisabledProviders: 'openai',
         piDisabledModels: ['openai/gpt-5'],
         ompDisabledProviders: ['openai', 'openai', '-bad', 42],
+        ompEnabledProviders: ['apple'],
         ompDisabledModels: ['openai/gpt-5', 'gpt-5', 7],
       },
     })
-    expect(settings.ompDisabledProviders).toEqual(['openai'])
-    expect(settings.ompDisabledModels).toEqual(['openai/gpt-5'])
+    expect(settings).not.toHaveProperty('ompDisabledProviders')
+    expect(settings).not.toHaveProperty('ompEnabledProviders')
+    expect(settings).not.toHaveProperty('ompDisabledModels')
   })
 
   it('keeps the valid omp model preference and clears malformed or legacy entries', () => {

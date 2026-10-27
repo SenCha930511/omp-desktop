@@ -19,15 +19,13 @@ export class ScheduledRunExecutor {
     private readonly sessions: SessionService,
     private readonly agents: AgentRpcManager,
     private readonly providers: ModelCatalogProvider,
-    private readonly disabledProviders: () => ReadonlySet<string>,
-    private readonly disabledModels: () => ReadonlySet<string> = () => new Set(),
   ) {}
 
   async validateTarget(target: ScheduleTarget): Promise<void> { await this.resolveTarget(target) }
 
   async validateExecution(execution: ScheduleExecution): Promise<void> {
     if (execution.model === 'auto') return
-    const model = await this.providers.requireAvailableModel(execution.model, this.disabledProviders(), this.disabledModels())
+    const model = await this.providers.requireAvailableModel(execution.model)
     if (execution.thinking !== 'auto' && !model.availableThinkingLevels.includes(execution.thinking)) {
       throw new ScheduleBlockedError(`${model.name} does not support ${execution.thinking} reasoning`)
     }

@@ -270,7 +270,7 @@ describe('prompt admission versus background transcript reads', () => {
   })
 
   it('renders the optimistic row immediately while an authoritative read is still pending', async () => {
-    // A rolled transcript read can hold the frame queue for seconds; the
+    // An appended transcript read can hold the frame queue for seconds; the
     // reader's own submitted row must not wait behind it.
     const read = vi.fn(() => new Promise<TranscriptMessage[]>(() => {}))
     const bridge = {

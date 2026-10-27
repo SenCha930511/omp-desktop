@@ -127,14 +127,14 @@ export function useAppShellOverlay(active: boolean): void {
   }, [active])
 }
 
-export function Modal({ title, children, onClose, footer }: { title: string; children: ReactNode; onClose(): void; footer?: ReactNode }) {
+export function Modal({ title, children, onClose, footer, wide = false }: { title: string; children: ReactNode; onClose(): void; footer?: ReactNode; /** 寬版（如 session tree）：放寬欄位與可視列數，不影響其他 modal。 */ wide?: boolean }) {
   const { t } = useI18n()
   const titleId = useId()
   const modalRef = useFocusTrap<HTMLElement>(true, onClose)
   useAppShellOverlay(true)
   return createPortal(
     <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <section ref={modalRef} className="modal" role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
+      <section ref={modalRef} className={`modal${wide ? ' modal--wide' : ''}`} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
         <div className="modal__header">
           <h2 id={titleId}>{title}</h2>
           <IconButton label={t('modal.close')} onClick={onClose}>

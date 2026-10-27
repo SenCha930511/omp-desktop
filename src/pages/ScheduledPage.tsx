@@ -135,7 +135,7 @@ function sessionBelongsToProject(session: SessionRecord, project: ProjectRecord)
 }
 
 function defaultScheduleModel(models: PrimeModelDescriptor[], lastSelectedModel: string): string {
-  return models.find((model) => model.key === lastSelectedModel && model.enabled !== false && model.available)?.key ?? models.find((model) => model.enabled !== false && model.available)?.key ?? ''
+  return models.find((model) => model.key === lastSelectedModel && model.available)?.key ?? models.find((model) => model.available)?.key ?? ''
 }
 
 function defaultForm(
@@ -366,7 +366,7 @@ export function ScheduledPage({
     return project ? sessions.filter((session) => sessionBelongsToProject(session, project) && !session.archived) : []
   }, [form.projectId, projects, sessions])
   const selectedModel = models.find((model) => model.key === form.model)
-  const availableModels = models.filter((model) => model.enabled !== false && model.available)
+  const availableModels = models.filter((model) => model.available)
   const currentTiming = useMemo(() => timingFromForm(form), [form.timingKind, form.date, form.time, form.timeZone, form.frequency, form.interval, form.weekdays, form.advancedRrule])
   const visible = schedules.filter((item) => filter === 'all' || (filter === 'attention' ? needsAttention(item) : item.status === filter))
   const counts = schedules.reduce(
@@ -745,7 +745,7 @@ export function ScheduledPage({
                     {t('scheduled.noModel')}
                   </option>
                 ) : null}
-                {form.model && !models.some((model) => model.key === form.model && model.enabled !== false && model.available) ? (
+                {form.model && !models.some((model) => model.key === form.model && model.available) ? (
                   <option value={form.model}>{t('scheduled.modelUnavailable', { model: form.model })}</option>
                 ) : null}
                 {availableModels.map((model) => (

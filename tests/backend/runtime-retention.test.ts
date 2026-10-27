@@ -5,11 +5,12 @@ it('protects commands awaiting asynchronous validation from idle retirement', as
   vi.useFakeTimers()
   let validate!: (path: string) => void
   const validation = new Promise<string>((resolve) => { validate = resolve })
-  const manager = new AgentRpcManager(null, async (cwd) => cwd, () => validation, undefined, undefined, OMP_RPC_ADAPTER, undefined, { idleMs: 100, warmCount: 0 })
+  const manager = new AgentRpcManager(null, async (cwd) => cwd, () => validation, undefined, OMP_RPC_ADAPTER, undefined, { idleMs: 100, warmCount: 0 })
   const runtime = {
     runtimeId: 'retained',
     snapshot: () => ({ runtimeId: 'retained', harness: 'omp', cwd: '/project', isStreaming: false }),
     command: vi.fn(async () => ({ type: 'response', success: true })),
+    canRetireSafely: () => true,
     stop: vi.fn(async () => true),
   }
   ;(manager as unknown as { runtimes: Map<string, unknown> }).runtimes.set(runtime.runtimeId, runtime)
@@ -31,10 +32,10 @@ it('rechecks the warm budget after awaiting another child retirement', async () 
   vi.useFakeTimers()
   let finishStop!: (stopped: boolean) => void
   const stopping = new Promise<boolean>((resolve) => { finishStop = resolve })
-  const manager = new AgentRpcManager(null, async (cwd) => cwd, async (path) => path, undefined, undefined, OMP_RPC_ADAPTER, undefined, { idleMs: 100, warmCount: 1 })
+  const manager = new AgentRpcManager(null, async (cwd) => cwd, async (path) => path, undefined, OMP_RPC_ADAPTER, undefined, { idleMs: 100, warmCount: 1 })
   const make = (id: string) => ({ runtimeId: id, busy: false,
     snapshot() { return { runtimeId: id, harness: 'omp', cwd: '/project', isStreaming: this.busy } },
-    command: vi.fn(async () => ({ success: true })), stop: vi.fn(async () => true) })
+    command: vi.fn(async () => ({ success: true })), canRetireSafely: () => true, stop: vi.fn(async () => true) })
   const runtimes = [make('first'), make('second'), make('warm')]
   const entries = (manager as unknown as { runtimes: Map<string, unknown> }).runtimes
   for (const runtime of runtimes) entries.set(runtime.runtimeId, runtime)

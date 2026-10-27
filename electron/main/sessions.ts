@@ -1,19 +1,17 @@
-import { randomUUID } from 'node:crypto'
 import { watch, type Dirent, type Stats } from 'node:fs'
-import { open, readdir, realpath, stat, unlink, type FileHandle } from 'node:fs/promises'
+import { readdir, realpath, unlink } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { dirname, join, resolve, sep } from 'node:path'
+import { join, resolve, sep } from 'node:path'
 import type { HarnessId, SessionCatalogUpdate, SessionChangeEvent, SessionRecord, TranscriptMessage } from '../../src/types/api'
 import { SessionCatalogSync } from './sessions/sync'
 
 import { comparePaths, createAdmissionQueue, createSingleFlight, type AdmissionQueue } from './lib/async'
-import { SESSION_FILE_RECORD_LIMIT_BYTES } from './jsonl-limits'
 import { resolveExecutable, runProcess, type ExecutableSource } from './process-utils'
 import { SessionMetadataCatalog, type SessionCatalogIo, type SessionNameTimestamp } from './sessions/catalog'
-import { createSessionMetadataReader, MAX_SESSION_FILE_BYTES, type SessionMetadata, type SessionMetadataReader } from './sessions/metadata'
+import { createSessionMetadataReader, type SessionMetadata, type SessionMetadataReader } from './sessions/metadata'
 import { readTranscript } from './sessions/transcript'
 import type { JsonStateStore } from './store'
-import { isRecord, isPathWithin, requireBoolean, requireExistingDirectory, requireString } from './validation'
+import { isPathWithin, requireBoolean, requireExistingDirectory, requireString } from './validation'
 
 interface RuntimeSessionState { isStreaming: boolean; isCompacting?: boolean }
 
@@ -23,9 +21,6 @@ const MAX_SESSION_FILES = 5_000
 const MAX_SESSION_WATCH_DIRECTORIES = 512
 const MAX_CONCURRENT_TRANSCRIPT_READS = 2
 const MAX_PENDING_TRANSCRIPT_READS = 32
-const BRANCH_COPY_CHUNK_BYTES = 256 * 1024
-/** Byte budget scanned from a session head for the identity header before a fork falls back to a verbatim copy. */
-const MAX_BRANCH_HEADER_SCAN_BYTES = 64 * 1024
 
 type TranscriptReader = (filePath: string, isStreaming: boolean) => Promise<TranscriptMessage[]>
 
@@ -49,88 +44,6 @@ const watchSessionDirectory: SessionWatchFactory = (path, options, listener) => 
 )
 
 const authorizeOmpSessionPath: SessionPathAuthorizer = (root, path) => isPathWithin(root, path) && path.endsWith('.jsonl')
-
-/** Bucketed branch file name: `<now with dashes>_<fresh uuid>.jsonl`, matching BUCKETED_SESSION_FILE_NAME. */
-function branchSessionFileName(id: string): string {
-  return `${new Date().toISOString().replace(/[:.]/g, '-')}_${id}.jsonl`
-}
-
-/**
- * Predecessor session paths superseded by a listed successor, keyed by the
- * predecessor's resolved file path. Two lineage rules fold one logical
- * conversation into a single row, mirroring what the harness's own GC
- * eventually deletes:
- *
- * 1. A successor references its predecessor through the header lineage omp
- *    writes on a compact rollover — `parentSession` (historically a session
- *    id or an absolute path) and `previousSessionFiles` (absolute paths).
- *    Only a strictly newer successor supersedes: rolls and forks always move
- *    forward in time.
- * 2. Repeated rollovers of the same source (several runtimes resuming one
- *    session, each rolling it forward) leave sibling files that all name the
- *    same `parentSession`. Among such siblings only the newest survives;
- *    only files a runtime is actively writing are shielded from hiding.
- */
-export function supersededSessionPaths(sessions: readonly SessionMetadata[], activelyWrittenPaths?: ReadonlySet<string>): Map<string, Set<string>> {
-  const byId = new Map<string, SessionMetadata>()
-  const byPath = new Map<string, SessionMetadata>()
-  for (const session of sessions) {
-    byId.set(session.id, session)
-    byPath.set(resolve(session.filePath), session)
-  }
-  const hideable = (session: SessionMetadata): boolean => !activelyWrittenPaths?.has(resolve(session.filePath))
-  const mark = (predecessor: SessionMetadata, successor: SessionMetadata, superseded: Map<string, Set<string>>): void => {
-    const predecessorPath = resolve(predecessor.filePath)
-    if (predecessorPath === resolve(successor.filePath) || !hideable(predecessor)) return
-    const successors = superseded.get(predecessorPath) ?? new Set<string>()
-    successors.add(resolve(successor.filePath))
-    superseded.set(predecessorPath, successors)
-  }
-  const superseded = new Map<string, Set<string>>()
-  for (const successor of sessions) {
-    const createdAt = Date.parse(successor.createdAt)
-    const references = new Set<string>([successor.parentSession, ...(successor.previousSessionFiles ?? [])].filter((value): value is string => typeof value === 'string'))
-    for (const reference of references) {
-      const predecessor = byId.get(reference) ?? byPath.get(resolve(reference))
-      if (!predecessor || predecessor === successor) continue
-      const predecessorCreated = Date.parse(predecessor.createdAt)
-      if (!Number.isFinite(createdAt) || !Number.isFinite(predecessorCreated) || predecessorCreated >= createdAt) continue
-      mark(predecessor, successor, superseded)
-    }
-  }
-  // Sibling collapse: group by the shared parentSession reference and keep
-  // only the newest member (plus anything a live runtime is writing).
-  const siblingsByParent = new Map<string, SessionMetadata[]>()
-  for (const session of sessions) {
-    if (!session.parentSession) continue
-    const group = siblingsByParent.get(session.parentSession) ?? []
-    group.push(session)
-    siblingsByParent.set(session.parentSession, group)
-  }
-  for (const group of siblingsByParent.values()) {
-    if (group.length < 2) continue
-    const ranked = [...group].sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))
-    const survivor = ranked.find((candidate) => !hideable(candidate)) ?? ranked[0]!
-    for (const sibling of ranked) {
-      if (sibling !== survivor) mark(sibling, survivor, superseded)
-    }
-  }
-  return superseded
-}
-
-/**
- * Rewrites a session identity header line (`{"type":"session",...}`) to the
- * branched session id. Returns null for every other line so a fork copies the
- * source byte-for-byte except for its session identity.
- */
-const SESSION_HEADER_NEWLINE = Buffer.from('\n')
-function rewrittenSessionHeader(line: Buffer, sessionId: string): string | null {
-  if (line.length === 0 || line.length > SESSION_FILE_RECORD_LIMIT_BYTES) return null
-  let value: unknown
-  try { value = JSON.parse(line.toString('utf8')) } catch { return null }
-  if (!isRecord(value) || value.type !== 'session' || typeof value.id !== 'string') return null
-  return JSON.stringify({ ...value, id: sessionId })
-}
 
 export interface SessionServiceOptions {
   /** Harness stamped on every record and change event this service emits; defaults to 'omp'. */
@@ -167,7 +80,7 @@ export class SessionService {
   private readonly recursiveWatch: boolean
   private runtimeForSession: (filePath: string) => RuntimeSessionState | undefined = () => undefined
   private listRuntimeSessions: (() => readonly RuntimeSessionSnapshot[]) | null = null
-  private adoptSupersededRuntime: ((filePath: string, successorPath: string) => void) | null = null
+  private runtimeForker: ((filePath: string, cwd: string) => Promise<string>) | null = null
   private stopRuntimeForSession: (filePath: string) => Promise<void> = async () => undefined
   private renameRuntimeSession: (filePath: string, title: string) => Promise<boolean> = async () => false
   private readonly catalog: SessionMetadataCatalog
@@ -229,14 +142,21 @@ export class SessionService {
     all?(): readonly RuntimeSessionSnapshot[]
     stop(filePath: string): Promise<void>
     rename(filePath: string, title: string): Promise<boolean>
-    /** Retarget a runtime parked on a superseded file to the surviving row; fire-and-forget. */
-    adoptSuperseded?(filePath: string, successorPath: string): void
   }): void {
     this.runtimeForSession = hooks.get
     this.listRuntimeSessions = hooks.all ?? null
     this.stopRuntimeForSession = hooks.stop
     this.renameRuntimeSession = hooks.rename
-    this.adoptSupersededRuntime = hooks.adoptSuperseded ?? null
+  }
+
+  /**
+   * Installs the harness-native fork operation that `branch` delegates to.
+   * The callback receives the resolved source session path and the source
+   * record's project path, forks inside the engine (artifacts included), and
+   * resolves to the forked session file path.
+   */
+  setRuntimeForker(fork: (filePath: string, cwd: string) => Promise<string>): void {
+    this.runtimeForker = fork
   }
 
   onDidChange(listener: (event: SessionChangeEvent) => void): () => void {
@@ -261,60 +181,28 @@ export class SessionService {
     // Force advances the scan revision while retaining metadata-level caches.
     if (force) this.catalog.invalidateLiveCatalog()
     const sessions = await this.catalog.all()
-    // A compact rolls a session forward (experimental-context rollover):
-    // the successor file's header names its predecessor, and the harness's
-    // own GC eventually deletes the stale file. Until then both would list
-    // as duplicate conversations — hide predecessors that a listed successor
-    // references, mirroring the harness's single-session view. Display flags
-    // (pinned/archived) transfer to the successor so a pinned rolled session
-    // stays pinned.
+    // Lineage header fields (`parentSession`, `previousSessionFiles`) are
+    // association and move history only: forks and moves leave every session
+    // file listed, so nothing is hidden, retargeted, or re-owned
+    // (pin/archive) without a demonstrated same identity.
     // One runtime snapshot per list call; each session then resolves in O(1).
     const runtimeBySession = this.snapshotRuntimeSessions()
-    // Only a runtime actively writing its file shields a superseded
-    // predecessor from hiding: the session lock is exclusive, so a roll
-    // observed here happened in another process and any parked runtime on
-    // the old file is stranded — it cannot append and its commands fail on
-    // the lock. Retarget such runtimes to the surviving row so one logical
-    // conversation stays one sidebar row and the open workspace follows.
-    const activelyWrittenPaths = new Set<string>()
-    for (const runtime of runtimeBySession?.values() ?? []) {
-      if ((runtime.isStreaming || runtime.isCompacting) && runtime.sessionFile) activelyWrittenPaths.add(resolve(runtime.sessionFile))
-    }
-    const supersededBy = supersededSessionPaths(sessions, activelyWrittenPaths)
-    const predecessorsOf = new Map<string, Set<string>>()
-    for (const [predecessorPath, successorPaths] of supersededBy) {
-      for (const successorPath of successorPaths) {
-        const predecessors = predecessorsOf.get(successorPath) ?? new Set<string>()
-        predecessors.add(predecessorPath)
-        predecessorsOf.set(successorPath, predecessors)
-      }
-    }
-    if (this.adoptSupersededRuntime && runtimeBySession) {
-      for (const predecessorPath of supersededBy.keys()) {
-        const runtime = runtimeBySession.get(predecessorPath)
-        if (!runtime || runtime.isStreaming || runtime.isCompacting) continue
-        const survivor = [...predecessorsOf.entries()].find(([successorPath, predecessors]) => (
-          predecessors.has(predecessorPath) && !supersededBy.has(successorPath)
-        ))?.[0]
-        if (survivor) this.adoptSupersededRuntime(predecessorPath, survivor)
-      }
-    }
     const archived = new Set(this.store.getArchivedSessions().map((path) => resolve(path)))
     const pinned = new Set(this.store.getPinnedSessions().map((path) => resolve(path)))
     const records: SessionRecord[] = []
     for (const original of sessions) {
       const filePath = resolve(original.filePath)
-      if (supersededBy.has(filePath)) continue
       const metadata = { ...original }
-      const predecessors = predecessorsOf.get(filePath)
-      const isArchived = archived.has(filePath) || Boolean(predecessors && [...predecessors].some((path) => archived.has(path)))
-      const isPinned = pinned.has(filePath) || Boolean(predecessors && [...predecessors].some((path) => pinned.has(path)))
+      const isArchived = archived.has(filePath)
+      const isPinned = pinned.has(filePath)
       if ((isArchived && !includeArchived) || (project && resolve(metadata.projectPath) !== project)) continue
       const runtime = runtimeBySession
         ? runtimeBySession.get(filePath)
         : this.runtimeForSession(metadata.filePath)
       if (runtime) metadata.status = runtime.isStreaming || runtime.isCompacting ? 'running' : 'idle'
-      const { sessionName: _sessionName, parentSession: _parentSession, previousSessionFiles: _previousSessionFiles, ...record } = metadata
+      // parentSession rides along: the renderer folds continued chains
+      // (compact rollover / fork) into one sidebar row via session-lineage.
+      const { sessionName: _sessionName, previousSessionFiles: _previousSessionFiles, ...record } = metadata
       records.push({ ...record, harness: this.harness, archived: isArchived, pinned: isPinned })
     }
     return records.sort((a, b) => Date.parse(b.lastUserMessageAt ?? b.createdAt) - Date.parse(a.lastUserMessageAt ?? a.createdAt) || comparePaths(a.filePath, b.filePath))
@@ -399,23 +287,22 @@ export class SessionService {
   }
 
   /**
-   * Forks a session by copying its file to a fresh bucketed sibling named
-   * `<now>_<fresh uuid>.jsonl`. The copy is byte-exact except that its session
-   * identity header is re-stamped with the fresh uuid (OMP ties the file-name
-   * uuid to the session id), so the fork is a distinct session while the
-   * source file is never modified.
+   * Forks a session through the harness-native fork operation installed with
+   * `setRuntimeForker`. The engine owns the forked file and its artifacts;
+   * this service only validates the reported path and reconciles the
+   * catalog. With no forker bound the branch fails explicitly — session
+   * JSONL is never copied or rewritten here.
    */
   async branch(filePath: unknown): Promise<SessionRecord> {
     const safePath = await this.requireSessionPath(filePath)
-    const fileStat = await stat(safePath)
-    if (fileStat.size > MAX_SESSION_FILE_BYTES) throw new Error('Session file is too large to branch')
-    const id = randomUUID()
-    const target = join(dirname(safePath), branchSessionFileName(id))
-    await this.copySessionFork(safePath, target, id)
+    if (!this.runtimeForker) throw new Error('Native session fork is not available')
+    const metadata = await this.readMetadata(safePath)
+    const forkedPath = await this.runtimeForker(safePath, metadata.projectPath)
+    const safeForkedPath = await this.requireSessionPath(forkedPath)
     this.emitChange({ harness: this.harness })
     const records = await this.list(undefined, true, true)
-    const record = records.find((candidate) => resolve(candidate.filePath) === resolve(target))
-    if (!record) throw new Error('Branched session did not appear in the session catalog')
+    const record = records.find((candidate) => resolve(candidate.filePath) === resolve(safeForkedPath))
+    if (!record) throw new Error('Forked session did not appear in the session catalog')
     return record
   }
 
@@ -438,61 +325,6 @@ export class SessionService {
     const path = await realpath(requested)
     if (!this.isSessionPathAuthorized(root, path)) throw new TypeError('Session path is outside the Prime session directory')
     return path
-  }
-
-  /**
-   * Streams a session file to a fresh sibling, rewriting only the first
-   * `{"type":"session"}` identity record to the branched id. Every other byte
-   * (including fixed-width leading slots) is copied verbatim, and a failed
-   * copy never leaves a partial target behind.
-   */
-  private async copySessionFork(source: string, target: string, sessionId: string): Promise<void> {
-    const input = await open(source, 'r')
-    let output: FileHandle | null = null
-    try {
-      output = await open(target, 'wx')
-      const chunk = Buffer.allocUnsafe(BRANCH_COPY_CHUNK_BYTES)
-      let pending: Buffer = Buffer.alloc(0)
-      let scanned = 0
-      let headerRewritten = false
-      let gaveUp = false
-      let position = 0
-      while (true) {
-        const { bytesRead } = await input.read(chunk, 0, chunk.length, position)
-        if (bytesRead === 0) break
-        position += bytesRead
-        let data = pending.length ? Buffer.concat([pending, chunk.subarray(0, bytesRead)]) : chunk.subarray(0, bytesRead)
-        pending = Buffer.alloc(0)
-        if (!headerRewritten && !gaveUp) {
-          scanned += bytesRead
-          while (!headerRewritten) {
-            const newline = data.indexOf(0x0a)
-            if (newline < 0) break
-            const line = data.subarray(0, newline)
-            data = data.subarray(newline + 1)
-            const rewritten = rewrittenSessionHeader(line, sessionId)
-            if (rewritten !== null) headerRewritten = true
-            await output.write(rewritten !== null ? Buffer.from(rewritten, 'utf8') : line)
-            await output.write(SESSION_HEADER_NEWLINE)
-          }
-          if (!headerRewritten && scanned >= MAX_BRANCH_HEADER_SCAN_BYTES) gaveUp = true
-        }
-        if (headerRewritten || gaveUp) await output.write(data)
-        else pending = Buffer.from(data)
-      }
-      // A source without a trailing newline keeps its final partial line; it
-      // can still be the identity header when the file is one line long.
-      if (pending.length) {
-        const rewritten = headerRewritten ? null : rewrittenSessionHeader(pending, sessionId)
-        await output.write(rewritten !== null ? Buffer.from(rewritten, 'utf8') : pending)
-      }
-    } catch (error) {
-      await unlink(target).catch(() => undefined)
-      throw error
-    } finally {
-      await input.close()
-      await output?.close()
-    }
   }
 
   private startWatcher(): void {

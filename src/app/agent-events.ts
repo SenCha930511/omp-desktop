@@ -97,7 +97,9 @@ export function authoritativeTranscriptReadIsCurrent(
     && (currentRuntimeId === null || currentRuntimeId === marker.runtimeId)
 }
 
-const LOCAL_MESSAGE_ID = /^(?:user|assistant|stream|error|compaction|fallback)-/
+// `bash-`:使用者 `!` shell 捷徑的 live 結果列;磁碟上的 bashExecution 重讀
+// 列(role 'tool')出現時由 persisted() 取代,不會與 live 列重複呈現。
+const LOCAL_MESSAGE_ID = /^(?:user|assistant|stream|error|compaction|fallback|bash)-/
 
 function messageText(message: TranscriptMessage): string {
   return message.parts.map((part) => 'text' in part && typeof part.text === 'string' ? part.text : '').join('\n').trim()

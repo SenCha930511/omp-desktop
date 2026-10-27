@@ -295,6 +295,15 @@ let streaming = false
 let pendingPrompt
 let answers = {}
 const btwTopics = {}
+// OMP-authoritative queue model (2.2/2.5): busy-time follow_up/steer are HELD
+// by the harness, reported through get_state (queuedMessageCount +
+// queuedMessages + explicit sessionActions) and session_action_update events,
+// and drained when the active turn ends.
+let steeringQueue = []
+let followUpQueue = []
+const sessionActionsSnapshot = () => ({ queuedCount: steeringQueue.length + followUpQueue.length, steering: [...steeringQueue], followUps: [...followUpQueue] })
+const sendSessionActions = () => send({ type: 'session_action_update', actions: sessionActionsSnapshot() })
+let drainBarrierFollowUp = null
 send({ type: 'ready', protocolVersion: 1, supportedProtocolVersions: [1, 2] })
 readline.createInterface({ input: process.stdin }).on('line', (line) => {
   const command = JSON.parse(line)
@@ -308,7 +317,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
       sessionId: 'fixture-session', sessionFile, isStreaming: streaming, thinkingLevel: 'medium',
       model: { provider: 'openai-codex', id: 'gpt-fixture', name: 'GPT Fixture' },
       contextUsage: { tokens: 12000, contextWindow: 100000, percent: 12 },
-      fastModeEnabled: false, queuedMessageCount: 0,
+      fastModeEnabled: false, queuedMessageCount: steeringQueue.length + followUpQueue.length, queuedMessages: { steering: [...steeringQueue], followUp: [...followUpQueue] }, sessionActions: sessionActionsSnapshot(),
     } }), Number(process.env.OMP_FIXTURE_START_DELAY_MS || 0))
   } else if (command.type === 'compact') {
     fs.writeFileSync(marker('compact-command-reached'), 'reached')
@@ -327,15 +336,38 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     send({ id: command.id, type: 'response', command: command.type, success: true, data: { subagents: [] } })
   } else if (command.type === 'get_subagent_messages') {
     send({ id: command.id, type: 'response', command: command.type, success: true, data: { messages: [{ role: 'user', timestamp: 0, content: 'A long assignment from the parent. '.repeat(80) }, { role: 'assistant', timestamp: 1, content: [{ type: 'thinking', thinking: 'Inspecting fixture code' }, { type: 'text', text: 'Subagent fixture result' }, { type: 'text', text: '\\n\\n' + 'A detailed progress line.\\n\\n'.repeat(80) }] }], nextByte: 100, reset: false } })
+  } else if (command.type === 'remove_queued_message') {
+    const queue = command.queue === 'steering' ? steeringQueue : followUpQueue
+    const index = queue.indexOf(command.message)
+    if (index >= 0) queue.splice(index, 1)
+    sendSessionActions()
+    send({ id: command.id, type: 'response', command: command.type, success: true, data: { removed: index >= 0 } })
+  } else if (command.type === 'promote_queued_message') {
+    const index = followUpQueue.indexOf(command.message)
+    if (index >= 0) {
+      followUpQueue.splice(index, 1)
+      steeringQueue.push(command.message)
+    }
+    sendSessionActions()
+    send({ id: command.id, type: 'response', command: command.type, success: true, data: { promoted: index >= 0 } })
   } else if (command.type === 'steer') {
     fs.writeFileSync(marker('steer-args.json'), JSON.stringify(command))
+    if (streaming) steeringQueue.push(typeof command.message === 'string' ? command.message : '')
+    sendSessionActions()
     send({ id: command.id, type: 'response', command: command.type, success: true, data: {} })
-  } else if (command.type === 'branch') {
+  } else if (command.type === 'branch' || command.type === 'fork') {
     fs.writeFileSync(marker('branch-args.json'), JSON.stringify(command))
     send({ id: command.id, type: 'response', command: command.type, success: true, data: {} })
   } else if (command.type === 'prompt' || command.type === 'follow_up') {
     fs.writeFileSync(marker('prompt-args.json'), JSON.stringify(command))
     const message = typeof command.message === 'string' ? command.message : ''
+    // 沒有特殊案例的 busy follow_up：由 harness 持有（對齊真實 omp 語意）。
+    if (command.type === 'follow_up' && streaming && !message.includes('barrier follow-up')) {
+      followUpQueue.push(message)
+      sendSessionActions()
+      send({ id: command.id, type: 'response', command: command.type, success: true, data: { agentInvoked: false } })
+      return
+    }
     if (message === 'conversation failure fixture') {
       send({ id: command.id, type: 'response', command: command.type, success: false, error: 'Fixture turn failed' })
       return
@@ -408,6 +440,10 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
       streaming = true
       send({ type: 'agent_start' })
       send({ id: command.id, type: 'response', command: command.type, success: true, data: { agentInvoked: true } })
+      // response 已送出＝admission 即將收束。測試先 poll 這個 marker 再
+      // 按 Ctrl+Enter，消除「busy follow-up 撞上仍在 flight 的 admission
+      // 而走本地列」的時序 race（第二輪審查 M3/m1）。
+      fs.writeFileSync(marker('prompt-admission-barrier-response-sent'), '1')
       const release = marker('prompt-admission-barrier-release')
       // The app can show its busy state before this prompt is admitted, so a
       // test may write the release before the watcher exists; treat that as
@@ -422,11 +458,12 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
         watcher.close()
         streaming = false
         send({ type: 'agent_end' })
+        if (drainBarrierFollowUp) drainBarrierFollowUp()
       })
       return
     }
-    if (message.includes('barrier follow-up')) {
-      fs.writeFileSync(marker('prompt-admission-barrier-accepted'), JSON.stringify(command))
+    if (message.includes('barrier follow-up') && !streaming) {
+      // idle 時照舊立即落盤（滾動測試依賴這條路徑的 user+assistant 訊息）。
       const completedAt = new Date().toISOString()
       const parentId = lastEntryId()
       fs.appendFileSync(sessionFile, [
@@ -438,11 +475,38 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
       send({ type: 'agent_end' })
       return
     }
+    if (message.includes('barrier follow-up')) {
+      // 2.2 語意：busy 中的 follow-up 由 harness 持有，直到作用中輪結束
+      // 才被承認——釋放檔出現時一次清空並落盤。
+      followUpQueue.push(command.message)
+      sendSessionActions()
+      send({ id: command.id, type: 'response', command: command.type, success: true, data: { agentInvoked: false } })
+      drainBarrierFollowUp = () => {
+        followUpQueue = followUpQueue.filter((held) => held !== command.message)
+        fs.writeFileSync(marker('prompt-admission-barrier-accepted'), JSON.stringify(command))
+        const completedAt = new Date().toISOString()
+        const parentId = lastEntryId()
+        fs.appendFileSync(sessionFile, [
+          JSON.stringify({ type: 'message', id: 'fixture-barrier-user', parentId, timestamp: completedAt, message: { role: 'user', content: command.message } }),
+          JSON.stringify({ type: 'message', id: 'fixture-barrier-assistant', parentId: 'fixture-barrier-user', timestamp: completedAt, message: { role: 'assistant', content: 'The barrier follow-up was accepted.' } }),
+        ].join('\\n') + '\\n')
+        send({ type: 'agent_start' })
+        send({ type: 'agent_end' })
+        sendSessionActions()
+      }
+      return
+    }
     if (message.includes('stay busy')) {
       fs.writeFileSync(marker('stay-busy-received'), '1')
       streaming = true
       send({ type: 'agent_start' })
-      send({ id: command.id, type: 'response', command: command.type, success: true, data: { agentInvoked: true } })
+      // steer 測試需要「busy 且 admission 仍在 flight」的確定性窗口：
+      // response 延遲 3 秒讓本地佇列分支（submissionAdmission active）
+      // 必然命中，而非與 admission 收束 race。agent_start 立即推送，
+      // busy 狀態（Stop 按鈕）不受影響。
+      const stayBusyResponse = () => send({ id: command.id, type: 'response', command: command.type, success: true, data: { agentInvoked: true } })
+      if (message.includes('steer')) setTimeout(stayBusyResponse, 3000)
+      else stayBusyResponse()
       return
     }
     if (message.includes('chunked reply')) {
@@ -589,6 +653,7 @@ test.describe('OMP Desktop desktop smoke', () => {
     const noOmp = testInfo.title === 'connects to OMP after it is installed while the app is open'
       || testInfo.title === 'opens Harness settings from the no-harness recovery prompt'
     const networkMcp = testInfo.title === 'shows externally managed OMP MCP servers without inspecting authorization'
+      || testInfo.title === 'shows mcp.json network MCP servers with editor controls and never touches authorization'
     let startupError: unknown
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const fixture = createHermeticFixture()
@@ -1148,7 +1213,10 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(page.getByRole('button', { name: 'Stop OMP' })).toBeVisible()
 
     await composer.fill('send this queued task now')
-    await composer.press('Enter')
+    // 2.6 起 messageEnterAction 預設 'steer'：plain Enter=steer、修飾鍵
+    // （Ctrl/Cmd+Enter）=queue。busy 中的 queue 意圖走 renderer 本地佇列
+    // （Send immediately/Edit/Delete），由單一 flight 閘管理 flush。
+    await composer.press('Control+Enter')
     const queuedTray = page.getByRole('region', { name: 'Queued messages' })
     await queuedTray.locator('.composer-queue__item').hover()
     await expect(queuedTray.locator('.composer-queue__actions')).toHaveCSS('opacity', '1')
@@ -1156,12 +1224,16 @@ test.describe('OMP Desktop desktop smoke', () => {
     const sendImmediately = queuedTray.getByRole('button', { name: /^Send queued message immediately:/ })
     await expect(sendImmediately).toHaveAttribute('title', 'Send queued message immediately')
     await sendImmediately.click()
-    await expect(queuedTray.locator('.composer-queue__item')).toHaveCount(0)
+    // 2.2/2.5 語意：steer 送出後由 omp 的 steering queue 持有——本地列交接
+    // 為 harness-held row（Reclaim/Delete；steering 列無 Promote），直到
+    // 上游把它撿進作用中輪。marker 證明 steer 已送達上游。
+    await expect(queuedTray.getByRole('button', { name: /^Reclaim queued message to the composer:/ })).toBeVisible()
     const queuedSteerMarker = join(fixtureRoot, 'steer-args.json')
     await expect.poll(() => existsSync(queuedSteerMarker)).toBe(true)
     expect(JSON.parse(readFileSync(queuedSteerMarker, 'utf8'))).toMatchObject({ type: 'steer', message: 'send this queued task now' })
     await composer.fill('change direction now')
-    await composer.press('Control+Enter')
+    // steer 是 plain Enter（預設 enterAction='steer'）。
+    await composer.press('Enter')
     await expect(page.locator('.message--user').filter({ hasText: 'change direction now' })).toBeVisible()
     const marker = join(fixtureRoot, 'steer-args.json')
     await expect.poll(() => {
@@ -1188,16 +1260,25 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(page.getByRole('button', { name: 'Send message', exact: true })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Stop OMP' })).toHaveCount(0)
 
-    await composer.press('Enter')
+    // 2.6 預設 enterAction='steer'：排隊用 Ctrl+Enter（本地佇列，釋放後 flush）。
+    await composer.press('Control+Enter')
     await expect(page.getByRole('button', { name: 'Stop OMP' })).toBeVisible()
     const queuedTray = page.getByRole('region', { name: 'Queued messages' })
     await expect(queuedTray.locator('.composer-queue__item')).toHaveCount(1)
 
+    // 確定性柵欄：barrier turn 的 response 已由 fixture 送出（admission
+    // 已收束），Ctrl+Enter 必然走 harness follow_up 而非本地列。
+    await expect.poll(() => existsSync(join(fixtureRoot, 'prompt-admission-barrier-response-sent'))).toBe(true)
+    await page.waitForTimeout(250)
     writeFileSync(join(fixtureRoot, 'prompt-admission-barrier-release'), 'release')
     const acceptedPath = join(fixtureRoot, 'prompt-admission-barrier-accepted')
     await expect.poll(() => existsSync(acceptedPath)).toBe(true)
     const accepted = JSON.parse(readFileSync(acceptedPath, 'utf8')) as { type: string; message: string; streamingBehavior?: string }
-    expect(accepted).toMatchObject({ type: 'prompt', message: 'barrier follow-up' })
+    // 唯一可達路徑：admission 收束後 busy follow-up 直接以 follow_up 送
+    // 達 harness 佇列（marker 只由 drain 寫出）。語意：訊息正確、無
+    // streamingBehavior（不得提前插輪）。
+    expect(accepted.message).toBe('barrier follow-up')
+    expect(accepted.type).toBe('follow_up')
     expect(accepted.streamingBehavior).toBeUndefined()
     await expect(queuedTray.locator('.composer-queue__item')).toHaveCount(0)
     await expect(page.locator('.message--user').filter({ hasText: 'barrier follow-up' })).toHaveCount(1)
@@ -1253,7 +1334,7 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(page.getByRole('button', { name: 'Close command result', exact: true })).toHaveCount(0)
   })
 
-  test('translates a renderer fork into an OMP branch command', async () => {
+  test('preserves a renderer fork as an OMP fork command', async () => {
     await page.locator('.session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
     await expect(page.locator('.model-picker__trigger')).toHaveAccessibleName('Model: Claude Fixture')
     const composer = page.getByRole('combobox', { name: 'Message OMP' })
@@ -1264,7 +1345,7 @@ test.describe('OMP Desktop desktop smoke', () => {
     await page.evaluate((runtimeId) => window.desktop.agent.command(runtimeId, { type: 'fork', entryId: 'fixture-goal-summary' }), runtimes[0].runtimeId)
     const marker = join(fixtureRoot, 'branch-args.json')
     await expect.poll(() => existsSync(marker)).toBe(true)
-    expect(JSON.parse(readFileSync(marker, 'utf8'))).toMatchObject({ type: 'branch', entryId: 'fixture-goal-summary' })
+    expect(JSON.parse(readFileSync(marker, 'utf8'))).toMatchObject({ type: 'fork', entryId: 'fixture-goal-summary' })
   })
 
   test('centers the compact context-usage dial', async () => {
@@ -1545,84 +1626,21 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(picker.getByRole('option', { name: /GPT Fixture/ })).toHaveCount(1)
   })
 
-  test('persists a desktop-only OMP provider toggle and removes its models from the picker', async () => {
+  test('shows the OMP provider catalogue without visibility toggles', async () => {
     await page.locator('.sidebar__footer button').filter({ hasText: 'Settings' }).click()
     await page.getByRole('button', { name: 'Providers', exact: true }).click()
-    const modelNamesBefore = await page.evaluate(async () => {
-      const catalog = await window.desktop.providers.catalog(true, 'omp')
-      const enabledProviders = new Set(catalog.providers.filter((provider) => provider.enabled).map((provider) => provider.id))
-      return catalog.models.filter((model) => model.available && model.enabled !== false && enabledProviders.has(model.provider)).map((model) => model.name)
-    })
-    expect(modelNamesBefore.sort()).toEqual(['Claude Fixture', 'GPT Fixture'])
-    const anthropic = page.getByRole('checkbox', { name: 'Show anthropic provider' })
-    await expect(anthropic).toBeChecked()
-    await page.getByTitle('Hide provider in OMP').filter({ has: anthropic }).click()
-    await expect(anthropic).not.toBeChecked()
-    await expect.poll(() => JSON.parse(readFileSync(join(fixtureRoot, 'user-data', CURRENT_DESKTOP_STATE_FILENAME), 'utf8')).settings.ompDisabledProviders).toEqual(['anthropic'])
-    const modelNamesAfter = await page.evaluate(async () => {
-      const catalog = await window.desktop.providers.catalog(true, 'omp')
-      const enabledProviders = new Set(catalog.providers.filter((provider) => provider.enabled).map((provider) => provider.id))
-      return catalog.models.filter((model) => model.available && model.enabled !== false && enabledProviders.has(model.provider)).map((model) => model.name)
-    })
-    expect(modelNamesAfter).toEqual(['GPT Fixture'])
+    await expect(page.getByLabel('Search providers')).toBeVisible()
+    await expect(page.locator('.provider-row')).toHaveCount(2)
+    // Provider visibility management is gone: no toolbar, no per-row switches.
+    await expect(page.locator('.provider-heading-actions')).toHaveCount(0)
+    await expect(page.locator('.provider-row input[type="checkbox"]')).toHaveCount(0)
 
-    await page.getByRole('button', { name: 'Back to session' }).click()
-    await page.locator('.session-row__title').filter({ hasText: 'OMP hermetic fixture' }).click()
-    const modelPicker = page.locator('.model-picker')
-    await modelPicker.locator('.model-picker__trigger').click()
-    await expect(modelPicker.getByRole('option', { name: /GPT Fixture/ })).toHaveCount(1)
-    await expect(modelPicker.getByRole('option', { name: /Claude Fixture/ })).toHaveCount(0)
-  })
-
-  test('persists an OMP model toggle and removes only that model from every picker', async () => {
-    await page.locator('.sidebar__footer button').filter({ hasText: 'Settings' }).click()
-    await page.getByRole('button', { name: 'Providers', exact: true }).click()
     await page.getByRole('tab', { name: /Models/ }).click()
-
-    const toggle = page.getByRole('checkbox', { name: 'Show GPT Fixture model' })
-    const groupHeader = page.locator('.provider-model-group__heading[aria-controls="provider-models-openai-codex"]')
-    await expect(groupHeader).toHaveAttribute('aria-expanded', 'true')
-    await groupHeader.click()
-    await expect(groupHeader).toHaveAttribute('aria-expanded', 'false')
-    await expect(toggle).toBeHidden()
-    await groupHeader.click()
-    await expect(groupHeader).toHaveAttribute('aria-expanded', 'true')
-    await expect(toggle).toBeVisible()
-    await expect(toggle).toBeChecked()
-    const row = page.locator('.provider-model-row').filter({ has: toggle })
-    await expect(row.locator('.provider-model-row__capabilities')).toBeVisible()
-    await expect(row.locator('.provider-model-row__toggle')).toBeVisible()
-    await row.locator('.provider-model-row__toggle').click()
-    await expect(toggle).not.toBeChecked()
-    await expect.poll(() => JSON.parse(readFileSync(join(fixtureRoot, 'user-data', CURRENT_DESKTOP_STATE_FILENAME), 'utf8')).settings.ompDisabledModels).toEqual(['openai-codex/gpt-fixture'])
-    await expect.poll(() => JSON.parse(readFileSync(join(fixtureRoot, 'user-data', CURRENT_DESKTOP_STATE_FILENAME), 'utf8')).settings.ompDisabledProviders).toEqual(['openai-codex'])
+    await expect(page.getByLabel('Search models')).toBeVisible()
     const groups = page.locator('.provider-model-group')
     await expect(groups.nth(0)).toContainText('Claude Fixture')
     await expect(groups.nth(1)).toContainText('GPT Fixture')
-
-    const visibleModelNames = await page.evaluate(async () => {
-      const catalog = await window.desktop.providers.catalog(true, 'omp')
-      const enabledProviders = new Set(catalog.providers.filter((provider) => provider.enabled).map((provider) => provider.id))
-      return catalog.models.filter((model) => model.available && model.enabled !== false && enabledProviders.has(model.provider)).map((model) => model.name)
-    })
-    expect(visibleModelNames).toEqual(['Claude Fixture'])
-    await page.getByRole('button', { name: 'Back to session' }).click()
-    await page.locator('.session-row__title').filter({ hasText: 'OMP hermetic fixture' }).click()
-    const modelPicker = page.locator('.model-picker')
-    await modelPicker.locator('.model-picker__trigger').click()
-    await expect(modelPicker.getByRole('option', { name: /GPT Fixture/ })).toHaveCount(0)
-    await expect(modelPicker.getByRole('option', { name: /Claude Fixture/ })).toHaveCount(1)
-
-    await page.locator('.sidebar__footer button').filter({ hasText: 'Settings' }).click()
-    await page.getByRole('button', { name: 'Providers', exact: true }).click()
-    await page.getByRole('tab', { name: /Models/ }).click()
-    const hiddenToggle = page.getByRole('checkbox', { name: 'Show GPT Fixture model' })
-    await page.locator('.provider-model-row').filter({ has: hiddenToggle }).locator('.provider-model-row__toggle').click()
-    await expect(hiddenToggle).toBeChecked()
-    await expect.poll(() => JSON.parse(readFileSync(join(fixtureRoot, 'user-data', CURRENT_DESKTOP_STATE_FILENAME), 'utf8')).settings.ompDisabledModels).toEqual([])
-    await expect.poll(() => JSON.parse(readFileSync(join(fixtureRoot, 'user-data', CURRENT_DESKTOP_STATE_FILENAME), 'utf8')).settings.ompDisabledProviders).toEqual([])
-    await page.getByRole('tab', { name: /Providers/ }).click()
-    await expect(page.getByRole('checkbox', { name: 'Show openai-codex provider' })).toBeChecked()
+    await expect(page.locator('.provider-model-row input[type="checkbox"]')).toHaveCount(0)
   })
 
   test('refreshes harness discovery through the live settings and preload path', async () => {
@@ -2444,9 +2462,6 @@ test.describe('OMP Desktop desktop smoke', () => {
     await page.getByRole('button', { name: 'Providers', exact: true }).click()
     await expect(page.getByLabel('Search providers')).toBeVisible()
     await expect(page.locator('.provider-row')).not.toHaveCount(0)
-    await page.getByRole('button', { name: /Hide all/, exact: true }).click()
-    await expect(page.getByRole('button', { name: /Show all/, exact: true })).toBeVisible()
-    await expect(page.locator('.provider-row input[type="checkbox"]:checked')).toHaveCount(0)
     await page.getByRole('tab', { name: /Models/ }).click()
     await expect(page.getByLabel('Search models')).toBeVisible()
     await expect(page.locator('.provider-model-row')).not.toHaveCount(0)
@@ -2458,17 +2473,23 @@ test.describe('OMP Desktop desktop smoke', () => {
     await page.keyboard.press('Escape')
   })
 
-  test('shows externally managed OMP MCP servers without inspecting authorization', async () => {
+  test('shows mcp.json network MCP servers with editor controls and never touches authorization', async () => {
     await page.getByRole('button', { name: 'Capabilities', exact: true }).click()
     const notion = page.locator('article').filter({ has: page.getByRole('heading', { name: 'Notion', exact: true }) })
     await expect(notion).toBeVisible()
-    await expect(notion).toContainText('Managed outside OMP Desktop')
-    await expect(notion.getByLabel('Externally managed Notion')).toBeVisible()
-    await expect(notion.getByRole('button', { name: 'Disable Notion' })).toHaveCount(0)
-    const notionBox = await notion.boundingBox()
-    const controlBox = await notion.getByLabel('Externally managed Notion').boundingBox()
-    if (!notionBox || !controlBox) throw new Error('Notion capability controls did not render')
-    expect(Math.abs(notionBox.x + notionBox.width - controlBox.x - controlBox.width)).toBeLessThanOrEqual(6)
+    await expect(notion).toContainText('HTTP MCP server at https://mcp.notion.test')
+    // 可管理 key:toggle / 編輯 / 移除都出現;編輯面板只動定義,憑證由 OMP 保留。
+    await expect(notion.getByRole('button', { name: 'Disable Notion' })).toBeVisible()
+    await expect(notion.getByRole('button', { name: 'Edit Notion' })).toBeVisible()
+    await expect(notion.getByRole('button', { name: 'Remove Notion' })).toBeVisible()
+    // 編輯器以 replace mode 預填 URL,並標示 header 值不回流(secret 不經 renderer)。
+    await notion.getByRole('button', { name: 'Edit Notion' }).click()
+    const editor = page.getByRole('dialog', { name: 'Edit MCP server' })
+    await expect(editor).toBeVisible()
+    await expect(editor.getByLabel('Server name')).toBeDisabled()
+    await expect(editor.getByLabel('Endpoint URL')).toHaveValue('https://mcp.notion.test/mcp')
+    await editor.getByRole('button', { name: 'Back', exact: true }).click()
+    await page.keyboard.press('Escape')
     expect(JSON.parse(readFileSync(join(fixtureRoot, 'home', '.omp', 'agent', 'mcp.json'), 'utf8')).mcpServers.Notion.url).toBe('https://mcp.notion.test/mcp')
   })
 
@@ -2481,7 +2502,7 @@ test.describe('OMP Desktop desktop smoke', () => {
     await addDialog.getByLabel('Server name').fill('docs')
     await addDialog.getByLabel('Executable').fill('mcp-docs')
     await addDialog.getByLabel(/Arguments/).fill('--local')
-    await addDialog.getByRole('button', { name: 'Save local server' }).click()
+    await addDialog.getByRole('button', { name: 'Save server' }).click()
     const mcpPath = join(fixtureRoot, 'home', '.omp', 'agent', 'mcp.json')
     await expect.poll(() => existsSync(mcpPath) ? JSON.parse(readFileSync(mcpPath, 'utf8')).mcpServers.docs : null).toEqual({ type: 'stdio', command: 'mcp-docs', args: ['--local'], enabled: true })
     await addDialog.getByRole('button', { name: 'Close' }).click()

@@ -146,26 +146,27 @@ describe('optimistic turn rows in existing sessions', () => {
     expect(state.queuePrompt).not.toHaveBeenCalled()
   })
 
-  it('keeps the transcript clean when the renderer already sees a streaming runtime', async () => {
+  it('delivers a follow_up when the renderer already sees a streaming runtime', async () => {
     const busy = runtime('busy-runtime', true)
     const state = fixture({ workspaceRuntime: busy, listedRuntimes: [busy] })
 
     await state.actions.sendPrompt('Queue this')
 
     expect(state.messages()).toEqual([])
-    expect(state.queuePrompt).toHaveBeenCalledWith('Queue this', 'queue')
-    expect(state.command).not.toHaveBeenCalled()
+    expect(state.queuePrompt).not.toHaveBeenCalled()
+    expect(state.command).toHaveBeenCalledWith('busy-runtime', expect.objectContaining({ type: 'follow_up', message: 'Queue this' }))
   })
 
-  it('retracts the optimistic rows when agent.list reveals a busy runtime', async () => {
+  it('delivers a follow_up when agent.list reveals a busy runtime', async () => {
     const busy = runtime('busy-runtime', true)
     const state = fixture({ listedRuntimes: [busy] })
 
     await state.actions.sendPrompt('Queue this')
 
     expect(state.messages()).toEqual([])
-    expect(state.queuePrompt).toHaveBeenCalledWith('Queue this', 'queue')
-    expect(state.command).not.toHaveBeenCalled()
+    expect(state.queuePrompt).not.toHaveBeenCalled()
+    expect(state.command).toHaveBeenCalledOnce()
+    expect(state.command).toHaveBeenCalledWith('busy-runtime', expect.objectContaining({ type: 'follow_up', message: 'Queue this' }))
     expect(state.start).not.toHaveBeenCalled()
   })
 

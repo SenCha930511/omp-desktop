@@ -33,7 +33,6 @@ const providers: PrimeProviderDescriptor[] = [
     configured: true,
     modelCount: 1,
     availableModelCount: 1,
-    enabled: true,
   },
 ]
 const modelsByProvider = groupModelsByProvider(models)

@@ -57,8 +57,6 @@ describe('SettingsService.update', () => {
       runtimePaths: { omp: '/opt/omp' },
       telemetry: false,
       askUserEnabled: false,
-      ompDisabledProviders: ['anthropic', 'anthropic'],
-      ompDisabledModels: ['anthropic/claude-sonnet-4'],
       lastSelectedModels: { omp: 'anthropic/claude-opus' },
       activeHarness: 'omp',
       ompApprovalMode: 'always-ask',
@@ -78,8 +76,7 @@ describe('SettingsService.update', () => {
       browserAskForDownloads: false, terminalShell: '/bin/zsh', reduceMotion: true,
       showReasoningSummaries: false, showToolCalls: false, messageEnterAction: 'steer',
       runtimePaths: { omp: '/opt/omp' },
-      telemetry: false, askUserEnabled: false, ompDisabledProviders: ['anthropic'],
-      ompDisabledModels: ['anthropic/claude-sonnet-4'],
+      telemetry: false, askUserEnabled: false,
       lastSelectedModels: { omp: 'anthropic/claude-opus' },
       activeHarness: 'omp', ompApprovalMode: 'always-ask',
       voiceTranscriptionProvider: 'groq', voiceSelfHostedUrl: 'https://speech.example.test/v1', voiceSelfHostedModel: 'nvidia/parakeet-tdt-0.6b-v3',
@@ -126,9 +123,9 @@ describe('SettingsService.update', () => {
     await expect(service.update({ disabledModels: ['../evil'] })).rejects.toThrow(/not supported/)
     await expect(service.update({ piDisabledProviders: ['../evil'] })).rejects.toThrow(/not supported/)
     await expect(service.update({ piDisabledModels: ['provider/model with spaces'] })).rejects.toThrow(/not supported/)
-    await expect(service.update({ ompDisabledProviders: ['../evil'] })).rejects.toThrow(/provider ID/)
-    await expect(service.update({ ompDisabledProviders: Array.from({ length: 257 }, () => 'p') })).rejects.toThrow(/bounded/)
-    await expect(service.update({ ompDisabledModels: ['missing-slash'] })).rejects.toThrow(/model key/)
+    await expect(service.update({ ompDisabledProviders: ['../evil'] })).rejects.toThrow(/not supported/)
+    await expect(service.update({ ompEnabledProviders: ['apple'] })).rejects.toThrow(/not supported/)
+    await expect(service.update({ ompDisabledModels: ['openai/gpt'] })).rejects.toThrow(/not supported/)
     await expect(service.update({ lastSelectedModels: { omp: 'missing-slash' } })).rejects.toThrow(/model key/)
     await expect(service.update({ lastSelectedModels: { omp: '', hostile: 'openai/gpt' } })).rejects.toThrow(/not supported/)
     await expect(service.update({ activeHarness: 'pi' })).rejects.toThrow(/Invalid harness/)
@@ -155,13 +152,6 @@ describe('SettingsService.update', () => {
       voiceSelfHostedModel: 'mlx-community/whisper-large-v3',
     })
     await expect(service.update({ voiceSelfHostedUrl: 'https://speech.example.test/v1' })).resolves.toMatchObject({ voiceSelfHostedUrl: 'https://speech.example.test/v1' })
-  })
-
-  it('dedupes ompDisabledProviders and pins the active harness', async () => {
-    const service = makeService()
-    const next = await service.update({ activeHarness: 'omp', ompDisabledProviders: ['openai', 'openai', 'anthropic'] })
-    expect(next.activeHarness).toBe('omp')
-    expect(next.ompDisabledProviders).toEqual(['openai', 'anthropic'])
   })
 
   it('rejects the removed legacy enabled-harness set instead of accepting it', async () => {

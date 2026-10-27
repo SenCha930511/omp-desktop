@@ -7,7 +7,7 @@ import type { GitStatus, HarnessId, TranscriptMessage } from '@/types/api'
 import { ChangesCard } from './ChangesCard'
 import { ErrorBoundary } from './ErrorBoundary'
 import { MarkdownText } from './MarkdownText'
-import { ActivityMessage, AgentMessage, AssistantMessage, GoalMessage, SteerReadMarker, UserMessage } from './transcript/messages'
+import { ActivityMessage, AgentMessage, AssistantMessage, GoalMessage, isAgentNoticeKind, NoticeMessage, SteerReadMarker, UserMessage } from './transcript/messages'
 import { useTranscriptScroll } from './transcript/scroll'
 import { TranscriptHud } from './TranscriptHud'
 import { OmpMark } from './ui'
@@ -167,6 +167,8 @@ export function Transcript({
             >
               {message.kind === 'steer-read-marker' ? (
                 <SteerReadMarker message={message} />
+              ) : isAgentNoticeKind(message.kind) ? (
+                <NoticeMessage message={message} />
               ) : message.role === 'user' ? (
                 <UserMessage message={message} entering={entering(message.id)} onOpenSessionReference={onOpenSessionReference} />
               ) : message.role === 'assistant' ? (

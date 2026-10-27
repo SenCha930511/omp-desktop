@@ -35,6 +35,8 @@ export interface DesktopState {
 export const CURRENT_DESKTOP_STATE_FILENAME = 'omp-desktop-state-v4.json'
 export const LEGACY_DESKTOP_STATE_FILENAME = 'omp-desktop-state.json'
 const CURRENT_DESKTOP_STATE_VERSION = 4 as const
+/** 2.6 輸入快捷鍵預設的遷移版本戳:1 = 已套用 TUI 預設(Enter 插話、Ctrl+Enter follow-up)。 */
+export const INPUT_SHORTCUTS_VERSION = 1
 type SupportedDesktopStateVersion = 1 | 2 | 3 | typeof CURRENT_DESKTOP_STATE_VERSION
 
 export class StateCompatibilityError extends Error {
@@ -128,15 +130,14 @@ export function defaultSettings(): AppSettings {
     conversationDensity: 'comfortable',
     subagentsPanelPinned: false,
     showToolCalls: true,
-    messageEnterAction: 'queue',
+    // 2.6:對齊 TUI 預設——執行中 Enter 插話(steer)、Ctrl/Cmd+Enter follow-up(queue)。
+    messageEnterAction: 'steer',
+    inputShortcutsVersion: INPUT_SHORTCUTS_VERSION,
     runtimePaths: { omp: '' },
     telemetry: false,
     askUserEnabled: false,
     browserEnabled: true,
     computerUseEnabled: false,
-    ompDisabledProviders: [],
-    ompEnabledProviders: [],
-    ompDisabledModels: [],
     lastSelectedModels: { omp: '' },
     activeHarness: 'omp',
     ompApprovalMode: 'inherit',
@@ -263,19 +264,16 @@ function parseSettings(value: unknown): AppSettings {
     conversationDensity: value.conversationDensity === 'compact' || value.conversationDensity === 'comfortable' ? value.conversationDensity : defaults.conversationDensity,
     subagentsPanelPinned: typeof value.subagentsPanelPinned === 'boolean' ? value.subagentsPanelPinned : defaults.subagentsPanelPinned,
     showToolCalls: typeof value.showToolCalls === 'boolean' ? value.showToolCalls : defaults.showToolCalls,
-    messageEnterAction: value.messageEnterAction === 'queue' || value.messageEnterAction === 'steer' ? value.messageEnterAction : defaults.messageEnterAction,
+    // 2.6 遷移:未蓋戳的舊狀態一律套用 TUI 預設('steer')。舊檔無法區分
+    // 「沿用舊預設 queue」與「明確選了 queue」,依審查決議不把舊預設誤認為
+    // 使用者選擇;蓋戳後的明確選擇(queue 或 steer)原樣保留。
+    messageEnterAction: value.messageEnterAction === 'steer' || (value.inputShortcutsVersion === INPUT_SHORTCUTS_VERSION && value.messageEnterAction === 'queue') ? value.messageEnterAction : defaults.messageEnterAction,
+    inputShortcutsVersion: INPUT_SHORTCUTS_VERSION,
     runtimePaths,
     telemetry: typeof value.telemetry === 'boolean' ? value.telemetry : defaults.telemetry,
     askUserEnabled: typeof value.askUserEnabled === 'boolean' ? value.askUserEnabled : defaults.askUserEnabled,
     browserEnabled: typeof value.browserEnabled === 'boolean' ? value.browserEnabled : defaults.browserEnabled,
     computerUseEnabled: typeof value.computerUseEnabled === 'boolean' ? value.computerUseEnabled : defaults.computerUseEnabled,
-    ompDisabledProviders: Array.isArray(value.ompDisabledProviders)
-      ? [...new Set(value.ompDisabledProviders.filter((item): item is string => typeof item === 'string' && /^[a-z0-9][a-z0-9._-]{0,127}$/i.test(item)))].slice(0, 256)
-      : defaults.ompDisabledProviders,
-    ompEnabledProviders: Array.isArray(value.ompEnabledProviders)
-      ? [...new Set(value.ompEnabledProviders.filter((item): item is string => typeof item === 'string' && /^[a-z0-9][a-z0-9._-]{0,127}$/i.test(item)))].slice(0, 256)
-      : defaults.ompEnabledProviders,
-    ompDisabledModels: parseDisabledModels(value.ompDisabledModels, defaults.ompDisabledModels),
     lastSelectedModels,
     activeHarness: 'omp',
     ompApprovalMode: value.ompApprovalMode === 'inherit' || value.ompApprovalMode === 'always-ask' || value.ompApprovalMode === 'write' || value.ompApprovalMode === 'yolo' ? value.ompApprovalMode : defaults.ompApprovalMode,
@@ -289,13 +287,6 @@ function parseSettings(value: unknown): AppSettings {
     voiceLocalWhisperExecutable: boundedString(value.voiceLocalWhisperExecutable, 4096, true) ? value.voiceLocalWhisperExecutable : defaults.voiceLocalWhisperExecutable,
     voiceLocalWhisperModel: boundedString(value.voiceLocalWhisperModel, 4096, true) ? value.voiceLocalWhisperModel : defaults.voiceLocalWhisperModel,
   }
-}
-
-function parseDisabledModels(value: unknown, fallback: string[]): string[] {
-  if (!Array.isArray(value)) return fallback
-  return [...new Set(value.filter((item): item is string => (
-    typeof item === 'string' && /^[a-z0-9][a-z0-9._-]{0,127}\/[a-z0-9._:/+-]{1,256}$/i.test(item)
-  )))].slice(0, 5_000)
 }
 
 const THINKING_LEVELS: ReadonlySet<string> = new Set(['auto', ...PRIME_THINKING_LEVELS])

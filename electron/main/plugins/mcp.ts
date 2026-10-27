@@ -3,7 +3,7 @@ import { renameSync, type BigIntStats, type Stats } from 'node:fs'
 import { lstat, mkdir, realpath, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type { CapabilityMutationInput, HarnessId, McpConnectionInput, McpStateInput, ProcessOutcome } from '../../../src/types/api'
-import { isAppManageableLocalMcpKey, isNetworkMcpDefinition, MAX_MCP_DEFINITION_KEY_LENGTH, NETWORK_MCP_UNAVAILABLE_DETAIL } from '../../../src/lib/mcp-policy'
+import { assessMcpUrl, isAppManageableLocalMcpKey, MAX_MCP_DEFINITION_KEY_LENGTH } from '../../../src/lib/mcp-policy'
 import { isPathWithin, isRecord, requireString } from '../validation'
 import { errorCode, readAtMost } from './file-io'
 
@@ -262,16 +262,22 @@ async function writeSettingsAtomically(
   }
 }
 
+/** HTTP header name/token per RFC 9110; values may hold ${VAR} or !command verbatim (upstream expands at load). */
+const MCP_HEADER_NAME_PATTERN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}$/
+
 export function validateMcpConnection(value: unknown, _harness: HarnessId = 'omp'): McpConnectionInput {
   if (!isRecord(value)) throw new TypeError('MCP connection must be an object')
-  if (isNetworkMcpDefinition(value)) throw new TypeError(NETWORK_MCP_UNAVAILABLE_DETAIL)
   const name = requireString(value.name, 'MCP server name', { min: 1, max: 64, trim: true })
   // OMP's mcp.json uses the stricter native map-key charset.
   if (!isAppManageableLocalMcpKey(name) || ['__proto__', 'prototype', 'constructor'].includes(name)) throw new TypeError('MCP server name contains unsupported characters')
   const scope = value.scope
   if (scope !== 'user' && scope !== 'project') throw new TypeError('MCP scope must be user or project')
   const projectPath = scope === 'project' ? requireString(value.projectPath, 'projectPath', { min: 1, max: 4096 }) : undefined
+  const mode = value.mode === undefined ? undefined : value.mode
+  if (mode !== undefined && mode !== 'create' && mode !== 'replace') throw new TypeError('MCP update mode is invalid')
   if (value.type === 'stdio') {
+    // stdio 與 url 互斥(上游 schema not: required [url])。
+    if (value.url !== undefined) throw new TypeError('MCP stdio definitions cannot include a URL')
     const command = requireString(value.command, 'MCP command', { min: 1, max: 2_048, trim: true })
     if (command.startsWith('-') || /[\0\r\n\u2028\u2029]/.test(command)) throw new TypeError('MCP command is invalid')
     if (value.args !== undefined && !Array.isArray(value.args)) throw new TypeError('MCP arguments must be a list')
@@ -281,9 +287,46 @@ export function validateMcpConnection(value: unknown, _harness: HarnessId = 'omp
       return parsed
     })
     if (args.length > 64) throw new TypeError('MCP arguments exceed the maximum count')
-    return { name, scope, projectPath, type: 'stdio', command, args }
+    return { name, scope, projectPath, ...(mode !== undefined ? { mode } : {}), type: 'stdio', command, args }
   }
-  throw new TypeError('MCP transport must be http or stdio')
+  if (value.type === 'http' || value.type === 'sse') {
+    // http/sse 與 command 互斥(上游 schema not: required [command])。
+    if (value.command !== undefined) throw new TypeError('MCP network definitions cannot include a command')
+    const url = requireString(value.url, 'MCP endpoint URL', { min: 1, max: 2_048, trim: true })
+    // https 預設;純 http 僅 loopback/私有網段且須明示 allowInsecureHttp。
+    // URL 內嵌帳密由 assessMcpUrl 拒絕;${VAR} 參照原樣通過,上游載入時解析。
+    const assessment = assessMcpUrl(url, { allowInsecureHttp: value.allowInsecureHttp === true })
+    if (!assessment.ok) throw new TypeError(assessment.error ?? 'MCP endpoint URL is invalid')
+    if (value.headers !== undefined && !isRecord(value.headers)) throw new TypeError('MCP headers must be an object')
+    const headerEntries = value.headers === undefined ? [] : Object.entries(value.headers)
+    if (headerEntries.length > 32) throw new TypeError('MCP headers exceed the maximum count')
+    const headers: Record<string, string> = {}
+    for (const [key, headerValue] of headerEntries) {
+      if (!MCP_HEADER_NAME_PATTERN.test(key) || ['__proto__', 'prototype', 'constructor'].includes(key)) throw new TypeError('MCP header name is invalid')
+      const parsed = requireString(headerValue, `MCP header ${key}`, { max: 4_096 })
+      if (/[\0\r\n\u2028\u2029]/.test(parsed)) throw new TypeError(`MCP header ${key} is invalid`)
+      headers[key] = parsed
+    }
+    if (value.timeout !== undefined) {
+      if (typeof value.timeout !== 'number' || !Number.isInteger(value.timeout) || value.timeout < 0 || value.timeout > 600_000) {
+        throw new TypeError('MCP timeout must be an integer between 0 and 600000 milliseconds')
+      }
+    }
+    if (value.requestIdFormat !== undefined && value.requestIdFormat !== 'string' && value.requestIdFormat !== 'number') {
+      throw new TypeError('MCP requestIdFormat must be string or number')
+    }
+    return {
+      name, scope, projectPath,
+      ...(mode !== undefined ? { mode } : {}),
+      type: value.type,
+      url,
+      ...(headerEntries.length ? { headers } : {}),
+      ...(value.timeout !== undefined ? { timeout: value.timeout as number } : {}),
+      ...(value.requestIdFormat !== undefined ? { requestIdFormat: value.requestIdFormat as 'string' | 'number' } : {}),
+      ...(value.allowInsecureHttp === true ? { allowInsecureHttp: true as const } : {}),
+    }
+  }
+  throw new TypeError('MCP transport must be stdio, http, or sse')
 }
 
 export function validateMcpStateInput(value: unknown, _harness: HarnessId = 'omp'): McpStateInput {
@@ -381,8 +424,6 @@ export async function updateMcpSettings(
   fingerprint: FingerprintSettings = settingsFingerprint,
   options: { agentName?: string; harness?: HarnessId; schema?: string; successMessage?: string; includeType?: boolean } = {},
 ): Promise<ProcessOutcome> {
-  if (isNetworkMcpDefinition(input)) throw new TypeError(NETWORK_MCP_UNAVAILABLE_DETAIL)
-  if (input.type !== 'stdio') throw new TypeError(NETWORK_MCP_UNAVAILABLE_DETAIL)
   const agentName = options.agentName ?? 'OMP'
   const settingsPath = typeof target === 'string' ? target : target.path
   const verify = typeof target === 'string' ? undefined : target.verify
@@ -395,11 +436,44 @@ export async function updateMcpSettings(
       const settings = snapshot.settings
       if (settings.mcpServers !== undefined && !isRecord(settings.mcpServers)) throw new TypeError(`${agentName} mcpServers setting must contain a JSON object`)
       const currentServers = isRecord(settings.mcpServers) ? settings.mcpServers : {}
-      if (Object.hasOwn(currentServers, input.name)) {
+      const replacing = input.mode === 'replace'
+      const existing = currentServers[input.name]
+      if (!replacing && Object.hasOwn(currentServers, input.name)) {
         return { ok: false, reason: 'blocked', output: `An MCP server named “${input.name}” already exists in this scope.` }
       }
-      const config = { type: 'stdio', command: input.command, ...(input.args?.length ? { args: input.args } : {}), enabled: true }
-      settings.mcpServers = { ...currentServers, [input.name]: config }
+      if (replacing && !isRecord(existing)) {
+        return { ok: false, reason: 'blocked', output: `MCP server “${input.name}” was not found in this scope.` }
+      }
+      // 編輯器保存(replace):保留 harness 擁有的 auth/oauth credential 與
+      // 本次未提供的欄位(headers、enabled、env、cwd),避免編輯 URL 時
+      // 抹掉上游管理的授權或使用者調整。headers 只在明確提供時覆寫。
+      const preserved: Record<string, unknown> = replacing && isRecord(existing) ? existing : {}
+      const config: Record<string, unknown> = input.type === 'stdio'
+        ? {
+            ...(preserved.env !== undefined ? { env: preserved.env } : {}),
+            ...(preserved.cwd !== undefined ? { cwd: preserved.cwd } : {}),
+            type: 'stdio',
+            command: input.command,
+            ...(input.args?.length ? { args: input.args } : preserved.args !== undefined ? { args: preserved.args } : {}),
+          }
+        : {
+            type: input.type,
+            url: input.url,
+            ...(input.headers !== undefined ? { headers: input.headers } : preserved.headers !== undefined ? { headers: preserved.headers } : {}),
+          }
+      const merged: Record<string, unknown> = {
+        ...preserved,
+        ...config,
+        ...(preserved.auth !== undefined ? { auth: preserved.auth } : {}),
+        ...(preserved.oauth !== undefined ? { oauth: preserved.oauth } : {}),
+        ...(input.type !== 'stdio' && input.timeout !== undefined ? { timeout: input.timeout } : {}),
+        ...(input.type !== 'stdio' && input.requestIdFormat !== undefined ? { requestIdFormat: input.requestIdFormat } : {}),
+        ...(preserved.enabled !== undefined ? { enabled: preserved.enabled } : { enabled: true }),
+      }
+      // stdio/http 互斥:換 transport 時丟棄舊 transport 專屬欄位。
+      if (input.type === 'stdio') { delete merged.url; delete merged.headers }
+      else { delete merged.command; delete merged.args; delete merged.env; delete merged.cwd }
+      settings.mcpServers = { ...currentServers, [input.name]: merged }
       if (options.schema && settings.$schema === undefined) settings.$schema = options.schema
       if (await writeSettingsAtomically(settingsPath, settings, snapshot.fingerprint, snapshot.source, fingerprint, verify)) {
         return { ok: true, output: options.successMessage ?? `Saved MCP server definition “${input.name}”. Start a new OMP session to load it.` }
@@ -430,12 +504,27 @@ export async function updateMcpState(
       if (!isRecord(settings.mcpServers)) return { ok: false, reason: 'blocked', output: `MCP server “${input.name}” was not found in this scope.` }
       const current = settings.mcpServers[input.name]
       if (!isRecord(current)) return { ok: false, reason: 'blocked', output: `MCP server “${input.name}” was not found in this scope.` }
-      if (isNetworkMcpDefinition(current)) return { ok: false, reason: 'blocked', output: NETWORK_MCP_UNAVAILABLE_DETAIL }
-      const currentlyEnabled = current.enabled !== false
-      if (currentlyEnabled === input.enabled) {
+      // disabledServers/enabledServers 是上游 mcp.json 原生的 allow/deny 清單:
+      // deny 優先,allow 會覆蓋定義上的 enabled:false。切換時一併正規化,
+      // 避免 GUI 顯示的狀態與上游生效狀態分叉。
+      const listFor = (key: 'disabledServers' | 'enabledServers'): string[] =>
+        Array.isArray(settings[key]) ? (settings[key] as unknown[]).filter((item): item is string => typeof item === 'string').slice(0, 1_024) : []
+      const disabled = listFor('disabledServers')
+      const allowed = listFor('enabledServers')
+      // deny 優先於 allow,allow 覆蓋定義上的 enabled:false(上游 mcp-schema 語意)。
+      const currentlyEnabled = !disabled.includes(input.name) && (current.enabled !== false || allowed.includes(input.name))
+      if (currentlyEnabled === input.enabled && !disabled.includes(input.name) && !allowed.includes(input.name)) {
         return { ok: true, output: `MCP server “${input.name}” is already ${input.enabled ? 'enabled' : 'disabled'}.` }
       }
-      settings.mcpServers = { ...settings.mcpServers, [input.name]: { ...current, enabled: input.enabled } }
+      if (input.enabled) {
+        if (disabled.includes(input.name)) settings.disabledServers = disabled.filter((item) => item !== input.name)
+        settings.mcpServers = { ...settings.mcpServers, [input.name]: { ...current, enabled: true } }
+      } else {
+        if (allowed.includes(input.name)) settings.enabledServers = allowed.filter((item) => item !== input.name)
+        settings.mcpServers = { ...settings.mcpServers, [input.name]: { ...current, enabled: false } }
+      }
+      if (Array.isArray(settings.disabledServers) && settings.disabledServers.length === 0) delete settings.disabledServers
+      if (Array.isArray(settings.enabledServers) && settings.enabledServers.length === 0) delete settings.enabledServers
       if (await writeSettingsAtomically(settingsPath, settings, snapshot.fingerprint, snapshot.source, fingerprint, verify)) {
         return { ok: true, output: `${input.enabled ? 'Enabled' : 'Disabled'} MCP server “${input.name}”. Start a new ${agentName} session to apply the change.` }
       }

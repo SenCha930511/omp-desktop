@@ -30,8 +30,8 @@ const models = [
   model('anthropic/claude-sonnet-4-7', 'anthropic', 'Claude Sonnet 4.7', false),
 ]
 const providers: PrimeProviderDescriptor[] = [
-  { id: 'openai', name: 'OpenAI', authMethod: 'oauth', configured: true, modelCount: 2, availableModelCount: 2, enabled: true },
-  { id: 'anthropic', name: 'Anthropic', authMethod: 'api_key', configured: false, modelCount: 2, availableModelCount: 1, enabled: true },
+  { id: 'openai', name: 'OpenAI', authMethod: 'oauth', configured: true, modelCount: 2, availableModelCount: 2 },
+  { id: 'anthropic', name: 'Anthropic', authMethod: 'api_key', configured: false, modelCount: 2, availableModelCount: 1 },
 ]
 const modelsByProvider = groupModelsByProvider(models)
 
@@ -187,8 +187,8 @@ describe('ModelPicker', () => {
       model('openai/gpt-5.6-sol', 'openai', 'GPT-5.6 Sol'),
     ]
     const collidingProviders: PrimeProviderDescriptor[] = [
-      { id: 'all', name: 'All Hands', authMethod: 'api_key', configured: true, modelCount: 1, availableModelCount: 1, enabled: true },
-      { id: 'openai', name: 'OpenAI', authMethod: 'oauth', configured: true, modelCount: 1, availableModelCount: 1, enabled: true },
+      { id: 'all', name: 'All Hands', authMethod: 'api_key', configured: true, modelCount: 1, availableModelCount: 1 },
+      { id: 'openai', name: 'OpenAI', authMethod: 'oauth', configured: true, modelCount: 1, availableModelCount: 1 },
     ]
     await act(async () => {
       root.render(<ModelPicker value="openai/gpt-5.6-sol" modelsByProvider={groupModelsByProvider(collidingModels)} providers={collidingProviders} onChange={vi.fn()} />)
@@ -268,7 +268,7 @@ describe('ModelPicker', () => {
 
   it('shows the model id under every entry, even when it matches the name', async () => {
     const same = model('openai/GLM-5.2', 'openai', 'GLM-5.2')
-    const provider: PrimeProviderDescriptor = { id: 'openai', name: 'OpenAI', authMethod: 'oauth', configured: true, modelCount: 1, availableModelCount: 1, enabled: true }
+    const provider: PrimeProviderDescriptor = { id: 'openai', name: 'OpenAI', authMethod: 'oauth', configured: true, modelCount: 1, availableModelCount: 1 }
     await act(async () => {
       root.render(<ModelPicker value="openai/GLM-5.2" modelsByProvider={groupModelsByProvider([same])} providers={[provider]} onChange={vi.fn()} />)
     })

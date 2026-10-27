@@ -190,6 +190,9 @@ export const panelsFragment = defineCatalogFragment({
     'run.runSetupAgain': 'Run setup again',
     'run.save': 'Save',
     'modal.close': 'Close',
+    'extensionCapability.unsupported': 'Unsupported extension update: {method}',
+    'extensionCapability.unknown': 'Unrecognized extension update: {method}',
+    'extensionCapability.dismiss': 'Dismiss extension notice',
   },
   'zh-TW': {
     'inspector.aria': '工作階段檢查器',
@@ -379,6 +382,9 @@ export const panelsFragment = defineCatalogFragment({
     'run.runSetupAgain': '重新執行安裝',
     'run.save': '儲存',
     'modal.close': '關閉',
+    'extensionCapability.unsupported': '此應用不支援的 extension 更新：{method}',
+    'extensionCapability.unknown': '無法辨識的 extension 更新：{method}',
+    'extensionCapability.dismiss': '關閉 extension 提示',
   },
   'zh-CN': {
     'inspector.aria': '会话检查器',
@@ -568,5 +574,8 @@ export const panelsFragment = defineCatalogFragment({
     'run.runSetupAgain': '重新运行安装',
     'run.save': '保存',
     'modal.close': '关闭',
+    'extensionCapability.unsupported': '此应用不支持的扩展更新：{method}',
+    'extensionCapability.unknown': '无法识别的扩展更新：{method}',
+    'extensionCapability.dismiss': '关闭扩展提示',
   },
 })

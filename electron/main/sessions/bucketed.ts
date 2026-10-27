@@ -94,9 +94,9 @@ export interface BucketedMetadataAccumulator {
   thinkingLevel?: string
   /** Harness-reported session title; falls back to the first user prompt. */
   displayName?: string
-  /** Session-id or absolute path of the session this file rolled/forked from. */
+  /** Session-id or absolute path of the session this file forked from. */
   parentSession?: string
-  /** Absolute paths of prior locations of this session (moves, rollovers). */
+  /** Absolute paths of prior locations of this session (moves). */
   previousSessionFiles: string[]
   firstUser: string
   preview: string
@@ -177,9 +177,9 @@ export function createBucketedMetadataParser(ingestRecord: BucketedRecordIngest)
         if (typeof value.id === 'string') state.id = value.id
         if (typeof value.cwd === 'string') state.projectPath = value.cwd
         state.createdAt = validTimestamp(value.timestamp, state.createdAt)
-        // Lineage: a compact rolls the session forward to a successor file
-        // whose header names the predecessor (id or absolute path) and the
-        // prior locations it carried over.
+        // Lineage: a native fork's header names the session it forked from
+        // (id or absolute path) and the prior locations the file carried
+        // over (moves).
         if (typeof value.parentSession === 'string' && value.parentSession.length > 0 && value.parentSession.length <= 4_096) {
           state.parentSession = value.parentSession
         }

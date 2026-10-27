@@ -1,6 +1,6 @@
 import { Bot, ChevronDown, MessageSquare, Users } from 'lucide-react'
-import { memo, useEffect, useMemo, useState, type ReactNode } from 'react'
-import type { SubagentView, useSubagents } from '@/hooks/useSubagents'
+import { memo, useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react'
+import { combineSubagentMessages, type SubagentPanelState, type SubagentView } from '@/hooks/useSubagents'
 import { string } from '@/lib/events/parse'
 import { subagentTranscript } from '@/lib/subagent-transcript'
 import { ActivityMessage, AssistantMessage, UserMessage } from './transcript/messages'
@@ -14,10 +14,39 @@ import { SearchMessage, TranscriptSearchBar, useTranscriptSearch } from './Trans
 import { useSubagentAttention } from '@/hooks/useSubagentAttention'
 import './subagents.css'
 
-const AgentTranscript = memo(function AgentTranscript({ agent, showReasoning, showTools, active }: { agent: SubagentView; showReasoning: boolean; showTools: boolean; active: boolean }) {
+function SteerForm({ agent, pending, onSteer }: { agent: SubagentView; pending: boolean; onSteer(id: string, message: string): Promise<void> }) {
+  const { t } = useI18n()
+  const [draft, setDraft] = useState('')
+  const [error, setError] = useState<string>()
+  const submit = async (event: FormEvent) => {
+    event.preventDefault()
+    const message = draft.trim()
+    if (!message || pending) return
+    setError(undefined)
+    try {
+      await onSteer(agent.id, message)
+      setDraft('')
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    }
+  }
+  return <form className="subagents__steer" onSubmit={(event) => { void submit(event) }}>
+    <input value={draft} onChange={(event) => { setDraft(event.target.value); setError(undefined) }} disabled={pending} maxLength={32_000}
+      placeholder={t('agents.steerPlaceholder')} aria-label={t('agents.steerLabel', { name: agent.agent })} />
+    <button type="submit" disabled={pending || !draft.trim()}>{t('agents.steerSend')}</button>
+    {error && <p className="subagents__steer-error" role="alert">{error}</p>}
+  </form>
+}
+
+const AgentTranscript = memo(function AgentTranscript({ agent, showReasoning, showTools, active, pendingActions, onLoadEarlier, onSteer }: {
+  agent: SubagentView; showReasoning: boolean; showTools: boolean; active: boolean
+  pendingActions?: ReadonlySet<string>; onLoadEarlier?(id: string): void; onSteer?(id: string, message: string): Promise<void>
+}) {
   const { t, locale } = useI18n()
   const progress = agent.progress
-  const messages = useMemo(() => subagentTranscript(agent.messages, agent.status === 'running'), [agent.messages, agent.status])
+  const messages = useMemo(() => subagentTranscript(combineSubagentMessages(agent.history, agent.messages), agent.status === 'running'), [agent.history, agent.messages, agent.status])
+  const historyPending = pendingActions?.has(`history:${agent.id}`) ?? false
+  const showLoadEarlier = Boolean(onLoadEarlier) && agent.historyDone !== true
   const { scrollRef, updatePinnedState, awayFromBottom, scrollToBottom, visibleMessages, hiddenCount, hiddenAfter, showEarlier, showNewer, revealIndex, hasNewContent } = useTranscriptScroll(messages, active)
   const search = useTranscriptSearch(messages, scrollRef, revealIndex, active)
   const execution = useMemo(() => subagentExecution(agent), [agent])
@@ -40,6 +69,7 @@ const AgentTranscript = memo(function AgentTranscript({ agent, showReasoning, sh
     </details>
     </div>
     <div className="subagents__messages" ref={scrollRef} tabIndex={-1} onScroll={updatePinnedState}><div className="transcript__inner">
+    {showLoadEarlier && <button type="button" className="transcript__show-earlier" disabled={historyPending} onClick={() => onLoadEarlier?.(agent.id)}>{t(historyPending ? 'agents.loadingEarlier' : 'agents.loadEarlier')}</button>}
     {hiddenCount > 0 && <button type="button" className="transcript__show-earlier" onClick={showEarlier}>{t('transcript.showEarlier', { count: Math.min(hiddenCount, 250) })}</button>}
     {!messages.length && agent.status === 'running' && <div className="subagents__empty"><p>{t('agents.waiting')}</p></div>}
     {visibleMessages.map((message) => <SearchMessage key={message.id} id={message.id} reveal={search.matchId === message.id}>{message.role === 'user'
@@ -50,29 +80,56 @@ const AgentTranscript = memo(function AgentTranscript({ agent, showReasoning, sh
     {hiddenAfter > 0 && <button type="button" className="transcript__show-earlier" onClick={showNewer}>{t('conversation.search.newer', { count: Math.min(250, hiddenAfter) })}</button>}
     </div></div>
     {awayFromBottom && <button type="button" className="subagents__jump" onClick={scrollToBottom}><ChevronDown size={14} />{t(hasNewContent ? 'agents.newContent' : 'transcript.jumpToBottom')}</button>}
+    {agent.status === 'running' && onSteer && <SteerForm agent={agent} pending={pendingActions?.has(`steer:${agent.id}`) ?? false} onSteer={onSteer} />}
   </article>
 })
 
 export function SubagentsPanel({ state, connected, showReasoning = true, showTools = true, pinned = false, onPinnedChange, execution, children }: {
-  state: ReturnType<typeof useSubagents>; connected: boolean; showReasoning?: boolean; showTools?: boolean
+  state: SubagentPanelState; connected: boolean; showReasoning?: boolean; showTools?: boolean
   pinned?: boolean; onPinnedChange?(pinned: boolean): void; execution?: ExecutionState; children?: ReactNode
 }) {
   const { t } = useI18n()
   const [open, setOpen] = useState(false)
   const [visited, setVisited] = useState<string[]>([])
+  const [actionError, setActionError] = useState<string>()
   const selected = state.agents.find((agent) => agent.id === state.selectedId)
   const retained = selected ? [...visited.filter((id) => id !== selected.id), selected.id].slice(-3) : visited
   const unread = useSubagentAttention(state.agents, selected?.id)
   useEffect(() => {
     if (selected) setVisited((ids) => [...ids.filter((id) => id !== selected.id), selected.id].slice(-3))
   }, [selected?.id])
+  useEffect(() => { setActionError(undefined) }, [selected?.id])
   const selectedExecution = useMemo(() => selected ? subagentExecution(selected) : undefined, [selected])
   const running = state.agents.filter((agent) => agent.status === 'running').length
   const back = () => { state.select(undefined); setOpen(false) }
   const closeRoster = () => { setOpen(false); onPinnedChange?.(false) }
+  // 取消回報:false = 上游確認不在執行(不當作取消成功);RPC 失敗如實顯示。
+  const cancelAgent = async (id: string) => {
+    if (!state.cancel) return
+    setActionError(undefined)
+    try {
+      if (!(await state.cancel(id))) setActionError(t('agents.cancelNotRunning'))
+    } catch (cause) { setActionError(cause instanceof Error ? cause.message : String(cause)) }
+  }
+  const loadEarlierAgent = async (id: string) => {
+    if (!state.loadEarlier) return
+    setActionError(undefined)
+    try {
+      await state.loadEarlier(id)
+    } catch (cause) { setActionError(cause instanceof Error ? cause.message : String(cause)) }
+  }
+  const changeSubscription = async (level: 'off' | 'progress' | 'events') => {
+    if (!state.setSubscriptionLevel) return
+    setActionError(undefined)
+    try {
+      await state.setSubscriptionLevel(level)
+    } catch (cause) { setActionError(cause instanceof Error ? cause.message : String(cause)) }
+  }
   const roster = <SubagentRoster agents={state.agents} selectedId={selected?.id} connected={connected} pinned={pinned} unread={unread}
     onPin={() => { onPinnedChange?.(!pinned); setOpen(pinned) }} onClose={closeRoster}
-    onSelect={(id) => { state.select(id); if (!pinned) setOpen(false) }} />
+    onSelect={(id) => { state.select(id); if (!pinned) setOpen(false) }}
+    onCancel={state.cancel ? (id) => { void cancelAgent(id) } : undefined} pendingActions={state.pendingActions}
+    subscriptionLevel={state.subscriptionLevel} onSubscriptionChange={state.setSubscriptionLevel ? (level) => { void changeSubscription(level) } : undefined} />
   const error = state.error?.includes('invalid subagent roster') ? t('agents.error.roster') : state.error?.includes('Invalid subagent transcript') ? t('agents.error.transcript') : state.error
   return <section className={`subagents ${selected ? 'has-selection' : ''} ${pinned ? 'has-pinned-roster' : ''}`} aria-label={t('agents.title')}>
     <div className="subagents__toolbar">
@@ -86,10 +143,12 @@ export function SubagentsPanel({ state, connected, showReasoning = true, showToo
     </div>
     {open && !pinned && roster}
     {error && (open || pinned || selected) && <p className="subagents__error" role="alert">{error}</p>}
+    {actionError && <p className="subagents__error" role="alert">{actionError}</p>}
     <div className="subagents__body">
     {children}
     {state.agents.filter((agent) => retained.includes(agent.id)).map((agent) => <div className="subagents__page" key={`${agent.id}:${agent.revision ?? 0}`} hidden={agent.id !== selected?.id}>
-      <AgentTranscript agent={agent} active={agent.id === selected?.id} showReasoning={showReasoning} showTools={showTools} />
+      <AgentTranscript agent={agent} active={agent.id === selected?.id} showReasoning={showReasoning} showTools={showTools}
+        pendingActions={state.pendingActions} onSteer={state.steer} onLoadEarlier={state.loadEarlier ? (id) => { void loadEarlierAgent(id) } : undefined} />
     </div>)}
     {pinned && roster}
     </div>

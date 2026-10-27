@@ -119,6 +119,8 @@ export interface SessionRecord {
   provider?: string
   thinkingLevel?: string
   depth: number
+  /** Session id or absolute path of the session this file continued (fork / context rollover); absent when the file started fresh. */
+  parentSession?: string
   /** Pinned sessions sort first in the sidebar; persisted in the app store, not the session file. */
   pinned?: boolean
   unread?: boolean
@@ -168,7 +170,7 @@ export interface BrowserAnnotation {
 }
 
 export type PrimeCompactionReason = 'manual' | 'threshold' | 'overflow' | 'requested'
-export type PrimeCompactionStatus = 'running' | 'done' | 'failed' | 'cancelled'
+export type PrimeCompactionStatus = 'running' | 'sync_pending' | 'done' | 'failed' | 'cancelled'
 export type PrimeCompactionOutcome = 'failed' | 'cancelled' | 'skipped'
 
 export type MessagePart =
@@ -178,6 +180,12 @@ export type MessagePart =
   | { type: 'toolResult'; partId?: string; name?: string; text: string; isError?: boolean; streaming?: boolean }
   | { type: 'agentMessage'; partId?: string; text: string; agentName?: string }
   | { type: 'image'; partId?: string; mimeType?: string; data?: string; dataTruncated?: boolean }
+  /**
+   * 無法呈現內容的 content block（file/audio、extension 自訂 renderer 的資料、
+   * provider 專屬 block 等）：保留型別供渲染層標示，data 帶原 block 的
+   * bounded pretty JSON，渲染層一律有可讀資料視圖，不靜默丟棄。
+   */
+  | { type: 'unsupported'; partId?: string; contentType: string; data?: string }
   | {
       type: 'compaction'
       partId?: string
@@ -200,8 +208,8 @@ export interface TranscriptMessage {
   role: 'user' | 'assistant' | 'agent' | 'goal' | 'tool' | 'system'
   /** Renderer-local steering lifecycle. Persisted transcripts remain harness-owned. */
   steerState?: 'accepted' | 'read'
-  /** Lightweight renderer-only boundary showing where an accepted steer was consumed. */
-  kind?: 'steer-read-marker'
+  /** Renderer-only row markers: consumed-steer boundaries and level-tagged agent notice rows. */
+  kind?: 'steer-read-marker' | 'agent-notice' | 'agent-notice-warning' | 'agent-notice-error'
   timestamp?: string | number
   agentName?: string
   startedAt?: string | number
@@ -222,6 +230,29 @@ export interface SessionUsageTokens {
   cacheRead: number
   cacheWrite: number
   total: number
+}
+
+/** Steering / follow-up 佇列模式(對應上游 set_steering_mode / set_follow_up_mode 的 mode)。 */
+export type SessionQueueMode = 'all' | 'one-at-a-time'
+/** 中斷模式(對應上游 set_interrupt_mode 的 mode)。 */
+export type SessionInterruptMode = 'immediate' | 'wait'
+/** Cache warming 覆寫模式(對應上游 set_cache_warming 的 mode;僅本工作階段生效)。 */
+export type SessionCacheWarmingMode = 'off' | 'streaming' | 'idle'
+
+/**
+ * 目前工作階段的 OMP 設定快照。真相一律在 RPC 側:欄位來自 get_state
+ * (OMP 18.13 回報 steeringMode / followUpMode / interruptMode /
+ * autoCompactionEnabled);get_state 未回報的項目(autoRetry、cacheWarming)
+ * 由 runtime 在 set_* 成功後採用其回聲,尚未讀到時保持 undefined,UI 顯示
+ * 「未知」而不是猜測。GUI 不寫任何自有設定檔。
+ */
+export interface SessionSettingsSnapshot {
+  autoCompaction?: boolean
+  autoRetry?: boolean
+  steeringMode?: SessionQueueMode
+  followUpMode?: SessionQueueMode
+  interruptMode?: SessionInterruptMode
+  cacheWarming?: SessionCacheWarmingMode
 }
 
 /** Cumulative cost and token totals for the in-context session, as reported by get_session_stats. */
@@ -253,8 +284,22 @@ export interface RuntimeInfo {
   imageInputSupported?: boolean
   fastModeAvailable?: boolean
   serviceTier?: PrimeServiceTier
+  /**
+   * 上游 SessionState.usageLimit:帳號已進 wrap-up 或 low-priority 期限流時
+   * 才回報。顯示之,避免使用者把限流降速誤判為 app bug。
+   */
+  usageLimit?: UsageLimitState
+  /** Session-scoped OMP settings (auto-compaction, queue modes, …); read from get_state / RPC echoes. */
+  sessionSettings?: SessionSettingsSnapshot
   contextUsage?: PrimeContextUsage
   sessionUsage?: SessionUsage
+  /**
+   * Renderer-tracked: a compaction finished but the authoritative session
+   * state could not be synchronized afterwards. Snapshots from the main
+   * process never carry the flag — the next runtime_state clears it — so a
+   * manual refresh retry is the way out, never an automatic repeat.
+   */
+  synchronizationPending?: boolean
 }
 
 export const PRIME_THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
@@ -265,6 +310,22 @@ export type PrimeEffortSelector = PrimeThinkingLevel | 'auto'
 export const ACCENT_COLORS = ['prime', 'blue', 'teal', 'green', 'orange', 'pink'] as const
 export type AccentColor = (typeof ACCENT_COLORS)[number]
 export type PrimeServiceTier = 'auto' | 'default' | 'flex' | 'scale' | 'priority' | null
+/** 上游 UsageLimitState:請求改走 provider 低優先佇列。 */
+export interface UsageLimitLowPriority {
+  stage: 'low_priority'
+  /** 上限重置時間(epoch 秒)。 */
+  resetsAtSec: number
+  /** 低優先額度剩餘百分比(上游有回報時)。 */
+  allowanceLeftPercent?: number
+}
+/** 上游 UsageLimitState:超過用量上限後的短暫收尾額度。 */
+export interface UsageLimitWrapUp {
+  stage: 'wrap_up'
+  resetsAtSec?: number
+  /** 額度用盡後是否由付費加購用量承接。 */
+  extraUsage: boolean
+}
+export type UsageLimitState = UsageLimitLowPriority | UsageLimitWrapUp
 export type ProviderAuthMethod = 'oauth' | 'api_key' | 'external'
 export type ProviderAuthSource = 'stored' | 'runtime' | 'environment' | 'prime_cli' | 'fallback' | 'models_json_key' | 'models_json_command' | 'stale'
 
@@ -280,8 +341,6 @@ export interface PrimeModelDescriptor {
   availableThinkingLevels: PrimeThinkingLevel[]
   fastModeSupported: boolean
   available: boolean
-  /** OMP Desktop visibility policy for this model; absent catalogs predate per-model controls. */
-  enabled?: boolean
 }
 
 export interface PrimeProviderDescriptor {
@@ -293,7 +352,6 @@ export interface PrimeProviderDescriptor {
   authLabel?: string
   modelCount: number
   availableModelCount: number
-  enabled: boolean
 }
 
 /** One OMP model preset: a name bound to a full role table and a default thinking level. */
@@ -347,6 +405,21 @@ export interface SkillRecord {
   definitionKey?: string
   /** False when an external definition key cannot be represented safely by the app removal API. */
   definitionRemovalAvailable?: boolean
+  /**
+   * Bounded summary of an mcp.json definition for the structured editor.
+   * Header/env values are never included (secrets); only header names so the
+   * editor can preserve them on save. Values still carry ${VAR}/!command
+   * verbatim — OMP resolves them at load time.
+   */
+  mcpDefinition?: {
+    transport: 'stdio' | 'http' | 'sse'
+    command?: string
+    args?: string[]
+    url?: string
+    headerNames?: string[]
+    timeout?: number
+    requestIdFormat?: 'string' | 'number'
+  }
   availability?: {
     available: boolean
     detail: string
@@ -365,13 +438,29 @@ export interface PluginCatalog {
   warnings: PluginWarning[]
 }
 
+/**
+ * mcp.json 結構化寫入,對齊上游 mcp-schema.json:stdio→command、http/sse→url,
+ * 兩者互斥。網路定義預設只允許 https;純 http 限 loopback/私有網段且須帶
+ * allowInsecureHttp 明示確認。headers/command/args 中的 ${VAR} 與 !command
+ * 值原樣寫入,由上游載入時解析,OMP Desktop 絕不展開。
+ * mode 'replace' 覆寫同名定義(編輯器保存),保留 harness 擁有的 auth/oauth
+ * 與未提供的欄位(如 headers、enabled)。
+ */
 export type McpConnectionInput = {
   name: string
   scope: 'user' | 'project'
   projectPath?: string
+  mode?: 'create' | 'replace'
 } & (
-  | { type: 'http'; url: string; auth?: 'none' | 'oauth' | 'bearer'; bearerTokenEnvVar?: string }
   | { type: 'stdio'; command: string; args?: string[] }
+  | {
+      type: 'http' | 'sse'
+      url: string
+      headers?: Record<string, string>
+      timeout?: number
+      requestIdFormat?: 'string' | 'number'
+      allowInsecureHttp?: boolean
+    }
 )
 
 export interface McpStateInput {
@@ -547,6 +636,13 @@ export interface AppSettings {
   defaultEffort: PrimeEffortSelector
   showToolCalls: boolean
   messageEnterAction: MessageEnterAction
+  /**
+   * 輸入快捷鍵預設的遷移版本戳(2.6):缺此欄位代表「尚未套用 TUI 預設」的舊狀態,
+   * 遷移時把舊預設值換成新預設並蓋戳;蓋戳後的使用者明確選擇永遠保留,
+   * 之後再調整預設也不再覆寫。舊檔無法區分「沿用預設」與「明確選了舊值」,
+   * 依審查決議一律視為沿用預設處理。
+   */
+  inputShortcutsVersion?: number
   /** Optional absolute executable override; blank keeps automatic discovery. */
   runtimePaths: Record<HarnessId, string>
   /**
@@ -560,12 +656,6 @@ export interface AppSettings {
   browserEnabled: boolean
   /** Expose the separately installed TryCUA driver to new sessions through its official CLI. */
   computerUseEnabled: boolean
-  /** Providers hidden from the OMP model picker; OMP's own config is untouched. */
-  ompDisabledProviders: string[]
-  /** Opt-in providers (advertised without user configuration) explicitly re-enabled, e.g. apple. */
-  ompEnabledProviders: string[]
-  /** Models hidden from the OMP model picker, stored as provider/model keys. */
-  ompDisabledModels: string[]
   /** Last usable model selected; blank falls back to the first usable catalog model. */
   lastSelectedModels: Record<HarnessId, string>
   /** Harness whose workspace the renderer shows; always 'omp'. */
@@ -801,15 +891,14 @@ export interface DesktopApi {
   agent: {
     start(options: { cwd: string; sessionPath?: string; model?: string; thinking?: string; fast?: boolean; harness?: HarnessId }): Promise<RuntimeInfo>
     command(runtimeId: string, command: Record<string, unknown>): Promise<Record<string, unknown>>
+    /** User-triggered authoritative state refresh (compact sync-pending retry); rejects when the runtime or the state read fails. */
+    refreshState(runtimeId: string): Promise<RuntimeInfo>
     stop(runtimeId: string): Promise<boolean>
     list(): Promise<RuntimeInfo[]>
     onEvent(callback: (envelope: PrimeEventEnvelope) => void): () => void
   }
   providers: {
     catalog(force?: boolean, harness?: HarnessId): Promise<PrimeModelCatalog>
-    setEnabled(providerId: string, enabled: boolean, harness?: HarnessId): Promise<PrimeModelCatalog>
-    setDisabled(providerIds: string[], harness?: HarnessId): Promise<PrimeModelCatalog>
-    setModelEnabled(modelKey: string, enabled: boolean, harness?: HarnessId): Promise<PrimeModelCatalog>
   }
   voice: {
     credentialStatus(): Promise<VoiceCredentialStatus>

@@ -18,7 +18,8 @@ import type { WorkspaceSnapshot } from '@/app/workspace'
 import { createPrimeEventBuffer, createQueuedMessageEvent, createSteerAcceptedEvent, createSteerPickupEvent, createSteerRetractEvent, replayPrimeEvents } from '@/lib/events'
 import type { PrimeEventBuffer } from '@/lib/events'
 import { findRuntimeForWorkspace, workspaceCwd } from '@/lib/workspace'
-import { readPendingQueues, savePendingQueues } from '@/lib/queued-prompt-storage'
+import { readPendingQueues, savePendingQueues, type WithdrawnQueue } from '@/lib/queued-prompt-storage'
+import { parseSessionActionSnapshot } from '@/lib/session-actions'
 import type { HarnessId, MessagePart, DesktopApi, ProjectRecord, PromptDeliveryIntent, QueuedPrompt, RuntimeInfo, SessionActionSnapshot, SessionRecord, TranscriptMessage } from '@/types/api'
 
 let queuedPromptSequence = 0
@@ -134,7 +135,7 @@ export function useWorkspaceRuntime({
 
   /** Reader-facing row events (the optimistic row, its retraction) apply
    * directly instead of through the event queue: they are click feedback, so
-   * neither an in-flight authoritative read (a rolled 20k-line transcript can
+   * neither an in-flight authoritative read (a 20k-line transcript can
    * read for seconds) nor a stalled animation frame may park them. Removal
    * and insertion target their own row, so later frame flushes cannot be
    * reordered around them, and transcript reconciliation keeps un-persisted
@@ -249,22 +250,26 @@ export function useWorkspaceRuntime({
     setActiveSessionId(session.id)
   }, [])
 
-  // A compact rolls the harness session file forward; adopt the successor
-  // record the same way — identity only, the rolled file carries the history.
-  const adoptRolledSession = useCallback((successor: SessionRecord) => {
+  // The workspace's own runtime may start reporting a different session
+  // file: a native session boundary (OMP fork/branch/switch executed inside
+  // the session) or a file move keeps the running runtime writing to a new
+  // path. Compact never does this — it compacts in place on the same file.
+  // Follow the owned runtime by adopting the catalog record for its new
+  // file, identity only.
+  const followOwnedRuntimeSession = useCallback((followed: SessionRecord) => {
     const current = workspaceRef.current
     workspaceRef.current = {
       ...current,
-      session: successor,
-      sessionFile: successor.filePath,
-      cwd: workspaceCwd(current.project, successor),
+      session: followed,
+      sessionFile: followed.filePath,
+      cwd: workspaceCwd(current.project, followed),
     }
-    // The rolled file carries the same history: an identity-only rebind, no
-    // transcript reset — the live event stream keeps flowing under the
-    // runtime that performed the roll.
-    lastTranscriptReadWorkspaceRef.current = { generation: current.generation, sessionFile: successor.filePath }
-    adoptionPendingCatalogRef.current = successor.id
-    setActiveSessionId(successor.id)
+    // An identity-only rebind, no transcript reset — the live event stream
+    // keeps flowing under the same running runtime on its new file, which
+    // already carries the history.
+    lastTranscriptReadWorkspaceRef.current = { generation: current.generation, sessionFile: followed.filePath }
+    adoptionPendingCatalogRef.current = followed.id
+    setActiveSessionId(followed.id)
   }, [])
 
 
@@ -277,16 +282,16 @@ export function useWorkspaceRuntime({
       if (workspaceRef.current.generation !== generation) return
       let match = findRuntimeForWorkspace(runtimes, selected.cwd, selected.sessionFile)
       if (!match) {
-        // A compact rolls the harness session file forward: the runtime we
-        // own now reports the successor path. Follow the roll instead of
-        // detaching — the successor record appears in the catalog as the
-        // sessions sync catches up.
+        // The runtime we own now reports a different session file (a native
+        // session boundary or a move). Follow the owned runtime instead of
+        // detaching — the record for its new file appears in the catalog as
+        // the sessions sync catches up.
         const owned = runtimes.find((candidate) => candidate.runtimeId === runtimeOwnerRef.current?.runtimeId)
-        const successor = owned?.sessionFile && owned.sessionFile !== selected.sessionFile
+        const followed = owned?.sessionFile && owned.sessionFile !== selected.sessionFile
           ? sessionsRef.current.find((session) => session.harness === harnessRef.current && session.filePath === owned.sessionFile)
           : undefined
-        if (successor) {
-          adoptRolledSession(successor)
+        if (followed) {
+          followOwnedRuntimeSession(followed)
           match = owned
         }
       }
@@ -294,7 +299,7 @@ export function useWorkspaceRuntime({
     } catch (error) {
       if (workspaceRef.current.generation === generation) reportError(error)
     }
-  }, [adoptRolledSession, attachRuntime, bridge, reportError])
+  }, [followOwnedRuntimeSession, attachRuntime, bridge, reportError])
 
 
   const startTranscriptRead = useCallback((
@@ -494,7 +499,7 @@ export function useWorkspaceRuntime({
     // Slash commands keep their command-chip flow and never get a row here.
     // The row is reader feedback tied to the click, not harness state: it
     // bypasses the event queue so neither an in-flight authoritative read
-    // (a rolled 20k-line transcript can read for seconds) nor a stalled
+    // (a 20k-line transcript can read for seconds) nor a stalled
     // animation frame can park it. Tool events target their own message ids,
     // so a directly applied row cannot be jumped by later frame flushes, and
     // transcript reconciliation keeps un-persisted local rows on merge.
@@ -663,6 +668,95 @@ export function useWorkspaceRuntime({
     reconcileQueuedPrompts(snapshot)
   }, [reconcileQueuedPrompts])
 
+  /** Re-queues input omp withdrew for an abort (`abort_and_restore_queue`).
+   * Steers the reply proves withdrawn lose their optimistic row and queue
+   * entry; every returned message comes back as an unsent local item —
+   * recovered, so only an explicit chip send can deliver it — under the
+   * stopped session's owner, which also survives a workspace switch. */
+  const restoreWithdrawnQueue = useCallback((withdrawn: WithdrawnQueue, owner: { harness: HarnessId; sessionFile?: string; runtimeId: string }) => {
+    const ownerKey = owner.sessionFile
+      ? `${owner.harness}:session:${owner.sessionFile}`
+      : `${owner.harness}:runtime:${owner.runtimeId}`
+    const withdrawnSteerTexts = new Map<string, number>()
+    for (const message of withdrawn.steering) withdrawnSteerTexts.set(message.text, (withdrawnSteerTexts.get(message.text) ?? 0) + 1)
+    const takeWithdrawnText = (text: string): boolean => {
+      const remaining = withdrawnSteerTexts.get(text) ?? 0
+      if (remaining <= 0) return false
+      withdrawnSteerTexts.set(text, remaining - 1)
+      return true
+    }
+    const dropWithdrawnSteers = (prompts: QueuedPrompt[]): QueuedPrompt[] => prompts.filter((prompt) => {
+      if (prompt.intent !== 'steer' || !takeWithdrawnText(prompt.text)) return true
+      observedSteerIdsRef.current.delete(prompt.id)
+      harnessHeldSteerIdsRef.current.delete(prompt.id)
+      applyLocalRowEvent(createSteerRetractEvent({ id: prompt.id }))
+      return false
+    })
+    const restored: QueuedPrompt[] = [...withdrawn.steering, ...withdrawn.followUp].map((message) => ({
+      id: nextQueuedPromptId(),
+      text: message.text,
+      intent: 'queue' as const,
+      timestamp: Date.now(),
+      parts: [{ type: 'text' as const, text: message.text }, ...(message.images ?? [])],
+      recovered: true,
+      flushAttemptFailed: true,
+    }))
+    const bucket = queuedPromptsByOwnerRef.current.get(ownerKey) ?? []
+    const nextBucket = [...dropWithdrawnSteers(bucket), ...restored]
+    if (nextBucket.length) queuedPromptsByOwnerRef.current.set(ownerKey, nextBucket)
+    else queuedPromptsByOwnerRef.current.delete(ownerKey)
+    if (activeQueuedPromptOwnerRef.current === ownerKey) {
+      pendingQueuedPromptsRef.current = nextBucket
+      setPendingQueuedPrompts(nextBucket)
+    }
+    savePendingQueues(queuedPromptsByOwnerRef.current)
+  }, [applyLocalRowEvent])
+
+  /** Removes one message omp holds, by the queue-chip text its state reports.
+   * Returns the removal outcome — including the removed message's images and
+   * omp's transport-loss flag when it reports one — or null when the runtime
+   * or RPC is unreachable; omp's own events remain the display authority. */
+  const removeHarnessQueuedMessage = useCallback(async (message: string, queue: 'steering' | 'followUp'): Promise<{ removed: boolean; images?: MessagePart[]; imagesDropped?: boolean } | null> => {
+    const runtimeId = runtimeIdRef.current
+    if (!bridge || !runtimeId) return null
+    try {
+      const response = await bridge.agent.command(runtimeId, { type: 'remove_queued_message', message, queue })
+      const actions = parseSessionActionSnapshot(response.sessionActions)
+      if (actions) setRuntime((current) => current?.runtimeId === runtimeId ? { ...current, sessionActions: actions } : current)
+      const data = response.data
+      if (!data || typeof data !== 'object' || Array.isArray(data)) return null
+      const raw = data as Record<string, unknown>
+      const images = Array.isArray(raw.images)
+        ? raw.images.flatMap((value) => {
+            if (!value || typeof value !== 'object' || Array.isArray(value)) return []
+            const candidate = value as Record<string, unknown>
+            return candidate.type === 'image' && typeof candidate.data === 'string' && typeof candidate.mimeType === 'string'
+              ? [{ type: 'image' as const, data: candidate.data, mimeType: candidate.mimeType }]
+              : []
+          })
+        : undefined
+      return { removed: raw.removed === true, ...(images?.length ? { images } : {}), ...(raw.imagesDropped === true ? { imagesDropped: true } : {}) }
+    } catch {
+      return null
+    }
+  }, [bridge])
+
+  /** Moves one queued follow-up omp holds to the end of the steering queue. */
+  const promoteHarnessQueuedMessage = useCallback(async (message: string): Promise<{ promoted: boolean } | null> => {
+    const runtimeId = runtimeIdRef.current
+    if (!bridge || !runtimeId) return null
+    try {
+      const response = await bridge.agent.command(runtimeId, { type: 'promote_queued_message', message })
+      const actions = parseSessionActionSnapshot(response.sessionActions)
+      if (actions) setRuntime((current) => current?.runtimeId === runtimeId ? { ...current, sessionActions: actions } : current)
+      const data = response.data
+      if (!data || typeof data !== 'object' || Array.isArray(data)) return null
+      return { promoted: (data as Record<string, unknown>).promoted === true }
+    } catch {
+      return null
+    }
+  }, [bridge])
+
   const activeSession = sessions.find((session) => session.id === activeSessionId)
   const sessionsRef = useRef(sessions)
   sessionsRef.current = sessions
@@ -674,17 +768,19 @@ export function useWorkspaceRuntime({
   const attachedRuntimeSessionFile = runtime?.sessionFile
   const attachedRuntimeId = runtime?.runtimeId
   useEffect(() => {
-    // Follow a compact rollover live: the attached runtime's sessionFile
-    // moves to the successor path (observed through runtime_state pushes and
-    // runtime re-attach). The catalog row for the successor arrives with the
-    // next sessions sync — the effect retries as `sessions` updates.
+    // Follow the owned runtime's session-file change live: a native session
+    // boundary or a move redirects the running runtime to a new path
+    // (observed through runtime_state pushes and runtime re-attach).
+    // Compact rewrites in place and never appears here. The catalog row for
+    // the new file arrives with the next sessions sync — the effect retries
+    // as `sessions` updates.
     if (!bridge || !attachedRuntimeSessionFile || !attachedRuntimeId) return
     if (runtimeOwnerRef.current?.runtimeId !== attachedRuntimeId) return
     const selected = workspaceRef.current
     if (!selected.sessionFile || attachedRuntimeSessionFile === selected.sessionFile) return
-    const successor = sessions.find((session) => session.harness === harnessRef.current && session.filePath === attachedRuntimeSessionFile)
-    if (successor) adoptRolledSession(successor)
-  }, [adoptRolledSession, attachedRuntimeId, attachedRuntimeSessionFile, bridge, sessions])
+    const followed = sessions.find((session) => session.harness === harnessRef.current && session.filePath === attachedRuntimeSessionFile)
+    if (followed) followOwnedRuntimeSession(followed)
+  }, [followOwnedRuntimeSession, attachedRuntimeId, attachedRuntimeSessionFile, bridge, sessions])
 
   useEffect(() => {
     if (!bridge || !activeSession?.filePath) {
@@ -757,6 +853,9 @@ export function useWorkspaceRuntime({
     setMessages,
     pendingQueuedPrompts,
     queuePrompt,
+    restoreWithdrawnQueue,
+    removeHarnessQueuedMessage,
+    promoteHarnessQueuedMessage,
     removeQueuedPrompt,
     editQueuedPrompt,
     updateQueuedPromptDelivery,
