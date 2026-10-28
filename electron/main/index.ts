@@ -621,6 +621,13 @@ async function bootstrap(): Promise<void> {
       const mode = stateStore.getSettings().ompApprovalMode
       return mode === 'inherit' ? undefined : mode
     },
+    // Idle GUI sessions close themselves: every idle runtime retires once the
+    // configured window passes, so long-forgotten sessions stop holding an
+    // omp child (resuming the session respawns it). 0 disables the sweep.
+    () => {
+      const minutes = stateStore.getSettings().idleSessionMinutes
+      return { idleMs: minutes === 0 ? 0 : minutes * 60_000, warmCount: 0 }
+    },
   )
   ompManager.setWorkspaceUseProvider((cwd, owner, retireIfIdle) => repositoryUseGate.beginWorkspaceUse(cwd, owner, retireIfIdle))
   agents = ompManager

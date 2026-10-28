@@ -609,6 +609,10 @@ export type LocalePreference = typeof LOCALE_PREFERENCES[number]
 export const PROJECT_SORT_MODES = ['recent', 'alphabetical'] as const
 export type ProjectSortMode = typeof PROJECT_SORT_MODES[number]
 
+/** Idle GUI session retirement window in minutes; 0 keeps idle runtimes resident. */
+export const IDLE_SESSION_MINUTES = [0, 5, 15, 30] as const
+export type IdleSessionMinutes = typeof IDLE_SESSION_MINUTES[number]
+
 export interface AppSettings {
   conversationDensity: 'compact' | 'comfortable'
   subagentsPanelPinned: boolean
@@ -624,6 +628,8 @@ export interface AppSettings {
   inspectorOpen: boolean
   showFileChangesPopup: boolean
   checkoutStrategy: CheckoutStrategy
+  /** Close a session's runtime after it has been idle this many minutes; 0 keeps it open. */
+  idleSessionMinutes: IdleSessionMinutes
   /** Keep the desktop process available for scheduled work after its window closes. */
   keepRunningInBackground: boolean
   /** Ask the operating system to launch OMP Desktop when the user signs in. */

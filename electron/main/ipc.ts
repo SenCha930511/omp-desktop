@@ -379,6 +379,7 @@ export function registerIpc(services: Services, expectedRendererUrl: string): Ip
     const patchRecord = requireRecord(patch, 'settings patch')
     if (patchRecord.computerUseEnabled === true && !previous.computerUseEnabled) await services.cuaDriver.requireAvailable()
     const settings = await services.settings.update(patch)
+    if (settings.idleSessionMinutes !== previous.idleSessionMinutes) services.agents.refreshRetention()
     if (settings.interfaceFontScale !== previous.interfaceFontScale) services.applyInterfaceZoom?.(settings.interfaceFontScale)
     if (settings.askUserEnabled !== previous.askUserEnabled || settings.browserEnabled !== previous.browserEnabled || settings.computerUseEnabled !== previous.computerUseEnabled) {
       await services.agents.requestRuntimeEnvironmentRefresh()

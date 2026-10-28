@@ -1,6 +1,6 @@
 import { session } from 'electron'
 import { isAbsolute } from 'node:path'
-import { ACCENT_COLORS, BROWSER_PARTITION, HARNESS_IDS, INTERFACE_FONT_SCALES, PRIME_EFFORT_SELECTORS, PROJECT_SORT_MODES, type AppSettings, type ProjectSortMode } from '../../src/types/api'
+import { ACCENT_COLORS, BROWSER_PARTITION, HARNESS_IDS, IDLE_SESSION_MINUTES, INTERFACE_FONT_SCALES, PRIME_EFFORT_SELECTORS, PROJECT_SORT_MODES, type AppSettings, type ProjectSortMode } from '../../src/types/api'
 import type { JsonStateStore } from './store'
 import { isRecord, rejectUnknownKeys, requireBoolean, requireSelfHostedVoiceUrl, requireString, requireWebUrl } from './validation'
 
@@ -23,6 +23,10 @@ export class SettingsService {
       conversationDensity: (value) => {
         if (value !== 'compact' && value !== 'comfortable') throw new TypeError('Invalid conversation density')
         return value
+      },
+      idleSessionMinutes: (value) => {
+        if (!IDLE_SESSION_MINUTES.includes(value as AppSettings['idleSessionMinutes'])) throw new TypeError('Invalid idle session minutes')
+        return value as AppSettings['idleSessionMinutes']
       },
       theme: (value) => {
         if (value !== 'system' && value !== 'light' && value !== 'dark') throw new TypeError('Invalid theme')

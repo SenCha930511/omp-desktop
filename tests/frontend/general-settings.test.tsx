@@ -46,6 +46,29 @@ describe('GeneralSettings macOS background controls', () => {
     expect(container.textContent).not.toContain('Launch at login')
   })
 
+  it('closes idle sessions on the chosen schedule', () => {
+    const update = vi.fn()
+    act(() => root.render(<GeneralSettings settings={DEFAULT_SETTINGS} onUpdate={update} platform="darwin" />))
+
+    expect(container.textContent).toContain('Close idle sessions')
+    expect(container.textContent).toContain("A session's agent stops after this much idle time; reopening it resumes the same conversation.")
+    const select = container.querySelector<HTMLSelectElement>('select[aria-label="Close idle sessions"]')
+    expect(select?.value).toBe('5')
+    expect([...select!.options].map((option) => option.textContent)).toEqual(['5 minutes', '15 minutes', '30 minutes', 'Never'])
+
+    act(() => {
+      select!.value = '0'
+      select!.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    expect(update).toHaveBeenCalledWith({ idleSessionMinutes: 0 })
+
+    act(() => {
+      select!.value = '15'
+      select!.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    expect(update).toHaveBeenCalledWith({ idleSessionMinutes: 15 })
+  })
+
   it('offers worktree isolation or in-place branch switching', () => {
     const update = vi.fn()
     act(() => root.render(<GeneralSettings settings={DEFAULT_SETTINGS} onUpdate={update} platform="linux" />))

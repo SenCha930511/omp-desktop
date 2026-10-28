@@ -191,6 +191,15 @@ describe('persisted settings parsing', () => {
     })
   })
 
+  it('defaults the idle session window to five minutes and keeps valid choices', () => {
+    expect(loadState({ version: 4, settings: {} }).settings).toMatchObject({ idleSessionMinutes: 5 })
+    for (const minutes of [0, 15, 30]) {
+      expect(loadState({ version: 4, settings: { idleSessionMinutes: minutes } }).settings).toMatchObject({ idleSessionMinutes: minutes })
+    }
+    expect(loadState({ version: 4, settings: { idleSessionMinutes: 7 } }).settings).toMatchObject({ idleSessionMinutes: 5 })
+    expect(loadState({ version: 4, settings: { idleSessionMinutes: '15' } }).settings).toMatchObject({ idleSessionMinutes: 5 })
+  })
+
   it('drops legacy provider and model visibility identifiers', () => {
     const { settings } = loadState({
       version: 3,

@@ -89,6 +89,24 @@ export function GeneralSettings({ settings, onUpdate, platform }: SettingsSectio
         </label>
         <label className="settings-row">
           <span>
+            <strong>{t('general.idleSessions.label')}</strong>
+            <small>{t('general.idleSessions.description')}</small>
+          </span>
+          <select
+            aria-label={t('general.idleSessions.label')}
+            value={String(settings.idleSessionMinutes)}
+            onChange={(event) => {
+              void onUpdate({ idleSessionMinutes: Number(event.target.value) as AppSettings['idleSessionMinutes'] })
+            }}
+          >
+            <option value="5">{t('general.idleSessions.minutes', { count: 5 })}</option>
+            <option value="15">{t('general.idleSessions.minutes', { count: 15 })}</option>
+            <option value="30">{t('general.idleSessions.minutes', { count: 30 })}</option>
+            <option value="0">{t('general.idleSessions.never')}</option>
+          </select>
+        </label>
+        <label className="settings-row">
+          <span>
             <strong>{t('general.inspectorTab.label')}</strong>
             <small>{t('general.inspectorTab.description')}</small>
           </span>

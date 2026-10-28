@@ -50,3 +50,66 @@ it('rechecks the warm budget after awaiting another child retirement', async () 
     expect(runtimes[0].stop).not.toHaveBeenCalled()
   } finally { await manager.stopAll(); vi.useRealTimers() }
 })
+
+it('retires every idle runtime once the settings-backed window elapses', async () => {
+  vi.useFakeTimers()
+  const retention = { idleMs: 100, warmCount: 0 }
+  const manager = new AgentRpcManager(null, async (cwd) => cwd, async (path) => path, undefined, OMP_RPC_ADAPTER, undefined, () => retention)
+  const runtime = {
+    runtimeId: 'idle-one',
+    snapshot: () => ({ runtimeId: 'idle-one', harness: 'omp', cwd: '/project', isStreaming: false }),
+    command: vi.fn(async () => ({ type: 'response', success: true })),
+    canRetireSafely: () => true,
+    stop: vi.fn(async () => true),
+  }
+  ;(manager as unknown as { runtimes: Map<string, unknown> }).runtimes.set(runtime.runtimeId, runtime)
+  try {
+    await manager.command(runtime.runtimeId, { type: 'get_state' })
+    await vi.advanceTimersByTimeAsync(101)
+    expect(runtime.stop).toHaveBeenCalledOnce()
+    expect(manager.list()).toEqual([])
+  } finally { await manager.stopAll(); vi.useRealTimers() }
+})
+
+it('keeps idle runtimes resident when the preference disables the sweep', async () => {
+  vi.useFakeTimers()
+  const retention = { idleMs: 0, warmCount: 0 }
+  const manager = new AgentRpcManager(null, async (cwd) => cwd, async (path) => path, undefined, OMP_RPC_ADAPTER, undefined, () => retention)
+  const runtime = {
+    runtimeId: 'idle-kept',
+    snapshot: () => ({ runtimeId: 'idle-kept', harness: 'omp', cwd: '/project', isStreaming: false }),
+    command: vi.fn(async () => ({ type: 'response', success: true })),
+    canRetireSafely: () => true,
+    stop: vi.fn(async () => true),
+  }
+  ;(manager as unknown as { runtimes: Map<string, unknown> }).runtimes.set(runtime.runtimeId, runtime)
+  try {
+    await manager.command(runtime.runtimeId, { type: 'get_state' })
+    await vi.advanceTimersByTimeAsync(600_000)
+    expect(runtime.stop).not.toHaveBeenCalled()
+    expect(manager.list()).toHaveLength(1)
+  } finally { await manager.stopAll(); vi.useRealTimers() }
+})
+
+it('picks up a preference change through refreshRetention', async () => {
+  vi.useFakeTimers()
+  const retention = { idleMs: 0, warmCount: 0 }
+  const manager = new AgentRpcManager(null, async (cwd) => cwd, async (path) => path, undefined, OMP_RPC_ADAPTER, undefined, () => retention)
+  const runtime = {
+    runtimeId: 'idle-live',
+    snapshot: () => ({ runtimeId: 'idle-live', harness: 'omp', cwd: '/project', isStreaming: false }),
+    command: vi.fn(async () => ({ type: 'response', success: true })),
+    canRetireSafely: () => true,
+    stop: vi.fn(async () => true),
+  }
+  ;(manager as unknown as { runtimes: Map<string, unknown> }).runtimes.set(runtime.runtimeId, runtime)
+  try {
+    await manager.command(runtime.runtimeId, { type: 'get_state' })
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(runtime.stop).not.toHaveBeenCalled()
+    retention.idleMs = 100
+    manager.refreshRetention()
+    await vi.advanceTimersByTimeAsync(101)
+    expect(runtime.stop).toHaveBeenCalledOnce()
+  } finally { await manager.stopAll(); vi.useRealTimers() }
+})

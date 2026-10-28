@@ -37,6 +37,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // 2.6:renderer fallback 預設與 electron/main/store.ts 一致(TUI 語意:Enter 插話)。
   messageEnterAction: 'steer',
   inputShortcutsVersion: 1,
+  idleSessionMinutes: 5,
   runtimePaths: { omp: '' },
   telemetry: false,
   askUserEnabled: false,

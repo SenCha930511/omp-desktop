@@ -24,6 +24,7 @@ export const SETTINGS_FIELD_SECTIONS = {
   inspectorOpen: 'general',
   showFileChangesPopup: 'general',
   checkoutStrategy: 'general',
+  idleSessionMinutes: 'general',
   keepRunningInBackground: 'general',
   launchAtLogin: 'general',
   terminalOpen: 'terminal',

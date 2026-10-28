@@ -23,6 +23,8 @@ export interface ProviderCatalog {
 }
 
 export interface RuntimeRetentionOptions { idleMs?: number; warmCount?: number }
+/** Settings-backed source so the idle window follows the live preference. */
+export type RuntimeRetentionSource = RuntimeRetentionOptions | (() => RuntimeRetentionOptions)
 const RETENTION_EVENTS = new Set(['agent_start', 'agent_end', 'runtime_state', 'session_action_update', 'compaction_start', 'compaction_end', 'auto_retry_end', 'prompt_result', 'runtime_exit', 'session_settled', 'extension_ui_request'])
 
 export class AgentRpcManager {
@@ -62,7 +64,7 @@ export class AgentRpcManager {
     private readonly adapter: HarnessRpcAdapter = OMP_RPC_ADAPTER,
     /** OMP approval-mode override consumed by the harness arg builder. */
     private readonly approvalMode: () => string | undefined = () => undefined,
-    private readonly retention: RuntimeRetentionOptions = {},
+    private readonly retention: RuntimeRetentionSource = {},
     /** Reads the compaction record a manual compact wrote; injectable for tests. */
     private readonly manualCompactionReader: ManualCompactionReader = readLatestCompactionRecord,
   ) {}
@@ -662,11 +664,24 @@ export class AgentRpcManager {
     if (this.closed) throw new Error(`${this.adapter.agentName} manager is shutting down`)
   }
 
+  private retentionOptions(): RuntimeRetentionOptions {
+    return typeof this.retention === 'function' ? this.retention() : this.retention
+  }
+
+  /** Re-evaluate the idle window after the preference changes. */
+  refreshRetention(): void {
+    this.scheduleIdleRetirement()
+  }
+
   /** One timer for safely idle children beyond the warm budget, never one polling loop per child. */
   private scheduleIdleRetirement(): void {
     if (this.idleTimer) clearTimeout(this.idleTimer)
     this.idleTimer = null
     if (this.closed) return
+    const options = this.retentionOptions()
+    const idleMs = options.idleMs ?? 5 * 60_000
+    // 0 / non-finite disables automatic retirement entirely (user opted out).
+    if (!Number.isFinite(idleMs) || idleMs <= 0) return
     const now = Date.now()
     const idle: RpcRuntime[] = []
     for (const runtime of this.runtimes.values()) {
@@ -676,16 +691,19 @@ export class AgentRpcManager {
     }
     const recency = new Map([...this.idleSince.keys()].map((id, index) => [id, index]))
     idle.sort((a, b) => recency.get(b.runtimeId)! - recency.get(a.runtimeId)!)
-    const expiredCandidates = idle.slice(this.retention.warmCount ?? 1)
+    const warmCount = options.warmCount ?? 1
+    const expiredCandidates = idle.slice(warmCount)
     if (!expiredCandidates.length) return
-    const idleMs = this.retention.idleMs ?? 5 * 60_000
     const deadline = Math.min(...expiredCandidates.map((runtime) => this.idleSince.get(runtime.runtimeId)! + idleMs))
     this.idleTimer = setTimeout(() => {
       this.idleTimer = null
       void (async () => {
+        const current = this.retentionOptions()
+        const currentIdleMs = current.idleMs ?? 5 * 60_000
+        if (!Number.isFinite(currentIdleMs) || currentIdleMs <= 0) return
         for (const runtime of expiredCandidates) {
           const since = this.idleSince.get(runtime.runtimeId)
-          if (since === undefined || Date.now() - since < idleMs) continue
+          if (since === undefined || Date.now() - since < currentIdleMs) continue
           // The existing admission barrier marks retiring atomically against new commands.
           try {
             const eligible = () => {
@@ -694,8 +712,8 @@ export class AgentRpcManager {
                 return candidate !== undefined && this.canReclaim(candidate)
               })
               const since = this.idleSince.get(runtime.runtimeId)
-              return since !== undefined && Date.now() - since >= idleMs
-                && recentIdle.slice(this.retention.warmCount ?? 1).includes(runtime.runtimeId)
+              return since !== undefined && Date.now() - since >= currentIdleMs
+                && recentIdle.slice(current.warmCount ?? 1).includes(runtime.runtimeId)
             }
             if (!await this.retireForCheckout(runtime, eligible)) this.idleSince.set(runtime.runtimeId, Date.now())
           } catch (error) {

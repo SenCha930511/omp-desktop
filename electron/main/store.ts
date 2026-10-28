@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, renameSync, statSync } from 'node:fs'
 import { open, rename, unlink } from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join } from 'node:path'
-import { ACCENT_COLORS, INTERFACE_FONT_SCALES, PRIME_THINKING_LEVELS, PROJECT_SORT_MODES, type AccentColor, type AppSettings, type HarnessId, type PrimeEffortSelector, type ProjectRecord, type ProjectScripts, type ScheduleExecution, type AutomationScheduleRecord, type ScheduleRunRecord, type ScheduleTarget, type ScheduleTiming } from '../../src/types/api'
+import { ACCENT_COLORS, IDLE_SESSION_MINUTES, INTERFACE_FONT_SCALES, PRIME_THINKING_LEVELS, PROJECT_SORT_MODES, type AccentColor, type AppSettings, type HarnessId, type PrimeEffortSelector, type ProjectRecord, type ProjectScripts, type ScheduleExecution, type AutomationScheduleRecord, type ScheduleRunRecord, type ScheduleTarget, type ScheduleTiming } from '../../src/types/api'
 import { normalizeScheduleRunHistory } from './schedules/retention'
 import { isRecord } from './validation'
 
@@ -116,6 +116,7 @@ export function defaultSettings(): AppSettings {
     inspectorOpen: true,
     showFileChangesPopup: true,
     checkoutStrategy: 'worktree',
+    idleSessionMinutes: 5,
     keepRunningInBackground: false,
     launchAtLogin: false,
     terminalOpen: false,
@@ -250,6 +251,7 @@ function parseSettings(value: unknown): AppSettings {
     inspectorOpen: typeof value.inspectorOpen === 'boolean' ? value.inspectorOpen : defaults.inspectorOpen,
     showFileChangesPopup: typeof value.showFileChangesPopup === 'boolean' ? value.showFileChangesPopup : defaults.showFileChangesPopup,
     checkoutStrategy: value.checkoutStrategy === 'branch' || value.checkoutStrategy === 'worktree' ? value.checkoutStrategy : defaults.checkoutStrategy,
+    idleSessionMinutes: IDLE_SESSION_MINUTES.includes(value.idleSessionMinutes as AppSettings['idleSessionMinutes']) ? value.idleSessionMinutes as AppSettings['idleSessionMinutes'] : defaults.idleSessionMinutes,
     keepRunningInBackground: typeof value.keepRunningInBackground === 'boolean' ? value.keepRunningInBackground : defaults.keepRunningInBackground,
     launchAtLogin: typeof value.launchAtLogin === 'boolean' ? value.launchAtLogin : defaults.launchAtLogin,
     terminalOpen: typeof value.terminalOpen === 'boolean' ? value.terminalOpen : defaults.terminalOpen,
