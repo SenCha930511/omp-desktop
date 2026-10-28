@@ -15,7 +15,6 @@
 
 @media (max-width: 720px) {
   .conversation-bottom-dock { right: 9px; bottom: 8px; left: 9px; width: auto; }
-  .transcript.has-queued-messages { padding-bottom: 325px; }
 }
 
 @media (max-width: 1180px) {

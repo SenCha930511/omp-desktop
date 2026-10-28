@@ -13,8 +13,8 @@
 .settings-content header h1 { margin: 0 0 5px; font-size: 22px; line-height: 1.2; font-weight: 560; letter-spacing: -.015em; }
 .settings-content header p { margin: 0; color: var(--text-secondary); }
 .settings-group { margin-bottom: 25px; border-top: 1px solid var(--border); }
-.settings-group > h2 { margin: -8px 0 4px; display: table; padding-right: 8px; color: var(--text-secondary); background: var(--canvas); font-size: 10.5px; font-weight: 560; }
-.settings-toggle, .settings-row, .danger-row { min-height: 64px; display: flex; align-items: center; justify-content: space-between; gap: 18px; border-bottom: 1px solid var(--border); }
+.settings-group > h2 { margin: -8px 0 8px; display: table; padding-right: 8px; color: var(--text-secondary); background: var(--canvas); font-size: 10.5px; font-weight: 560; }
+.settings-toggle, .settings-row, .danger-row { min-height: 64px; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 15px 0; border-bottom: 1px solid var(--border); }
 /* Row actions (update check, toggle, delete) must never fold mid-label: the
    row's text column already flexes, so the control keeps its natural width. */
 .settings-row .button, .danger-row .button { flex: 0 0 auto; white-space: nowrap; }
@@ -28,7 +28,7 @@
 .settings-toggle input:checked + i span { transform: translateX(14px); }
 .settings-toggle input:focus-visible + i { outline: 2px solid var(--focus); outline-offset: 2px; }
 .settings-row select, .settings-row input, .field input, .field textarea, .field select { height: 32px; min-width: 180px; padding: 0 8px; border: 1px solid var(--border-strong); border-radius: 7px; outline: 0; background: var(--surface-raised); font-size: 11.5px; }
-.settings-row--stack { align-items: flex-start; flex-direction: column; gap: 9px; padding: 13px 0; }
+.settings-row--stack { align-items: flex-start; flex-direction: column; gap: 9px; padding: 15px 0; }
 .settings-row--stack input { width: 100%; }
 .settings-group > h2 { display: flex; align-items: center; gap: 6px; }
 .settings-group__description { margin: -2px 0 10px; color: var(--text-tertiary); font-size: 10.5px; line-height: 1.45; }
@@ -106,7 +106,7 @@
 .text-size-options button { min-width: 56px; height: 28px; padding: 0 7px; border-radius: 5px; color: var(--text-secondary); background: transparent; font-size: 10.5px; }
 .text-size-options button:hover { color: var(--text); background: var(--surface-hover); }
 .text-size-options button.is-active { color: var(--text); background: var(--surface-raised); box-shadow: 0 1px 2px rgba(0,0,0,.1); }
-.runtime-card { min-height: 74px; display: flex; align-items: center; gap: 10px; padding: 11px 0; border-bottom: 1px solid var(--border); }
+.runtime-card { min-height: 74px; display: flex; align-items: center; gap: 10px; padding: 15px 0; border-bottom: 1px solid var(--border); }
 .runtime-card > span { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 8px; color: var(--danger); background: var(--danger-soft); }
 .runtime-card > span.is-online { color: var(--success); background: var(--success-soft); }
 .runtime-card > div { min-width: 0; flex: 1; display: flex; flex-direction: column; }
@@ -117,7 +117,7 @@
 .info-row > div { display: flex; flex-direction: column; }
 .info-row strong { color: var(--text); font-size: 12px; font-weight: 540; }
 .info-row small { margin-top: 2px; color: var(--text-tertiary); font-size: 10.5px; }
-.shortcut-row { min-height: 52px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); }
+.shortcut-row { min-height: 52px; display: flex; align-items: center; justify-content: space-between; padding: 15px 0; border-bottom: 1px solid var(--border); }
 .shortcut-row span { display: flex; align-items: center; gap: 7px; }
 .shortcut-row kbd { padding: 4px 7px; border: 1px solid var(--border); border-bottom-color: var(--border-strong); border-radius: 5px; background: var(--surface-subtle); }
 .shortcut-choice { display: flex !important; flex-direction: row !important; gap: 4px; flex: 0 0 auto; }

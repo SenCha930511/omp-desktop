@@ -1,11 +1,12 @@
 import { ArrowUp, AtSign, Check, ChevronDown, Clock3, Command, Edit3, Hourglass, ImageIcon, LoaderCircle, MessageCirclePlus, Mic, Paperclip, Plus, RotateCcw, Shield, ShieldAlert, ShieldCheck, ShieldQuestionMark, Square, SquareTerminal, Trash2, X, Zap } from 'lucide-react'
 import type { CSSProperties } from 'react'
-import { Fragment, memo, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { Fragment, memo, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useComposerImages } from '@/hooks/useComposerImages'
 import { useDictation } from '@/hooks/useDictation'
 import { appendAnnotationsToPrompt } from '@/lib/browser-annotations'
 import { appendCapabilityRouting } from '@/lib/capability-mentions'
 import { readComposerDraft, saveComposerDraft, takeComposerDraft } from '@/lib/composer-draft'
+import { getTurnMetrics, subscribeTurnMetrics } from '@/lib/events/turn-metrics'
 import { contextDialLabel, formatSessionCost, PRICING_UNAVAILABLE } from '@/lib/format-cost'
 import { type MessageKey, useI18n } from '@/lib/i18n'
 import { formatQueuedItemsForRestore, isContinueShorthand, MANUAL_CONTINUE_PROMPT, parseQueueShorthandInput } from '@/lib/input-shorthands'
@@ -96,6 +97,8 @@ interface ComposerProps {
   contextUsage?: PrimeContextUsage
   executingModel?: ExecutingModelChipProps['executingModel']
   sessionUsage?: SessionUsage
+  /** 查詢回合指標(TTFT/TPS)的 runtime;切換後自然回到 —。 */
+  runtimeId?: string | null
   voice?: DesktopApi['voice'] | null
   transcriptionProvider?: VoiceTranscriptionProvider
   skills: SkillRecord[]
@@ -210,6 +213,7 @@ export const Composer = memo(function Composer({
   contextUsage,
   executingModel,
   sessionUsage,
+  runtimeId,
   voice,
   transcriptionProvider = 'openai-live',
   skills,
@@ -738,6 +742,8 @@ export const Composer = memo(function Composer({
   const contextDisplayPercent = contextPercent === null ? null : Math.min(99, Math.round(contextPercent))
   const contextStyle = { '--context-percent': `${contextPercent ?? 0}%` } as CSSProperties
   const sessionCost = formatSessionCost(sessionUsage)
+  // 回合指標快照只在值變時替換,訂閱不會因 delta 事件連發而重渲染。
+  const turnMetrics = useSyncExternalStore(subscribeTurnMetrics, () => getTurnMetrics(runtimeId))
   /** Click target for the context dial's popover; closes on outside click/Escape. */
   const [contextMenuOpen, setContextMenuOpen] = useState(false)
   const contextMenuRef = useRef<HTMLDivElement>(null)
@@ -1475,6 +1481,14 @@ export const Composer = memo(function Composer({
                             <dd>{sessionCost}</dd>
                           </div>
                         ) : null}
+                        <div>
+                          <dt>{t('composer.context.ttft')}</dt>
+                          <dd>{turnMetrics.ttftMs === null ? '—' : `${(turnMetrics.ttftMs / 1000).toFixed(2)}s`}</dd>
+                        </div>
+                        <div>
+                          <dt>{t('composer.context.tps')}</dt>
+                          <dd>{turnMetrics.tokensPerSecond === null ? '—' : `${turnMetrics.tokensPerSecond.toFixed(1)} tok/s`}</dd>
+                        </div>
                       </dl>
                     ) : (
                       <p className="context-popover__empty">{t('composer.context.unavailable')}</p>

@@ -1,5 +1,5 @@
 import { ChevronDown, LoaderCircle } from 'lucide-react'
-import { useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { createAssistantTurnCoalescer } from '@/lib/assistant-turns'
 import { HARNESS_SHORT_NAMES } from '@/lib/harness'
 import { useI18n } from '@/lib/i18n'
@@ -109,6 +109,26 @@ export function Transcript({
   }
   const entering = (id: string) => entranceRef.current.hydrated && !entranceRef.current.initial.has(id)
   const activeAssistantId = useMemo(() => (active && groupedMessages.at(-1)?.role === 'assistant' ? groupedMessages.at(-1)?.id : undefined), [active, groupedMessages])
+  // Footer clearance: the composer (and its queue tray) flow below the
+  // absolutely-positioned transcript, so their combined height is the real
+  // bottom padding the last message needs to rest snugly above them. A
+  // static 325px left the model text floating far above a one-row tray;
+  // measuring live keeps padding, scroll anchoring and the jump-to-bottom
+  // button aligned whether zero or five messages are queued.
+  useEffect(() => {
+    const root = scrollRef.current
+    if (!root) return
+    const scope = root.closest('.conversation-pane') ?? root.parentElement
+    const footer = scope?.querySelector('.composer-wrap')
+    if (!footer) return
+    const apply = () => {
+      root.style.setProperty('--footer-clearance', `${Math.max(footer.getBoundingClientRect().height + 16, 190)}px`)
+    }
+    apply()
+    const observer = new ResizeObserver(apply)
+    observer.observe(footer)
+    return () => observer.disconnect()
+  }, [scrollRef])
   const transcriptClasses = [
     'transcript',
     'scroll-area',

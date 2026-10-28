@@ -435,6 +435,30 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
       send({ id: command.id, type: 'response', command: command.type, success: true, data: { agentInvoked: false } })
       return
     }
+    if (message.includes('silent drain turn')) {
+      // omp 18.13 silent delivery: the turn ends and the harness queue
+      // drains with NO session_action_update, NO file write, NO events —
+      // only get_state reports the emptied queue. The desktop's state poll
+      // must self-heal the tray from the stale snapshot.
+      streaming = true
+      send({ type: 'agent_start' })
+      send({ id: command.id, type: 'response', command: command.type, success: true, data: { agentInvoked: true } })
+      fs.writeFileSync(marker('silent-drain-started'), 'ready')
+      const release = marker('silent-drain-release')
+      const finishSilent = () => {
+        streaming = false
+        followUpQueue = followUpQueue.filter((held) => !held.includes('silent drain follow-up'))
+        fs.writeFileSync(marker('silent-drain-accepted'), '1')
+        send({ type: 'agent_end' })
+      }
+      if (fs.existsSync(release)) { finishSilent(); return }
+      const watcher = fs.watch(fixtureRoot, (_event, filename) => {
+        if (filename?.toString() !== 'silent-drain-release' || !fs.existsSync(release)) return
+        watcher.close()
+        finishSilent()
+      })
+      return
+    }
     if (message.includes('barrier turn')) {
       fs.writeFileSync(marker('prompt-admission-barrier-started'), 'ready')
       streaming = true
@@ -1261,7 +1285,6 @@ test.describe('OMP Desktop desktop smoke', () => {
     await composer.fill('barrier follow-up')
     await expect(page.getByRole('button', { name: 'Send message', exact: true })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Stop OMP' })).toHaveCount(0)
-
     // 2.6 預設 enterAction='steer'：排隊用 Ctrl+Enter（本地佇列，釋放後 flush）。
     await composer.press('Control+Enter')
     await expect(page.getByRole('button', { name: 'Stop OMP' })).toBeVisible()
@@ -1285,6 +1308,31 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(queuedTray.locator('.composer-queue__item')).toHaveCount(0)
     await expect(page.locator('.message--user').filter({ hasText: 'barrier follow-up' })).toHaveCount(1)
     await expect(page.locator('.message--activity').filter({ hasText: 'Cannot send prompt' })).toHaveCount(0)
+  })
+
+
+  test('clears the queued tray through the state poll when delivery is silent', async () => {
+    await page.locator('.session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
+    await expect(page.locator('.model-picker__trigger')).toHaveAccessibleName('Model: Claude Fixture')
+    const composer = page.getByRole('combobox', { name: 'Message OMP' })
+    await composer.fill('silent drain turn')
+    await composer.press('Enter')
+    await expect(page.getByRole('button', { name: 'Stop OMP' })).toBeVisible()
+    await expect.poll(() => existsSync(join(fixtureRoot, 'silent-drain-started'))).toBe(true)
+
+    // Queue a follow-up while the turn runs; the harness-held row renders.
+    await composer.fill('silent drain follow-up')
+    await composer.press('Control+Enter')
+    const queuedTray = page.getByRole('region', { name: 'Queued messages' })
+    await expect(queuedTray.locator('.composer-queue__item')).toHaveCount(1)
+
+    // Delivery is completely silent: no session_action_update, no file row,
+    // no events — only get_state reports the drained queue. The desktop's
+    // two-second state poll must self-heal the tray from the stale snapshot.
+    writeFileSync(join(fixtureRoot, 'silent-drain-release'), 'release')
+    await expect.poll(() => existsSync(join(fixtureRoot, 'silent-drain-accepted'))).toBe(true)
+    await expect(queuedTray.locator('.composer-queue__item')).toHaveCount(0, { timeout: 10_000 })
+    await expect(queuedTray).toHaveCount(0)
   })
 
   test('re-anchors the transcript to the sent message after scrolling up', async () => {

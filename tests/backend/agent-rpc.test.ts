@@ -1553,12 +1553,13 @@ const readline = require('node:readline')
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
 let compacting = false
 let streaming = false
+let heldQueue = []
 readline.createInterface({ input: process.stdin }).on('line', (line) => {
   const command = JSON.parse(line)
   if (command.type === 'negotiate_protocol') {
     send({ id: command.id, type: 'response', command: 'negotiate_protocol', success: true, data: { protocolVersion: command.protocolVersion } })
   } else if (command.type === 'get_state') {
-    send({ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'watchdog', isStreaming: streaming, isCompacting: compacting } })
+    send({ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'watchdog', isStreaming: streaming, isCompacting: compacting, sessionActions: { queuedCount: heldQueue.length, steering: [], followUps: heldQueue } } })
   } else if (command.type === 'prompt') {
     send({ id: command.id, type: 'response', command: 'prompt', success: true })
     ${promptScript}
@@ -1603,6 +1604,54 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
       await new Promise((resolve) => setTimeout(resolve, 450))
       expect(events.some((event) => event.type === 'agent_end' && event.synthetic === true)).toBe(false)
       expect(runtime.snapshot().isStreaming).toBe(true)
+    } finally {
+      await runtime.stop()
+    }
+  })
+})
+
+describe('idle queue snapshot reconciliation', () => {
+  it('clears a stale harness queue through the state poll when delivery pushed no event', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-rpc-silent-drain-'))
+    dirs.push(cwd)
+    const executable = join(cwd, 'silent-drain.cjs')
+    writeFileSync(executable, `#!/usr/bin/env node
+const readline = require('node:readline')
+const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
+let streaming = false
+let heldQueue = []
+readline.createInterface({ input: process.stdin }).on('line', (line) => {
+  const command = JSON.parse(line)
+  if (command.type === 'negotiate_protocol') {
+    send({ id: command.id, type: 'response', command: 'negotiate_protocol', success: true, data: { protocolVersion: command.protocolVersion } })
+  } else if (command.type === 'get_state') {
+    send({ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'silent-drain', isStreaming: streaming, isCompacting: false, sessionActions: { queuedCount: heldQueue.length, steering: [], followUps: heldQueue } } })
+  } else if (command.type === 'prompt') {
+    send({ id: command.id, type: 'response', command: 'prompt', success: true })
+    send({ type: 'agent_start' })
+    streaming = true
+    heldQueue = ['held follow-up']
+    setTimeout(() => {
+      // Delivery: the turn ends and the queue drains with NO agent_end and
+      // NO session_action_update — omp 18.13 relies on get_state for this.
+      streaming = false
+      heldQueue = []
+    }, 350)
+  }
+})
+`)
+    chmodSync(executable, 0o755)
+    const events: Record<string, unknown>[] = []
+    const runtime = new RpcRuntime(executable, [], cwd, ({ event }) => events.push(event), () => undefined, {}, { pollIntervalMs: 80, endGraceMs: 150 })
+    await runtime.handshake()
+    try {
+      await runtime.command({ type: 'prompt', message: 'work' })
+      await waitUntil(() => (runtime.snapshot().sessionActions?.followUps?.length ?? -1) === 1)
+      await waitUntil(() => events.some((event) => event.type === 'agent_end' && event.synthetic === true))
+      // The poll folds the drained snapshot: queuedCount 0, followUps empty.
+      await waitUntil(() => (runtime.snapshot().sessionActions?.followUps?.length ?? -1) === 0)
+      expect(runtime.snapshot().sessionActions?.queuedCount).toBe(0)
+      await waitUntil(() => events.some((event) => event.type === 'runtime_state' && (event as { state?: { sessionActions?: { followUps?: unknown[] } } }).state?.sessionActions?.followUps?.length === 0))
     } finally {
       await runtime.stop()
     }

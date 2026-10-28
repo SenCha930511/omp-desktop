@@ -1,4 +1,4 @@
-import { Bot, ChevronDown, MessageSquare, Users } from 'lucide-react'
+import { ArrowUp, Bot, ChevronDown, MessageSquare, Users } from 'lucide-react'
 import { memo, useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react'
 import { combineSubagentMessages, type SubagentPanelState, type SubagentView } from '@/hooks/useSubagents'
 import { string } from '@/lib/events/parse'
@@ -33,7 +33,7 @@ function SteerForm({ agent, pending, onSteer }: { agent: SubagentView; pending: 
   return <form className="subagents__steer" onSubmit={(event) => { void submit(event) }}>
     <input value={draft} onChange={(event) => { setDraft(event.target.value); setError(undefined) }} disabled={pending} maxLength={32_000}
       placeholder={t('agents.steerPlaceholder')} aria-label={t('agents.steerLabel', { name: agent.agent })} />
-    <button type="submit" disabled={pending || !draft.trim()}>{t('agents.steerSend')}</button>
+    <button type="submit" disabled={pending || !draft.trim()} aria-label={t('agents.steerSend')} title={t('agents.steerSend')}><ArrowUp size={17} /></button>
     {error && <p className="subagents__steer-error" role="alert">{error}</p>}
   </form>
 }
@@ -54,6 +54,7 @@ const AgentTranscript = memo(function AgentTranscript({ agent, showReasoning, sh
     [t('agents.tools'), progress?.toolCount], [t('agents.requests'), progress?.requests], [t('agents.tokens'), progress?.tokens],
     [t('agents.elapsed'), typeof progress?.durationMs === 'number' ? t('agents.seconds', { count: Math.round(progress.durationMs / 1_000) }) : undefined],
   ].filter(([, value]) => typeof value === 'string' || typeof value === 'number')
+  const jumpLabel = t(hasNewContent ? 'agents.newContent' : 'transcript.jumpToBottom')
   return <article className="subagents__transcript" aria-label={t('agents.transcript', { name: agent.agent })}>
     <TranscriptSearchBar state={search} />
     <div className="subagents__overview">
@@ -79,7 +80,7 @@ const AgentTranscript = memo(function AgentTranscript({ agent, showReasoning, sh
         : <ActivityMessage message={message} />}</div>}</SearchMessage>)}
     {hiddenAfter > 0 && <button type="button" className="transcript__show-earlier" onClick={showNewer}>{t('conversation.search.newer', { count: Math.min(250, hiddenAfter) })}</button>}
     </div></div>
-    {awayFromBottom && <button type="button" className="subagents__jump" onClick={scrollToBottom}><ChevronDown size={14} />{t(hasNewContent ? 'agents.newContent' : 'transcript.jumpToBottom')}</button>}
+    {awayFromBottom && <button type="button" className="subagents__jump" onClick={scrollToBottom} aria-label={jumpLabel} title={jumpLabel}><ChevronDown size={17} /></button>}
     {agent.status === 'running' && onSteer && <SteerForm agent={agent} pending={pendingActions?.has(`steer:${agent.id}`) ?? false} onSteer={onSteer} />}
   </article>
 })

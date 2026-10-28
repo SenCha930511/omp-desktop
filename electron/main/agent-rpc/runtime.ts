@@ -491,6 +491,20 @@ export class RpcRuntime {
         this.emit({ type: 'agent_end', synthetic: true })
         this.emit({ type: 'runtime_state', state: this.snapshot() })
       }
+      // omp does not reliably push session_action_update when it delivers a
+      // queued follow-up between turns; a stale snapshot then keeps the
+      // queue tray (and the busy flag it feeds, which also blocks the local
+      // queue flush) rendering long after delivery. While no turn is in
+      // flight — events own the live truth then — fold the authoritative
+      // queue snapshot into runtime state so the GUI self-heals within one
+      // poll interval even when the delivery event never arrives.
+      if (!this.watchdogDisposed && raw && !this.info.isStreaming && !this.retryPending && !this.continuationPending) {
+        const actions = parseSessionActionSnapshot(raw.sessionActions)
+        if (actions && JSON.stringify(actions) !== JSON.stringify(this.info.sessionActions)) {
+          this.info.sessionActions = actions
+          this.emit({ type: 'runtime_state', state: this.snapshot() })
+        }
+      }
     } catch { /* transient poll failures are ignored; the next tick retries */ }
      finally { this.compactionPollInFlight = false }
   }

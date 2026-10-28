@@ -29,7 +29,9 @@
 .subagents__page[hidden] { display: none; }
 .subagents__transcript { position: relative; }
 .subagents__messages .transcript__inner { padding: 0; width: 100%; max-width: calc(var(--transcript-measure) - 56px); margin: 0 auto; }
-.subagents__jump { position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 6px; border: 1px solid var(--border); border-radius: 20px; padding: 7px 12px; background: var(--surface-raised); color: var(--text-secondary); font: inherit; cursor: pointer; box-shadow: var(--shadow-popover); }
+.subagents__jump { position: absolute; z-index: 9; bottom: 16px; left: 50%; width: 34px; height: 34px; display: grid; place-items: center; padding: 0; border: 1px solid var(--border); border-radius: 50%; color: var(--text-secondary); background: var(--surface-raised); box-shadow: var(--shadow-popover); cursor: pointer; transform: translateX(-50%); animation: fade-in 130ms ease-out; }
+.subagents__jump:hover { color: var(--text); background: var(--surface-hover); border-color: var(--border-strong); }
+.subagents__transcript:has(.subagents__steer) .subagents__jump { bottom: 80px; }
 .subagents__transcript { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; width: 100%; color: var(--text); font-size: 14px; line-height: 1.65; }
 .subagents__overview { flex-shrink: 0; overflow-y: auto; scrollbar-gutter: stable; padding: 14px 24px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); background: var(--canvas); }
 .subagents__overview > * { max-width: 720px; margin-left: auto; margin-right: auto; }
@@ -63,8 +65,13 @@
 .subagents__cancel:disabled { opacity: .5; cursor: default; }
 .subagents__subscription { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 10px 8px; font-size: 11px; color: var(--text-tertiary); }
 .subagents__subscription select { min-width: 0; border: 1px solid var(--border); border-radius: var(--conversation-control-radius, 6px); padding: 4px 6px; background: var(--surface-raised); color: var(--text-secondary); font-size: var(--conversation-control-font, 11px); }
-.subagents__steer { display: flex; flex-wrap: wrap; align-items: center; flex-shrink: 0; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border); }
-.subagents__steer input { flex: 1; min-width: 160px; border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; background: var(--surface-raised); color: var(--text); font: inherit; }
-.subagents__steer button { padding: 7px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-raised); color: var(--text); font: inherit; cursor: pointer; }
-.subagents__steer button:disabled { opacity: .5; cursor: default; }
+.subagents__steer { display: flex; flex-wrap: wrap; align-items: center; flex-shrink: 0; gap: 8px; width: calc(100% - 48px); max-width: var(--transcript-measure); margin: 8px auto 13px; padding: 10px 11px 9px; border: var(--border-hairline, 1px) solid var(--border); border-radius: 18px; background: var(--surface-raised); box-shadow: var(--shadow-composer); transition: border-color 180ms var(--ease-out), box-shadow 180ms var(--ease-out); }
+.subagents__steer:hover:not(:focus-within) { border-color: var(--border-strong); box-shadow: var(--shadow-composer-hover); }
+.subagents__steer:focus-within { border-color: color-mix(in srgb, var(--border-strong) 55%, var(--focus)); box-shadow: var(--shadow-composer-focus); }
+.subagents__steer input { flex: 1; min-width: 160px; border: 0; outline: 0; padding: 7px 10px 8px; background: transparent; color: var(--text); caret-color: var(--text); font: inherit; font-size: 14px; line-height: 1.65; }
+.subagents__steer input::placeholder { color: var(--text-tertiary); }
+.subagents__steer button { width: 30px; height: 30px; display: grid; place-items: center; flex: 0 0 auto; padding: 0; border: 0; border-radius: 50%; color: var(--canvas); background: var(--text); font: inherit; cursor: pointer; transition: transform 110ms var(--ease-out), opacity 130ms var(--ease-out), background 130ms var(--ease-out); }
+.subagents__steer button:hover:not(:disabled) { opacity: .88; }
+.subagents__steer button:active:not(:disabled) { transform: scale(.95); }
+.subagents__steer button:disabled { color: var(--text-tertiary); background: var(--surface-selected); opacity: 1; cursor: default; }
 .subagents__steer-error { flex-basis: 100%; margin: 0; color: var(--danger); font-size: 12px; }

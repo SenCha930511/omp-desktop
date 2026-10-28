@@ -1460,6 +1460,7 @@ export default function App() {
                         imageInputSupported={Boolean(provider.selectedModel?.input.includes('image') || provider.catalog?.visionDelegation)}
                         contextUsage={workspace.runtime?.contextUsage}
                         sessionUsage={workspace.runtime?.sessionUsage}
+                        runtimeId={workspace.runtime?.runtimeId}
                         executingModel={workspace.runtime?.executingModel}
                         skills={pluginSkills.skills}
                         sessions={mentionableSessions}

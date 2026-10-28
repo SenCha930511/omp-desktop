@@ -5,6 +5,7 @@ import { shouldNotifyCompletion, showCompletionNotification } from '@/lib/comple
 import { compactionSyncPendingStore } from '@/lib/compaction-sync-state'
 import { agentNoticeBody, agentNoticeFromEvent, isConfigWarningsChangedEvent } from '@/lib/events/reduce'
 import { fallbackModelFromRecord } from '@/lib/events/model-fallback'
+import { observeTurnEvent, resetTurnMetrics } from '@/lib/events/turn-metrics'
 import { useI18n } from '@/lib/i18n'
 import { parseSessionActionSnapshot } from '@/lib/session-actions'
 import { parseSlashCommands } from '@/lib/slash-commands'
@@ -70,6 +71,9 @@ export function useAgentEvents({
     }
     const unsubscribe = bridge.agent.onEvent(({ runtimeId, event }) => {
       const type = typeof event.type === 'string' ? event.type : ''
+      // 回合指標(TTFT/TPS)對每個 runtime 都追蹤:快照以 runtimeId 查詢,
+      // 背景 runtime 的回合在切回 session 後仍可顯示。
+      observeTurnEvent(runtimeId, event)
       const sessionFile = runtimeSessionsRef.current.get(runtimeId)
         ?? (runtimeIdRef.current === runtimeId ? workspaceRef.current.sessionFile : undefined)
       if (sessionFile) {
@@ -105,7 +109,10 @@ export function useAgentEvents({
         onConfigWarningsChanged()
       }
       if (runtimeIdRef.current !== runtimeId) {
-        if (type === 'runtime_exit') runtimeSessionsRef.current.delete(runtimeId)
+        if (type === 'runtime_exit') {
+          runtimeSessionsRef.current.delete(runtimeId)
+          resetTurnMetrics(runtimeId)
+        }
         return
       }
       // The manual-compact path reports a failed post-compact state read as a
@@ -208,6 +215,7 @@ export function useAgentEvents({
         // A stopped runtime can never serve the state refresh; a lingering
         // divider stays visible as history but offers no retry.
         compactionSyncPendingStore.clear(runtimeId)
+        resetTurnMetrics(runtimeId)
         runtimeSessionsRef.current.delete(runtimeId)
         runtimeIdRef.current = null
         runtimeOwnerRef.current = null
