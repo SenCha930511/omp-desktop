@@ -100,6 +100,7 @@ export interface BucketedMetadataAccumulator {
   previousSessionFiles: string[]
   firstUser: string
   preview: string
+  lastUserTexts: string[]
   lastRole?: string
   stopReason?: string
   records: number
@@ -122,6 +123,7 @@ function createBucketedAccumulator(filePath: string, fileStat: Stats): BucketedM
     previousSessionFiles: [],
     firstUser: '',
     preview: '',
+    lastUserTexts: [],
     records: 0,
   }
 }
@@ -143,6 +145,7 @@ function bucketedMetadataFromAccumulator(state: BucketedMetadataAccumulator, fil
     pinned: false,
     unread: false,
     preview: compactText(state.preview || state.firstUser),
+    lastUserTexts: state.lastUserTexts.slice(),
     parentSession: state.parentSession,
     previousSessionFiles: state.previousSessionFiles.length ? [...state.previousSessionFiles] : undefined,
   }

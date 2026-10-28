@@ -41,7 +41,7 @@ async function renderSidebar(harnessUpdateState?: HarnessUpdateState, onHarnessU
     root.render(
       <Sidebar
         projects={[project]} sessions={[session]} activeView="session" harnessUpdateState={harnessUpdateState} onHarnessUpdateAction={onHarnessUpdateAction}
-        onSelectProject={noop} onSelectSession={noop} onNavigate={noop} onNewSession={noop} onAddProject={noop} onRemoveProject={noop}
+        onSelectSession={noop} onNavigate={noop} onNewSession={noop} onAddProject={noop} onRemoveProject={noop}
         onClose={noop} onOpenPalette={noop} onRenameSession={async () => undefined} onArchiveSession={async () => undefined}
       />,
     )

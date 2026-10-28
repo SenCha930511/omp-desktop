@@ -1021,7 +1021,6 @@ export default function App() {
     })
   }, [activeProject?.id, activeProject?.scripts, activeProjectScriptRun, reportError, startProjectScript])
   const sidebarActions = useSidebarActions({
-    onSelectProject: selectProject,
     onSelectSession: selectSession,
     onNavigate: navigate,
     onNewSession: newSession,
@@ -1093,8 +1092,13 @@ export default function App() {
       const text = message.parts.filter((part): part is Extract<MessagePart, { type: 'text' }> => part.type === 'text').map((part) => part.text).join('')
       if (text) texts.push(text)
     }
+    // The engine keeps a delivered steer in its queue list until the turn
+    // ends, and no live event carries the mid-turn user row — but the session
+    // file already holds it, so the catalog's tail user texts clear the
+    // preview the moment the model receives the message.
+    for (const text of activeSession?.lastUserTexts ?? []) if (text && !texts.includes(text)) texts.push(text)
     return texts
-  }, [workspace.messages, harnessPreviewCount])
+  }, [workspace.messages, harnessPreviewCount, activeSession])
   const queuePreviewDelivered = useStableCallback((preview: string) => deliveredQueueTexts.some((text) => (
     text === preview || text.startsWith(preview) || preview.startsWith(text)
   )))

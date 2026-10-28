@@ -63,7 +63,7 @@ describe('sidebar project context menu', () => {
         <Sidebar
           projects={projects} sessions={[session]} activeView="session" projectSortMode="recent"
           onSetProjectSortMode={onSetProjectSortMode} onTogglePinProject={onTogglePinProject}
-          onSelectProject={noop} onSelectSession={noop} onNavigate={noop} onNewSession={noop} onAddProject={noop} onRemoveProject={noop}
+          onSelectSession={noop} onNavigate={noop} onNewSession={noop} onAddProject={noop} onRemoveProject={noop}
           onClose={noop} onOpenPalette={noop} onRenameSession={async () => undefined} onArchiveSession={async () => undefined}
           onPopupMenu={async (items) => {
             menuItems.push(...items)
@@ -90,7 +90,7 @@ describe('sidebar project context menu', () => {
       root.render(
         <Sidebar
           projects={[project]} sessions={[session]} activeView="session" projectSortMode="recent"
-          onSelectProject={noop} onSelectSession={noop} onNavigate={noop} onNewSession={noop} onAddProject={noop} onRemoveProject={noop}
+          onSelectSession={noop} onNavigate={noop} onNewSession={noop} onAddProject={noop} onRemoveProject={noop}
           onClose={noop} onOpenPalette={noop} onRenameSession={async () => undefined} onArchiveSession={async () => undefined}
         />,
       )
@@ -109,7 +109,7 @@ describe('sidebar project context menu', () => {
       root.render(
         <Sidebar
           projects={[{ ...project, inferred: true }]} sessions={[session]} activeView="session"
-          onSelectProject={noop} onSelectSession={noop} onNavigate={noop} onNewSession={noop} onAddProject={noop} onRemoveProject={noop}
+          onSelectSession={noop} onNavigate={noop} onNewSession={noop} onAddProject={noop} onRemoveProject={noop}
           onClose={noop} onOpenPalette={noop} onRenameSession={async () => undefined} onArchiveSession={async () => undefined}
         />,
       )
@@ -124,7 +124,7 @@ describe('sidebar project context menu', () => {
       root.render(
         <Sidebar
           projects={[project]} sessions={[session]} activeView="session" updateState={{ phase: 'available', version: '0.2.0' }} onUpdateAction={onUpdateAction}
-          onSelectProject={noop} onSelectSession={noop} onNavigate={noop} onNewSession={noop} onAddProject={noop} onRemoveProject={noop}
+          onSelectSession={noop} onNavigate={noop} onNewSession={noop} onAddProject={noop} onRemoveProject={noop}
           onClose={noop} onOpenPalette={noop} onRenameSession={async () => undefined} onArchiveSession={async () => undefined}
         />,
       )
@@ -151,7 +151,7 @@ describe('sidebar project context menu', () => {
       root.render(
         <Sidebar
           projects={[project]} sessions={[session]} activeView="session" updateState={{ phase: 'not-available' }}
-          onSelectProject={noop} onSelectSession={noop} onNavigate={noop} onNewSession={noop} onAddProject={noop} onRemoveProject={noop}
+          onSelectSession={noop} onNavigate={noop} onNewSession={noop} onAddProject={noop} onRemoveProject={noop}
           onClose={noop} onOpenPalette={noop} onRenameSession={async () => undefined} onArchiveSession={async () => undefined}
         />,
       )
@@ -168,7 +168,7 @@ describe('sidebar project context menu', () => {
       root.render(
         <Sidebar
           projects={[project]} sessions={[session]} activeView="session"
-          onSelectProject={noop} onSelectSession={noop} onNavigate={noop} onNewSession={noop} onAddProject={noop} onRemoveProject={noop}
+          onSelectSession={noop} onNavigate={noop} onNewSession={noop} onAddProject={noop} onRemoveProject={noop}
           onClose={noop} onOpenPalette={noop} onRenameSession={async () => undefined} onArchiveSession={async () => undefined}
           onPopupMenu={async (items) => (items.some((item) => item.label.includes('Copy session UUID')) ? 'copy' : null)}
         />,
@@ -187,7 +187,6 @@ describe('sidebar project context menu', () => {
           projects={[project]}
           sessions={[session]}
           activeView="session"
-          onSelectProject={noop}
           onSelectSession={noop}
           onNavigate={noop}
           onNewSession={noop}
@@ -218,7 +217,6 @@ describe('sidebar project context menu', () => {
           projects={[project]}
           sessions={[session]}
           activeView="session"
-          onSelectProject={noop}
           onSelectSession={noop}
           onNavigate={noop}
           onNewSession={noop}
@@ -248,7 +246,6 @@ describe('sidebar project context menu', () => {
           projects={[project]}
           sessions={[session]}
           activeView="session"
-          onSelectProject={noop}
           onSelectSession={noop}
           onNavigate={noop}
           onNewSession={noop}
@@ -277,7 +274,6 @@ describe('sidebar delete confirmation', () => {
           projects={[project]}
           sessions={[session]}
           activeView="session"
-          onSelectProject={noop}
           onSelectSession={noop}
           onNavigate={noop}
           onNewSession={noop}

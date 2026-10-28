@@ -65,7 +65,6 @@ async function renderSidebar(props: Partial<ComponentProps<typeof Sidebar>>) {
         sessions={sessions}
         activeView="session"
         projectSortMode="recent"
-        onSelectProject={noop}
         onSelectSession={noop}
         onNavigate={noop}
         onNewSession={noop}

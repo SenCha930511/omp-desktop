@@ -385,3 +385,20 @@ describe('durable new session boundary', () => {
     expect(state.command.mock.calls.filter(([, command]) => command.type === 'new_session')).toHaveLength(1)
   })
 })
+
+describe('inferred project grant', () => {
+  it('grants an inferred project before starting the boundary runtime', async () => {
+    const grantInferred = vi.fn(async () => ({ ...project, inferred: false }))
+    const start = vi.fn(async () => filelessRuntime())
+    const state = fixture({ bridge: {
+      agent: { list: vi.fn(async () => []), command: vi.fn(async () => ({})), start, stop: vi.fn(async () => false) },
+      sessions: { list: vi.fn(async () => []) },
+      projects: { grantInferred },
+    } as unknown as DesktopApi })
+
+    await state.actions.newSession({ ...project, inferred: true })
+
+    expect(grantInferred).toHaveBeenCalledWith(project.primaryFolder, 'omp')
+    expect(start).toHaveBeenCalledWith({ cwd: project.primaryFolder, harness: 'omp' })
+  })
+})

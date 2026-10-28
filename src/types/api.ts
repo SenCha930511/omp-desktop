@@ -121,6 +121,8 @@ export interface SessionRecord {
   depth: number
   /** Session id or absolute path of the session this file continued (fork / context rollover); absent when the file started fresh. */
   parentSession?: string
+  /** Tail user message texts (bounded) from the session file; lets the queue panel clear previews the model already received mid-turn. */
+  readonly lastUserTexts?: string[]
   /** Pinned sessions sort first in the sidebar; persisted in the app store, not the session file. */
   pinned?: boolean
   unread?: boolean

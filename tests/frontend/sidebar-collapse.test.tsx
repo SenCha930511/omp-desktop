@@ -48,7 +48,7 @@ async function renderSidebar(projects: ProjectRecord[], sessions: SessionRecord[
     root.render(
       <Sidebar
         projects={projects} sessions={sessions} activeView="session" projectSortMode="recent" activeProjectId={activeIds.activeProjectId} activeSessionId={activeIds.activeSessionId}
-        onSelectProject={noop} onSelectSession={noop} onNavigate={noop} onNewSession={noop} onAddProject={noop} onRemoveProject={noop}
+        onSelectSession={noop} onNavigate={noop} onNewSession={noop} onAddProject={noop} onRemoveProject={noop}
         onClose={noop} onOpenPalette={noop} onRenameSession={async () => undefined} onArchiveSession={async () => undefined}
       />,
     )
@@ -117,5 +117,18 @@ describe('sidebar expand and collapse all projects', () => {
 
     await press(expandAllButton()!)
     expect(container.querySelector('.project-row.is-selected')).toBeNull()
+  })
+})
+
+describe('project row click', () => {
+  it('expands and collapses the session list instead of opening a session', async () => {
+    await renderSidebar([project], [session])
+    const mainButton = () => container.querySelector<HTMLButtonElement>('.project-row__main')!
+
+    expect(sessionRows().length).toBe(1)
+    await press(mainButton())
+    expect(sessionRows().length).toBe(0)
+    await press(mainButton())
+    expect(sessionRows().length).toBe(1)
   })
 })

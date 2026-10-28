@@ -84,6 +84,7 @@ interface MetadataAccumulator {
   sessionName?: string
   firstUser: string
   preview: string
+  lastUserTexts: string[]
   lifecycle?: string
   taskState?: string
   taskStateBasedOnMessageCount?: number
@@ -103,6 +104,7 @@ function createAccumulator(filePath: string, fileStat: Stats): MetadataAccumulat
     depth: 0,
     firstUser: '',
     preview: '',
+    lastUserTexts: [],
     messageCount: 0,
     records: 0,
   }
@@ -114,6 +116,7 @@ export interface MessageActivityAccumulator {
   lastUserMessageAt?: string
   firstUser: string
   preview: string
+  lastUserTexts: string[]
   lastRole?: string
   stopReason?: string
 }
@@ -126,6 +129,13 @@ export function ingestMessageActivity(state: MessageActivityAccumulator, record:
   const text = textFromContent(message.content, 4_096)
   if (message.role === 'user') {
     if (!state.firstUser && text) state.firstUser = text
+    // The delivered-queue filter matches harness previews against the tail
+    // user texts: the engine appends the record when the model receives a
+    // steer, so the queue panel can clear it mid-turn.
+    if (text) {
+      state.lastUserTexts.push(text)
+      if (state.lastUserTexts.length > 3) state.lastUserTexts.shift()
+    }
     state.lastUserMessageAt = validTimestamp(message.timestamp, validTimestamp(record.timestamp, state.lastUserMessageAt ?? state.createdAt))
   }
   if ((message.role === 'assistant' || message.role === 'user') && text) state.preview = text
@@ -192,6 +202,7 @@ function metadataFromAccumulator(state: MetadataAccumulator, filePath: string, f
     pinned: false,
     unread: false,
     preview: compactText(state.preview || state.firstUser),
+    lastUserTexts: state.lastUserTexts.slice(),
     sessionName: state.sessionName,
   }
 }

@@ -55,7 +55,7 @@ describe('sidebar session ordering', () => {
       root.render(
         <Sidebar
           projects={[project]} sessions={sessions} activeView="session" activeSessionId={activeSessionId} projectSortMode="recent"
-          onSelectProject={noop} onSelectSession={noop} onNavigate={noop} onNewSession={noop} onAddProject={noop} onRemoveProject={noop}
+          onSelectSession={noop} onNavigate={noop} onNewSession={noop} onAddProject={noop} onRemoveProject={noop}
           onClose={noop} onOpenPalette={noop} onRenameSession={async () => undefined} onArchiveSession={async () => undefined}
         />,
       )
@@ -100,7 +100,7 @@ describe('sidebar session ordering', () => {
       root.render(
         <Sidebar
           projects={[project]} sessions={[target]} activeView="session" projectSortMode="recent"
-          onSelectProject={noop} onSelectSession={noop} onNavigate={noop} onNewSession={noop} onAddProject={noop} onRemoveProject={noop}
+          onSelectSession={noop} onNavigate={noop} onNewSession={noop} onAddProject={noop} onRemoveProject={noop}
           onClose={noop} onOpenPalette={noop} onRenameSession={async () => undefined} onArchiveSession={async () => undefined}
           onPopupMenu={async (items) => {
             menuItems.push(...items)

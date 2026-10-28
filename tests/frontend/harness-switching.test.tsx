@@ -41,7 +41,7 @@ describe('sidebar static brand', () => {
       root.render(
         <Sidebar
           projects={[project]} sessions={[session]} activeView="session"
-          onSelectProject={noop} onSelectSession={noop} onNavigate={noop} onNewSession={noop} onAddProject={noop} onRemoveProject={noop}
+          onSelectSession={noop} onNavigate={noop} onNewSession={noop} onAddProject={noop} onRemoveProject={noop}
           onClose={noop} onOpenPalette={noop} onRenameSession={async () => undefined} onArchiveSession={async () => undefined}
         />,
       )

@@ -292,6 +292,10 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
       setView('session'); setPaletteOpen(false)
       if (!bridge) { workspace.setMessages([]); return }
       try {
+        // An inferred project (from the harness's global session history) has
+        // no filesystem grant yet: promoting it here keeps New session from
+        // failing the cwd authorization gate the engine enforces.
+        if (project.inferred) { try { await grantProject(project) } catch { /* the start below reports the authorization failure */ } }
         const cwd = workspace.workspaceRef.current.cwd ?? project.primaryFolder
         const runtime = await bridge.agent.start({ cwd, harness: project.harness })
         try {
@@ -1024,6 +1028,9 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
           if (images.length > 0 && selected.sessionFile && selectedSession?.status === 'running') {
             throw new Error('Image attachments cannot be queued while this session is active outside OMP Desktop. Wait for it to finish, then try again.')
           }
+          // Same grant as New session: an inferred project must be promoted
+          // before the engine's cwd authorization gate rejects the launch.
+          if (selected.project?.inferred) { try { await grantProject(selected.project) } catch { /* the start below reports the authorization failure */ } }
           const latestProvider = getDeps().provider
           const selection = latestProvider.resolveSelection ? await latestProvider.resolveSelection() : latestProvider
           if (workspace.workspaceRef.current.generation !== generation) return

@@ -117,7 +117,6 @@ const sidebarProps = (onNewSession: () => void): SidebarProps => ({
   projects: [],
   sessions: [],
   activeView: 'projects',
-  onSelectProject: () => undefined,
   onSelectSession: () => undefined,
   onNavigate: () => undefined,
   onNewSession,

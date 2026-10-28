@@ -130,6 +130,27 @@ describe('OMP metadata reader', () => {
     })
   })
 
+  it('keeps the tail user texts so delivered queue previews can clear mid-turn', async () => {
+    const { root, project, service } = setup()
+    mkdirSync(join(root, '-bucket'))
+    const file = join(root, '-bucket', NAME_A)
+    writeOmpSession(file, {
+      id: 'omp-session-1',
+      cwd: project,
+      title: 'Slot title',
+      entries: [
+        ompEntry('message', 'aa11bb22', null, { message: { role: 'user', content: [{ type: 'text', text: 'first prompt' }], timestamp: 1786155361373 } }, '2026-08-08T02:16:01.414Z'),
+        ompEntry('message', 'cc33dd44', 'aa11bb22', { message: { role: 'user', content: [{ type: 'text', text: 'queued steer one' }], timestamp: 1786155362489 } }, '2026-08-08T02:16:02.495Z'),
+        ompEntry('message', 'ee55ff66', 'cc33dd44', { message: { role: 'user', content: [{ type: 'text', text: 'queued steer two' }], timestamp: 1786155363597 } }, '2026-08-08T02:16:03.601Z'),
+        ompEntry('message', 'ab12cd34', 'ee55ff66', { message: { role: 'user', content: [{ type: 'text', text: 'queued steer three' }], timestamp: 1786155364611 } }, '2026-08-08T02:16:04.615Z'),
+        ompEntry('message', 'ef56ab78', 'ab12cd34', { message: { role: 'user', content: [{ type: 'text', text: 'queued steer four' }], timestamp: 1786155365623 } }, '2026-08-08T02:16:05.627Z'),
+      ],
+    })
+
+    const records = await service.list()
+    expect(records[0]?.lastUserTexts).toEqual(['queued steer two', 'queued steer three', 'queued steer four'])
+  })
+
   it('falls back to title_change then the first user message when the slot title is empty', async () => {
     const { root, project, service } = setup()
     mkdirSync(join(root, '-bucket'))

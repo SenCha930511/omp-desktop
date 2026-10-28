@@ -45,7 +45,6 @@ export interface SidebarProps {
   harnessUpdateState?: HarnessUpdateState
   onHarnessUpdateAction?(): void
   onUpdateAction?(): void | Promise<void>
-  onSelectProject(project: ProjectRecord): void
   onSelectSession(session: SessionRecord): void
   onNavigate(view: WorkspaceView): void
   onNewSession(project?: ProjectRecord): void
@@ -262,7 +261,6 @@ function SidebarView({
   harnessUpdateState,
   onHarnessUpdateAction,
   onUpdateAction,
-  onSelectProject,
   onSelectSession,
   onNavigate,
   onNewSession,
@@ -527,10 +525,13 @@ function SidebarView({
                 <button
                   className="project-row__main"
                   type="button"
-                  onClick={() => {
-                      onSelectProject(project)
-                  }}
+                  // Clicking the folder row toggles its session list instead of
+                  // opening the newest session; opening a session stays on the
+                  // session rows themselves.
                   title={project.path}
+                  onClick={() => {
+                    setCollapsed((value) => ({ ...value, [project.id]: !isCollapsed }))
+                  }}
                 >
                   {activeProjectId === project.id ? <FolderOpen size={14} /> : <Folder size={14} />}
                   <span>{project.name}</span>
@@ -856,7 +857,6 @@ export function areSidebarPropsEqual(previous: SidebarProps, next: SidebarProps)
     previous.harnessUpdateState === next.harnessUpdateState &&
     previous.onHarnessUpdateAction === next.onHarnessUpdateAction &&
     previous.onUpdateAction === next.onUpdateAction &&
-    previous.onSelectProject === next.onSelectProject &&
     previous.onSelectSession === next.onSelectSession &&
     previous.onNavigate === next.onNavigate &&
     previous.onNewSession === next.onNewSession &&

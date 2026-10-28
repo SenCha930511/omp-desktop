@@ -2,7 +2,6 @@ import { useRef } from 'react'
 import type { SidebarProps } from '@/components/Sidebar'
 
 type SidebarActions = Pick<SidebarProps,
-  | 'onSelectProject'
   | 'onSelectSession'
   | 'onNavigate'
   | 'onNewSession'
@@ -29,7 +28,6 @@ export function createSidebarActionProxy(initialActions: SidebarActions): Sideba
   let current = initialActions
   return {
     callbacks: {
-      onSelectProject: (project) => current.onSelectProject(project),
       onSelectSession: (session) => current.onSelectSession(session),
       onNavigate: (view) => current.onNavigate(view),
       onNewSession: (project) => current.onNewSession(project),
