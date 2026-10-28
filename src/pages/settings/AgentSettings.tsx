@@ -152,7 +152,8 @@ export function AgentSettings({ settings, meta, onUpdate, onRefreshHarnesses }: 
                   {status?.path ?? (status?.problem ? `${status.problem.path}: ${status.problem.reason}` : t('agent.runtime.installHint', { name }))}
                 </small>
               </div>
-              {status?.version ? <code>v{status.version}</code> : null}
+              {/* omp reports "omp/18.13.2"; keep only the semver so the badge reads v18.13.2, not "vomp/…". */}
+              {status?.version ? <code>v{status.version.split('/').at(-1)}</code> : null}
             </div>
           )
         })}

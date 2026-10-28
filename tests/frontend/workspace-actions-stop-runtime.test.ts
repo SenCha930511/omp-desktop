@@ -296,6 +296,7 @@ describe('idle prompt streaming behavior', () => {
       resetBrowserView: vi.fn(),
       closeTerminalForSession: vi.fn(),
       clearSessionAttention: vi.fn(),
+      bumpRecentSessionOpen: vi.fn(),
       reportError: vi.fn(),
     } as unknown as WorkspaceActionsDeps))
 
@@ -369,6 +370,7 @@ describe('idle prompt streaming behavior', () => {
       resetBrowserView: vi.fn(),
       closeTerminalForSession: vi.fn(),
       clearSessionAttention: vi.fn(),
+      bumpRecentSessionOpen: vi.fn(),
       reportError: vi.fn(),
     } as unknown as WorkspaceActionsDeps))
 

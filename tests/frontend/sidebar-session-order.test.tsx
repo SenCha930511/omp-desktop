@@ -43,18 +43,25 @@ describe('sidebar session ordering', () => {
     expect(sessionsByProject.get('project')?.map((item) => item.id)).toEqual(['newer', 'older'])
   })
 
-  it('keeps the session in use in its message order instead of jumping to the top', () => {
-    const sessions = [session('older', '2026-01-02T00:00:00.000Z'), session('newer', '2026-01-03T00:00:00.000Z'), session('in-use', '2026-01-01T00:00:00.000Z')]
+  it('keeps message order for sessions with no recorded open', () => {
+    const sessions = [session('older', '2026-01-02T00:00:00.000Z'), session('newer', '2026-01-03T00:00:00.000Z'), session('unopened', '2026-01-01T00:00:00.000Z')]
     const { sessionsByProject } = indexSidebarSessions([project], sessions)
-    expect(sessionsByProject.get('project')?.map((item) => item.id)).toEqual(['newer', 'older', 'in-use'])
+    expect(sessionsByProject.get('project')?.map((item) => item.id)).toEqual(['newer', 'older', 'unopened'])
   })
 
-  it('leaves the clicked session in place until the sessions data refreshes', async () => {
+  it('floats the most recently opened session above message order', () => {
     const sessions = [session('older', '2026-01-02T00:00:00.000Z'), session('newer', '2026-01-03T00:00:00.000Z'), session('in-use', '2026-01-01T00:00:00.000Z')]
-    const renderSidebar = (activeSessionId?: string) => act(async () => {
+    const { sessionsByProject } = indexSidebarSessions([project], sessions, undefined, new Map([['in-use', Date.now()]]))
+    expect(sessionsByProject.get('project')?.map((item) => item.id)).toEqual(['in-use', 'newer', 'older'])
+  })
+
+  it('re-sorts rows through the recent-open map when a session is opened', async () => {
+    const sessions = [session('older', '2026-01-02T00:00:00.000Z'), session('newer', '2026-01-03T00:00:00.000Z'), session('in-use', '2026-01-01T00:00:00.000Z')]
+    const renderSidebar = (recentSessionOpens?: ReadonlyMap<string, number>) => act(async () => {
       root.render(
         <Sidebar
-          projects={[project]} sessions={sessions} activeView="session" activeSessionId={activeSessionId} projectSortMode="recent"
+          projects={[project]} sessions={sessions} activeView="session" activeSessionId="in-use" projectSortMode="recent"
+          recentSessionOpens={recentSessionOpens}
           onSelectSession={noop} onNavigate={noop} onNewSession={noop} onAddProject={noop} onRemoveProject={noop}
           onClose={noop} onOpenPalette={noop} onRenameSession={async () => undefined} onArchiveSession={async () => undefined}
         />,
@@ -65,11 +72,10 @@ describe('sidebar session ordering', () => {
     await renderSidebar()
     expect(rowTitles()).toEqual(['newer', 'older', 'in-use'])
 
-    // Selecting a session re-renders with the new activeSessionId; rows must
-    // stay put — resorting happens on the next sessions data refresh, not on
-    // navigation.
-    await renderSidebar('in-use')
-    expect(rowTitles()).toEqual(['newer', 'older', 'in-use'])
+    // Opening a session records the use: the row jumps to the top of its
+    // group so the session in play is always the easiest to reach.
+    await renderSidebar(new Map([['in-use', Date.now()]]))
+    expect(rowTitles()).toEqual(['in-use', 'newer', 'older'])
   })
 
   it('floats pinned sessions above recency', () => {

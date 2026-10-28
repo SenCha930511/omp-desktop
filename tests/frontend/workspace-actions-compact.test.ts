@@ -121,6 +121,7 @@ function fixture({ runtime: configuredRuntime = null, sessionStatus = 'idle', ow
     resetBrowserView: vi.fn(),
     closeTerminalForSession: vi.fn(),
     clearSessionAttention: vi.fn(),
+    bumpRecentSessionOpen: vi.fn(),
     reportError,
     onCommandStart,
     onCommandFinish,

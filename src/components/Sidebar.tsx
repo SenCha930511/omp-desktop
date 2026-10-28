@@ -67,6 +67,8 @@ export interface SidebarProps {
   onBranchSession?(session: SessionRecord): void
   /** Pins or unpins the session in the persisted sidebar order. */
   onTogglePinSession?(session: SessionRecord): void
+  /** sessionId → when it was last opened; opened rows float to the top. */
+  recentSessionOpens?: ReadonlyMap<string, number>
   overlay?: boolean
   platform?: NodeJS.Platform
 }
@@ -101,6 +103,7 @@ export function indexSidebarSessions(
   projects: ProjectRecord[],
   sessions: SessionRecord[],
   stats?: SidebarIndexStats,
+  recentOpens?: ReadonlyMap<string, number>,
 ): { activeSessions: SessionRecord[]; sessionsByProject: Map<string, SessionRecord[]> } {
   const activeSessions: SessionRecord[] = []
   const ownersByFolder = new Map<string, string[]>()
@@ -137,19 +140,18 @@ export function indexSidebarSessions(
     }
     for (const projectId of new Set(claiming)) sessionsByProject.get(projectId)?.push(session)
   }
-  const compareByLastUserMessage = (left: SessionRecord, right: SessionRecord) => {
+  const compareByRecentUse = (left: SessionRecord, right: SessionRecord) => {
     if (Boolean(left.pinned) !== Boolean(right.pinned)) return left.pinned ? -1 : 1
+    // Opening a session is use: the most recently opened row floats to the
+    // top of its group so the session in play is always the easiest to find.
+    const leftOpen = recentOpens?.get(left.id) ?? 0
+    const rightOpen = recentOpens?.get(right.id) ?? 0
+    if (leftOpen !== rightOpen) return rightOpen - leftOpen
     const difference = Date.parse(right.lastUserMessageAt ?? right.createdAt) - Date.parse(left.lastUserMessageAt ?? left.createdAt)
     return difference || right.createdAt.localeCompare(left.createdAt) || left.filePath.localeCompare(right.filePath)
   }
-  // Rows never jump when clicked: selecting a session leaves ordering
-  // untouched, so re-sorts happen only on the refresh that publishes new
-  // message timestamps — not on mere navigation. Deliberately no "active
-  // first" override here; earlier behavior re-ordered the list under the
-  // user's cursor on every click. Pinned rows are the one standing exception:
-  // they float above recency until unpinned.
-  activeSessions.sort(compareByLastUserMessage)
-  for (const projectSessions of sessionsByProject.values()) projectSessions.sort(compareByLastUserMessage)
+  activeSessions.sort(compareByRecentUse)
+  for (const projectSessions of sessionsByProject.values()) projectSessions.sort(compareByRecentUse)
   return { activeSessions, sessionsByProject }
 }
 
@@ -276,8 +278,9 @@ function SidebarView({
   onRenameSession,
   onArchiveSession,
   onPopupMenu,
-  onBranchSession,
-  onTogglePinSession,
+  onBranchSession = () => undefined,
+   onTogglePinSession = () => undefined,
+  recentSessionOpens,
   overlay = false,
   platform = 'darwin',
 }: SidebarProps) {
@@ -300,9 +303,13 @@ function SidebarView({
   // reachable.
   const [expandedProjects, setExpandedProjects] = useState<ReadonlySet<string>>(() => new Set(expandedProjectChoices))
   const [updateErrorOpen, setUpdateErrorOpen] = useState(false)
-  // activeSessionId is deliberately absent from the memo input: selection
-  // must not re-index (and thereby re-sort) the rows.
-  const { activeSessions, sessionsByProject } = useMemo(() => indexSidebarSessions(projects, sessions, undefined), [projects, sessions])
+  // activeSessionId is deliberately absent from the memo inputs: selection
+  // re-sorts through recentSessionOpens (which changes exactly when a
+  // session is opened), never through a full re-index per render.
+  const { activeSessions, sessionsByProject } = useMemo(
+    () => indexSidebarSessions(projects, sessions, undefined, recentSessionOpens),
+    [projects, sessions, recentSessionOpens],
+  )
   // Draft state: a project is active but no session has been created yet. The
   // placeholder row stands in until the first prompt adopts a real session.
   const draftProjectId = activeProjectId && !activeSessionId ? activeProjectId : undefined

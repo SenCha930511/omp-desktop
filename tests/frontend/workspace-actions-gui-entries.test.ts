@@ -64,10 +64,13 @@ function fixture({ attachedRuntime = null, bridgeOverride }: FixtureOptions = {}
   const start = vi.fn(async () => ({ runtimeId: 'durable-runtime', harness: 'omp' as const, cwd: project.primaryFolder, isStreaming: false }))
   const sessionsBranch = vi.fn(async () => branchedSession)
   const sessionsList = vi.fn(async () => [currentSession, olderSession])
-  const bridge = (bridgeOverride ?? ({
-    agent: { list: vi.fn(async () => []), command, start, stop: vi.fn(async () => false) },
-    sessions: { list: sessionsList, branch: sessionsBranch },
-  } as unknown as DesktopApi))
+  const bridge =
+    bridgeOverride ??
+    ({
+      agent: { list: vi.fn(async () => []), command, start, stop: vi.fn(async () => false) },
+      sessions: { list: sessionsList, branch: sessionsBranch },
+      projects: { touch: vi.fn(async () => true) },
+    } as unknown as DesktopApi)
   const queuePrompt = vi.fn(() => 'queued-prompt-id')
   const reportError = vi.fn()
   const setToast = vi.fn()
@@ -76,14 +79,16 @@ function fixture({ attachedRuntime = null, bridgeOverride }: FixtureOptions = {}
   const openSessionTree = vi.fn()
   const activateWorkspace = vi.fn((_p?: unknown, session?: SessionRecord) => {
     workspaceRef.current.session = session
-    workspaceRef.current.sessionFile = session?.filePath ?? null as unknown as string
+    workspaceRef.current.sessionFile = session?.filePath ?? (null as unknown as string)
     return 1
   })
   const reconcileRuntime = vi.fn(async () => undefined)
-  const runtimeIdRef = { current: attachedRuntime?.runtimeId ?? null as string | null }
-  const runtimeOwnerRef = { current: attachedRuntime ? { runtimeId: attachedRuntime.runtimeId, generation: 1 } : null as { runtimeId: string; generation: number } | null }
+  const runtimeIdRef = { current: attachedRuntime?.runtimeId ?? (null as string | null) }
+  const runtimeOwnerRef = { current: attachedRuntime ? { runtimeId: attachedRuntime.runtimeId, generation: 1 } : (null as { runtimeId: string; generation: number } | null) }
   const workspace = {
-    get runtime() { return currentRuntime },
+    get runtime() {
+      return currentRuntime
+    },
     workspaceRef,
     runtimeIdRef,
     runtimeOwnerRef,
@@ -111,38 +116,53 @@ function fixture({ attachedRuntime = null, bridgeOverride }: FixtureOptions = {}
     restoreWithdrawnQueue: vi.fn(),
     reconcileQueuedPrompts: vi.fn(),
   }
-  const actions = createWorkspaceActions(() => ({
-    bridge,
-    projects: [project],
-    sessions: [currentSession, olderSession],
-    activeProject: project,
-    workspace,
-    settingsState: { settings: { activeHarness: 'omp', locale: 'en' }, setSidebarOpen },
-    provider: { model: 'auto', effort: 'medium', fast: false },
-    submissionAdmissionRef: { current: submissionAdmission },
-    initialized: true,
-    layout: {},
-    pluginSkills: {},
-    demoTimerRef: { current: [] },
-    setProjects: vi.fn(),
-    setSessions: vi.fn(),
-    setView,
-    setPaletteOpen: vi.fn(),
-    setToast,
-    setSubmitting: vi.fn(),
-    refreshSchedules: vi.fn(),
-    resetBrowserView: vi.fn(),
-    closeTerminalForSession: vi.fn(),
-    clearSessionAttention: vi.fn(),
-    reportError,
-    onCommandStart: vi.fn(),
-    onCommandFinish: vi.fn(),
-    openSessionTree,
-  } as unknown as WorkspaceActionsDeps))
+  const actions = createWorkspaceActions(
+    () =>
+      ({
+        bridge,
+        projects: [project],
+        sessions: [currentSession, olderSession],
+        activeProject: project,
+        workspace,
+        settingsState: { settings: { activeHarness: 'omp', locale: 'en' }, setSidebarOpen },
+        provider: { model: 'auto', effort: 'medium', fast: false },
+        submissionAdmissionRef: { current: submissionAdmission },
+        initialized: true,
+        layout: {},
+        pluginSkills: {},
+        demoTimerRef: { current: [] },
+        setProjects: vi.fn(),
+        setSessions: vi.fn(),
+        setView,
+        setPaletteOpen: vi.fn(),
+        setToast,
+        setSubmitting: vi.fn(),
+        bumpRecentSessionOpen: vi.fn(),
+        refreshSchedules: vi.fn(),
+        resetBrowserView: vi.fn(),
+        closeTerminalForSession: vi.fn(),
+        clearSessionAttention: vi.fn(),
+        reportError,
+        onCommandStart: vi.fn(),
+        onCommandFinish: vi.fn(),
+        openSessionTree,
+      }) as unknown as WorkspaceActionsDeps,
+  )
 
   return {
-    actions, command, start, queuePrompt, reportError, setToast, setView, setSidebarOpen, openSessionTree,
-    sessionsBranch, activateWorkspace, reconcileRuntime, workspace,
+    actions,
+    command,
+    start,
+    queuePrompt,
+    reportError,
+    setToast,
+    setView,
+    setSidebarOpen,
+    openSessionTree,
+    sessionsBranch,
+    activateWorkspace,
+    reconcileRuntime,
+    workspace,
     messages: () => messages,
     runtimeState: () => currentRuntime,
   }

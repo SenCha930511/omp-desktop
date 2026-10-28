@@ -6,8 +6,16 @@ import { readComposerDraft, saveComposerDraft } from '../../src/lib/composer-dra
 import type { ProjectRecord, SessionRecord } from '../../src/types/api'
 
 const project: ProjectRecord = {
-  id: 'project', harness: 'omp', name: 'Project', path: '/project', folders: ['/project'], primaryFolder: '/project',
-  pinned: false, createdAt: '2026-01-01T00:00:00.000Z', lastOpenedAt: '2026-01-01T00:00:00.000Z', sessionCount: 1,
+  id: 'project',
+  harness: 'omp',
+  name: 'Project',
+  path: '/project',
+  folders: ['/project'],
+  primaryFolder: '/project',
+  pinned: false,
+  createdAt: '2026-01-01T00:00:00.000Z',
+  lastOpenedAt: '2026-01-01T00:00:00.000Z',
+  sessionCount: 1,
 }
 
 const other: ProjectRecord = {
@@ -20,29 +28,40 @@ const other: ProjectRecord = {
 }
 
 const session: SessionRecord = {
-  id: 'session', harness: 'omp', filePath: '/sessions/session.jsonl', projectPath: '/project', title: 'Session',
-  createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z', status: 'idle', depth: 0,
+  id: 'session',
+  harness: 'omp',
+  filePath: '/sessions/session.jsonl',
+  projectPath: '/project',
+  title: 'Session',
+  createdAt: '2026-01-01T00:00:00.000Z',
+  updatedAt: '2026-01-01T00:00:00.000Z',
+  status: 'idle',
+  depth: 0,
 }
 
 describe('selectProject workspace resume', () => {
   it('returns to the current unsent project chat instead of replacing it with the latest session', async () => {
     const activateWorkspace = vi.fn(() => 2)
     const setView = vi.fn()
-    const actions = createWorkspaceActions(() => ({
-      layout: { compactLayout: false, setSmallestSidebarAllowed: vi.fn() },
-      settingsState: { setSidebarOpen: vi.fn() },
-      sessions: [session],
-      workspace: {
-        workspaceRef: { current: { project, session: undefined, generation: 1 } },
-        activateWorkspace,
-        reconcileRuntime: vi.fn(),
-      },
-      setView,
-      setSessions: vi.fn(),
-      clearSessionAttention: vi.fn(),
-      reportError: vi.fn(),
-      bridge: { projects: { touch: vi.fn() } },
-    } as unknown as WorkspaceActionsDeps))
+    const actions = createWorkspaceActions(
+      () =>
+        ({
+          layout: { compactLayout: false, setSmallestSidebarAllowed: vi.fn() },
+          settingsState: { setSidebarOpen: vi.fn() },
+          sessions: [session],
+          workspace: {
+            workspaceRef: { current: { project, session: undefined, generation: 1 } },
+            activateWorkspace,
+            reconcileRuntime: vi.fn(),
+          },
+          setView,
+          setSessions: vi.fn(),
+          clearSessionAttention: vi.fn(),
+          bumpRecentSessionOpen: vi.fn(),
+          reportError: vi.fn(),
+          bridge: { projects: { touch: vi.fn() } },
+        }) as unknown as WorkspaceActionsDeps,
+    )
 
     await actions.selectProject(project)
 
@@ -53,21 +72,25 @@ describe('selectProject workspace resume', () => {
   it('still activates a different project', async () => {
     const activateWorkspace = vi.fn(() => 2)
     const reconcileRuntime = vi.fn()
-    const actions = createWorkspaceActions(() => ({
-      layout: { compactLayout: false, setSmallestSidebarAllowed: vi.fn() },
-      settingsState: { setSidebarOpen: vi.fn() },
-      sessions: [],
-      workspace: {
-        workspaceRef: { current: { project, session: undefined, generation: 1 } },
-        activateWorkspace,
-        reconcileRuntime,
-      },
-      setView: vi.fn(),
-      setSessions: vi.fn(),
-      clearSessionAttention: vi.fn(),
-      reportError: vi.fn(),
-      bridge: { projects: { touch: vi.fn() } },
-    } as unknown as WorkspaceActionsDeps))
+    const actions = createWorkspaceActions(
+      () =>
+        ({
+          layout: { compactLayout: false, setSmallestSidebarAllowed: vi.fn() },
+          settingsState: { setSidebarOpen: vi.fn() },
+          sessions: [],
+          workspace: {
+            workspaceRef: { current: { project, session: undefined, generation: 1 } },
+            activateWorkspace,
+            reconcileRuntime,
+          },
+          setView: vi.fn(),
+          setSessions: vi.fn(),
+          clearSessionAttention: vi.fn(),
+          bumpRecentSessionOpen: vi.fn(),
+          reportError: vi.fn(),
+          bridge: { projects: { touch: vi.fn() } },
+        }) as unknown as WorkspaceActionsDeps,
+    )
 
     await actions.selectProject(other)
 
@@ -78,24 +101,90 @@ describe('selectProject workspace resume', () => {
   it('clears an unsent project draft when explicitly starting a new session', () => {
     saveComposerDraft('project:new', { text: '/plan ' })
     const activateWorkspace = vi.fn()
-    const actions = createWorkspaceActions(() => ({
-      bridge: null,
-      initialized: true,
-      activeProject: project,
-      layout: { compactLayout: false, setSmallestSidebarAllowed: vi.fn() },
-      settingsState: { setSidebarOpen: vi.fn() },
-      workspace: {
-        workspaceRef: { current: { project, session: undefined, generation: 1 } },
-        activateWorkspace,
-        setMessages: vi.fn(),
-      },
-      setView: vi.fn(),
-      setPaletteOpen: vi.fn(),
-    } as unknown as WorkspaceActionsDeps))
+    const actions = createWorkspaceActions(
+      () =>
+        ({
+          bridge: null,
+          initialized: true,
+          activeProject: project,
+          layout: { compactLayout: false, setSmallestSidebarAllowed: vi.fn() },
+          settingsState: { setSidebarOpen: vi.fn() },
+          workspace: {
+            workspaceRef: { current: { project, session: undefined, generation: 1 } },
+            activateWorkspace,
+            setMessages: vi.fn(),
+          },
+          setView: vi.fn(),
+          setPaletteOpen: vi.fn(),
+        }) as unknown as WorkspaceActionsDeps,
+    )
 
     actions.newSession(project)
 
     expect(readComposerDraft('project:new')).toBeNull()
     expect(activateWorkspace).toHaveBeenCalledWith(project)
+  })
+})
+
+describe('selectSession recent-use tracking', () => {
+  it('records the open and touches the containing project so both jump to the top', async () => {
+    const bumpRecentSessionOpen = vi.fn()
+    const touch = vi.fn()
+    const actions = createWorkspaceActions(
+      () =>
+        ({
+          bridge: { projects: { touch } },
+          layout: { compactLayout: false, setSmallestSidebarAllowed: vi.fn() },
+          settingsState: { setSidebarOpen: vi.fn() },
+          projects: [project],
+          sessions: [session],
+          workspace: {
+            workspaceRef: { current: { project, session: undefined, generation: 1 } },
+            activateWorkspace: vi.fn(() => 2),
+            reconcileRuntime: vi.fn(),
+          },
+          setView: vi.fn(),
+          setSessions: vi.fn(),
+          clearSessionAttention: vi.fn(),
+          bumpRecentSessionOpen,
+          reportError: vi.fn(),
+        }) as unknown as WorkspaceActionsDeps,
+    )
+
+    await actions.selectSession(session)
+
+    expect(bumpRecentSessionOpen).toHaveBeenCalledWith('session')
+    expect(touch).toHaveBeenCalledWith('project', 'omp')
+  })
+
+  it('still records the open for an inferred project but never touches it', async () => {
+    const inferred = { ...project, inferred: true }
+    const bumpRecentSessionOpen = vi.fn()
+    const touch = vi.fn()
+    const actions = createWorkspaceActions(
+      () =>
+        ({
+          bridge: { projects: { touch } },
+          layout: { compactLayout: false, setSmallestSidebarAllowed: vi.fn() },
+          settingsState: { setSidebarOpen: vi.fn() },
+          projects: [inferred],
+          sessions: [session],
+          workspace: {
+            workspaceRef: { current: { project: inferred, session: undefined, generation: 1 } },
+            activateWorkspace: vi.fn(() => 2),
+            reconcileRuntime: vi.fn(),
+          },
+          setView: vi.fn(),
+          setSessions: vi.fn(),
+          clearSessionAttention: vi.fn(),
+          bumpRecentSessionOpen,
+          reportError: vi.fn(),
+        }) as unknown as WorkspaceActionsDeps,
+    )
+
+    await actions.selectSession(session)
+
+    expect(bumpRecentSessionOpen).toHaveBeenCalledWith('session')
+    expect(touch).not.toHaveBeenCalled()
   })
 })

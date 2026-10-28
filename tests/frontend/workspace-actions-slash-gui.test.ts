@@ -132,6 +132,7 @@ function fixture({ runtime: configuredRuntime = null, ownsStreaming = false, wit
     resetBrowserView: vi.fn(),
     closeTerminalForSession: vi.fn(),
     clearSessionAttention: vi.fn(),
+    bumpRecentSessionOpen: vi.fn(),
     reportError,
     openSessionTree,
   } as unknown as WorkspaceActionsDeps))

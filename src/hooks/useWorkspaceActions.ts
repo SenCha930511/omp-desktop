@@ -47,6 +47,8 @@ export interface WorkspaceActionsDeps {
   resetBrowserView(): void
   closeTerminalForSession(sessionPath: string): void
   clearSessionAttention(session: SessionRecord): void
+  /** 記錄「剛開啟」的 session,側欄把它排到所屬群組最上面。 */
+  bumpRecentSessionOpen(sessionId: string): void
   reportError(error: unknown): void
   /** `onAbort` 只在可中止的指令(使用者 `!` bash)提供,面板據此顯示停止鈕。 */
   onCommandStart?(command: string, onAbort?: () => void): void
@@ -218,7 +220,7 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     persistPanel({ terminalOpen: !settingsState.terminalOpen })
   }
   const selectProject = async (project: ProjectRecord) => {
-    const { bridge, layout, settingsState, sessions, workspace, setSessions, setView, clearSessionAttention, reportError } = getDeps()
+    const { bridge, layout, settingsState, sessions, workspace, setSessions, setView, clearSessionAttention, bumpRecentSessionOpen, reportError } = getDeps()
     if (layout.compactLayout) { layout.setSmallestSidebarAllowed(false); settingsState.setSidebarOpen(false) }
     if (workspace.workspaceRef.current.project?.id === project.id) {
       setView('session')
@@ -227,6 +229,7 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     const session = sessions.find((candidate) => !candidate.archived && projectContainsPath(project, candidate.projectPath))
     if (session) {
       clearSessionAttention(session)
+      bumpRecentSessionOpen(session.id)
       setSessions((items) => items.map((item) => item.id === session.id ? { ...item, unread: false } : item))
     }
     const generation = workspace.activateWorkspace(project, session)
@@ -240,16 +243,22 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     } catch (error) { if (workspace.workspaceRef.current.generation === generation) reportError(error) }
   }
   const selectSession = async (session: SessionRecord) => {
-    const { layout, settingsState, projects, workspace, setSessions, setView, clearSessionAttention, reportError } = getDeps()
+    const { bridge, layout, settingsState, projects, workspace, setSessions, setView, clearSessionAttention, bumpRecentSessionOpen, reportError } = getDeps()
     if (layout.compactLayout) { layout.setSmallestSidebarAllowed(false); settingsState.setSidebarOpen(false) }
     clearSessionAttention(session)
+    bumpRecentSessionOpen(session.id)
     setSessions((items) => items.map((item) => item.id === session.id ? { ...item, unread: false } : item))
     const project = findProjectForSession(projects, session)
     if (!project) { reportError('This session is not contained by an available project.'); return }
     const generation = workspace.activateWorkspace(project, session)
     setView('session')
-    try { await workspace.reconcileRuntime(generation) }
-    catch (error) { if (workspace.workspaceRef.current.generation === generation) reportError(error) }
+    try {
+      // Opening a session is use, not just navigation: the containing project
+      // takes the top slot of the recent-activity sort (creation already
+      // did). Inferred projects stay display-only until granted.
+      if (bridge && !project.inferred) await bridge.projects.touch(project.id, project.harness)
+      await workspace.reconcileRuntime(generation)
+    } catch (error) { if (workspace.workspaceRef.current.generation === generation) reportError(error) }
   }
   // The local draft reset archive/delete fall back to: a renderer placeholder
   // only, with no engine boundary. Deliberately private — the public New
