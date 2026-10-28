@@ -501,17 +501,27 @@ export class RpcRuntime {
       // only fires to clear residue: an already-empty snapshot must not push
       // periodic runtime_state frames that perturb workspace adoption races.
       if (!this.watchdogDisposed && raw && !this.info.isStreaming && !this.retryPending && !this.continuationPending) {
+        // omp reports the queue as queuedMessageCount/queuedMessages; the
+        // adapter owns that translation (raw.sessionActions does not exist
+        // on the wire, which once left the fold a silent no-op).
+        const reading = this.adapter.readState(raw)
+        let changed = false
         const current = this.info.sessionActions
         if (current && (current.queuedCount > 0 || (current.steering?.length ?? 0) > 0 || (current.followUps?.length ?? 0) > 0)) {
-          // omp reports the queue as queuedMessageCount/queuedMessages; the
-          // adapter owns that translation (raw.sessionActions does not exist
-          // on the wire, which once left the fold a silent no-op).
-          const actions = this.adapter.readState(raw).sessionActions ?? null
+          const actions = reading.sessionActions ?? null
           if (actions && JSON.stringify(actions) !== JSON.stringify(current)) {
             this.info.sessionActions = actions
-            this.emit({ type: 'runtime_state', state: this.snapshot() })
+            changed = true
           }
         }
+        // The engine finalizes its per-turn rate around agent_end; the
+        // immediate post-turn refresh can still read null, so the idle poll
+        // backfills the authoritative value within one interval.
+        if (typeof reading.tokensPerSecond === 'number' && reading.tokensPerSecond !== this.info.tokensPerSecond) {
+          this.info.tokensPerSecond = reading.tokensPerSecond
+          changed = true
+        }
+        if (changed) this.emit({ type: 'runtime_state', state: this.snapshot() })
       }
     } catch { /* transient poll failures are ignored; the next tick retries */ }
      finally { this.compactionPollInFlight = false }

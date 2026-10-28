@@ -12,8 +12,10 @@
 .context-popover {position: absolute; right: 0; bottom: calc(100% + 10px); z-index: 30; min-width: 216px; padding: 10px 12px 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-raised); box-shadow: 0 8px 30px color-mix(in srgb, #000 14%, transparent); font-size: 12px; }
 .context-popover dl { margin: 0 0 10px; display: flex; flex-direction: column; gap: 6px; }
 .context-popover dl > div { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
-.context-popover dt { color: var(--text-tertiary); }
-.context-popover dd { margin: 0; color: var(--text); font-variant-numeric: tabular-nums; }
+/* Labels and values stay on one line: a 1M-token window ("138,756 / 1,048,576")
+   otherwise wrapped both cells and split the label mid-word. */
+.context-popover dt { color: var(--text-tertiary); white-space: nowrap; }
+.context-popover dd { margin: 0; color: var(--text); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .context-popover__empty { margin: 0 0 10px; color: var(--text-secondary); }
 .context-popover__compact { width: 100%; min-height: 30px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-hover); color: var(--text); font: inherit; cursor: pointer; }
 .context-popover__compact:hover:not(:disabled) { background: var(--surface-selected); }

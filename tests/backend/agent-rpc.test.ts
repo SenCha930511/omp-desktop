@@ -690,6 +690,47 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     }
   })
 
+  it('backfills the output rate through the idle poll when the post-turn read races', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-rpc-tps-race-'))
+    dirs.push(cwd)
+    const executable = join(cwd, 'tps-race-agent.cjs')
+    writeFileSync(executable, `#!/usr/bin/env node
+const readline = require('node:readline')
+let states = 0
+let prompted = false
+const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
+readline.createInterface({ input: process.stdin }).on('line', (line) => {
+  const command = JSON.parse(line)
+  if (command.type === 'negotiate_protocol') {
+    send({ id: command.id, type: 'response', command: 'negotiate_protocol', success: true, data: { protocolVersion: command.protocolVersion } })
+  } else if (command.type === 'get_state') {
+    states += 1
+    // The first read after agent_end still races the engine finalizing the
+    // rate; later polls answer with the settled value.
+    send({ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'tps-race', isStreaming: false, tokensPerSecond: prompted && states > 2 ? 88.5 : null } })
+  } else if (command.type === 'get_session_stats') {
+    send({ id: command.id, type: 'response', command: 'get_session_stats', success: true, data: { cost: 0, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } })
+  } else if (command.type === 'prompt') {
+    prompted = true
+    send({ id: command.id, type: 'response', command: 'prompt', success: true })
+    send({ type: 'agent_end' })
+  } else if (command.type === 'abort') send({ id: command.id, type: 'response', command: 'abort', success: true })
+})
+`)
+    chmodSync(executable, 0o755)
+    const events: Record<string, unknown>[] = []
+    const runtime = new RpcRuntime(executable, [], cwd, ({ event }) => events.push(event), () => undefined, {}, { pollIntervalMs: 60 })
+    await runtime.handshake()
+    try {
+      await runtime.command({ type: 'prompt', message: 'go' })
+      await waitUntil(() => runtime.snapshot().tokensPerSecond === 88.5)
+      expect(events.some((event) => event.type === 'runtime_state'
+        && (event.state as { tokensPerSecond?: number } | undefined)?.tokensPerSecond === 88.5)).toBe(true)
+    } finally {
+      await runtime.stop()
+    }
+  })
+
   it('clears streaming state when a local-only slash command completes via prompt_result', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-rpc-prompt-result-'))
     dirs.push(cwd)
