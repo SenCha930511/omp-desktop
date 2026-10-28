@@ -236,9 +236,29 @@ export function useTranscriptScroll(messages: TranscriptMessage[], active = true
       }
     })
     observer.observe(content)
+    // A scroll sequence that ends resting at the bottom is a deliberate
+    // landing: the last scroll event can read as "away" (micro-jitter near
+    // the end, or an expand hold whose manual window had not expired when
+    // the final event fired) and static content never resizes to self-heal,
+    // so the jump button used to linger over a transcript already at its
+    // bottom. scrollend fires once the gesture — momentum included — has
+    // truly stopped, which no residual fling can fake; only an expand
+    // click's own hold still wins, keeping the accordion's growth from
+    // re-engaging the tail snap mid-animation.
+    const settleAtBottom = () => {
+      if (readerExpandedRef.current && performance.now() < manualScrollUntilRef.current) return
+      if (scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight >= 40) return
+      readerExpandedRef.current = false
+      if (!pinnedToBottomRef.current) {
+        pinnedToBottomRef.current = true
+        setAwayFromBottom(false)
+        setHasNewContent(false)
+      }
+    }
+    scroller.addEventListener('scrollend', settleAtBottom)
     scroller.addEventListener('wheel', stopFollowing, { passive: true })
     scroller.addEventListener('click', stopFollowing, true)
-    return () => { observer.disconnect(); scroller.removeEventListener('wheel', stopFollowing); scroller.removeEventListener('click', stopFollowing, true) }
+    return () => { observer.disconnect(); scroller.removeEventListener('scrollend', settleAtBottom); scroller.removeEventListener('wheel', stopFollowing); scroller.removeEventListener('click', stopFollowing, true) }
   }, [active, windowEnd])
 
   const scrollToBottom = () => {

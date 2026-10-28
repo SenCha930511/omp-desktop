@@ -70,6 +70,7 @@ function stopFixture() {
   const runtimeOwnerRef = { current: { runtimeId: 'runtime-a', generation: 1 } as { runtimeId: string; generation: number } | null }
   const reportError = vi.fn()
   const agentCommand = vi.fn(async (_runtimeId: string, _command: Record<string, unknown>): Promise<Record<string, unknown>> => ({}))
+  const agentStop = vi.fn(async () => true)
   const restoreWithdrawnQueue = vi.fn()
   const reconcileQueuedPrompts = vi.fn()
   const pauseQueuedPrompts = vi.fn()
@@ -90,7 +91,7 @@ function stopFixture() {
     },
   }
   const actions = createWorkspaceActions(() => ({
-    bridge: { agent: { command: agentCommand } } as unknown as DesktopApi,
+    bridge: { agent: { command: agentCommand, stop: agentStop } } as unknown as DesktopApi,
     workspace,
     reportError,
   } as unknown as WorkspaceActionsDeps))
@@ -98,6 +99,7 @@ function stopFixture() {
   return {
     actions,
     agentCommand,
+    agentStop,
     reportError,
     restoreWithdrawnQueue,
     reconcileQueuedPrompts,
@@ -345,5 +347,25 @@ describe('restoreWithdrawnQueue in the workspace runtime', () => {
       recovered: true,
       parts: [{ type: 'text', text: 'with an image' }, image],
     })
+  })
+})
+
+describe('stop escalation', () => {
+  it('escalates to the hard stop when the graceful abort leaves the turn streaming', async () => {
+    const fixture = stopFixture()
+    fixture.agentCommand.mockResolvedValue({})
+
+    await fixture.actions.stopRuntime()
+    expect(fixture.agentCommand).toHaveBeenCalledWith('runtime-a', { type: 'abort_and_restore_queue' })
+    expect(fixture.agentStop).not.toHaveBeenCalled()
+
+    // The abort did not take: events re-opened the same turn on the same runtime.
+    fixture.replaceWorkspace(runtime('runtime-a'), [transcript('message-a')], 1)
+
+    await fixture.actions.stopRuntime()
+    expect(fixture.agentStop).toHaveBeenCalledWith('runtime-a')
+    expect(fixture.agentCommand).toHaveBeenCalledTimes(1)
+    expect(fixture.runtime()).toMatchObject({ runtimeId: 'runtime-a', isStreaming: false })
+    expect(fixture.messages()).toMatchObject([{ id: 'message-a', streaming: false, outcome: 'cancelled' }])
   })
 })

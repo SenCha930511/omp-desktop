@@ -270,6 +270,11 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
    * project requested mid-flight still establishes its own independent
    * boundary. Callers that ignore the promise share their project's flight. */
   const durableNewSessionFlights = new Map<string, Promise<void>>()
+  /** runtimeId → when Stop last sent its graceful abort for the current
+   * turn. A second press while the same turn still streams escalates to the
+   * hard stop; any new prompt clears the entry so a fresh turn always gets
+   * a graceful stop first. */
+  const gracefulAbortAttempts = new Map<string, number>()
   // Public New: establishes an omp-owned empty session boundary on the engine
   // (TUI parity) instead of leaving only a renderer draft the next prompt
   // would auto-resume. The boundary rides a freshly started fileless runtime —
@@ -1097,6 +1102,9 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
             if (workspace.workspaceRef.current.generation === generation) workspace.setRuntime({ ...activeRuntime, isStreaming: true })
             appendPendingAssistant()
           }
+          // A fresh turn deserves a fresh graceful Stop: forget any abort
+          // attempt recorded for the previous turn on this runtime.
+          gracefulAbortAttempts.delete(activeRuntime.runtimeId)
           const response = await bridge.agent.command(activeRuntime.runtimeId, {
             type: 'prompt',
             message: prompt,
@@ -1187,6 +1195,20 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
         return items.map((item) => item.id === lastAssistant?.id ? { ...item, streaming: false, completedAt: Date.now(), outcome: 'cancelled' } : item.streaming ? { ...item, streaming: false } : item)
       })
     }
+    const stillWorking = stoppedRuntime.isStreaming || stoppedRuntime.isCompacting
+    const previousAbortAttempt = gracefulAbortAttempts.get(stoppedRuntimeId)
+    if (stillWorking && previousAbortAttempt !== undefined && performance.now() - previousAbortAttempt < 45_000) {
+      // The graceful abort did not stop this turn — a long tool call can
+      // outlive the abort round-trip, or the reply was lost with events
+      // still flowing. A second press means Stop: kill the runtime (the
+      // session itself is file-backed and resumable).
+      gracefulAbortAttempts.delete(stoppedRuntimeId)
+      try { await bridge.agent.stop(stoppedRuntimeId) } catch { /* already gone */ }
+      if (ownershipMoved()) return
+      settleStoppedTurn()
+      return
+    }
+    if (stillWorking) gracefulAbortAttempts.set(stoppedRuntimeId, performance.now())
     try {
       // omp withdraws every queued steering/follow-up before aborting and the
       // reply lists the withdrawn input, so Stop restores what actually came
