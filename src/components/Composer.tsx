@@ -66,6 +66,8 @@ interface ComposerProps {
   availableCommands?: SlashCommand[]
   busy: boolean
   submitting?: boolean
+  /** The in-flight submission is a compact, so the placeholder says so. */
+  submittingKind?: 'prompt' | 'compact'
   loading?: boolean
   disabled?: boolean
   model: string
@@ -190,6 +192,7 @@ export const Composer = memo(function Composer({
   availableCommands = INITIAL_SLASH_COMMANDS,
   busy,
   submitting = false,
+  submittingKind = 'prompt',
   loading = false,
   disabled,
   model,
@@ -1024,7 +1027,9 @@ export const Composer = memo(function Composer({
                 : loading
                   ? t('composer.placeholderLoading')
                   : submitting
-                    ? t('composer.placeholderSubmitting', { name: shortName })
+                    ? submittingKind === 'compact'
+                      ? t('composer.placeholderCompacting')
+                      : t('composer.placeholderSubmitting', { name: shortName })
                     : t('composer.placeholder', { name: shortName })
             }
             aria-label={t('composer.ariaLabel', { name: shortName })}

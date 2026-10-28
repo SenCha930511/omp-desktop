@@ -18,6 +18,16 @@ it('derives startup, reasoning, tools and user input from structured signals', (
   expect(activityState([{ type: 'toolCall', id: 'x', name: 'ask_user' }, { type: 'toolResult', text: 'answered' }, { type: 'thinking', text: 'Continuing' }]).phase).toBe('thinking')
 })
 
+it('reads an in-flight compact as compacting, timed from the click', () => {
+  expect(conversationExecution({ ...base, submitting: true, messages: [assistant] })).toMatchObject({ phase: 'starting' })
+  expect(conversationExecution({ ...base, submitting: true, submittingKind: 'compact', submittingSince: 5000, messages: [assistant] }))
+    .toMatchObject({ phase: 'starting', since: 5000 })
+  expect(conversationExecution({ ...base, runtime: { ...runtime, isStreaming: false }, submitting: true, submittingKind: 'compact', submittingSince: 5000 }))
+    .toMatchObject({ phase: 'compacting', since: 5000 })
+  // The runtime's own compacting flag still wins once omp reports it.
+  expect(conversationExecution({ ...base, runtime: { ...runtime, isCompacting: true }, submitting: true, submittingKind: 'compact' }).phase).toBe('compacting')
+})
+
 it('keeps failures and user cancellation distinct from normal completion', () => {
   const done: TranscriptMessage = { ...assistant, streaming: false, completedAt: 2000, parts: [{ type: 'text', text: 'Done' }] }
   expect(conversationExecution({ ...base, messages: [done] })).toMatchObject({ phase: 'completed', since: 1000, until: 2000 })

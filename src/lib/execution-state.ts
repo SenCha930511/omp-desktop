@@ -25,10 +25,14 @@ export function activityState(parts: MessagePart[]): Pick<ExecutionState, 'phase
 }
 
 /** Session/runtime signals take precedence over the last visible content. */
-export function conversationExecution({ runtime, messages, submitting, waiting, sessionStatus }: {
+export function conversationExecution({ runtime, messages, submitting, submittingKind, submittingSince, waiting, sessionStatus }: {
   runtime: RuntimeInfo | null
   messages: TranscriptMessage[]
   submitting: boolean
+  /** What the in-flight admission is doing: a compact reads as compacting, not starting. */
+  submittingKind?: 'prompt' | 'compact'
+  /** When the admission began, so the live timer counts the command, not the previous turn. */
+  submittingSince?: number
   waiting: boolean
   sessionStatus?: SessionStatus
 }): ExecutionState {
@@ -38,7 +42,12 @@ export function conversationExecution({ runtime, messages, submitting, waiting, 
     if (messages[index].role === 'assistant') { assistant = messages[index]; break }
   }
   const since = assistant?.startedAt ?? assistant?.timestamp
-  if (submitting && (!runtime || (!runtime.isStreaming && !assistant?.streaming))) return { phase: 'starting', since }
+  if (submitting && (!runtime || (!runtime.isStreaming && !assistant?.streaming))) {
+    // A compact without an attached runtime is still spawning the harness;
+    // once it is attached the command itself is what runs.
+    const phase = submittingKind === 'compact' && runtime ? 'compacting' : 'starting'
+    return { phase, since: submittingSince ?? since }
+  }
   if (waiting || sessionStatus === 'waiting') return { phase: 'waiting', since }
   if (runtime?.isCompacting) return { phase: 'compacting', since }
   if (runtime?.isStreaming || assistant?.streaming || sessionStatus === 'running') return { ...activityState(assistant?.parts ?? []), since }

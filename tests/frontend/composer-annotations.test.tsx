@@ -73,13 +73,17 @@ interface RenderOptions {
   getTerminalContext?: () => TerminalPromptContext | undefined
   onClearTerminalSelection?: Mock<() => void>
   sessions?: SessionRecord[]
+  submitting?: boolean
+  submittingKind?: 'prompt' | 'compact'
 }
 
-function renderComposer({ annotations = [], sendSignal = 0, onSend = vi.fn(async () => undefined), onRemoveAnnotation = vi.fn(), onClearAnnotations = vi.fn(), terminalSelection, getTerminalContext, onClearTerminalSelection = vi.fn(), sessions = [] }: RenderOptions = {}) {
+function renderComposer({ annotations = [], sendSignal = 0, onSend = vi.fn(async () => undefined), onRemoveAnnotation = vi.fn(), onClearAnnotations = vi.fn(), terminalSelection, getTerminalContext, onClearTerminalSelection = vi.fn(), sessions = [], submitting = false, submittingKind }: RenderOptions = {}) {
   act(() =>
     root.render(
       <Composer
         busy={false}
+        submitting={submitting}
+        submittingKind={submittingKind}
         model="provider/vision"
         effort="medium"
         modelsByProvider={modelsByProvider}
@@ -340,5 +344,16 @@ describe('Composer sendSignal', () => {
       renderComposer(options)
     })
     expect(onSend).not.toHaveBeenCalled()
+  })
+})
+
+describe('Composer pending submissions', () => {
+  it('names the running compact instead of claiming the harness is still starting', async () => {
+    renderComposer({ submitting: true, submittingKind: 'compact' })
+    const textarea = container.querySelector('textarea') as HTMLTextAreaElement
+    expect(textarea.placeholder).toBe('Compacting conversation…')
+
+    renderComposer({ submitting: true })
+    expect((container.querySelector('textarea') as HTMLTextAreaElement).placeholder).toBe('Starting OMP…')
   })
 })

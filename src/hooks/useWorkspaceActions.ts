@@ -65,7 +65,7 @@ export interface WorkspaceActionsDeps {
   setView: Dispatch<SetStateAction<WorkspaceView>>
   setPaletteOpen: Dispatch<SetStateAction<boolean>>
   setToast: Dispatch<SetStateAction<string | null>>
-  setSubmitting: Dispatch<SetStateAction<boolean>>
+  setSubmitting: (value: boolean, kind?: 'prompt' | 'compact') => void
   refreshSchedules(): Promise<void>
   resetBrowserView(): void
   closeTerminalForSession(sessionPath: string): void
@@ -1021,7 +1021,7 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
       }
     }
     const admittedSubmission = await submissionAdmissionRef.current.run(async () => {
-      setSubmitting(true)
+      setSubmitting(true, compactRpc ? 'compact' : 'prompt')
       // The queued prompt's optimistic row hands off to the real turn: the
       // harness events render the durable row as the prompt is delivered.
       if (queuedFlushPromptId) workspace.retractQueuedPrompt(queuedFlushPromptId)

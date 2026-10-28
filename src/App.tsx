@@ -147,6 +147,8 @@ export default function App() {
   const [browserNavigationRequest, setBrowserNavigationRequest] = useState<{ id: number; url: string }>()
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [submitting, setSubmitting] = useState(false)
+  const [submittingKind, setSubmittingKind] = useState<'prompt' | 'compact'>('prompt')
+  const [submittingSince, setSubmittingSince] = useState<number | undefined>(undefined)
   const [restorePrompt, setRestorePrompt] = useState<{ owner: number; id: number; text: string }>()
   const [sessionTreeOpen, setSessionTreeOpen] = useState(false)
   const submissionGenerationRef = useRef<number | undefined>(undefined)
@@ -706,8 +708,14 @@ export default function App() {
     setView,
     setPaletteOpen,
     setToast,
-    setSubmitting: (value) => {
-      if (value === true) submissionGenerationRef.current = workspace.workspaceRef.current.generation
+    setSubmitting: (value, kind = 'prompt') => {
+      if (value === true) {
+        submissionGenerationRef.current = workspace.workspaceRef.current.generation
+        setSubmittingKind(kind)
+        setSubmittingSince(Date.now())
+      } else {
+        setSubmittingSince(undefined)
+      }
       setSubmitting(value)
     },
     onCommandStart: commandOutputBegin,
@@ -1182,6 +1190,8 @@ export default function App() {
     runtime: workspace.runtime,
     messages: workspace.messages,
     submitting: submitting && submissionGenerationRef.current === workspace.workspaceGeneration,
+    submittingKind,
+    submittingSince,
     waiting: Boolean(extension.extensionUi && extension.extensionUi.runtimeId === workspace.runtime?.runtimeId),
     sessionStatus: activeSession?.status,
   })
@@ -1514,6 +1524,7 @@ export default function App() {
                               draftKey={workspace.activeSessionId ? `${activeProject?.id ?? 'no-project'}:${workspace.activeSessionId}` : `${activeProject?.id ?? 'no-project'}:new`}
                               busy={busy}
                               submitting={submitting}
+                              submittingKind={submittingKind}
                               loading={workspace.loadingSession}
                               disabled={!activeProject}
                               messageEnterAction={settingsState.settings.messageEnterAction}
