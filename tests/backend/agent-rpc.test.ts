@@ -731,6 +731,50 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     }
   })
 
+  it('folds a mid-turn queue drain while the turn is still streaming', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-rpc-queue-midturn-'))
+    dirs.push(cwd)
+    const executable = join(cwd, 'queue-midturn-agent.cjs')
+    writeFileSync(executable, `#!/usr/bin/env node
+const readline = require('node:readline')
+let streaming = false
+let held = 0
+const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
+readline.createInterface({ input: process.stdin }).on('line', (line) => {
+  const command = JSON.parse(line)
+  if (command.type === 'negotiate_protocol') {
+    send({ id: command.id, type: 'response', command: 'negotiate_protocol', success: true, data: { protocolVersion: command.protocolVersion } })
+  } else if (command.type === 'get_state') {
+    send({ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'queue-midturn', isStreaming: streaming, queuedMessageCount: held, queuedMessages: { steering: [], followUp: held ? ['held follow-up'] : [] } } })
+  } else if (command.type === 'get_session_stats') {
+    send({ id: command.id, type: 'response', command: 'get_session_stats', success: true, data: { cost: 0, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } })
+  } else if (command.type === 'prompt') {
+    send({ id: command.id, type: 'response', command: 'prompt', success: true })
+    send({ type: 'agent_start' })
+    streaming = true
+    held = 1
+    // Delivery happens mid-turn with no session_action_update, and the turn
+    // keeps running: the tray must still clear.
+    setTimeout(() => { held = 0 }, 400)
+  } else if (command.type === 'abort') send({ id: command.id, type: 'response', command: 'abort', success: true })
+})
+`)
+    chmodSync(executable, 0o755)
+    const events: Record<string, unknown>[] = []
+    const runtime = new RpcRuntime(executable, [], cwd, ({ event }) => events.push(event), () => undefined, {}, { pollIntervalMs: 60 })
+    await runtime.handshake()
+    try {
+      await runtime.command({ type: 'prompt', message: 'work' })
+      await waitUntil(() => (runtime.snapshot().sessionActions?.queuedCount ?? -1) === 1)
+      await waitUntil(() => (runtime.snapshot().sessionActions?.queuedCount ?? -1) === 0)
+      // The fold must not fake a turn end: the runtime still streams.
+      expect(runtime.snapshot().isStreaming).toBe(true)
+      expect(events.some((event) => event.type === 'agent_end')).toBe(false)
+    } finally {
+      await runtime.stop()
+    }
+  })
+
   it('clears streaming state when a local-only slash command completes via prompt_result', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-rpc-prompt-result-'))
     dirs.push(cwd)

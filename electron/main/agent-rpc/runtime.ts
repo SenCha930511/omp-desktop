@@ -141,6 +141,8 @@ export class RpcRuntime {
   private watchdogDisposed = false
   private lastActivityAt = Date.now()
   private lastRealCompactionEventAt = 0
+  /** Newest session_action_update arrival; the queue fold ignores older polls. */
+  private lastSessionActionEventAt = 0
   // v2 chunked frames: base64 rpc_chunk sequences reassembled per chunkId,
   // bounded by the shared read frame limit and small concurrency caps.
   private readonly chunkAssemblies = new Map<string, ChunkAssembly>()
@@ -500,7 +502,12 @@ export class RpcRuntime {
       // poll interval even when the delivery event never arrives. The fold
       // only fires to clear residue: an already-empty snapshot must not push
       // periodic runtime_state frames that perturb workspace adoption races.
-      if (!this.watchdogDisposed && raw && !this.info.isStreaming && !this.retryPending && !this.continuationPending) {
+      // Mid-turn delivery is silent too: omp injects a held message into the
+      // running turn without pushing session_action_update, so the tray would
+      // keep the delivered row until agent_end. Fold whenever this probe is
+      // newer than the last queue event; that guard keeps stale responses
+      // from re-adding previews a newer event already removed.
+      if (!this.watchdogDisposed && raw && requestedAt >= this.lastSessionActionEventAt && !this.retryPending && !this.continuationPending) {
         // omp reports the queue as queuedMessageCount/queuedMessages; the
         // adapter owns that translation (raw.sessionActions does not exist
         // on the wire, which once left the fold a silent no-op).
@@ -742,6 +749,7 @@ export class RpcRuntime {
       this.compactionEpisode = 'none'
     } else if (value.type === 'auto_retry_start') this.retryPending = true
     else if (value.type === 'auto_retry_end') this.retryPending = false
+    else if (value.type === 'session_action_update') this.lastSessionActionEventAt = Date.now()
     this.emit(value)
     if (liveUsageUpdate.changed || liveUsageUpdate.reset) this.publishLiveContextUsage(value.type === 'message_end')
     if (value.type === 'message_end'

@@ -3315,7 +3315,9 @@ test.describe('OMP Desktop desktop smoke', () => {
       expect(box).not.toBeNull()
       await page.mouse.move(box!.x + 2, box!.y + box!.height / 2)
       await page.mouse.down()
-      await page.mouse.move(Math.min(box!.x + box!.width - 2, box!.x + 190), box!.y + box!.height / 2, { steps: 5 })
+      // Drag to the row's right edge: a fixed pixel offset depends on the
+      // terminal font's cell width and can stop one character short.
+      await page.mouse.move(box!.x + box!.width - 4, box!.y + box!.height / 2, { steps: 5 })
       await page.mouse.up()
       await expect(page.getByLabel(/Inspect selected text from/)).toBeVisible()
     }
