@@ -1,4 +1,4 @@
-import { GitBranch, ListTree, PanelLeft, PanelRight, Terminal } from 'lucide-react'
+import { GitBranch, ListTree, PanelLeft, PanelRight, PanelRightClose, Terminal } from 'lucide-react'
 import type { MouseEvent } from 'react'
 import { type MessageKey, useI18n } from '@/lib/i18n'
 import { shortcutLabel } from '@/lib/platform-shortcuts'
@@ -117,7 +117,7 @@ export function TitleToolbar({
         ) : null}
         {view === 'session' ? (
           <IconButton className={inspectorOpen ? 'is-active' : ''} label={t('toolbar.toggleInspector')} onClick={onToggleInspector}>
-            <PanelRight size={16} />
+            {inspectorOpen ? <PanelRightClose size={16} /> : <PanelRight size={16} />}
           </IconButton>
         ) : null}
         {view !== 'session' && sidebarOpen ? (

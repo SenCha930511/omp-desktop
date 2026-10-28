@@ -297,20 +297,29 @@ export default function App() {
   useEffect(() => setBtwHint(false), [workspace.activeSessionId])
   const commandOutput = useCommandOutput(workspace.workspaceGeneration)
   const backgroundCommandDepthRef = useRef(0)
-  const commandOutputBegin = useCallback((command: string, onAbort?: () => void) => {
-    if (isBackgroundedSlashCommand(command)) backgroundCommandDepthRef.current += 1
-    else commandOutput.begin(command, onAbort)
-  }, [commandOutput])
-  const commandOutputFinish = useCallback((failure?: string, agentInvoked?: boolean) => {
-    if (backgroundCommandDepthRef.current > 0) backgroundCommandDepthRef.current -= 1
-    else commandOutput.finish(failure, agentInvoked)
-  }, [commandOutput])
-  const commandOutputAppend = useCallback((text: string, failed = false) => {
-    // Harness echoes for a backgrounded command must stay silent too: without
-    // a begun entry, append would otherwise open the panel on its own.
-    if (backgroundCommandDepthRef.current > 0) return
-    commandOutput.append(text, failed)
-  }, [commandOutput])
+  const commandOutputBegin = useCallback(
+    (command: string, onAbort?: () => void) => {
+      if (isBackgroundedSlashCommand(command)) backgroundCommandDepthRef.current += 1
+      else commandOutput.begin(command, onAbort)
+    },
+    [commandOutput],
+  )
+  const commandOutputFinish = useCallback(
+    (failure?: string, agentInvoked?: boolean) => {
+      if (backgroundCommandDepthRef.current > 0) backgroundCommandDepthRef.current -= 1
+      else commandOutput.finish(failure, agentInvoked)
+    },
+    [commandOutput],
+  )
+  const commandOutputAppend = useCallback(
+    (text: string, failed = false) => {
+      // Harness echoes for a backgrounded command must stay silent too: without
+      // a begun entry, append would otherwise open the panel on its own.
+      if (backgroundCommandDepthRef.current > 0) return
+      commandOutput.append(text, failed)
+    },
+    [commandOutput],
+  )
   const provider = useProviderCatalog({
     bridge,
     ready: settingsState.initialized,
@@ -336,10 +345,14 @@ export default function App() {
   // top-level conversation — unlike rlm subagent files — so it stays eligible.
   const mentionableSessions = useMemo(() => {
     const continuedBy = continuedSessionKeys(sessions)
-    return sessions.filter((session) => !session.archived
-      && (session.depth === 0 || session.parentSession !== undefined)
-      && !(continuedBy.has(session.id) || continuedBy.has(session.filePath))
-      && session.id !== activeSession?.id && session.projectPath === activeCwd)
+    return sessions.filter(
+      (session) =>
+        !session.archived &&
+        (session.depth === 0 || session.parentSession !== undefined) &&
+        !(continuedBy.has(session.id) || continuedBy.has(session.filePath)) &&
+        session.id !== activeSession?.id &&
+        session.projectPath === activeCwd,
+    )
   }, [activeCwd, activeSession?.id, sessions])
   const terminalSessionKey = workspace.activeSessionId
     ? `${activeProject?.id ?? 'no-project'}:${workspace.activeSessionId}`
@@ -353,7 +366,11 @@ export default function App() {
   )
   const terminalOpen = Boolean(activeTerminalSession)
   const { git, refreshGit } = useGitStatus({
-    bridge, cwd: activeCwd, generation: workspace.workspaceGeneration, workspaceRef: workspace.workspaceRef, reportError,
+    bridge,
+    cwd: activeCwd,
+    generation: workspace.workspaceGeneration,
+    workspaceRef: workspace.workspaceRef,
+    reportError,
     initial: { cwd: initialProject?.primaryFolder, status: bridge ? { isRepo: false, files: [] } : SAMPLE_GIT },
   })
   useEffect(() => {
@@ -426,10 +443,15 @@ export default function App() {
   const autoOpenedAuthUrlRef = useRef<unknown>(null)
   useEffect(() => {
     const request = extension.openUrlRequest
-    if (!providerAccounts.loginInFlight) { autoOpenedAuthUrlRef.current = null; return }
+    if (!providerAccounts.loginInFlight) {
+      autoOpenedAuthUrlRef.current = null
+      return
+    }
     if (!request || !bridge || autoOpenedAuthUrlRef.current === request) return
     autoOpenedAuthUrlRef.current = request
-    void openExternalUrl(bridge.app, request.url).then((failure) => { if (failure) setToast(failure) })
+    void openExternalUrl(bridge.app, request.url).then((failure) => {
+      if (failure) setToast(failure)
+    })
   }, [extension.openUrlRequest, providerAccounts.loginInFlight, bridge])
   // Stable identity: the harness-switch reset lives inside the bootstrap
   // effect, and an unstable callback would re-run the whole bootstrap.
@@ -471,7 +493,6 @@ export default function App() {
     }
   }, [view])
 
-
   useAgentEvents({
     bridge,
     runtimeIdRef: workspace.runtimeIdRef,
@@ -485,7 +506,9 @@ export default function App() {
     clearQueuedPrompts: workspace.clearQueuedPrompts,
     queueAgentEvent: workspace.queueAgentEvent,
     onNotice: setToast,
-    onConfigWarningsChanged: () => { void pluginSkillsRefreshRef.current?.() },
+    onConfigWarningsChanged: () => {
+      void pluginSkillsRefreshRef.current?.()
+    },
     onCommandOutput: commandOutputAppend,
     reconcileTranscriptForEvent: workspace.reconcileTranscriptForEvent,
     showExtensionUi: extension.showExtensionUi,
@@ -714,20 +737,32 @@ export default function App() {
     setSideChatOpen(false)
     toggleInspector()
   }, [toggleInspector])
-  const askSideQuestion = useCallback((question: string, topicId?: string) => {
-    if (!sideChatSessionId) return
-    void sideQuestions.ask(sideChatSessionId, question, topicId).then((answered) => {
-      if (!answered) reportError(new Error('Side questions are unavailable for this session'))
-    }).catch(reportError)
-  }, [sideChatSessionId, sideQuestions, reportError])
-  const cancelSideQuestion = useCallback((topicId?: string) => {
-    if (!sideChatSessionId) return
-    void sideQuestions.cancel(sideChatSessionId, topicId).catch(reportError)
-  }, [sideChatSessionId, sideQuestions, reportError])
-  const selectSideQuestionTopic = useCallback((topicId: string | null) => {
-    if (!sideChatSessionId) return
-    sideQuestions.setActiveTopic(sideChatSessionId, topicId)
-  }, [sideChatSessionId, sideQuestions])
+  const askSideQuestion = useCallback(
+    (question: string, topicId?: string) => {
+      if (!sideChatSessionId) return
+      void sideQuestions
+        .ask(sideChatSessionId, question, topicId)
+        .then((answered) => {
+          if (!answered) reportError(new Error('Side questions are unavailable for this session'))
+        })
+        .catch(reportError)
+    },
+    [sideChatSessionId, sideQuestions, reportError],
+  )
+  const cancelSideQuestion = useCallback(
+    (topicId?: string) => {
+      if (!sideChatSessionId) return
+      void sideQuestions.cancel(sideChatSessionId, topicId).catch(reportError)
+    },
+    [sideChatSessionId, sideQuestions, reportError],
+  )
+  const selectSideQuestionTopic = useCallback(
+    (topicId: string | null) => {
+      if (!sideChatSessionId) return
+      sideQuestions.setActiveTopic(sideChatSessionId, topicId)
+    },
+    [sideChatSessionId, sideQuestions],
+  )
   // Intercept /btw before it ever reaches the harness: bare opens the dock,
   // `/btw <question>` opens it and fires the question as a new topic. The
   // intercept also runs while the support probe is still resolving — the
@@ -742,24 +777,27 @@ export default function App() {
   // would otherwise strand /btw into the harness queue. An unsupported harness
   // surfaces through the ask error instead.
   const sideChatIntercept = true
-  const sendVisiblePrompt = useCallback((prompt: string, images: PromptImage[] = [], intent: PromptDeliveryIntent = 'queue') => {
-    const trimmed = prompt.trim()
-    if (sideChatIntercept && /^\/btw(?:\s|$)/.test(trimmed)) {
-      if (!sideChatSessionId) {
-        // No runtime to ride yet — surface the hint inside the conversation;
-        // the first real message covers it (effect below).
-        setBtwHint(true)
+  const sendVisiblePrompt = useCallback(
+    (prompt: string, images: PromptImage[] = [], intent: PromptDeliveryIntent = 'queue') => {
+      const trimmed = prompt.trim()
+      if (sideChatIntercept && /^\/btw(?:\s|$)/.test(trimmed)) {
+        if (!sideChatSessionId) {
+          // No runtime to ride yet — surface the hint inside the conversation;
+          // the first real message covers it (effect below).
+          setBtwHint(true)
+          return Promise.resolve()
+        }
+        const question = trimmed.slice(4).trim()
+        setSideChatOpen(true)
+        if (question) askSideQuestion(question)
         return Promise.resolve()
       }
-      const question = trimmed.slice(4).trim()
-      setSideChatOpen(true)
-      if (question) askSideQuestion(question)
-      return Promise.resolve()
-    }
-    // Any real prompt (slash command or message) covers the hint.
-    if (intent !== 'steer') setBtwHint(false)
-    return sendPrompt(prompt, images, intent)
-  }, [sideChatIntercept, sideChatSessionId, askSideQuestion, sendPrompt])
+      // Any real prompt (slash command or message) covers the hint.
+      if (intent !== 'steer') setBtwHint(false)
+      return sendPrompt(prompt, images, intent)
+    },
+    [sideChatIntercept, sideChatSessionId, askSideQuestion, sendPrompt],
+  )
   const openTerminalLink = useCallback(
     (url: string, external: boolean) => {
       if (external) {
@@ -909,9 +947,9 @@ export default function App() {
   const reclaimHarnessQueuedMessage = useStableCallback((message: string, queue: 'steering' | 'followUp', images: MessagePart[], imagesDropped?: boolean) => {
     const runtime = workspace.runtime
     if (!runtime?.runtimeId) return
-    const promptImages = images.flatMap((part) => part.type === 'image' && typeof part.data === 'string' && typeof part.mimeType === 'string'
-      ? [{ type: 'image' as const, data: part.data, mimeType: part.mimeType }]
-      : [])
+    const promptImages = images.flatMap((part) =>
+      part.type === 'image' && typeof part.data === 'string' && typeof part.mimeType === 'string' ? [{ type: 'image' as const, data: part.data, mimeType: part.mimeType }] : [],
+    )
     // The occupied draft keeps its place: the reclaimed message returns as an
     // unaccepted local row that only an explicit chip send can deliver.
     workspace.restoreWithdrawnQueue(
@@ -927,7 +965,12 @@ export default function App() {
       // A lossy reclaim stays visible, exactly like the stop-withdraw flow.
       workspace.setMessages((items) => [
         ...items,
-        { id: `reclaim-images-${Date.now()}`, role: 'system', timestamp: Date.now(), parts: [{ type: 'text', text: 'Some images from the reclaimed message exceeded the transport limit and could not be restored.' }] },
+        {
+          id: `reclaim-images-${Date.now()}`,
+          role: 'system',
+          timestamp: Date.now(),
+          parts: [{ type: 'text', text: 'Some images from the reclaimed message exceeded the transport limit and could not be restored.' }],
+        },
       ])
     }
   })
@@ -1100,7 +1143,10 @@ export default function App() {
       // createQueuedMessageEvent): that text exists locally before delivery,
       // so matching it would hide every queued row the moment it is typed.
       if (message.id.startsWith('user-queued-')) continue
-      const text = message.parts.filter((part): part is Extract<MessagePart, { type: 'text' }> => part.type === 'text').map((part) => part.text).join('')
+      const text = message.parts
+        .filter((part): part is Extract<MessagePart, { type: 'text' }> => part.type === 'text')
+        .map((part) => part.text)
+        .join('')
       if (text) texts.push(text)
     }
     // The engine keeps a delivered steer in its queue list until the turn
@@ -1110,13 +1156,15 @@ export default function App() {
     for (const text of activeSession?.lastUserTexts ?? []) if (text && !texts.includes(text)) texts.push(text)
     return texts
   }, [workspace.messages, harnessPreviewCount, activeSession])
-  const queuePreviewDelivered = useStableCallback((preview: string) => deliveredQueueTexts.some((text) => (
-    text === preview || text.startsWith(preview) || preview.startsWith(text)
-  )))
-  const harnessQueuedPreviews = useMemo<HarnessQueuedPreview[]>(() => [
-    ...(harnessSessionActions?.steering ?? []).map((message) => ({ message, queue: 'steering' as const })),
-    ...(harnessSessionActions?.followUps ?? []).map((message) => ({ message, queue: 'followUp' as const })),
-  ].filter((preview) => !queuePreviewDelivered(preview.message)), [harnessSessionActions, queuePreviewDelivered])
+  const queuePreviewDelivered = useStableCallback((preview: string) => deliveredQueueTexts.some((text) => text === preview || text.startsWith(preview) || preview.startsWith(text)))
+  const harnessQueuedPreviews = useMemo<HarnessQueuedPreview[]>(
+    () =>
+      [
+        ...(harnessSessionActions?.steering ?? []).map((message) => ({ message, queue: 'steering' as const })),
+        ...(harnessSessionActions?.followUps ?? []).map((message) => ({ message, queue: 'followUp' as const })),
+      ].filter((preview) => !queuePreviewDelivered(preview.message)),
+    [harnessSessionActions, queuePreviewDelivered],
+  )
   const deliveredQueuePreviews = harnessPreviewCount - harnessQueuedPreviews.length
   const harnessQueuedMessageCount = Math.max(0, (harnessSessionActions?.queuedCount ?? 0) - deliveredQueuePreviews)
   const busy = Boolean(workspace.runtime?.isStreaming || workspace.runtime?.isCompacting || harnessQueuedMessageCount > 0 || workspace.messages.some((message) => message.streaming))
@@ -1124,13 +1172,19 @@ export default function App() {
   // cancelled assistant row: the composer's send slot becomes a retry button
   // until a new draft arrives (mirroring how the stop button owns the slot
   // while the model streams).
-  const stoppedTurnRetryAvailable = !busy && (() => {
-    const lastAssistant = [...workspace.messages].reverse().find((message) => message.role === 'assistant')
-    return lastAssistant?.outcome === 'cancelled'
-  })()
-  const execution = conversationExecution({ runtime: workspace.runtime, messages: workspace.messages,
+  const stoppedTurnRetryAvailable =
+    !busy &&
+    (() => {
+      const lastAssistant = [...workspace.messages].reverse().find((message) => message.role === 'assistant')
+      return lastAssistant?.outcome === 'cancelled'
+    })()
+  const execution = conversationExecution({
+    runtime: workspace.runtime,
+    messages: workspace.messages,
     submitting: submitting && submissionGenerationRef.current === workspace.workspaceGeneration,
-    waiting: Boolean(extension.extensionUi && extension.extensionUi.runtimeId === workspace.runtime?.runtimeId), sessionStatus: activeSession?.status })
+    waiting: Boolean(extension.extensionUi && extension.extensionUi.runtimeId === workspace.runtime?.runtimeId),
+    sessionStatus: activeSession?.status,
+  })
   /* Compare owned status snapshots. A turn already running when a workspace
      opens has no trustworthy baseline, so it cannot produce a changes card. */
   useEffect(() => {
@@ -1168,9 +1222,11 @@ export default function App() {
     const next = queuedMessages[0]
     if (next.flushAttemptFailed || next.recovered || next.deliveryPending) return
     queuedFlushRef.current = true
-    void sendPrompt(next.text, [], 'queue', next.id).catch(() => undefined).finally(() => {
-      queuedFlushRef.current = false
-    })
+    void sendPrompt(next.text, [], 'queue', next.id)
+      .catch(() => undefined)
+      .finally(() => {
+        queuedFlushRef.current = false
+      })
   }, [bridge, busy, externalSessionRunning, queuedMessages, sendPrompt, submitting])
 
   const viewLabels = {
@@ -1285,400 +1341,447 @@ export default function App() {
   return (
     <I18nProvider preference={settingsState.settings.locale}>
       <ReasoningExpandedContext.Provider value={settingsState.settings.reasoningExpandedByDefault}>
-      <div className="app-shell" data-density={settingsState.settings.conversationDensity} aria-busy={!initialized} data-platform={platform} data-ready={initialized ? 'true' : 'false'} style={{ '--sidebar-width': `${layout.sidebarWidth}px` } as CSSProperties}>
-        {sidebarVisible && initialized ? (
-          <Sidebar
-            projects={projects}
-            sessions={sessions}
-            clearedAttention={clearedAttention}
-            recentSessionOpens={recentSessionOpens}
-            activeProjectId={activeProject?.id}
-            activeSessionId={workspace.activeSessionId}
-            activeView={view}
-            activeHarness={activeHarness}
-            updateState={appUpdates.state}
-            onUpdateAction={appUpdates.act}
-            harnessUpdateState={harnessUpdates.state}
-            onHarnessUpdateAction={openHarnessUpdatePrompt}
-            projectSortMode={settingsState.settings.projectSortMode}
-            {...sidebarActions}
-            onSelectDraftSession={openDraftSession}
-            onDiscardDraftSession={discardDraftSession}
-            overlay={layout.compactLayout}
-            platform={platform}
-          />
-        ) : null}
-        {sidebarVisible && initialized && !layout.compactLayout ? (
-          <ResizeHandle
-            orientation="vertical"
-            startEdge
-            styleTarget=".app-shell"
-            label={t('app.resizeSidebar')}
-            value={layout.sidebarWidth}
-            min={SIDEBAR_MIN}
-            max={SIDEBAR_MAX}
-            defaultValue={SIDEBAR_DEFAULT}
-            onChange={layout.setSidebarWidth}
-          />
-        ) : null}
-        {sidebarVisible && initialized ? <button type="button" className="panel-scrim panel-scrim--sidebar" aria-label={t('app.closeSidebar')} onClick={toggleSidebar} /> : null}
-        <div className="workbench" inert={layout.compactLayout && sidebarVisible ? true : undefined}>
-          <TitleToolbar
-            project={view === 'session' ? activeProject : undefined}
-            sessionTitle={view === 'session' ? activeSession?.title : undefined}
-            gitBranch={git.branch}
-            view={view}
-            productName={HARNESS_PRODUCT_NAMES[activeHarness]}
-            sidebarOpen={sidebarVisible}
-            inspectorOpen={inspectorVisible && !sideChatVisible}
-            terminalOpen={terminalOpen}
-            activeProjectScriptKind={activeProjectScriptKind(activeProjectScriptRun, activeProject?.id)}
-            onRunProjectScript={startProjectScript}
-            onStopProjectScript={stopProjectScript}
-            onSaveProjectScripts={saveProjectScripts}
-            onToggleSidebar={toggleSidebar}
-            onToggleInspector={toggleInspectorPanel}
-            onToggleTerminal={toggleTerminal}
-            onOpenBrowser={openBrowser}
-            onOpenSessionTree={view === 'session' ? () => setSessionTreeOpen(true) : undefined}
-            platform={platform}
-          />
-          <div className="workbench__content">
-            {view === 'session' ? (
-              <div
-                ref={layout.workspaceRowRef}
-                className="session-workspace"
-                style={{ '--inspector-width': `${layout.inspectorWidth}px`, '--side-chat-width': `${layout.sideChatWidth}px`, '--terminal-height': `${layout.terminalHeight}px` } as CSSProperties}
-              >
-                <div ref={layout.sessionWorkspaceRef} className="conversation-column">
-                  <SubagentsPanel key={workspace.workspaceGeneration} state={subagents} connected={Boolean(workspace.runtime)} showReasoning={settingsState.settings.showReasoningSummaries} showTools={settingsState.settings.showToolCalls}
-                    execution={execution} pinned={settingsState.settings.subagentsPanelPinned} onPinnedChange={(subagentsPanelPinned) => { void settingsState.updateSettings({ subagentsPanelPinned }) }}>
-                  <main className="conversation-pane" style={subagents.selectedId ? { display: 'none' } : undefined}>
-                    <Suspense fallback={<LoadingPanel label={t('app.panel.conversation')} />}>
-                      <Transcript
-                        key={workspace.activeSessionId ?? 'new-session'}
-                        followKey={workspace.activeSessionId ?? 'new-session'}
-                        transcript={workspace.transcriptStore}
-                        git={turnGit}
-                        harness={activeHarness}
-                        loading={workspace.loadingSession}
-                        active={busy || activeSession?.status === 'running'}
-                        visible={!subagents.selectedId}
-                        onRetry={async () => { await sendPrompt('/retry') }}
-                        onRestorePrompt={(text) => setRestorePrompt({ owner: workspace.workspaceGeneration, id: Date.now(), text })}
-                        showReasoning={settingsState.settings.showReasoningSummaries}
-                        showTools={settingsState.settings.showToolCalls}
-                        onOpenChanges={openChanges}
-                        onSuggestion={(prompt) => {
-                          void sendPrompt(prompt).catch(() => undefined)
-                        }}
-                        suggestionsDisabled={!activeProject || workspace.loadingSession || submitting}
-                        showChangesCard={Boolean(turnChanges?.length && settingsState.settings.showFileChangesPopup && !changesCardDismissed)}
-                        onDismissChanges={() => setChangesCardDismissed(true)}
-                        queuedMessageCount={queuedMessages.length + harnessQueuedMessageCount}
-                        onOpenSessionReference={(sessionId, harness) => {
-                          const session = sessions.find((candidate) => candidate.id === sessionId && candidate.harness === harness && !candidate.archived && candidate.depth === 0)
-                          if (session) void selectSession(session)
-                          else setToast('That referenced session is archived or no longer available.')
-                        }}
-                      />
-                    </Suspense>
-                    {btwHint ? (
-                      <div className="conversation-hint" role="status">{t('sidechat.needsRuntime')}</div>
-                    ) : null}
-                    <ConversationDock>
-                      <CommandOutputPanel text={commandOutput.text} command={commandOutput.command} status={commandOutput.status} onAbort={commandOutput.onAbort} onClose={commandOutput.dismiss} history={commandOutput.history} selectedId={commandOutput.selectedId} onSelect={commandOutput.select} onClear={commandOutput.clear} />
-                      <ExtensionUiPresentation
-                        status={extension.extensionStatus}
-                        widgets={extension.extensionWidgets}
-                        editorText={extension.editorTextUpdate}
-                        openUrl={extension.openUrlRequest}
-                        capabilityNotices={extension.extensionCapabilityNotices}
-                        composerDraft={readComposerDraft(workspace.activeSessionId ? `${activeProject?.id ?? 'no-project'}:${workspace.activeSessionId}` : `${activeProject?.id ?? 'no-project'}:new`)?.text ?? ''}
-                        activeRuntimeId={workspace.runtime?.runtimeId}
-                        onApplyEditorText={(text) => {
-                          // Stale guard: only the update currently pending for
-                          // the active runtime may reach the composer draft.
-                          const update = extension.editorTextUpdate
-                          if (!update || update.runtimeId !== workspace.runtime?.runtimeId || update.text !== text) return
-                          extension.consumeEditorTextUpdate()
-                          setRestorePrompt({ owner: workspace.workspaceGeneration, id: Date.now(), text })
-                        }}
-                        onDismissEditorText={() => extension.dismissEditorTextUpdate()}
-                        onOpenUrl={(url) => {
-                          if (bridge) void openExternalUrl(bridge.app, url).then((failure) => { if (failure) setToast(failure) })
-                        }}
-                        onDismissOpenUrl={() => extension.dismissOpenUrlRequest()}
-                        onDismissCapabilityNotice={extension.dismissCapabilityNotice}
-                      >
-                      <Composer
-                        availableCommands={visibleSlashCommands}
-                        key={
-                          workspace.activeSessionId ? `${activeProject?.id ?? 'no-project'}:${workspace.activeSessionId}` : `${activeProject?.id ?? 'no-project'}:new:${workspace.workspaceGeneration}`
-                        }
-                        draftKey={workspace.activeSessionId ? `${activeProject?.id ?? 'no-project'}:${workspace.activeSessionId}` : `${activeProject?.id ?? 'no-project'}:new`}
-                        busy={busy}
-                        submitting={submitting}
-                        loading={workspace.loadingSession}
-                        disabled={!activeProject}
-                        messageEnterAction={settingsState.settings.messageEnterAction}
-                        voice={bridge?.voice}
-                        transcriptionProvider={settingsState.settings.voiceTranscriptionProvider}
-                        model={provider.model}
-                        effort={provider.effort}
-                        modelsByProvider={provider.modelsByProvider}
-                        resolvedAutoEffort={provider.resolvedAutoEffort}
-                        providers={provider.catalog?.providers ?? EMPTY_PROVIDERS}
-                        presets={provider.catalog?.presets}
-                        onSwitchPreset={(preset) => { void sendPrompt(`/modelpreset switch ${preset.name}`).catch(reportError) }}
-                        onSavePreset={(name) => void sendPrompt(`/modelpreset save ${name}`)}
-                        reasoningLevels={provider.reasoningLevels}
-                        fast={provider.fast}
-                        fastSupported={provider.selectedModel?.fastModeSupported ?? false}
-                        fastAvailable={workspace.runtime?.fastModeAvailable !== false}
-                        usageLimit={provider.usageLimit}
-                        approvalMode={settingsState.settings.ompApprovalMode}
-                        onApprovalModeChange={(mode) => {
-                          void settingsState.updateSettings({ ompApprovalMode: mode })
-                        }}
-                        checkoutCatalog={checkoutCatalog}
-                        checkoutLabel={git.branch ?? activeProject?.gitBranch ?? activeProject?.name}
-                        checkoutsLoading={checkoutsLoading}
-                        onExecuteCheckout={bridge && activeProject && !activeProject.inferred && checkoutCatalog ? executeCheckout : undefined}
-                        projects={projects}
-                        activeProjectId={activeProject?.id}
-                        onSelectProject={(project) => {
-                          if (project.id === activeProject?.id) return
-                          // An empty workspace keeps its fresh-session state in the
-                          // picked folder; an active session navigates like the sidebar.
-                          if (workspace.activeSessionId) void selectProject(project)
-                          else newSession(project)
-                        }}
-                        onAddProjectFolder={() => { void addProject() }}
-                        agentName={HARNESS_AGENT_NAMES[activeHarness]}
-                        shortName={HARNESS_SHORT_NAMES[activeHarness]}
-                        imageInputSupported={Boolean(provider.selectedModel?.input.includes('image') || provider.catalog?.visionDelegation)}
-                        contextUsage={workspace.runtime?.contextUsage}
-                        sessionUsage={workspace.runtime?.sessionUsage}
-                        runtimeId={workspace.runtime?.runtimeId}
-                        executingModel={workspace.runtime?.executingModel}
-                        skills={pluginSkills.skills}
-                        sessions={mentionableSessions}
-                        annotations={browserAnnotations.annotations}
-                        terminalSelection={terminalSelection}
-                        getTerminalContext={getTerminalContext}
-                        queuedMessages={queuedMessages}
-                        harnessQueuedMessageCount={harnessQueuedMessageCount}
-                        harnessQueuedPreviews={harnessQueuedPreviews}
-                        queueRuntimeId={workspace.runtime?.runtimeId}
-                        onRemoveHarnessQueuedMessage={removeHarnessQueuedMessage}
-                        onPromoteHarnessQueuedMessage={promoteHarnessQueuedMessage}
-                        onReclaimHarnessQueuedMessage={reclaimHarnessQueuedMessage}
-                        onDeleteQueuedMessage={removeQueuedMessage}
-                        onSendQueuedMessage={sendQueuedMessage}
-                        onEditQueuedMessage={(message) => workspace.editQueuedPrompt(message.id, message.text)}
-                        sendSignal={browserAnnotations.sendSignal}
-                        restoreRequest={restorePrompt?.owner === workspace.workspaceGeneration ? restorePrompt : undefined}
-                        onRestoreHandled={() => setRestorePrompt(undefined)}
-                        onModelChange={provider.changeModel}
-                        onEffortChange={provider.changeEffort}
-                        onFastChange={provider.changeFast}
-                        onSend={sendVisiblePrompt}
-                        onStop={stopRuntime}
-                        retryStoppedTurn={stoppedTurnRetryAvailable}
-                        onRetryStoppedTurn={() => { void sendPrompt('/retry') }}
-                        onRemoveAnnotation={browserAnnotations.remove}
-                        onClearAnnotations={browserAnnotations.clear}
-                        onClearTerminalSelection={clearTerminalSelection}
-                      />
-                      </ExtensionUiPresentation>
-                    </ConversationDock>
-                  </main>
-                  </SubagentsPanel>
-                  {terminalSessions.map((terminal) => (
-                    <Suspense key={terminal.id} fallback={terminal.id === activeTerminalSession?.id ? <TerminalLoadingPanel /> : null}>
-                      <TerminalDrawer
-                        ref={(handle) => {
-                          if (handle) terminalDrawerRefs.current.set(terminal.id, handle)
-                          else terminalDrawerRefs.current.delete(terminal.id)
-                        }}
-                        visible={terminal.id === activeTerminalSession?.id}
-                        cwd={terminal.cwd}
-                        sessionPath={terminal.sessionPath}
-                        shell={settingsState.settings.terminalShell}
-                        initialCommand={terminal.initialCommand}
-                        height={layout.terminalHeight}
-                        minHeight={TERMINAL_MIN}
-                        maxHeight={layout.terminalMax}
-                        defaultHeight={TERMINAL_DEFAULT}
-                        onHeightChange={layout.setTerminalHeight}
-                        onClose={() => closeTerminal(terminal.id)}
-                        onError={reportError}
-                        onInitialCommandConsumed={() => setTerminalSessions((current) => current.map((item) => (item.id === terminal.id ? { ...item, initialCommand: undefined } : item)))}
-                        onOpenLink={openTerminalLink}
-                        onReady={() => setTerminalDrawerRevision((revision) => revision + 1)}
-                        onSelectionChange={(selection) => {
-                          if (terminal.id === activeTerminalSession?.id) setTerminalSelection(selection)
-                        }}
-                      />
-                    </Suspense>
-                  ))}
-                </div>
-                {sideChatVisible ? (
-                  <ResizeHandle
-                    orientation="vertical"
-                    label={t('sidechat.resize')}
-                    value={layout.sideChatWidth}
-                    min={INSPECTOR_MIN}
-                    max={layout.inspectorMax}
-                    defaultValue={INSPECTOR_DEFAULT}
-                    onChange={layout.setSideChatWidth}
-                    cssVariable="--side-chat-width"
-                  />
-                ) : inspectorVisible ? (
-                  <ResizeHandle
-                    orientation="vertical"
-                    label={t('app.resizeInspector')}
-                    value={layout.inspectorWidth}
-                    min={INSPECTOR_MIN}
-                    max={layout.inspectorMax}
-                    defaultValue={INSPECTOR_DEFAULT}
-                    onChange={layout.setInspectorWidth}
-                  />
-                ) : null}
-                {sideChatVisible && activeSideChat && sideChatSessionId ? (
-                  <Suspense fallback={<LoadingPanel label={t('sidechat.aria')} />}>
-                    <SideChatPanel
-                      key={`side-chat-${sideChatSessionId}`}
-                      state={activeSideChat}
-                      hasSession={Boolean(workspace.runtime)}
-                      onAsk={askSideQuestion}
-                      onCancel={cancelSideQuestion}
-                      onSelectTopic={selectSideQuestionTopic}
-                      onClose={closeSideChat}
-                    />
-                  </Suspense>
-                ) : inspectorVisible ? (
-                  <Suspense fallback={<LoadingPanel label={t('app.panel.inspector')} />}>
-                    <Inspector
-                      key={`inspector-${browserGeneration}`}
-                      activeTab={settingsState.inspectorTab}
-                      onTabChange={settingsState.selectInspectorTab}
-                      onClose={toggleInspectorPanel}
-                      agentName={HARNESS_AGENT_NAMES[activeHarness]}
-                      shortName={HARNESS_SHORT_NAMES[activeHarness]}
-                      project={activeProject}
-                      cwd={activeCwd}
-                      runtime={workspace.runtime}
-                      transcript={workspace.transcriptStore}
-                      git={git}
-                      automations={inspectorAutomations}
-                      onOpenAutomation={openAutomation}
-                      browserHome={settingsState.settings.browserHome}
-                      browserNavigationRequest={browserNavigationRequest}
-                      onBrowserNavigationRequestHandled={handleBrowserNavigationRequest}
-                      browserAnnotations={browserAnnotations}
-                      agentBrowserTabs={activeAgentTabs}
-                      activeAgentTabId={activeAgentTabId}
-                      agentPreviewSelected={agentPreviewSelected}
-                      onSelectAgentTab={selectAgentTab}
-                      onCloseAgentTab={agentBrowser.close}
-                      onShowBrowserPreview={showBrowserPreview}
-                      onAgentSlotRect={setAgentSlotRect}
-                      agentSessionKey={activeRuntimeSessionFile ?? activeSessionFilePath}
-                      onPreviewContext={previewContext}
-                      previewPointerEvent={agentBrowser.pointerEvent?.tabId === 'preview' ? agentBrowser.pointerEvent : null}
-                      onNavigateAgentTab={navigateAgentTab}
-                      onRefreshGit={refreshGit}
-                      onOpenExternal={openExternal}
-                      onRevealPath={revealInFileManager}
-                      onGrantProject={grantActiveProject}
-                      overlay={layout.compactLayout}
-                      platform={platform}
-                    />
-                  </Suspense>
-                ) : null}
-                {sideChatVisible ? <button type="button" className="panel-scrim panel-scrim--inspector" aria-label={t('sidechat.close')} onClick={closeSideChat} /> : null}
-                {!sideChatVisible && inspectorVisible ? <button type="button" className="panel-scrim panel-scrim--inspector" aria-label={t('app.closeInspector')} onClick={toggleInspectorPanel} /> : null}
-              </div>
-            ) : (
-              <Suspense fallback={<LoadingPanel label={viewLabels[view]} />}>{page}</Suspense>
-            )}
-          </div>
-        </div>
-        {paletteOpen ? (
-          <Suspense fallback={null}>
-            <CommandPalette
-              open
-              onClose={() => setPaletteOpen(false)}
-              onNavigate={navigate}
-              onNewSession={newSession}
-              onToggleSidebar={toggleSidebar}
-              onToggleTerminal={toggleTerminal}
-              onOpenBrowser={openBrowser}
+        <div
+          className="app-shell"
+          data-density={settingsState.settings.conversationDensity}
+          aria-busy={!initialized}
+          data-platform={platform}
+          data-ready={initialized ? 'true' : 'false'}
+          style={{ '--sidebar-width': `${layout.sidebarWidth}px` } as CSSProperties}
+        >
+          {sidebarVisible && initialized ? (
+            <Sidebar
+              projects={projects}
+              sessions={sessions}
+              clearedAttention={clearedAttention}
+              recentSessionOpens={recentSessionOpens}
+              activeProjectId={activeProject?.id}
+              activeSessionId={workspace.activeSessionId}
+              activeView={view}
+              activeHarness={activeHarness}
+              updateState={appUpdates.state}
+              onUpdateAction={appUpdates.act}
+              harnessUpdateState={harnessUpdates.state}
+              onHarnessUpdateAction={openHarnessUpdatePrompt}
+              projectSortMode={settingsState.settings.projectSortMode}
+              {...sidebarActions}
+              onSelectDraftSession={openDraftSession}
+              onDiscardDraftSession={discardDraftSession}
+              overlay={layout.compactLayout}
               platform={platform}
             />
-          </Suspense>
-        ) : null}
-        {extension.extensionUi ? (
-          <Suspense fallback={<LoadingPanel label={t('app.panel.request')} />}>
-            <ExtensionUiModal request={extension.extensionUi.request} onRespond={(response) => void extension.respondToExtensionUi(response)} platform={platform} />
-          </Suspense>
-        ) : null}
-        {sessionTreeOpen ? (
-          <SessionTreeDialog
-            runtimeId={workspace.runtime?.runtimeId}
-            onClose={() => setSessionTreeOpen(false)}
-            onToast={(text) => setToast(text)}
-            onPrefillPrompt={(text) => setRestorePrompt({ owner: workspace.workspaceGeneration, id: Date.now(), text })}
-          />
-        ) : null}
-        {harnessUpdatePromptOpen && harnessUpdates.state.phase === 'available' ? (
-          <Modal
-            title={t('sidebar.harnessUpdate.confirmTitle')}
-            onClose={() => setHarnessUpdatePromptOpen(false)}
-            footer={
-              <>
-                <button type="button" className="button" onClick={() => setHarnessUpdatePromptOpen(false)}>
-                  {t('sidebar.harnessUpdate.later')}
-                </button>
-                <button type="button" className="button button--primary" onClick={runHarnessUpdate}>
-                  {t('sidebar.harnessUpdate.updateNow')}
-                </button>
-              </>
-            }
-          >
-            <p>{t('sidebar.harnessUpdate.confirmBody', { version: harnessUpdates.state.availableVersion ?? '' })}</p>
-          </Modal>
-        ) : null}
-        {meta && !detectedHarnesses.length && !noHarnessPromptDismissed ? (
-          <NoHarnessPrompt
-            onClose={() => setNoHarnessPromptDismissed(true)}
-            onOpenHarnessSettings={() => {
-              setNoHarnessPromptDismissed(true)
-              setSettingsSectionRequest((current) => ({ section: 'agent', id: current.id + 1 }))
-              setView('settings')
-            }}
-          />
-        ) : null}
-        {toast ? (
-          <div className={`toast toast--${toastTone}`} data-tone={toastTone} role="status" onMouseEnter={() => setToastHovered(true)} onMouseLeave={() => setToastHovered(false)}>
-            {toast}
-            <button type="button" aria-label={t('app.dismiss')} onClick={() => setToast(null)}>
-              ×
-            </button>
+          ) : null}
+          {sidebarVisible && initialized && !layout.compactLayout ? (
+            <ResizeHandle
+              orientation="vertical"
+              startEdge
+              styleTarget=".app-shell"
+              label={t('app.resizeSidebar')}
+              value={layout.sidebarWidth}
+              min={SIDEBAR_MIN}
+              max={SIDEBAR_MAX}
+              defaultValue={SIDEBAR_DEFAULT}
+              onChange={layout.setSidebarWidth}
+            />
+          ) : null}
+          {sidebarVisible && initialized ? <button type="button" className="panel-scrim panel-scrim--sidebar" aria-label={t('app.closeSidebar')} onClick={toggleSidebar} /> : null}
+          <div className="workbench" inert={layout.compactLayout && sidebarVisible ? true : undefined}>
+            <TitleToolbar
+              project={view === 'session' ? activeProject : undefined}
+              sessionTitle={view === 'session' ? activeSession?.title : undefined}
+              gitBranch={git.branch}
+              view={view}
+              productName={HARNESS_PRODUCT_NAMES[activeHarness]}
+              sidebarOpen={sidebarVisible}
+              terminalOpen={terminalOpen}
+              activeProjectScriptKind={activeProjectScriptKind(activeProjectScriptRun, activeProject?.id)}
+              onRunProjectScript={startProjectScript}
+              onStopProjectScript={stopProjectScript}
+              onSaveProjectScripts={saveProjectScripts}
+              onToggleSidebar={toggleSidebar}
+              inspectorOpen={inspectorVisible && !sideChatVisible}
+              onToggleInspector={toggleInspectorPanel}
+              onToggleTerminal={toggleTerminal}
+              onOpenBrowser={openBrowser}
+              onOpenSessionTree={view === 'session' ? () => setSessionTreeOpen(true) : undefined}
+              platform={platform}
+            />
+            <div className="workbench__content">
+              {view === 'session' ? (
+                <div
+                  ref={layout.workspaceRowRef}
+                  className="session-workspace"
+                  style={{ '--inspector-width': `${layout.inspectorWidth}px`, '--side-chat-width': `${layout.sideChatWidth}px`, '--terminal-height': `${layout.terminalHeight}px` } as CSSProperties}
+                >
+                  <div ref={layout.sessionWorkspaceRef} className="conversation-column">
+                    <SubagentsPanel
+                      key={workspace.workspaceGeneration}
+                      state={subagents}
+                      connected={Boolean(workspace.runtime)}
+                      showReasoning={settingsState.settings.showReasoningSummaries}
+                      showTools={settingsState.settings.showToolCalls}
+                      execution={execution}
+                      pinned={settingsState.settings.subagentsPanelPinned}
+                      onPinnedChange={(subagentsPanelPinned) => {
+                        void settingsState.updateSettings({ subagentsPanelPinned })
+                      }}
+                    >
+                      <main className="conversation-pane">
+                        <Suspense fallback={<LoadingPanel label={t('app.panel.conversation')} />}>
+                          <Transcript
+                            key={workspace.activeSessionId ?? 'new-session'}
+                            followKey={workspace.activeSessionId ?? 'new-session'}
+                            transcript={workspace.transcriptStore}
+                            git={turnGit}
+                            harness={activeHarness}
+                            loading={workspace.loadingSession}
+                            active={busy || activeSession?.status === 'running'}
+                            visible={!subagents.selectedId}
+                            onRetry={async () => {
+                              await sendPrompt('/retry')
+                            }}
+                            onRestorePrompt={(text) => setRestorePrompt({ owner: workspace.workspaceGeneration, id: Date.now(), text })}
+                            showReasoning={settingsState.settings.showReasoningSummaries}
+                            showTools={settingsState.settings.showToolCalls}
+                            onOpenChanges={openChanges}
+                            onSuggestion={(prompt) => {
+                              void sendPrompt(prompt).catch(() => undefined)
+                            }}
+                            suggestionsDisabled={!activeProject || workspace.loadingSession || submitting}
+                            showChangesCard={Boolean(turnChanges?.length && settingsState.settings.showFileChangesPopup && !changesCardDismissed)}
+                            onDismissChanges={() => setChangesCardDismissed(true)}
+                            queuedMessageCount={queuedMessages.length + harnessQueuedMessageCount}
+                            onOpenSessionReference={(sessionId, harness) => {
+                              const session = sessions.find((candidate) => candidate.id === sessionId && candidate.harness === harness && !candidate.archived && candidate.depth === 0)
+                              if (session) void selectSession(session)
+                              else setToast('That referenced session is archived or no longer available.')
+                            }}
+                          />
+                        </Suspense>
+                        {btwHint ? (
+                          <div className="conversation-hint" role="status">
+                            {t('sidechat.needsRuntime')}
+                          </div>
+                        ) : null}
+                        <ConversationDock>
+                          <CommandOutputPanel
+                            text={commandOutput.text}
+                            command={commandOutput.command}
+                            status={commandOutput.status}
+                            onAbort={commandOutput.onAbort}
+                            onClose={commandOutput.dismiss}
+                            history={commandOutput.history}
+                            selectedId={commandOutput.selectedId}
+                            onSelect={commandOutput.select}
+                            onClear={commandOutput.clear}
+                          />
+                          <ExtensionUiPresentation
+                            status={extension.extensionStatus}
+                            widgets={extension.extensionWidgets}
+                            editorText={extension.editorTextUpdate}
+                            openUrl={extension.openUrlRequest}
+                            capabilityNotices={extension.extensionCapabilityNotices}
+                            composerDraft={
+                              readComposerDraft(workspace.activeSessionId ? `${activeProject?.id ?? 'no-project'}:${workspace.activeSessionId}` : `${activeProject?.id ?? 'no-project'}:new`)?.text ??
+                              ''
+                            }
+                            activeRuntimeId={workspace.runtime?.runtimeId}
+                            onApplyEditorText={(text) => {
+                              // Stale guard: only the update currently pending for
+                              // the active runtime may reach the composer draft.
+                              const update = extension.editorTextUpdate
+                              if (!update || update.runtimeId !== workspace.runtime?.runtimeId || update.text !== text) return
+                              extension.consumeEditorTextUpdate()
+                              setRestorePrompt({ owner: workspace.workspaceGeneration, id: Date.now(), text })
+                            }}
+                            onDismissEditorText={() => extension.dismissEditorTextUpdate()}
+                            onOpenUrl={(url) => {
+                              if (bridge)
+                                void openExternalUrl(bridge.app, url).then((failure) => {
+                                  if (failure) setToast(failure)
+                                })
+                            }}
+                            onDismissOpenUrl={() => extension.dismissOpenUrlRequest()}
+                            onDismissCapabilityNotice={extension.dismissCapabilityNotice}
+                          >
+                            <Composer
+                              availableCommands={visibleSlashCommands}
+                              key={
+                                workspace.activeSessionId
+                                  ? `${activeProject?.id ?? 'no-project'}:${workspace.activeSessionId}`
+                                  : `${activeProject?.id ?? 'no-project'}:new:${workspace.workspaceGeneration}`
+                              }
+                              draftKey={workspace.activeSessionId ? `${activeProject?.id ?? 'no-project'}:${workspace.activeSessionId}` : `${activeProject?.id ?? 'no-project'}:new`}
+                              busy={busy}
+                              submitting={submitting}
+                              loading={workspace.loadingSession}
+                              disabled={!activeProject}
+                              messageEnterAction={settingsState.settings.messageEnterAction}
+                              voice={bridge?.voice}
+                              transcriptionProvider={settingsState.settings.voiceTranscriptionProvider}
+                              model={provider.model}
+                              effort={provider.effort}
+                              modelsByProvider={provider.modelsByProvider}
+                              resolvedAutoEffort={provider.resolvedAutoEffort}
+                              providers={provider.catalog?.providers ?? EMPTY_PROVIDERS}
+                              presets={provider.catalog?.presets}
+                              onSwitchPreset={(preset) => {
+                                void sendPrompt(`/modelpreset switch ${preset.name}`).catch(reportError)
+                              }}
+                              onSavePreset={(name) => void sendPrompt(`/modelpreset save ${name}`)}
+                              reasoningLevels={provider.reasoningLevels}
+                              fast={provider.fast}
+                              fastSupported={provider.selectedModel?.fastModeSupported ?? false}
+                              fastAvailable={workspace.runtime?.fastModeAvailable !== false}
+                              usageLimit={provider.usageLimit}
+                              approvalMode={settingsState.settings.ompApprovalMode}
+                              onApprovalModeChange={(mode) => {
+                                void settingsState.updateSettings({ ompApprovalMode: mode })
+                              }}
+                              checkoutCatalog={checkoutCatalog}
+                              checkoutLabel={git.branch ?? activeProject?.gitBranch ?? activeProject?.name}
+                              checkoutsLoading={checkoutsLoading}
+                              onExecuteCheckout={bridge && activeProject && !activeProject.inferred && checkoutCatalog ? executeCheckout : undefined}
+                              projects={projects}
+                              activeProjectId={activeProject?.id}
+                              onSelectProject={(project) => {
+                                if (project.id === activeProject?.id) return
+                                // An empty workspace keeps its fresh-session state in the
+                                // picked folder; an active session navigates like the sidebar.
+                                if (workspace.activeSessionId) void selectProject(project)
+                                else newSession(project)
+                              }}
+                              onAddProjectFolder={() => {
+                                void addProject()
+                              }}
+                              agentName={HARNESS_AGENT_NAMES[activeHarness]}
+                              shortName={HARNESS_SHORT_NAMES[activeHarness]}
+                              imageInputSupported={Boolean(provider.selectedModel?.input.includes('image') || provider.catalog?.visionDelegation)}
+                              contextUsage={workspace.runtime?.contextUsage}
+                              sessionUsage={workspace.runtime?.sessionUsage}
+                              runtimeId={workspace.runtime?.runtimeId}
+                              executingModel={workspace.runtime?.executingModel}
+                              skills={pluginSkills.skills}
+                              sessions={mentionableSessions}
+                              annotations={browserAnnotations.annotations}
+                              terminalSelection={terminalSelection}
+                              getTerminalContext={getTerminalContext}
+                              queuedMessages={queuedMessages}
+                              harnessQueuedMessageCount={harnessQueuedMessageCount}
+                              harnessQueuedPreviews={harnessQueuedPreviews}
+                              queueRuntimeId={workspace.runtime?.runtimeId}
+                              onRemoveHarnessQueuedMessage={removeHarnessQueuedMessage}
+                              onPromoteHarnessQueuedMessage={promoteHarnessQueuedMessage}
+                              onReclaimHarnessQueuedMessage={reclaimHarnessQueuedMessage}
+                              onDeleteQueuedMessage={removeQueuedMessage}
+                              onSendQueuedMessage={sendQueuedMessage}
+                              onEditQueuedMessage={(message) => workspace.editQueuedPrompt(message.id, message.text)}
+                              sendSignal={browserAnnotations.sendSignal}
+                              restoreRequest={restorePrompt?.owner === workspace.workspaceGeneration ? restorePrompt : undefined}
+                              onRestoreHandled={() => setRestorePrompt(undefined)}
+                              onModelChange={provider.changeModel}
+                              onEffortChange={provider.changeEffort}
+                              onFastChange={provider.changeFast}
+                              onSend={sendVisiblePrompt}
+                              onStop={stopRuntime}
+                              retryStoppedTurn={stoppedTurnRetryAvailable}
+                              onRetryStoppedTurn={() => {
+                                void sendPrompt('/retry')
+                              }}
+                              onRemoveAnnotation={browserAnnotations.remove}
+                              onClearAnnotations={browserAnnotations.clear}
+                              onClearTerminalSelection={clearTerminalSelection}
+                            />
+                          </ExtensionUiPresentation>
+                        </ConversationDock>
+                      </main>
+                    </SubagentsPanel>
+                    {terminalSessions.map((terminal) => (
+                      <Suspense key={terminal.id} fallback={terminal.id === activeTerminalSession?.id ? <TerminalLoadingPanel /> : null}>
+                        <TerminalDrawer
+                          ref={(handle) => {
+                            if (handle) terminalDrawerRefs.current.set(terminal.id, handle)
+                            else terminalDrawerRefs.current.delete(terminal.id)
+                          }}
+                          visible={terminal.id === activeTerminalSession?.id}
+                          cwd={terminal.cwd}
+                          sessionPath={terminal.sessionPath}
+                          shell={settingsState.settings.terminalShell}
+                          initialCommand={terminal.initialCommand}
+                          height={layout.terminalHeight}
+                          minHeight={TERMINAL_MIN}
+                          maxHeight={layout.terminalMax}
+                          defaultHeight={TERMINAL_DEFAULT}
+                          onHeightChange={layout.setTerminalHeight}
+                          onClose={() => closeTerminal(terminal.id)}
+                          onError={reportError}
+                          onInitialCommandConsumed={() => setTerminalSessions((current) => current.map((item) => (item.id === terminal.id ? { ...item, initialCommand: undefined } : item)))}
+                          onOpenLink={openTerminalLink}
+                          onReady={() => setTerminalDrawerRevision((revision) => revision + 1)}
+                          onSelectionChange={(selection) => {
+                            if (terminal.id === activeTerminalSession?.id) setTerminalSelection(selection)
+                          }}
+                        />
+                      </Suspense>
+                    ))}
+                  </div>
+                  {sideChatVisible ? (
+                    <ResizeHandle
+                      orientation="vertical"
+                      label={t('sidechat.resize')}
+                      value={layout.sideChatWidth}
+                      min={INSPECTOR_MIN}
+                      max={layout.inspectorMax}
+                      defaultValue={INSPECTOR_DEFAULT}
+                      onChange={layout.setSideChatWidth}
+                      cssVariable="--side-chat-width"
+                    />
+                  ) : inspectorVisible ? (
+                    <ResizeHandle
+                      orientation="vertical"
+                      label={t('app.resizeInspector')}
+                      value={layout.inspectorWidth}
+                      min={INSPECTOR_MIN}
+                      max={layout.inspectorMax}
+                      defaultValue={INSPECTOR_DEFAULT}
+                      onChange={layout.setInspectorWidth}
+                    />
+                  ) : null}
+                  {sideChatVisible && activeSideChat && sideChatSessionId ? (
+                    <Suspense fallback={<LoadingPanel label={t('sidechat.aria')} />}>
+                      <SideChatPanel
+                        key={`side-chat-${sideChatSessionId}`}
+                        state={activeSideChat}
+                        hasSession={Boolean(workspace.runtime)}
+                        onAsk={askSideQuestion}
+                        onCancel={cancelSideQuestion}
+                        onSelectTopic={selectSideQuestionTopic}
+                        onClose={closeSideChat}
+                      />
+                    </Suspense>
+                  ) : inspectorVisible ? (
+                    <Suspense fallback={<LoadingPanel label={t('app.panel.inspector')} />}>
+                      <Inspector
+                        key={`inspector-${browserGeneration}`}
+                        activeTab={settingsState.inspectorTab}
+                        onTabChange={settingsState.selectInspectorTab}
+                        onClose={toggleInspectorPanel}
+                        agentName={HARNESS_AGENT_NAMES[activeHarness]}
+                        shortName={HARNESS_SHORT_NAMES[activeHarness]}
+                        project={activeProject}
+                        cwd={activeCwd}
+                        runtime={workspace.runtime}
+                        transcript={workspace.transcriptStore}
+                        git={git}
+                        automations={inspectorAutomations}
+                        onOpenAutomation={openAutomation}
+                        browserHome={settingsState.settings.browserHome}
+                        browserNavigationRequest={browserNavigationRequest}
+                        onBrowserNavigationRequestHandled={handleBrowserNavigationRequest}
+                        browserAnnotations={browserAnnotations}
+                        agentBrowserTabs={activeAgentTabs}
+                        activeAgentTabId={activeAgentTabId}
+                        agentPreviewSelected={agentPreviewSelected}
+                        onSelectAgentTab={selectAgentTab}
+                        onCloseAgentTab={agentBrowser.close}
+                        onShowBrowserPreview={showBrowserPreview}
+                        onAgentSlotRect={setAgentSlotRect}
+                        agentSessionKey={activeRuntimeSessionFile ?? activeSessionFilePath}
+                        onPreviewContext={previewContext}
+                        previewPointerEvent={agentBrowser.pointerEvent?.tabId === 'preview' ? agentBrowser.pointerEvent : null}
+                        onNavigateAgentTab={navigateAgentTab}
+                        onRefreshGit={refreshGit}
+                        onOpenExternal={openExternal}
+                        onRevealPath={revealInFileManager}
+                        onGrantProject={grantActiveProject}
+                        overlay={layout.compactLayout}
+                        platform={platform}
+                      />
+                    </Suspense>
+                  ) : null}
+                  {sideChatVisible ? <button type="button" className="panel-scrim panel-scrim--inspector" aria-label={t('sidechat.close')} onClick={closeSideChat} /> : null}
+                  {!sideChatVisible && inspectorVisible ? (
+                    <button type="button" className="panel-scrim panel-scrim--inspector" aria-label={t('app.closeInspector')} onClick={toggleInspectorPanel} />
+                  ) : null}
+                </div>
+              ) : (
+                <Suspense fallback={<LoadingPanel label={viewLabels[view]} />}>{page}</Suspense>
+              )}
+            </div>
           </div>
-        ) : null}
-        {bridge ? (
-          <AgentBrowserLayer
-            tabs={agentBrowser.tabs}
-            visibleTabId={agentTabVisible ? activeAgentTabId : null}
-            rect={agentTabVisible ? agentSlotRect : null}
-            pointerEvent={agentBrowser.pointerEvent}
-            onAttach={agentBrowser.attach}
-          />
-        ) : null}
-      </div>
+          {paletteOpen ? (
+            <Suspense fallback={null}>
+              <CommandPalette
+                open
+                onClose={() => setPaletteOpen(false)}
+                onNavigate={navigate}
+                onNewSession={newSession}
+                onToggleSidebar={toggleSidebar}
+                onToggleTerminal={toggleTerminal}
+                onOpenBrowser={openBrowser}
+                platform={platform}
+              />
+            </Suspense>
+          ) : null}
+          {extension.extensionUi ? (
+            <Suspense fallback={<LoadingPanel label={t('app.panel.request')} />}>
+              <ExtensionUiModal request={extension.extensionUi.request} onRespond={(response) => void extension.respondToExtensionUi(response)} platform={platform} />
+            </Suspense>
+          ) : null}
+          {sessionTreeOpen ? (
+            <SessionTreeDialog
+              runtimeId={workspace.runtime?.runtimeId}
+              onClose={() => setSessionTreeOpen(false)}
+              onToast={(text) => setToast(text)}
+              onPrefillPrompt={(text) => setRestorePrompt({ owner: workspace.workspaceGeneration, id: Date.now(), text })}
+            />
+          ) : null}
+          {harnessUpdatePromptOpen && harnessUpdates.state.phase === 'available' ? (
+            <Modal
+              title={t('sidebar.harnessUpdate.confirmTitle')}
+              onClose={() => setHarnessUpdatePromptOpen(false)}
+              footer={
+                <>
+                  <button type="button" className="button" onClick={() => setHarnessUpdatePromptOpen(false)}>
+                    {t('sidebar.harnessUpdate.later')}
+                  </button>
+                  <button type="button" className="button button--primary" onClick={runHarnessUpdate}>
+                    {t('sidebar.harnessUpdate.updateNow')}
+                  </button>
+                </>
+              }
+            >
+              <p>{t('sidebar.harnessUpdate.confirmBody', { version: harnessUpdates.state.availableVersion ?? '' })}</p>
+            </Modal>
+          ) : null}
+          {meta && !detectedHarnesses.length && !noHarnessPromptDismissed ? (
+            <NoHarnessPrompt
+              onClose={() => setNoHarnessPromptDismissed(true)}
+              onOpenHarnessSettings={() => {
+                setNoHarnessPromptDismissed(true)
+                setSettingsSectionRequest((current) => ({ section: 'agent', id: current.id + 1 }))
+                setView('settings')
+              }}
+            />
+          ) : null}
+          {toast ? (
+            <div className={`toast toast--${toastTone}`} data-tone={toastTone} role="status" onMouseEnter={() => setToastHovered(true)} onMouseLeave={() => setToastHovered(false)}>
+              {toast}
+              <button type="button" aria-label={t('app.dismiss')} onClick={() => setToast(null)}>
+                ×
+              </button>
+            </div>
+          ) : null}
+          {bridge ? (
+            <AgentBrowserLayer
+              tabs={agentBrowser.tabs}
+              visibleTabId={agentTabVisible ? activeAgentTabId : null}
+              rect={agentTabVisible ? agentSlotRect : null}
+              pointerEvent={agentBrowser.pointerEvent}
+              onAttach={agentBrowser.attach}
+            />
+          ) : null}
+        </div>
       </ReasoningExpandedContext.Provider>
     </I18nProvider>
   )

@@ -497,12 +497,17 @@ export class RpcRuntime {
       // queue flush) rendering long after delivery. While no turn is in
       // flight — events own the live truth then — fold the authoritative
       // queue snapshot into runtime state so the GUI self-heals within one
-      // poll interval even when the delivery event never arrives.
+      // poll interval even when the delivery event never arrives. The fold
+      // only fires to clear residue: an already-empty snapshot must not push
+      // periodic runtime_state frames that perturb workspace adoption races.
       if (!this.watchdogDisposed && raw && !this.info.isStreaming && !this.retryPending && !this.continuationPending) {
-        const actions = parseSessionActionSnapshot(raw.sessionActions)
-        if (actions && JSON.stringify(actions) !== JSON.stringify(this.info.sessionActions)) {
-          this.info.sessionActions = actions
-          this.emit({ type: 'runtime_state', state: this.snapshot() })
+        const current = this.info.sessionActions
+        if (current && (current.queuedCount > 0 || (current.steering?.length ?? 0) > 0 || (current.followUps?.length ?? 0) > 0)) {
+          const actions = parseSessionActionSnapshot(raw.sessionActions)
+          if (actions && JSON.stringify(actions) !== JSON.stringify(current)) {
+            this.info.sessionActions = actions
+            this.emit({ type: 'runtime_state', state: this.snapshot() })
+          }
         }
       }
     } catch { /* transient poll failures are ignored; the next tick retries */ }

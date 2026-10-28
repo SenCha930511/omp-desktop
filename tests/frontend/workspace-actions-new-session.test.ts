@@ -75,10 +75,12 @@ interface FixtureOptions {
   currentRuntime?: RuntimeInfo | null
   /** The runtimes agent.list() reports. */
   listedRuntimes?: RuntimeInfo[]
+  /** Dynamic override for agent.list() (evaluated per call). */
+  listRuntimes?(): RuntimeInfo[]
   bridge?: DesktopApi | null
 }
 
-function fixture({ currentRuntime = null, listedRuntimes = [], bridge: bridgeOverride }: FixtureOptions = {}) {
+function fixture({ currentRuntime = null, listedRuntimes = [], listRuntimes, bridge: bridgeOverride }: FixtureOptions = {}) {
   let runtimeState: RuntimeInfo | null = currentRuntime
   let generation = 1
   let messages: TranscriptMessage[] = []
@@ -145,7 +147,7 @@ function fixture({ currentRuntime = null, listedRuntimes = [], bridge: bridgeOve
     reconcileQueuedPrompts: vi.fn(),
   }
   const bridge = bridgeOverride === null ? null : bridgeOverride ?? ({
-    agent: { list: vi.fn(async () => listedRuntimes), command, start, stop },
+    agent: { list: vi.fn(async () => (listRuntimes ? listRuntimes() : listedRuntimes)), command, start, stop },
     sessions: { list: sessionsList },
   } as unknown as DesktopApi)
   const actions = createWorkspaceActions(() => ({
@@ -403,3 +405,28 @@ describe('inferred project grant', () => {
     expect(start).toHaveBeenCalledWith({ cwd: project.primaryFolder, harness: 'omp' })
   })
 })
+
+  it('waits for an in-flight boundary flight instead of starting a second session', async () => {
+    // The prompt must land on the boundary runtime the New-session flight is
+    // still establishing; racing ahead would spawn a second session file and
+    // orphan the boundary as an untitled duplicate row in the catalog.
+    const attached: RuntimeInfo[] = []
+    const state = fixture({ listRuntimes: () => [...attached] })
+    const originalAttach = state.workspace.attachRuntime
+    state.workspace.attachRuntime = (next: RuntimeInfo | undefined, generation?: number) => {
+      attached.length = 0
+      if (next) attached.push(next)
+      originalAttach(next, generation)
+    }
+    state.command.mockImplementation(durableCommandResponses)
+    const startDeferred = Promise.withResolvers<RuntimeInfo>()
+    state.start.mockReturnValue(startDeferred.promise)
+
+    const creating = state.actions.newSession(project)
+    const sending = state.actions.sendPrompt('hello boundary')
+    startDeferred.resolve(filelessRuntime())
+    await Promise.all([creating, sending])
+
+    expect(state.start).toHaveBeenCalledTimes(1)
+    expect(state.command).toHaveBeenCalledWith('durable-runtime', expect.objectContaining({ type: 'prompt', message: 'hello boundary' }))
+  })

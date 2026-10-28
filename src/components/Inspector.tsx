@@ -1,4 +1,3 @@
-import { PanelRightClose } from 'lucide-react'
 import { memo } from 'react'
 import type { StampedPointerEvent } from '@/hooks/useAgentBrowserTabs'
 import type { BrowserAnnotationsApi } from '@/hooks/useBrowserAnnotations'
@@ -127,9 +126,6 @@ export const Inspector = memo(function Inspector({
           </button>
         ))}
         <span className="inspector__tab-spacer" />
-        <IconButton label={t('inspector.close')} onClick={onClose}>
-          <PanelRightClose size={15} />
-        </IconButton>
       </div>
       <div id={`inspector-panel-${activeTab}`} className="inspector__body" role="tabpanel" aria-labelledby={`inspector-tab-${activeTab}`} tabIndex={0}>
         {activeTab === 'summary' ? (

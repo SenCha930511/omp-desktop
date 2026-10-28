@@ -262,7 +262,7 @@ if (!args.includes('--mode') || args[args.indexOf('--mode') + 1] !== 'rpc') proc
 fs.writeFileSync(marker('omp-runtime.pid'), String(process.pid))
 fs.writeFileSync(marker('omp-runtime-args.json'), JSON.stringify(args))
 const resumeIndex = args.indexOf('--resume')
-const sessionFile = resumeIndex >= 0 ? args[resumeIndex + 1] : ${JSON.stringify(realpathSync(fixtureSessionPath))}
+let sessionFile = resumeIndex >= 0 ? args[resumeIndex + 1] : ${JSON.stringify(realpathSync(fixtureSessionPath))}
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
 const lastEntryId = () => {
   try {
@@ -350,6 +350,22 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     }
     sendSessionActions()
     send({ id: command.id, type: 'response', command: command.type, success: true, data: { promoted: index >= 0 } })
+  } else if (command.type === 'new_session') {
+    // The durable New-session boundary creates its own session file, like
+    // the real harness: the boundary must not claim the fixture session
+    // other workspaces resume, and its row must be adoptable on its own.
+    // The file follows the canonical <timestamp>_<uuid>.jsonl shape with a
+    // padded title slot plus a session record so the catalog indexes it.
+    const dir = sessionFile.slice(0, sessionFile.lastIndexOf('/'))
+    const now = new Date()
+    const hex = (Date.now().toString(16) + String(process.pid).padStart(12, '0')).slice(0, 32).padEnd(32, '0')
+    const sessionId = hex.slice(0, 8) + '-' + hex.slice(8, 12) + '-' + hex.slice(12, 16) + '-' + hex.slice(16, 20) + '-' + hex.slice(20, 32)
+    const boundaryFile = dir + '/' + now.toISOString().replace(/[:.]/g, '-') + '_' + sessionId + '.jsonl'
+    const titleRecord = JSON.stringify({ type: 'title', v: 1, title: 'Untitled session', updatedAt: now.toISOString(), pad: '' })
+    const paddedTitle = JSON.stringify({ type: 'title', v: 1, title: 'Untitled session', updatedAt: now.toISOString(), pad: ' '.repeat(Math.max(0, 255 - Buffer.byteLength(titleRecord, 'utf8'))) })
+    fs.writeFileSync(boundaryFile, paddedTitle + '\\n' + JSON.stringify({ type: 'session', version: 3, id: sessionId, timestamp: now.toISOString(), cwd: process.cwd() }) + '\\n')
+    sessionFile = boundaryFile
+    send({ id: command.id, type: 'response', command: command.type, success: true, data: { cancelled: false } })
   } else if (command.type === 'steer') {
     fs.writeFileSync(marker('steer-args.json'), JSON.stringify(command))
     if (streaming) steeringQueue.push(typeof command.message === 'string' ? command.message : '')
@@ -794,9 +810,11 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(page.locator('.subagents__commands-toggle')).toHaveCount(0)
     await expect(page.locator('.project-run-control')).toHaveCount(0)
     await page.screenshot({ path: test.info().outputPath('subagents.png') })
-    await expect(composer).not.toBeVisible()
-    await page.getByRole('button', { name: 'Conversation', exact: true }).click()
+    // Split view: the composer never leaves the screen while an agent pane
+    // is open; closing the pane deselects the agent.
     await expect(composer).toBeVisible()
+    await page.getByRole('button', { name: 'Close agent transcript' }).click()
+    await expect(page.locator('.subagents__page:not([hidden])')).toHaveCount(0)
   })
 
   test('renders a manual compact in the live transcript', async () => {
@@ -867,7 +885,7 @@ test.describe('OMP Desktop desktop smoke', () => {
 
   test('pins an agent overview, prioritizes attention and preserves it while switching views', async () => {
     await page.setViewportSize({ width: 1800, height: 950 })
-    if (await page.locator('.inspector').count()) await page.locator('.inspector').getByRole('button', { name: 'Close inspector' }).click()
+    if (await page.locator('.inspector').count()) await page.getByRole('button', { name: 'Toggle inspector' }).click()
     await expect(page.locator('.model-picker__trigger')).toHaveAccessibleName('Model: Claude Fixture')
     // This fixture emits a one-shot roster, so attach the observer before asking
     // it to spawn agents. A real harness can also recover its registry snapshot.
@@ -906,8 +924,8 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(activeAgent.locator('.work-timeline')).toBeVisible()
     await expect.poll(() => activeAgent.locator('.subagents__messages').evaluate((element) => element.scrollTop)).toBeCloseTo(previousTop, 0)
     await expect(activeAgent.getByRole('button', { name: /Jump to/ })).toBeVisible()
-    await page.getByRole('button', { name: 'Conversation', exact: true }).click()
-    await expect(page.getByRole('combobox', { name: 'Message OMP' })).toBeVisible()
+    await page.getByRole('button', { name: 'Close agent transcript' }).click()
+    await expect(page.locator('.subagents__page:not([hidden])')).toHaveCount(0)
     const positions = await page.locator('.subagents__body').evaluate((element) => {
       const main = element.querySelector('main')!.getBoundingClientRect()
       const list = element.querySelector('.subagents__roster')!.getBoundingClientRect()
@@ -1140,7 +1158,7 @@ test.describe('OMP Desktop desktop smoke', () => {
 
   test('filters unread agent updates and measures retained view switching', async () => {
     await page.setViewportSize({ width: 1600, height: 950 })
-    if (await page.locator('.inspector').count()) await page.locator('.inspector').getByRole('button', { name: 'Close inspector' }).click()
+    if (await page.locator('.inspector').count()) await page.getByRole('button', { name: 'Toggle inspector' }).click()
     await expect(page.locator('.model-picker__trigger')).toHaveAccessibleName('Model: Claude Fixture')
     const composer = page.getByRole('combobox', { name: 'Message OMP' })
     await composer.fill('/context')
@@ -1176,7 +1194,7 @@ test.describe('OMP Desktop desktop smoke', () => {
     await page.reload()
     await expect(page.locator('.app-shell')).toHaveAttribute('data-ready', 'true')
     await page.setViewportSize({ width: 1540, height: 980 })
-    if (await page.locator('.inspector').count()) await page.locator('.inspector').getByRole('button', { name: '關閉檢查器' }).click()
+    if (await page.locator('.inspector').count()) await page.getByRole('button', { name: '切換檢查器' }).click()
     const timestamp = new Date().toISOString()
     appendFileSync(fixtureSessionFile, `${JSON.stringify({ type: 'message', id: 'preview-user', parentId: 'fixture-goal-summary', timestamp,
       message: { role: 'user', timestamp, content: [{ type: 'text', text: '請整理這次介面更新，並確認測試結果。' }] },
@@ -2056,11 +2074,16 @@ test.describe('OMP Desktop desktop smoke', () => {
     await composer.press('Enter')
     await expect(page.locator('.conversation-hint')).toHaveCount(0)
     await expect(page.locator('.session-row-wrap.is-placeholder')).toHaveCount(0)
-    await expect(page.locator('.session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' })).toHaveClass(/is-selected/)
+    // The prompt rode the New-session boundary runtime, so the boundary's
+    // own row (not the deleted fixture session) owns the selection.
+    await expect(page.locator('.session-row-wrap').filter({ hasText: 'Untitled session' })).toHaveClass(/is-selected/)
     await expect(page.locator('.transcript .user-bubble').filter({ hasText: '/modelpreset list' })).toHaveCount(0)
   })
 
   test('adopts the session started by the first prompt in place of the draft placeholder', async () => {
+    // Let the boot's auto-selection settle first: clicking New during the
+    // bootstrap workspace reset races the flight against a generation bump.
+    await expect(page.locator('.session-row-wrap.is-selected')).toHaveCount(1)
     const projectRow = page.locator('.project-row').first()
     await projectRow.hover()
     await projectRow.getByRole('button', { name: /^New session in / }).click()
@@ -2087,7 +2110,9 @@ test.describe('OMP Desktop desktop smoke', () => {
     // The hermetic daemon reports the fixture session file for fresh starts,
     // so its row replaces the placeholder and keeps the turn that created it.
     await expect(placeholder).toHaveCount(0)
-    const adopted = page.locator('.session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' })
+    // The prompt rode the New-session boundary runtime, so the boundary's own
+    // row replaces the placeholder (no second session file is spawned).
+    const adopted = page.locator('.session-row-wrap').filter({ hasText: 'Untitled session' })
     await expect(adopted).toHaveClass(/is-selected/)
     await expect(page.locator('.session-row-wrap.is-selected')).toHaveCount(1)
     await expect(page.locator('.transcript .user-bubble').filter({ hasText: 'Draft placeholder adoption probe' })).toHaveCount(1)
@@ -2823,7 +2848,9 @@ test.describe('OMP Desktop desktop smoke', () => {
     // the sidebar closes. Normalize either valid state before testing the toggle.
     await page.waitForTimeout(250)
     if (await page.locator('.inspector').count()) {
-      await page.locator('.inspector').getByRole('button', { name: 'Close inspector' }).click()
+      // At the compact breakpoint the inspector scrim covers the toolbar, so
+      // the scrim itself is the close affordance.
+      await page.getByRole('button', { name: 'Close inspector', exact: true }).click({ position: { x: 20, y: 300 } })
       await expect(page.locator('.inspector')).toHaveCount(0)
     }
     await expect(page.locator('.workbench')).not.toHaveAttribute('inert')
@@ -2844,7 +2871,7 @@ test.describe('OMP Desktop desktop smoke', () => {
     await page.getByRole('button', { name: /^New session/ }).first().click()
     await page.setViewportSize({ width: 1800, height: 900 })
     if (await page.locator('.inspector').count()) {
-      await page.locator('.inspector').getByRole('button', { name: 'Close inspector' }).click()
+      await page.getByRole('button', { name: 'Toggle inspector' }).click()
       await expect(page.locator('.inspector')).toHaveCount(0)
     }
     const measure = () => page.evaluate(() => {
@@ -2887,13 +2914,13 @@ test.describe('OMP Desktop desktop smoke', () => {
       ],
     } })}\n`)
     await expect(page.locator('.transcript').getByText('專案已整理完成', { exact: true })).toBeVisible()
-    if (await page.locator('.inspector').count()) await page.locator('.inspector').getByRole('button', { name: 'Close inspector' }).click()
+    if (await page.locator('.inspector').count()) await page.getByRole('button', { name: 'Toggle inspector' }).click()
     for (const theme of ['light', 'dark'] as const) {
       await page.evaluate(async (theme) => window.desktop.settings.update({ theme, reasoningExpandedByDefault: true }), theme)
       await page.reload()
       await expect(page.locator('.app-shell')).toHaveAttribute('data-ready', 'true')
       await expect(page.locator('html')).toHaveAttribute('data-theme', theme)
-      if (await page.locator('.inspector').count()) await page.locator('.inspector').getByRole('button', { name: 'Close inspector' }).click()
+      if (await page.locator('.inspector').count()) await page.getByRole('button', { name: 'Toggle inspector' }).click()
       for (const width of [1440, 680]) {
         await page.setViewportSize({ width, height: 950 })
         const alignment = await page.locator('.transcript .work-timeline').last().evaluate((element) => {

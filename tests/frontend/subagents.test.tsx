@@ -67,7 +67,7 @@ describe('subagent observability', () => {
     const root = createRoot(host)
     const agent = { id: 'a', agent: 'Explore', status: 'running', messages: [{ role: 'assistant', timestamp: 1, content: [{ type: 'thinking', thinking: 'Original model output' }] }] }
     try {
-      for (const [preference, back, running] of [['zh-TW', '主對話', '思考中'], ['zh-CN', '主对话', '思考中'], ['en', 'Conversation', 'Thinking']] as const) {
+      for (const [preference, back, running] of [['zh-TW', '子代理', '思考中'], ['zh-CN', '子代理', '思考中'], ['en', 'Subagents', 'Thinking']] as const) {
         act(() => root.render(<I18nProvider preference={preference}><SubagentsPanel connected state={{ agents: [agent], selectedId: 'a', select: vi.fn(), error: undefined }} /></I18nProvider>))
         expect(host.textContent).toContain(back)
         expect(host.textContent).toContain(running)
@@ -220,3 +220,18 @@ describe('subagent control and history UI', () => {
     } finally { act(() => root.unmount()) }
   })
 })
+
+  it('closes the split-view pane through its header control', async () => {
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    const select = vi.fn()
+    const agent: SubagentView = { id: 'a', agent: 'Explore', status: 'running', messages: [] }
+    try {
+      act(() => root.render(<I18nProvider preference="en"><SubagentsPanel connected state={{ agents: [agent], selectedId: 'a', select, error: undefined }} /></I18nProvider>))
+      const close = host.querySelector<HTMLButtonElement>('.subagents__pane-close')
+      expect(close).not.toBeNull()
+      expect(close?.getAttribute('aria-label')).toBe('Close agent transcript')
+      await act(async () => close!.click())
+      expect(select).toHaveBeenCalledWith(undefined)
+    } finally { act(() => root.unmount()) }
+  })
