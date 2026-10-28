@@ -476,8 +476,23 @@ export class RpcRuntime {
       if (!this.watchdogDisposed && raw && typeof raw.isCompacting === 'boolean' && requestedAt > this.lastRealCompactionEventAt) {
         this.observePolledCompaction(raw.isCompacting)
       }
+      // The turn can end without agent_end reaching us (a lost frame or an
+      // upstream gap) — the transcript then sits complete while the pill
+      // keeps spinning. While no event has arrived since this probe was
+      // issued, omp's own isStreaming verdict is authoritative, so settle
+      // exactly like a real end. Pending retries and continuations keep the
+      // working state true by design and are never overridden.
+      if (!this.watchdogDisposed && raw && typeof raw.isStreaming === 'boolean'
+        && requestedAt >= this.lastActivityAt
+        && !this.retryPending && !this.continuationPending
+        && this.info.isStreaming && !raw.isStreaming) {
+        this.info.isStreaming = false
+        this.bakeLiveContextUsage()
+        this.emit({ type: 'agent_end', synthetic: true })
+        this.emit({ type: 'runtime_state', state: this.snapshot() })
+      }
     } catch { /* transient poll failures are ignored; the next tick retries */ }
-    finally { this.compactionPollInFlight = false }
+     finally { this.compactionPollInFlight = false }
   }
 
   private shouldPollCompaction(): boolean {

@@ -1297,6 +1297,7 @@ describe('compaction watchdog', () => {
 const readline = require('node:readline')
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
 let compacting = false
+let streaming = false
 readline.createInterface({ input: process.stdin }).on('line', (line) => {
   const command = JSON.parse(line)
   if (command.type === 'negotiate_protocol') {
@@ -1539,5 +1540,71 @@ describe('agent RPC duplicate session starts', () => {
     // Starting the second session retires the now-idle first child (warm
     // replacement), so exactly one resident child remains.
     expect(manager.list().map((runtime) => runtime.runtimeId)).toEqual([third.runtimeId])
+  })
+})
+
+describe('streaming silence watchdog', () => {
+  const watchdogAgent = (name: string, promptScript: string): { cwd: string; executable: string } => {
+    const cwd = mkdtempSync(join(tmpdir(), `omp-desktop-rpc-${name}-`))
+    dirs.push(cwd)
+    const executable = join(cwd, `${name}.cjs`)
+    writeFileSync(executable, `#!/usr/bin/env node
+const readline = require('node:readline')
+const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
+let compacting = false
+let streaming = false
+readline.createInterface({ input: process.stdin }).on('line', (line) => {
+  const command = JSON.parse(line)
+  if (command.type === 'negotiate_protocol') {
+    send({ id: command.id, type: 'response', command: 'negotiate_protocol', success: true, data: { protocolVersion: command.protocolVersion } })
+  } else if (command.type === 'get_state') {
+    send({ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'watchdog', isStreaming: streaming, isCompacting: compacting } })
+  } else if (command.type === 'prompt') {
+    send({ id: command.id, type: 'response', command: 'prompt', success: true })
+    ${promptScript}
+  } else if (command.type === 'abort') {
+    send({ id: command.id, type: 'response', command: 'abort', success: true })
+  }
+})
+`)
+    chmodSync(executable, 0o755)
+    return { cwd, executable }
+  }
+
+  it('settles a turn whose agent_end never arrives once the poll reports streaming over', async () => {
+    const fake = watchdogAgent('silent-turn-end', `
+    send({ type: 'agent_start' })
+    streaming = true
+    setTimeout(() => { streaming = false }, 400)`)
+    const events: Record<string, unknown>[] = []
+    const runtime = new RpcRuntime(fake.executable, [], fake.cwd, ({ event }) => events.push(event), () => undefined, {}, { pollIntervalMs: 80, endGraceMs: 150 })
+    await runtime.handshake()
+    try {
+      await runtime.command({ type: 'prompt', message: 'continue' })
+      await waitUntil(() => runtime.snapshot().isStreaming === true)
+      await waitUntil(() => events.some((event) => event.type === 'agent_end' && event.synthetic === true))
+      expect(runtime.snapshot().isStreaming).toBe(false)
+      await waitUntil(() => events.some((event) => event.type === 'runtime_state' && (event as { state?: { isStreaming?: boolean } }).state?.isStreaming === false))
+    } finally {
+      await runtime.stop()
+    }
+  })
+
+  it('never overrides a turn that omp still reports as streaming', async () => {
+    const fake = watchdogAgent('still-streaming', `
+    send({ type: 'agent_start' })
+    streaming = true`)
+    const events: Record<string, unknown>[] = []
+    const runtime = new RpcRuntime(fake.executable, [], fake.cwd, ({ event }) => events.push(event), () => undefined, {}, { pollIntervalMs: 80, endGraceMs: 150 })
+    await runtime.handshake()
+    try {
+      await runtime.command({ type: 'prompt', message: 'continue' })
+      await waitUntil(() => runtime.snapshot().isStreaming === true)
+      await new Promise((resolve) => setTimeout(resolve, 450))
+      expect(events.some((event) => event.type === 'agent_end' && event.synthetic === true)).toBe(false)
+      expect(runtime.snapshot().isStreaming).toBe(true)
+    } finally {
+      await runtime.stop()
+    }
   })
 })
