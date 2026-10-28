@@ -64,7 +64,24 @@ describe('turn-metrics TPS', () => {
     observeTurnEvent('rt-d', { type: 'agent_end' })
     const metrics = getTurnMetrics('rt-d')
     expect(metrics.ttftMs).toBe(500)
-    expect(metrics.tokensPerSecond).toBeCloseTo(42, 5)
+    // The generation window runs from the first token to agent_end (1.1s).
+    expect(metrics.tokensPerSecond).toBeCloseTo(42 / 1.1, 5)
+  })
+
+  it('still derives TPS when every delta lands in the same tick', () => {
+    // Renderer batching: deltas can arrive together, so first === last. The
+    // measurement window must come from agent_end, not the streaming span.
+    observeTurnEvent('rt-batch', sessionUsage(0))
+    observeTurnEvent('rt-batch', { type: 'agent_start' })
+    advance(1_500)
+    observeTurnEvent('rt-batch', messageUpdate('text_delta', 'a'))
+    observeTurnEvent('rt-batch', messageUpdate('text_delta', 'b'))
+    observeTurnEvent('rt-batch', sessionUsage(60))
+    advance(3_500)
+    observeTurnEvent('rt-batch', { type: 'agent_end' })
+    const metrics = getTurnMetrics('rt-batch')
+    expect(metrics.ttftMs).toBe(500)
+    expect(metrics.tokensPerSecond).toBeCloseTo(30, 5)
   })
 
   it('finalizes when the closing session_usage arrives after agent_end', () => {

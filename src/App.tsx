@@ -1560,6 +1560,7 @@ export default function App() {
                               contextUsage={workspace.runtime?.contextUsage}
                               sessionUsage={workspace.runtime?.sessionUsage}
                               runtimeId={workspace.runtime?.runtimeId}
+                              harnessTokensPerSecond={workspace.runtime?.tokensPerSecond}
                               executingModel={workspace.runtime?.executingModel}
                               skills={pluginSkills.skills}
                               sessions={mentionableSessions}

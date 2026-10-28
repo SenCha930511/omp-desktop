@@ -99,6 +99,8 @@ interface ComposerProps {
   sessionUsage?: SessionUsage
   /** 查詢回合指標(TTFT/TPS)的 runtime;切換後自然回到 —。 */
   runtimeId?: string | null
+  /** Harness-reported output rate of the last turn; preferred over the local estimate. */
+  harnessTokensPerSecond?: number
   voice?: DesktopApi['voice'] | null
   transcriptionProvider?: VoiceTranscriptionProvider
   skills: SkillRecord[]
@@ -214,6 +216,7 @@ export const Composer = memo(function Composer({
   executingModel,
   sessionUsage,
   runtimeId,
+  harnessTokensPerSecond,
   voice,
   transcriptionProvider = 'openai-live',
   skills,
@@ -744,6 +747,7 @@ export const Composer = memo(function Composer({
   const sessionCost = formatSessionCost(sessionUsage)
   // 回合指標快照只在值變時替換,訂閱不會因 delta 事件連發而重渲染。
   const turnMetrics = useSyncExternalStore(subscribeTurnMetrics, () => getTurnMetrics(runtimeId))
+  const outputTokensPerSecond = harnessTokensPerSecond ?? turnMetrics.tokensPerSecond
   /** Click target for the context dial's popover; closes on outside click/Escape. */
   const [contextMenuOpen, setContextMenuOpen] = useState(false)
   const contextMenuRef = useRef<HTMLDivElement>(null)
@@ -1487,7 +1491,7 @@ export const Composer = memo(function Composer({
                         </div>
                         <div>
                           <dt>{t('composer.context.tps')}</dt>
-                          <dd>{turnMetrics.tokensPerSecond === null ? '—' : `${turnMetrics.tokensPerSecond.toFixed(1)} tok/s`}</dd>
+                          <dd>{outputTokensPerSecond === null ? '—' : `${outputTokensPerSecond.toFixed(1)} tok/s`}</dd>
                         </div>
                       </dl>
                     ) : (

@@ -295,6 +295,8 @@ export interface RuntimeInfo {
   sessionSettings?: SessionSettingsSnapshot
   contextUsage?: PrimeContextUsage
   sessionUsage?: SessionUsage
+  /** Harness-reported output rate of the last turn (tokens/sec); absent before any turn. */
+  tokensPerSecond?: number
   /**
    * Renderer-tracked: a compaction finished but the authoritative session
    * state could not be synchronized afterwards. Snapshots from the main

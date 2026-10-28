@@ -41,7 +41,7 @@ afterEach(async () => {
   vi.unstubAllGlobals()
 })
 
-function renderComposer(onSend = vi.fn(), imageInputSupported = true, busy = false, messageEnterAction: 'queue' | 'steer' = 'queue', contextUsage?: PrimeContextUsage, executingModel?: RuntimeInfo['executingModel']) {
+function renderComposer(onSend = vi.fn(), imageInputSupported = true, busy = false, messageEnterAction: 'queue' | 'steer' = 'queue', contextUsage?: PrimeContextUsage, executingModel?: RuntimeInfo['executingModel'], harnessTokensPerSecond?: number) {
   act(() => root.render(<Composer
     busy={busy}
     model="provider/vision"
@@ -55,6 +55,7 @@ function renderComposer(onSend = vi.fn(), imageInputSupported = true, busy = fal
     imageInputSupported={imageInputSupported}
     messageEnterAction={messageEnterAction}
     contextUsage={contextUsage}
+    harnessTokensPerSecond={harnessTokensPerSecond}
     executingModel={executingModel}
     skills={[]}
     onModelChange={vi.fn()}
@@ -565,6 +566,17 @@ describe('Composer context usage and stop control', () => {
     })
     expect(onSend).toHaveBeenCalledWith('/compact', [], 'queue')
     expect(container.querySelector('.context-popover')).toBeNull()
+  })
+
+  it('shows the harness-reported output rate in the usage popover', () => {
+    renderComposer(vi.fn(), true, false, 'queue', { tokens: 50_000, contextWindow: 100_000, percent: 50 }, undefined, 212.64)
+    const dial = container.querySelector<HTMLButtonElement>('.context-usage-dial')
+    act(() => {
+      dial?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    const popover = container.querySelector('.context-popover')
+    expect(popover?.textContent).toContain('Output speed')
+    expect(popover?.textContent).toContain('212.6 tok/s')
   })
 
   it('shows unavailable usage honestly and uses a square stop icon', () => {

@@ -607,6 +607,89 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     expect(manager.list()[0]?.sessionUsage?.cost).toBeGreaterThanOrEqual(0.42)
   })
 
+  it('publishes the engine-reported output rate after the turn ends', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-rpc-tps-'))
+    dirs.push(cwd)
+    const executable = join(cwd, 'tps-agent.cjs')
+    writeFileSync(executable, `#!/usr/bin/env node
+const readline = require('node:readline')
+let turns = 0
+const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
+readline.createInterface({ input: process.stdin }).on('line', (line) => {
+  const command = JSON.parse(line)
+  if (command.type === 'negotiate_protocol') {
+    send({ id: command.id, type: 'response', command: 'negotiate_protocol', success: true, data: { protocolVersion: command.protocolVersion } })
+  } else if (command.type === 'get_state') {
+    send({ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'tps', isStreaming: false, tokensPerSecond: turns === 0 ? null : 212.64 } })
+  } else if (command.type === 'get_session_stats') {
+    send({ id: command.id, type: 'response', command: 'get_session_stats', success: true, data: { cost: 0.1, tokens: { input: 100, output: 60, cacheRead: 0, cacheWrite: 0, total: 160 } } })
+  } else if (command.type === 'prompt') {
+    turns += 1
+    send({ id: command.id, type: 'response', command: 'prompt', success: true })
+    send({ type: 'agent_end' })
+  } else if (command.type === 'abort') send({ id: command.id, type: 'response', command: 'abort', success: true })
+})
+`)
+    chmodSync(executable, 0o755)
+    const manager = managerFor(executable)
+    const events: Array<{ event: Record<string, unknown> }> = []
+    manager.setEventSink((event) => events.push(event))
+
+    const runtime = await manager.start({ cwd })
+    // 首回合前上游回報 null:不得留下任何顯示值。
+    expect(runtime.tokensPerSecond).toBeUndefined()
+    await manager.command(runtime.runtimeId, { type: 'prompt', message: 'go' })
+    await waitUntil(() => events.some(({ event }) => event.type === 'runtime_state'
+      && (event.state as { tokensPerSecond?: unknown } | undefined)?.tokensPerSecond === 212.64))
+    expect(manager.list()[0]?.tokensPerSecond).toBeCloseTo(212.64, 5)
+  })
+
+  it('clears a stale harness queue snapshot once omp reports the delivery', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-rpc-queue-fold-'))
+    dirs.push(cwd)
+    const executable = join(cwd, 'queue-fold-agent.cjs')
+    writeFileSync(executable, `#!/usr/bin/env node
+const readline = require('node:readline')
+let delivered = false
+const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
+readline.createInterface({ input: process.stdin }).on('line', (line) => {
+  const command = JSON.parse(line)
+  if (command.type === 'negotiate_protocol') {
+    send({ id: command.id, type: 'response', command: 'negotiate_protocol', success: true, data: { protocolVersion: command.protocolVersion } })
+  } else if (command.type === 'get_state') {
+    send({ id: command.id, type: 'response', command: 'get_state', success: true, data: {
+      sessionId: 'queue-fold',
+      isStreaming: false,
+      queuedMessageCount: delivered ? 0 : 1,
+      queuedMessages: delivered ? { steering: [], followUp: [] } : { steering: ['然後advisor用deepseek'], followUp: [] },
+    } })
+  } else if (command.type === 'get_session_stats') {
+    send({ id: command.id, type: 'response', command: 'get_session_stats', success: true, data: { cost: 0, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } })
+  } else if (command.type === 'prompt') {
+    // omp delivers the held message between turns without pushing
+    // session_action_update; only the polled snapshot reflects the change.
+    delivered = true
+    send({ id: command.id, type: 'response', command: 'prompt', success: true })
+    send({ type: 'agent_end' })
+  } else if (command.type === 'abort') send({ id: command.id, type: 'response', command: 'abort', success: true })
+})
+`)
+    chmodSync(executable, 0o755)
+    const events: Record<string, unknown>[] = []
+    const runtime = new RpcRuntime(executable, [], cwd, ({ event }) => events.push(event), () => undefined, {}, { pollIntervalMs: 80 })
+    await runtime.handshake()
+    try {
+      expect(runtime.snapshot().sessionActions).toMatchObject({ queuedCount: 1, steering: ['然後advisor用deepseek'] })
+      await runtime.command({ type: 'prompt', message: 'go' })
+      await waitUntil(() => runtime.snapshot().sessionActions?.queuedCount === 0)
+      expect(runtime.snapshot().sessionActions).toMatchObject({ queuedCount: 0, steering: [], followUps: [] })
+      expect(events.some((event) => event.type === 'runtime_state'
+        && (event.state as { sessionActions?: { queuedCount?: number } } | undefined)?.sessionActions?.queuedCount === 0)).toBe(true)
+    } finally {
+      await runtime.stop()
+    }
+  })
+
   it('clears streaming state when a local-only slash command completes via prompt_result', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-rpc-prompt-result-'))
     dirs.push(cwd)
@@ -1625,7 +1708,9 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   if (command.type === 'negotiate_protocol') {
     send({ id: command.id, type: 'response', command: 'negotiate_protocol', success: true, data: { protocolVersion: command.protocolVersion } })
   } else if (command.type === 'get_state') {
-    send({ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'silent-drain', isStreaming: streaming, isCompacting: false, sessionActions: { queuedCount: heldQueue.length, steering: [], followUps: heldQueue } } })
+    // Real omp wire shape: queuedMessageCount + queuedMessages (a literal
+    // sessionActions field does not exist on get_state).
+    send({ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'silent-drain', isStreaming: streaming, isCompacting: false, queuedMessageCount: heldQueue.length, queuedMessages: { steering: [], followUp: heldQueue } } })
   } else if (command.type === 'prompt') {
     send({ id: command.id, type: 'response', command: 'prompt', success: true })
     send({ type: 'agent_start' })

@@ -25,6 +25,8 @@ export interface HarnessStateReading {
   /** 回報表示帳號進入限流;state dump 缺席該欄代表未限流(讀取方清除)。 */
   usageLimit?: UsageLimitState
   contextUsage?: PrimeContextUsage
+  /** 上游回報的末回合輸出速度;null 表示尚未有回合(讀取方清除顯示)。 */
+  tokensPerSecond?: number | null
   sessionActions?: SessionActionSnapshot
 }
 
@@ -246,6 +248,11 @@ export const OMP_RPC_ADAPTER: HarnessRpcAdapter = {
     if (usageLimit) reading.usageLimit = usageLimit
     const usage = parseContextUsage(data.contextUsage)
     if (usage) reading.contextUsage = usage
+    if (typeof data.tokensPerSecond === 'number' && Number.isFinite(data.tokensPerSecond) && data.tokensPerSecond >= 0) {
+      reading.tokensPerSecond = data.tokensPerSecond
+    } else if (data.tokensPerSecond === null) {
+      reading.tokensPerSecond = null
+    }
     if (Number.isSafeInteger(data.queuedMessageCount) && Number(data.queuedMessageCount) >= 0 && Number(data.queuedMessageCount) <= MAX_QUEUED_ACTIONS) {
       // get_state also names the held messages (queuedMessages.steering /
       // followUp previews). Keep them: the queue banner shows what omp is

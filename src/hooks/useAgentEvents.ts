@@ -152,6 +152,9 @@ export function useAgentEvents({
           // refresh came from the harness or the manual retry.
           compactionSyncPendingStore.clear(runtimeId)
           setRuntime((current) => current?.runtimeId === runtimeId ? state : current)
+          // The poll folds the harness queue into runtime_state to clear
+          // residue after silent delivery; the local queue follows suit.
+          if (state.sessionActions) reconcileQueuedPrompts(state.sessionActions)
         }
         return
       }

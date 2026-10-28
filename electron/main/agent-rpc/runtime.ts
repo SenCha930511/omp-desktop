@@ -503,7 +503,10 @@ export class RpcRuntime {
       if (!this.watchdogDisposed && raw && !this.info.isStreaming && !this.retryPending && !this.continuationPending) {
         const current = this.info.sessionActions
         if (current && (current.queuedCount > 0 || (current.steering?.length ?? 0) > 0 || (current.followUps?.length ?? 0) > 0)) {
-          const actions = parseSessionActionSnapshot(raw.sessionActions)
+          // omp reports the queue as queuedMessageCount/queuedMessages; the
+          // adapter owns that translation (raw.sessionActions does not exist
+          // on the wire, which once left the fold a silent no-op).
+          const actions = this.adapter.readState(raw).sessionActions ?? null
           if (actions && JSON.stringify(actions) !== JSON.stringify(current)) {
             this.info.sessionActions = actions
             this.emit({ type: 'runtime_state', state: this.snapshot() })
@@ -736,6 +739,9 @@ export class RpcRuntime {
       || value.type === 'turn_end'
       || value.type === 'agent_end') {
       void this.refreshContextUsage(this.liveContextUsage.tokens)
+      // The engine finalizes its per-turn output rate at agent_end; publish
+      // the fresh snapshot so the composer shows the authoritative value.
+      if (value.type === 'agent_end') void this.refreshState().catch(() => undefined)
     } else if (value.type === 'compaction_end') {
       void this.refreshContextUsage()
       // Query the engine's actual identity after compaction. It normally keeps
@@ -985,6 +991,7 @@ export class RpcRuntime {
         this.authoritativeContextUsage = undefined
         delete this.info.contextUsage
         delete this.info.sessionUsage
+        delete this.info.tokensPerSecond
         // A state dump is a persisted configuration, not resolution evidence.
         this.info.autoThinkingResolved = false
       }
@@ -1011,6 +1018,8 @@ export class RpcRuntime {
       // path as the get_session_stats refresh.
       this.applyAuthoritativeContextUsage(reading.contextUsage)
     }
+    if (reading.tokensPerSecond === null) delete this.info.tokensPerSecond
+    else if (reading.tokensPerSecond !== undefined) this.info.tokensPerSecond = reading.tokensPerSecond
     const sessionActions = parseSessionActionSnapshot(raw.sessionActions) ?? reading.sessionActions ?? null
     if (sessionActions) this.info.sessionActions = sessionActions
     if (isRecord(raw.model)) {

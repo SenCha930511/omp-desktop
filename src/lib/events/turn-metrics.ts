@@ -20,6 +20,8 @@ interface TurnState {
   startedAt: number
   firstTokenAt: number | null
   lastTokenAt: number | null
+  /** agent_end 抵達時刻;TPS 測量窗的終點(delta 常整批同 tick 抵達,不能只量串流跨度)。 */
+  endedAt: number | null
   /** 回合開始時的 session 累計輸出 token;本回合輸出量 = 結束值 − 基線。 */
   baselineOutputTokens: number | null
   /** agent_end 後收到 auto_retry_start:同一回合重開,計時延續不重置。 */
@@ -71,11 +73,13 @@ function sessionOutputTokens(event: Record<string, unknown>): number | null {
 
 /** 以最新累計值結算本回合 TPS;可重複呼叫(agent_end 後才送達的讀數會補算)。 */
 function finalizeOutputRate(turn: TurnState, outputTokens: number | null): void {
-  if (turn.firstTokenAt === null || turn.lastTokenAt === null) return
+  if (turn.firstTokenAt === null || turn.endedAt === null) return
   if (outputTokens === null || turn.baselineOutputTokens === null) return
   const tokens = outputTokens - turn.baselineOutputTokens
   if (tokens <= 0) return
-  const seconds = (turn.lastTokenAt - turn.firstTokenAt) / 1000
+  // Deltas often arrive batched within one tick, so the first/last delta
+  // span can be zero; the generation window ends at agent_end instead.
+  const seconds = (turn.endedAt - turn.firstTokenAt) / 1000
   if (seconds <= 0) return
   turn.tokensPerSecond = tokens / seconds
   publish(turn)
@@ -109,6 +113,7 @@ export function observeTurnEvent(runtimeId: string, event: Record<string, unknow
       startedAt: Date.now(),
       firstTokenAt: null,
       lastTokenAt: null,
+      endedAt: null,
       baselineOutputTokens: sessionOutputByRuntime.get(runtimeId) ?? null,
       retrying: false,
       ended: false,
@@ -147,6 +152,8 @@ export function observeTurnEvent(runtimeId: string, event: Record<string, unknow
     const turn = turns.get(runtimeId)
     if (!turn || turn.ended) return
     turn.ended = true
+    // 每次 agent_end 都是當下回合的終點;auto_retry 重開的回合以最後一次為準。
+    turn.endedAt = Date.now()
     finalizeOutputRate(turn, sessionOutputByRuntime.get(runtimeId) ?? null)
   }
 }
