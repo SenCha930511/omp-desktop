@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   clearComposerDraft,
   composerDraftStorageKey,
+  moveComposerDraft,
   readComposerDraft,
   saveComposerDraft,
   saveComposerDraftFromDom,
@@ -54,5 +55,26 @@ describe('composer draft storage', () => {
     expect(readComposerDraft('another:session')).toBeNull()
     expect(readComposerDraft('project:new')).toEqual({ text: 'recovered after crash' })
     expect(takeComposerDraft()).toBe('')
+  })
+
+  it('carries the draft typed before a draft session adopts its id', () => {
+    saveComposerDraft('project:new', { text: '/context ', model: 'anthropic/x', effort: 'high' })
+    moveComposerDraft('project:new', 'project:session-1')
+    expect(readComposerDraft('project:session-1')).toMatchObject({ text: '/context ', model: 'anthropic/x', effort: 'high' })
+  })
+
+  it('never overwrites a draft that already exists at the adopted scope', () => {
+    saveComposerDraft('project:new', { text: 'from draft' })
+    saveComposerDraft('project:session-1', { text: 'already typed' })
+    moveComposerDraft('project:new', 'project:session-1')
+    expect(readComposerDraft('project:session-1')).toEqual({ text: 'already typed' })
+  })
+
+  it('ignores empty drafts and identical scopes', () => {
+    moveComposerDraft('project:new', 'project:session-1')
+    expect(readComposerDraft('project:session-1')).toBeNull()
+    saveComposerDraft('project:new', { text: 'kept' })
+    moveComposerDraft('project:new', 'project:new')
+    expect(readComposerDraft('project:new')).toEqual({ text: 'kept' })
   })
 })

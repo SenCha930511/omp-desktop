@@ -138,3 +138,18 @@ export function takeComposerDraft(): string {
     return draft
   } catch { return '' }
 }
+
+/**
+ * Carries a draft to the scope that replaces it. A draft workspace adopts the
+ * session id its first prompt started and the composer remounts onto the new
+ * scope; without the copy the text typed before the adoption is read from an
+ * empty session scope and silently disappears.
+ */
+export function moveComposerDraft(fromScope: string, toScope: string): void {
+  if (fromScope === toScope) return
+  try {
+    const draft = readComposerDraft(fromScope)
+    if (!draft?.text || readComposerDraft(toScope)?.text) return
+    saveComposerDraft(toScope, draft)
+  } catch { /* storage unavailable */ }
+}

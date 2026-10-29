@@ -17,6 +17,7 @@ import { reconcileTranscripts } from '@/app/transcript-reconcile'
 import type { WorkspaceSnapshot } from '@/app/workspace'
 import { createPrimeEventBuffer, createQueuedMessageEvent, createSteerAcceptedEvent, createSteerPickupEvent, createSteerRetractEvent, replayPrimeEvents } from '@/lib/events'
 import type { PrimeEventBuffer } from '@/lib/events'
+import { moveComposerDraft } from '@/lib/composer-draft'
 import { findRuntimeForWorkspace, workspaceCwd } from '@/lib/workspace'
 import { readPendingQueues, savePendingQueues, type WithdrawnQueue } from '@/lib/queued-prompt-storage'
 import { parseSessionActionSnapshot } from '@/lib/session-actions'
@@ -258,6 +259,10 @@ export function useWorkspaceRuntime({
   // sidebar selection and composer key move to the real session.
   const adoptSessionId = useCallback((session: SessionRecord) => {
     const current = workspaceRef.current
+    // The composer keys on the session id, so it remounts onto the adopted
+    // scope; carry what was typed under the draft scope first.
+    const projectScope = current.project?.id ?? 'no-project'
+    moveComposerDraft(`${projectScope}:new`, `${projectScope}:${session.id}`)
     workspaceRef.current = {
       ...current,
       session,

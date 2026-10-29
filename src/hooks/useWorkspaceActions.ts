@@ -348,6 +348,11 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     if (!initialized) return Promise.resolve()
     const project = newSessionProject(requestedProject, workspace.workspaceRef.current.project, activeProject)
     if (!project) return Promise.resolve()
+    // New always starts from an empty composer, including the repeated click
+    // that lands while the previous start is still in flight and is deduped
+    // below — otherwise the text typed into the starting draft survives the
+    // adoption and the click looks ignored.
+    clearComposerDraft(`${project.id}:new`)
     const inFlight = durableNewSessionFlights.get(project.id)
     if (inFlight) return inFlight
     const run = async () => {
@@ -356,7 +361,6 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
         layout.setSmallestSidebarAllowed(false)
         settingsState.setSidebarOpen(false)
       }
-      clearComposerDraft(`${project.id}:new`)
       const generation = workspace.activateWorkspace(project)
       setView('session')
       setPaletteOpen(false)
