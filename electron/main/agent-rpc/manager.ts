@@ -208,6 +208,10 @@ export class AgentRpcManager {
             this.durableIdentityByRuntimeId.delete(closed.runtimeId)
             this.quarantinedRuntimes.delete(closed.runtimeId)
             this.idleSince.delete(closed.runtimeId)
+            // Normal close must release the environment generation exactly like
+            // the failed-start path does; a leftover entry would keep a retired
+            // child counted against the next settings refresh.
+            this.runtimeEnvironmentRevisions.delete(closed.runtimeId)
             this.scheduleIdleRetirement()
             notifyRuntimeEnd(closed.snapshot())
           },

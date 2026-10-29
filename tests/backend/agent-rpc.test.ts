@@ -1827,3 +1827,23 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     }
   })
 })
+
+describe('agent RPC runtime bookkeeping', () => {
+  it('releases the environment generation when a runtime closes normally', async () => {
+    const fake = fakeAgent("{ id: command.id, type: 'response', command: 'prompt', success: true }")
+    const manager = managerFor(fake.executable)
+    const revisions = (manager as unknown as { runtimeEnvironmentRevisions: Map<string, number> }).runtimeEnvironmentRevisions
+
+    const first = await manager.start({ cwd: fake.cwd })
+    expect(revisions.has(first.runtimeId)).toBe(true)
+    await manager.stop(first.runtimeId)
+    await waitUntil(() => revisions.size === 0)
+    expect(revisions.has(first.runtimeId)).toBe(false)
+
+    // A second start/stop cycle must not accumulate either.
+    const second = await manager.start({ cwd: fake.cwd })
+    expect(revisions.size).toBe(1)
+    await manager.stop(second.runtimeId)
+    await waitUntil(() => revisions.size === 0)
+  }, 30_000)
+})
