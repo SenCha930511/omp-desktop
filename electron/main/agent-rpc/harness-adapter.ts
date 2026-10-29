@@ -27,6 +27,9 @@ export interface HarnessStateReading {
   contextUsage?: PrimeContextUsage
   /** 上游回報的末回合輸出速度;null 表示尚未有回合(讀取方清除顯示)。 */
   tokensPerSecond?: number | null
+  /** `/slow` 是否適用於目前模型;缺席代表上游未回報,讀取方保留既有值。 */
+  slowModeSupported?: boolean
+  slowModeEnabled?: boolean
   sessionActions?: SessionActionSnapshot
 }
 
@@ -243,6 +246,8 @@ export const OMP_RPC_ADAPTER: HarnessRpcAdapter = {
   readState: (data) => {
     const reading: HarnessStateReading = {}
     if (typeof data.fastModeEnabled === 'boolean') reading.serviceTier = data.fastModeEnabled ? 'priority' : 'default'
+    if (typeof data.slowModeSupported === 'boolean') reading.slowModeSupported = data.slowModeSupported
+    if (typeof data.slowModeEnabled === 'boolean') reading.slowModeEnabled = data.slowModeEnabled
     // state dump 以欄位缺席表達「未限流」;讀取方據此清除。
     const usageLimit = parseUsageLimitState(data.usageLimit)
     if (usageLimit) reading.usageLimit = usageLimit

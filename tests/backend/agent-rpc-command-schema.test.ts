@@ -144,6 +144,12 @@ describe('validateRpcCommand settings commands', () => {
     await expect(validate({ type: 'set_thinking_level', level: 'auto' })).resolves.toEqual({ type: 'set_thinking_level', level: 'auto' })
   })
 
+  it('validates set_slow_mode', async () => {
+    await expect(validate({ type: 'set_slow_mode', enabled: true })).resolves.toEqual({ type: 'set_slow_mode', enabled: true })
+    await expect(validate({ type: 'set_slow_mode', enabled: 'yes' })).rejects.toThrow('set_slow_mode requires boolean enabled')
+    await expect(validate({ type: 'set_slow_mode', enabled: true, extra: 1 })).rejects.toThrow('not supported')
+  })
+
   it('validates set_service_tier', async () => {
     await expect(validate({ type: 'set_service_tier', serviceTier: 'priority' })).resolves.toEqual({ type: 'set_service_tier', serviceTier: 'priority' })
     await expect(validate({ type: 'set_service_tier', serviceTier: 'flex' })).rejects.toThrow('Invalid service tier')

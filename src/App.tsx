@@ -48,6 +48,7 @@ import { HARNESS_AGENT_NAMES, HARNESS_PRODUCT_NAMES, HARNESS_SHORT_NAMES } from 
 import { continuedSessionKeys } from '@/lib/session-lineage'
 import { isBackgroundedSlashCommand, type SlashCommand } from '@/lib/slash-commands'
 import { I18nProvider, useI18n } from '@/lib/i18n'
+import { type SessionMode, withSessionModeDirective } from '@/lib/session-mode'
 import { detectRendererPlatform } from '@/lib/platform-shortcuts'
 import { activeProjectScriptKind, ProjectScriptBusyError, setupNeedsRun } from '@/lib/project-scripts'
 import { createSingleFlightAdmission, findProjectForSession, shouldRefreshGitOnSessionTransition, turnFileDeltas, workspaceCwd } from '@/lib/workspace'
@@ -147,6 +148,7 @@ export default function App() {
   const [browserNavigationRequest, setBrowserNavigationRequest] = useState<{ id: number; url: string }>()
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [submitting, setSubmitting] = useState(false)
+  const [sessionMode, setSessionMode] = useState<SessionMode | null>(null)
   const [submittingKind, setSubmittingKind] = useState<'prompt' | 'compact'>('prompt')
   const [submittingSince, setSubmittingSince] = useState<number | undefined>(undefined)
   const [restorePrompt, setRestorePrompt] = useState<{ owner: number; id: number; text: string }>()
@@ -504,6 +506,7 @@ export default function App() {
     setSessions,
     setRuntime: workspace.setRuntime,
     reconcileQueuedPrompts: workspace.reconcileQueuedPrompts,
+    deliverQueuedSteer: workspace.deliverQueuedSteer,
     clearQueuedPromptFlushFailures: workspace.clearQueuedPromptFlushFailures,
     clearQueuedPrompts: workspace.clearQueuedPrompts,
     queueAgentEvent: workspace.queueAgentEvent,
@@ -802,9 +805,11 @@ export default function App() {
       }
       // Any real prompt (slash command or message) covers the hint.
       if (intent !== 'steer') setBtwHint(false)
-      return sendPrompt(prompt, images, intent)
+      // 工作階段模式只前綴一般訊息;slash 指令由上游本地消化,不能加料。
+      const delivered = trimmed.startsWith('/') ? prompt : withSessionModeDirective(sessionMode, prompt)
+      return sendPrompt(delivered, images, intent)
     },
-    [sideChatIntercept, sideChatSessionId, askSideQuestion, sendPrompt],
+    [sideChatIntercept, sideChatSessionId, askSideQuestion, sendPrompt, sessionMode],
   )
   const openTerminalLink = useCallback(
     (url: string, external: boolean) => {
@@ -1525,6 +1530,8 @@ export default function App() {
                               busy={busy}
                               submitting={submitting}
                               submittingKind={submittingKind}
+                              sessionMode={sessionMode}
+                              onSessionModeChange={setSessionMode}
                               loading={workspace.loadingSession}
                               disabled={!activeProject}
                               messageEnterAction={settingsState.settings.messageEnterAction}

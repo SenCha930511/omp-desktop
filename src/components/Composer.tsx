@@ -1,10 +1,11 @@
-import { ArrowUp, AtSign, Check, ChevronDown, Clock3, Command, Edit3, Hourglass, ImageIcon, LoaderCircle, MessageCirclePlus, Mic, Paperclip, Plus, RotateCcw, Shield, ShieldAlert, ShieldCheck, ShieldQuestionMark, Square, SquareTerminal, Trash2, X, Zap } from 'lucide-react'
+import { ArrowUp, AtSign, Check, ChevronDown, ClipboardList, Clock3, Command, Edit3, Hourglass, ImageIcon, LoaderCircle, MessageCirclePlus, Mic, Paperclip, Plus, RotateCcw, Shield, ShieldAlert, ShieldCheck, ShieldQuestionMark, Square, SquareTerminal, Target, Trash2, X, Zap } from 'lucide-react'
 import type { CSSProperties } from 'react'
 import { Fragment, memo, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useComposerImages } from '@/hooks/useComposerImages'
 import { useDictation } from '@/hooks/useDictation'
 import { appendAnnotationsToPrompt } from '@/lib/browser-annotations'
 import { appendCapabilityRouting } from '@/lib/capability-mentions'
+import type { SessionMode } from '@/lib/session-mode'
 import { readComposerDraft, saveComposerDraft, takeComposerDraft } from '@/lib/composer-draft'
 import { getTurnMetrics, subscribeTurnMetrics } from '@/lib/events/turn-metrics'
 import { contextDialLabel, formatSessionCost, PRICING_UNAVAILABLE } from '@/lib/format-cost'
@@ -89,6 +90,9 @@ interface ComposerProps {
   /** App-level OMP approval mode shown as a compact pill with an inline mode menu. */
   approvalMode?: OmpApprovalMode
   onApprovalModeChange?(mode: OmpApprovalMode): void
+  /** GUI 層工作階段模式(規劃/目標);以送出時附加的指令實現。 */
+  sessionMode?: SessionMode | null
+  onSessionModeChange?(mode: SessionMode | null): void
   /** Active harness agent name for tooltips ("OMP"). */
   agentName?: string
   /** Active harness short name for inline copy ("OMP"). */
@@ -209,6 +213,8 @@ export const Composer = memo(function Composer({
   fastAvailable,
   usageLimit,
   approvalMode = 'inherit',
+  sessionMode = null,
+  onSessionModeChange = () => undefined,
   onApprovalModeChange,
   agentName = 'OMP',
   shortName = 'OMP',
@@ -736,6 +742,30 @@ export const Composer = memo(function Composer({
                 },
               },
               { key: 'commands', label: t('slash.menu.label'), detail: t('slash.menu.detail'), source: undefined, icon: <Command size={14} />, choose: () => { if (!value) setValue('/'); setMenu('command'); textareaRef.current?.focus() } },
+              {
+                key: 'plan',
+                label: t('composer.mode.plan'),
+                detail: sessionMode === 'plan' ? t('composer.mode.active') : t('composer.mode.planDetail'),
+                source: undefined,
+                icon: <ClipboardList size={14} />,
+                choose: () => {
+                  setMenu(null)
+                  onSessionModeChange?.(sessionMode === 'plan' ? null : 'plan')
+                  textareaRef.current?.focus()
+                },
+              },
+              {
+                key: 'goal',
+                label: t('composer.mode.goal'),
+                detail: sessionMode === 'goal' ? t('composer.mode.active') : t('composer.mode.goalDetail'),
+                source: undefined,
+                icon: <Target size={14} />,
+                choose: () => {
+                  setMenu(null)
+                  onSessionModeChange?.(sessionMode === 'goal' ? null : 'goal')
+                  textareaRef.current?.focus()
+                },
+              },
             ]
           : []
 
@@ -1388,6 +1418,29 @@ export const Composer = memo(function Composer({
             <ModelPicker value={model} modelsByProvider={modelsByProvider} providers={providers} onChange={onModelChange} presets={presets} onSwitchPreset={onSwitchPreset} onSavePreset={onSavePreset} />
             <ExecutingModelChip executingModel={executingModel} />
             <EffortPicker value={effort} levels={reasoningLevels} resolvedAutoEffort={resolvedAutoEffort} onChange={onEffortChange} />
+            {fastSupported ? (
+              <button
+                type="button"
+                className={`fast-mode-toggle ${fast ? 'is-active' : ''}`}
+                aria-pressed={fast}
+                disabled={!fastAvailable}
+                title={fastAvailable ? t('composer.fastTitle', { name: agentName }) : t('composer.fastUnavailable', { name: agentName })}
+                onClick={() => onFastChange(!fast)}
+              >
+                <Zap size={12} fill={fast ? 'currentColor' : 'none'} /> <span className="fast-mode-toggle__label">{t('composer.fast')}</span>
+              </button>
+            ) : null}
+            {usageLimit && usageLimitTitle ? (
+              <span className="usage-limit-badge" title={usageLimitTitle} role="status">
+                <Hourglass size={11} /> {t(usageLimit.stage === 'low_priority' ? 'composer.usageLowPriority' : 'composer.usageWrapUp')}
+              </span>
+            ) : null}
+            {projects && onAddProjectFolder ? (
+              <ProjectPicker projects={projects} activeProjectId={activeProjectId} onSelectProject={onSelectProject} onAddFolder={onAddProjectFolder} />
+            ) : null}
+            {checkoutCatalog && onExecuteCheckout && (checkoutCatalog.checkouts.length > 0 || (checkoutCatalog.strategy ?? 'worktree') === 'branch') ? (
+              <CheckoutPicker catalog={checkoutCatalog} fallbackLabel={checkoutLabel} loading={checkoutsLoading} onExecute={onExecuteCheckout} />
+            ) : null}
             <div className="approval-mode" ref={approvalMenuRef}>
               <button
                 type="button"
@@ -1426,28 +1479,18 @@ export const Composer = memo(function Composer({
                 </div>
               ) : null}
             </div>
-            {fastSupported ? (
+            {sessionMode ? (
               <button
                 type="button"
-                className={`fast-mode-toggle ${fast ? 'is-active' : ''}`}
-                aria-pressed={fast}
-                disabled={!fastAvailable}
-                title={fastAvailable ? t('composer.fastTitle', { name: agentName }) : t('composer.fastUnavailable', { name: agentName })}
-                onClick={() => onFastChange(!fast)}
+                className="session-mode-chip"
+                aria-label={t('composer.mode.clear', { mode: t(sessionMode === 'plan' ? 'composer.mode.plan' : 'composer.mode.goal') })}
+                title={t('composer.mode.clear', { mode: t(sessionMode === 'plan' ? 'composer.mode.plan' : 'composer.mode.goal') })}
+                onClick={() => onSessionModeChange?.(null)}
               >
-                <Zap size={12} fill={fast ? 'currentColor' : 'none'} /> <span className="fast-mode-toggle__label">{t('composer.fast')}</span>
+                {sessionMode === 'plan' ? <ClipboardList size={12} /> : <Target size={12} />}
+                <span>{t(sessionMode === 'plan' ? 'composer.mode.plan' : 'composer.mode.goal')}</span>
+                <X size={11} />
               </button>
-            ) : null}
-            {usageLimit && usageLimitTitle ? (
-              <span className="usage-limit-badge" title={usageLimitTitle} role="status">
-                <Hourglass size={11} /> {t(usageLimit.stage === 'low_priority' ? 'composer.usageLowPriority' : 'composer.usageWrapUp')}
-              </span>
-            ) : null}
-            {projects && onAddProjectFolder ? (
-              <ProjectPicker projects={projects} activeProjectId={activeProjectId} onSelectProject={onSelectProject} onAddFolder={onAddProjectFolder} />
-            ) : null}
-            {checkoutCatalog && onExecuteCheckout && (checkoutCatalog.checkouts.length > 0 || (checkoutCatalog.strategy ?? 'worktree') === 'branch') ? (
-              <CheckoutPicker catalog={checkoutCatalog} fallbackLabel={checkoutLabel} loading={checkoutsLoading} onExecute={onExecuteCheckout} />
             ) : null}
           </div>
           <div className="composer__actions">

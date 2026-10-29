@@ -93,7 +93,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     }
     send({ id: command.id, type: 'response', command: 'get_state', success: true, data: {
       sessionId: 'omp-session', isStreaming: streaming, isCompacting: false, thinkingLevel: 'medium',
-      fastModeEnabled: true, model: { provider: 'openai-codex', id: 'gpt-5.6-luna', name: 'Luna GPT-5.6' },
+      fastModeEnabled: true, slowModeSupported: true, slowModeEnabled: false, model: { provider: 'openai-codex', id: 'gpt-5.6-luna', name: 'Luna GPT-5.6' },
       queuedMessageCount: ${options.queuedMessageCount ?? 0},
       fakeAskDialogEnabled: askDialogEnabled,
       ...(sessionFileVar ? { sessionFile: sessionFileVar } : {}),
@@ -368,6 +368,8 @@ describe('OMP RPC handshake', () => {
     expect(runtime.model).toEqual({ provider: 'openai-codex', id: 'gpt-5.6-luna', name: 'Luna GPT-5.6' })
     // fastModeEnabled: true in get_state maps to the priority service tier.
     expect(runtime.serviceTier).toBe('priority')
+    expect(runtime.slowModeSupported).toBe(true)
+    expect(runtime.slowModeEnabled).toBe(false)
     expect(runtime.fastModeAvailable).toBe(true)
     expect(runtime.fastModeSupported).toBe(true)
     // contextUsage arrives directly in get_state data.

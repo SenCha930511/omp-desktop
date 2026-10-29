@@ -1028,6 +1028,8 @@ export class RpcRuntime {
       this.info.fastModeAvailable = true
       this.requestedServiceTier = reading.serviceTier
     }
+    if (reading.slowModeSupported !== undefined) this.info.slowModeSupported = reading.slowModeSupported
+    if (reading.slowModeEnabled !== undefined) this.info.slowModeEnabled = reading.slowModeEnabled
     // state dump 以欄位缺席表達「未限流」;據此清除。
     if (reading.usageLimit !== undefined) this.info.usageLimit = reading.usageLimit
     else delete this.info.usageLimit

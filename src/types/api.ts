@@ -286,6 +286,9 @@ export interface RuntimeInfo {
   imageInputSupported?: boolean
   fastModeAvailable?: boolean
   serviceTier?: PrimeServiceTier
+  /** 上游 get_state 的 slowModeSupported / slowModeEnabled(`/slow` 只適用部分模型)。 */
+  slowModeSupported?: boolean
+  slowModeEnabled?: boolean
   /**
    * 上游 SessionState.usageLimit:帳號已進 wrap-up 或 low-priority 期限流時
    * 才回報。顯示之,避免使用者把限流降速誤判為 app bug。

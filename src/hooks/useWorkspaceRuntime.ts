@@ -668,6 +668,26 @@ export function useWorkspaceRuntime({
     reconcileQueuedPrompts(snapshot)
   }, [reconcileQueuedPrompts])
 
+  /** A steer the harness injected into the running turn: the durable user row
+   *  already came from the harness, so only the optimistic row and queue entry
+   *  are dropped here. omp's queuedMessageCount can stay at 1 until the turn
+   *  ends, so the snapshot fold alone would leave the chip behind. */
+  const deliverQueuedSteer = useCallback((text: string) => {
+    const prompt = pendingQueuedPromptsRef.current.find((candidate) => candidate.intent === 'steer' && candidate.text === text)
+    if (!prompt) return
+    observedSteerIdsRef.current.delete(prompt.id)
+    harnessHeldSteerIdsRef.current.delete(prompt.id)
+    applyLocalRowEvent(createSteerRetractEvent({ id: prompt.id }))
+    const next = pendingQueuedPromptsRef.current.filter((candidate) => candidate.id !== prompt.id)
+    pendingQueuedPromptsRef.current = next
+    const owner = activeQueuedPromptOwnerRef.current
+    if (owner) {
+      if (next.length) queuedPromptsByOwnerRef.current.set(owner, next)
+      else queuedPromptsByOwnerRef.current.delete(owner)
+    }
+    setPendingQueuedPrompts(next)
+  }, [applyLocalRowEvent])
+
   /** Re-queues input omp withdrew for an abort (`abort_and_restore_queue`).
    * Steers the reply proves withdrawn lose their optimistic row and queue
    * entry; every returned message comes back as an unsent local item —
@@ -867,6 +887,7 @@ export function useWorkspaceRuntime({
     retractQueuedPrompt,
     reconcileQueuedPrompts,
     acknowledgeSteer,
+    deliverQueuedSteer,
     activeProjectId,
     activeSessionId,
     runtime,

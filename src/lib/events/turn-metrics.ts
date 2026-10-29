@@ -96,7 +96,13 @@ export function observeTurnEvent(runtimeId: string, event: Record<string, unknow
     if (!turn.ended) {
       // 回合內、還沒串流任何內容 delta 時到達的累計讀數就是本回合基線;
       // delta 已開始才出現的首個讀數無法回推回合前值,寧可讓 TPS 缺席。
-      if (turn.baselineOutputTokens === null && turn.firstTokenAt === null) turn.baselineOutputTokens = output
+      if (turn.baselineOutputTokens === null) {
+        if (turn.firstTokenAt === null) turn.baselineOutputTokens = output
+      } else if (output < turn.baselineOutputTokens) {
+        // 壓縮或 session 重寫會把累計輸出量歸零,舊基線此後永遠算不出正差;
+        // 較低的讀數本身就是歸零後的新起點,直接改立基線。
+        turn.baselineOutputTokens = output
+      }
       return
     }
     // agent_end 之後才送達的收尾讀數:補算或修正本回合 TPS。

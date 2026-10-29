@@ -121,6 +121,13 @@ export async function validateRpcCommand(raw: unknown, validateSessionPath: (pat
     if (!THINKING_LEVELS.has(level)) throw new TypeError('Invalid thinking level')
     return { type, level }
   }
+  if (type === 'set_slow_mode') {
+    // 上游 set_slow_mode:切換目前模型的 `/slow`(flex/low-priority lane),
+    // 只接受 boolean enabled,回傳 { enabled }。
+    rejectUnknownKeys(command, ['type', 'enabled'], 'command')
+    if (typeof command.enabled !== 'boolean') throw new TypeError('set_slow_mode requires boolean enabled')
+    return { type, enabled: command.enabled }
+  }
   if (type === 'set_service_tier') {
     rejectUnknownKeys(command, ['type', 'serviceTier'], 'command')
     if (command.serviceTier !== 'default' && command.serviceTier !== 'priority') throw new TypeError('Invalid service tier')

@@ -109,6 +109,23 @@ describe('turn-metrics TPS', () => {
     expect(getTurnMetrics('rt-f').tokensPerSecond).toBeCloseTo(10, 5)
   })
 
+  it('rebases the baseline when compaction resets the cumulative counter', () => {
+    // 上一回合留下 268k 的累計值;壓縮後 omp 的累計輸出量歸零到 28k。
+    observeTurnEvent('rt-reset', sessionUsage(268_323))
+    advance(2_000)
+    observeTurnEvent('rt-reset', { type: 'agent_start' })
+    advance(2_050)
+    observeTurnEvent('rt-reset', sessionUsage(28_273))
+    advance(2_500)
+    observeTurnEvent('rt-reset', messageUpdate('text_delta', 'p'))
+    advance(5_500)
+    observeTurnEvent('rt-reset', { type: 'agent_end' })
+    advance(5_520)
+    observeTurnEvent('rt-reset', sessionUsage(28_285))
+    // 12 個輸出 token ÷ 3 秒(首 delta → agent_end)。
+    expect(getTurnMetrics('rt-reset').tokensPerSecond).toBeCloseTo(4, 5)
+  })
+
   it('keeps TPS absent when no baseline is knowable', () => {
     observeTurnEvent('rt-g', { type: 'agent_start' })
     advance(1_000)

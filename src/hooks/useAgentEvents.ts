@@ -3,6 +3,7 @@ import { contextUsageFromEvent, sessionUsageFromEvent } from '@/app/agent-events
 import { applySessionLifecycleEvent, sessionLifecycleChange } from '@/app/session-attention'
 import { shouldNotifyCompletion, showCompletionNotification } from '@/lib/completion-notify'
 import { compactionSyncPendingStore } from '@/lib/compaction-sync-state'
+import { contentText } from '@/lib/events/message-content'
 import { agentNoticeBody, agentNoticeFromEvent, isConfigWarningsChangedEvent } from '@/lib/events/reduce'
 import { fallbackModelFromRecord } from '@/lib/events/model-fallback'
 import { observeTurnEvent, resetTurnMetrics } from '@/lib/events/turn-metrics'
@@ -21,6 +22,8 @@ interface UseAgentEventsOptions {
   setSessions: React.Dispatch<React.SetStateAction<SessionRecord[]>>
   setRuntime: React.Dispatch<React.SetStateAction<RuntimeInfo | null>>
   reconcileQueuedPrompts?(snapshot: SessionActionSnapshot): void
+  /** 上游把 steer 注入進行中回合時送一則 user message;以文字比對清掉佇列 chip。 */
+  deliverQueuedSteer?(text: string): void
   clearQueuedPromptFlushFailures?(): void
   clearQueuedPrompts?(): void
   queueAgentEvent(event: Record<string, unknown>): void
@@ -45,6 +48,7 @@ export function useAgentEvents({
   setSessions,
   setRuntime,
   reconcileQueuedPrompts = () => undefined,
+  deliverQueuedSteer = () => undefined,
   clearQueuedPromptFlushFailures = () => undefined,
   clearQueuedPrompts = () => undefined,
   queueAgentEvent,
@@ -74,6 +78,15 @@ export function useAgentEvents({
       // 回合指標(TTFT/TPS)對每個 runtime 都追蹤:快照以 runtimeId 查詢,
       // 背景 runtime 的回合在切回 session 後仍可顯示。
       observeTurnEvent(runtimeId, event)
+      // 注入回合的 steer 只以 user message 形式出現;omp 的 queuedMessageCount
+      // 可能到回合結束才歸零,這裡先依實際送達清掉佇列 chip。
+      if ((type === 'message_start' || type === 'message_end') && runtimeIdRef.current === runtimeId) {
+        const message = event.message
+        if (message && typeof message === 'object' && (message as { role?: unknown }).role === 'user') {
+          const text = contentText((message as { content?: unknown }).content)
+          if (text) deliverQueuedSteer(text)
+        }
+      }
       const sessionFile = runtimeSessionsRef.current.get(runtimeId)
         ?? (runtimeIdRef.current === runtimeId ? workspaceRef.current.sessionFile : undefined)
       if (sessionFile) {
@@ -247,6 +260,7 @@ export function useAgentEvents({
     clearQueuedPromptFlushFailures,
     clearQueuedPrompts,
     reconcileQueuedPrompts,
+    deliverQueuedSteer,
     workspaceRef,
     queueAgentEvent,
     onNotice,
