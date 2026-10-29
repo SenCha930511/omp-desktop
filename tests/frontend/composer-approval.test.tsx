@@ -90,33 +90,4 @@ describe('composer approval mode pill', () => {
     expect(onApprovalModeChange).toHaveBeenCalledWith('yolo')
     expect(container.querySelector('.approval-mode__menu')).toBeNull()
   })
-
-  it('offers plan and goal in the add menu and reports the chosen mode', () => {
-    const onSessionModeChange = vi.fn()
-    act(() => root.render(<Composer {...props({ onSessionModeChange })} />))
-
-    act(() => (container.querySelector('button.composer-add') as HTMLButtonElement).click())
-    const items = Array.from(container.querySelectorAll<HTMLButtonElement>('.composer-menu button[role="option"]'))
-    const labels = items.map((item) => item.textContent ?? '')
-    expect(labels.some((item) => item.includes('Plan mode'))).toBe(true)
-    expect(labels.some((item) => item.includes('Goal mode'))).toBe(true)
-
-    const plan = items.find((item) => (item.textContent ?? '').includes('Plan mode'))
-    act(() => plan?.click())
-    expect(onSessionModeChange).toHaveBeenCalledWith('plan')
-  })
-
-  it('shows the active mode chip and cancels it on click', () => {
-    const onSessionModeChange = vi.fn()
-    act(() => root.render(<Composer {...props({ sessionMode: 'goal', onSessionModeChange })} />))
-
-    const chip = container.querySelector<HTMLButtonElement>('button.session-mode-chip')
-    expect(chip?.textContent).toContain('Goal mode')
-    expect(chip?.getAttribute('title')).toBe('Turn off Goal mode')
-    act(() => chip?.click())
-    expect(onSessionModeChange).toHaveBeenCalledWith(null)
-
-    act(() => root.render(<Composer {...props({ sessionMode: null })} />))
-    expect(container.querySelector('button.session-mode-chip')).toBeNull()
-  })
 })

@@ -196,9 +196,6 @@
 .composer-menu strong { color: var(--text); font-size: 12px; font-weight: 540; }
 .composer-menu small { overflow: hidden; color: var(--text-tertiary); font-size: 10.5px; white-space: nowrap; text-overflow: ellipsis; }
 .composer-menu__group-label { padding: 7px 9px 2px; color: var(--text-tertiary); font-size: 10px; font-weight: 620; letter-spacing: .04em; text-transform: uppercase; user-select: none; }
-/* 作用中的工作階段模式(規劃/目標):點擊即取消。 */
-.session-mode-chip { height: 26px; display: inline-flex; align-items: center; gap: 5px; padding: 0 8px; border: 1px solid transparent; border-radius: 999px; color: var(--text-secondary); background: transparent; font-size: 11px; font-weight: 500; cursor: pointer; transition: color 130ms var(--ease-out), background 130ms var(--ease-out), border-color 130ms var(--ease-out); }
-.session-mode-chip:hover { color: var(--text); background: var(--surface-hover); }
 .approval-mode { position: relative; }
 .approval-mode__menu { position: absolute; z-index: 70; left: 0; bottom: calc(100% + 7px); min-width: 176px; padding: 6px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-raised); box-shadow: var(--shadow-popover); }
 .approval-mode__option { width: 100%; display: flex; align-items: center; gap: 7px; padding: 6px 7px; border-radius: 7px; color: var(--text-secondary); background: transparent; font-size: 11.5px; font-weight: 540; text-align: left; }
