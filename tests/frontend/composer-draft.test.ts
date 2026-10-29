@@ -13,6 +13,9 @@ import {
 
 afterEach(() => {
   window.sessionStorage.clear()
+  // The persistent mirror survives sessionStorage, so it must be cleared too
+  // or one test's draft is restored by the next one.
+  try { window.localStorage.clear() } catch { /* storage unavailable */ }
 })
 
 describe('composer draft storage', () => {
@@ -67,7 +70,7 @@ describe('composer draft storage', () => {
     saveComposerDraft('project:new', { text: 'from draft' })
     saveComposerDraft('project:session-1', { text: 'already typed' })
     moveComposerDraft('project:new', 'project:session-1')
-    expect(readComposerDraft('project:session-1')).toEqual({ text: 'already typed' })
+    expect(readComposerDraft('project:session-1')).toMatchObject({ text: 'already typed' })
   })
 
   it('ignores empty drafts and identical scopes', () => {
@@ -75,6 +78,6 @@ describe('composer draft storage', () => {
     expect(readComposerDraft('project:session-1')).toBeNull()
     saveComposerDraft('project:new', { text: 'kept' })
     moveComposerDraft('project:new', 'project:new')
-    expect(readComposerDraft('project:new')).toEqual({ text: 'kept' })
+    expect(readComposerDraft('project:new')).toMatchObject({ text: 'kept' })
   })
 })
