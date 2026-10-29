@@ -3,10 +3,22 @@ import { boundText } from '@/lib/render-bounds'
 import type { MessagePart } from '@/types/api'
 import { TranscriptImage } from './TranscriptImage'
 
+/** Image parts are immutable once they reach the renderer (the reducer only
+ *  rewrites tool args in place), so the data URL is built once per part object
+ *  instead of re-copying up to 8 MiB of base64 on every render. */
+const imageSources = new WeakMap<object, string | undefined>()
+
 /** data URL 僅在型別與 base64 內容都通過檢查時才產生；其餘走可讀 fallback。 */
 export function imageSource(part: Extract<MessagePart, { type: 'image' }>): string | undefined {
-  if (part.dataTruncated || !part.data || !part.mimeType || !/^image\/(png|jpeg|gif|webp)$/i.test(part.mimeType) || !/^[a-z\d+/=\s]+$/i.test(part.data)) return undefined
-  return `data:${part.mimeType};base64,${part.data.replace(/\s/g, '')}`
+  if (imageSources.has(part)) return imageSources.get(part)
+  let source: string | undefined
+  if (!part.dataTruncated && part.data && part.mimeType && /^image\/(png|jpeg|gif|webp)$/i.test(part.mimeType) && /^[a-z\d+/=\s]+$/i.test(part.data)) {
+    // Base64 from the transcript reader never contains whitespace, so the
+    // replace() copy is only paid when the data actually carries any.
+    source = `data:${part.mimeType};base64,${/\s/.test(part.data) ? part.data.replace(/\s/g, '') : part.data}`
+  }
+  imageSources.set(part, source)
+  return source
 }
 
 /** 使用者附件與工具輸出共用的圖片 part；alt 文字由呼叫端依來源提供。 */

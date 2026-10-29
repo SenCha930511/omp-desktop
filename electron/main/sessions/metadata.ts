@@ -297,8 +297,16 @@ export function createIncrementalMetadataReader<Accumulator extends object>(
   const locks = new Map<string, Promise<unknown>>()
   let retainedBytes = 0
 
+  // Arrays (lastUserTexts, previousSessionFiles) hold the largest strings in an
+  // accumulator, so counting only top-level strings let the cache grow far past
+  // the documented budget. Every retained string is charged at UTF-16 size.
+  const valueBytes = (value: unknown): number => {
+    if (typeof value === 'string') return value.length * 2
+    if (Array.isArray(value)) return value.reduce<number>((bytes, item) => bytes + valueBytes(item), 0)
+    return 0
+  }
   const stateBytes = (state: IncrementalMetadataState<Accumulator>): number => state.pending.byteLength + state.tail.length
-    + Object.values(state.accumulator).reduce<number>((bytes, value) => bytes + (typeof value === 'string' ? value.length * 2 : 0), 0)
+    + Object.values(state.accumulator).reduce<number>((bytes, value) => bytes + valueBytes(value), 0)
 
   const forget = (filePath: string): void => {
     const previous = states.get(filePath)

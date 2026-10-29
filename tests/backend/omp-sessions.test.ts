@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { appendFileSync, closeSync, createReadStream, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync, writeSync } from 'node:fs'
-import { stat } from 'node:fs/promises'
+import { open, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -16,6 +16,7 @@ import {
 } from '../../electron/main/sessions/omp'
 import { JsonStateStore } from '../../electron/main/store'
 import { createBranchSummaryTranscriptReader } from '../../electron/main/sessions/bucketed'
+import { MAX_PART_IMAGE_CHARS } from '../../src/lib/events/message-content'
 
 const dirs: string[] = []
 const stores: JsonStateStore[] = []
@@ -964,5 +965,49 @@ describe('OMP image blob references', () => {
     const messages = await reader(realpathSync(file), false)
     const image = messages.flatMap((message) => message.parts).find((part) => part.type === 'image')
     expect(image).toMatchObject({ type: 'image', dataTruncated: true })
+  })
+
+  it('reads only the prefix of an oversized blob instead of buffering the whole file', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-omp-blobs-large-')); dirs.push(dir)
+    const root = join(dir, 'sessions'); mkdirSync(join(root, '-bucket'), { recursive: true })
+    const project = join(dir, 'project'); mkdirSync(project)
+    const blobs = join(dir, 'blobs'); mkdirSync(blobs)
+    const hash = 'c'.repeat(64)
+    // 20 MiB blob: the transcript can only ever show the first 6 MiB of bytes.
+    writeFileSync(join(blobs, hash), Buffer.alloc(20 * 1024 * 1024, 7))
+    const file = join(root, '-bucket', NAME_A)
+    writeOmpSession(file, {
+      id: 'blob-session-large',
+      cwd: project,
+      entries: [ompEntry('message', 'm1', null, { message: { role: 'user', timestamp: 1_700_000_000_000, content: [
+        { type: 'image', mimeType: 'image/png', data: `blob:sha256:${hash}` },
+      ] } }, '2026-08-08T02:13:01.000Z')],
+    })
+
+    const maxBytes = Math.floor(MAX_PART_IMAGE_CHARS * 3 / 4)
+    let requested = 0
+    // FileHandle is a type-only export, so the read spy is installed on the
+    // prototype of a real handle; the reader opens its own handle from the same
+    // prototype.
+    const probe = await open(join(blobs, hash), 'r')
+    const prototype = Object.getPrototypeOf(probe) as { read(buffer: Buffer, offset: number, length: number, position: number): Promise<{ bytesRead: number }> }
+    const originalRead = prototype.read
+    const readSpy = vi.spyOn(prototype, 'read').mockImplementation(function (this: unknown, buffer: Buffer, offset: number, length: number, position: number) {
+      requested += length
+      return originalRead.call(this, buffer, offset, length, position)
+    })
+    try {
+      const reader = createBranchSummaryTranscriptReader(blobs)
+      const messages = await reader(realpathSync(file), false)
+      const image = messages.flatMap((message) => message.parts).find((part) => part.type === 'image')
+      expect(image).toMatchObject({ type: 'image', dataTruncated: true })
+      expect((image as { data?: string }).data).toHaveLength(MAX_PART_IMAGE_CHARS)
+      // Bounded I/O, not just bounded output: the 20 MiB file is never buffered.
+      expect(requested).toBeGreaterThan(0)
+      expect(requested).toBeLessThanOrEqual(maxBytes)
+    } finally {
+      readSpy.mockRestore()
+      await probe.close()
+    }
   })
 })

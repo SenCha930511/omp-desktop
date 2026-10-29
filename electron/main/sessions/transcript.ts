@@ -1,5 +1,5 @@
 import { createReadStream } from 'node:fs'
-import { open, readFile, stat } from 'node:fs/promises'
+import { open, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { MessagePart, TranscriptMessage } from '../../../src/types/api'
@@ -254,12 +254,29 @@ const BLOB_REFERENCE = /^blob:sha256:([0-9a-f]{64})$/
 
 async function resolveImageBlobReferences(transcript: TranscriptMessage[], blobsRoot: string): Promise<void> {
   const pending = new Map<string, Promise<string | null>>()
-  const readBlob = (hash: string): Promise<string | null> => readFile(join(blobsRoot, hash))
-    .then((buffer) => {
-      const maxBytes = Math.floor(MAX_PART_IMAGE_CHARS * 3 / 4)
-      return buffer.subarray(0, Math.min(buffer.length, maxBytes)).toString('base64')
-    })
-    .catch(() => null)
+  // Read only the prefix the transcript can ever show: a pathological blob must
+  // not cost a full-file buffer just to throw all but the first 6 MiB away.
+  const maxBytes = Math.floor(MAX_PART_IMAGE_CHARS * 3 / 4)
+  const readBlob = async (hash: string): Promise<string | null> => {
+    let handle: Awaited<ReturnType<typeof open>> | undefined
+    try {
+      handle = await open(join(blobsRoot, hash), 'r')
+      const chunks: Buffer[] = []
+      let total = 0
+      while (total < maxBytes) {
+        const buffer = Buffer.allocUnsafe(Math.min(64 * 1024, maxBytes - total))
+        const { bytesRead } = await handle.read(buffer, 0, buffer.length, total)
+        if (bytesRead === 0) break
+        chunks.push(bytesRead === buffer.length ? buffer : buffer.subarray(0, bytesRead))
+        total += bytesRead
+      }
+      return total === 0 ? '' : Buffer.concat(chunks, total).toString('base64')
+    } catch {
+      return null
+    } finally {
+      await handle?.close().catch(() => undefined)
+    }
+  }
   for (const message of transcript) {
     for (const part of message.parts) {
       if (part.type !== 'image' || !part.data) continue
