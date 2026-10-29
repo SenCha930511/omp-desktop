@@ -833,3 +833,90 @@ describe('plugin request ownership', () => {
     expect(reportError).not.toHaveBeenCalled()
   })
 })
+
+describe('external transcript refresh', () => {
+  function mountWorkspace(read: ReturnType<typeof vi.fn>) {
+    const bridge = { sessions: { read } } as unknown as DesktopApi
+    let bump!: (revision: number) => void
+    let state!: ReturnType<typeof useWorkspaceRuntime>
+    function WorkspaceProbe() {
+      const [sessions, setSessions] = useState<SessionRecord[]>([session])
+      bump = (revision) => setSessions([{ ...session, syncRevision: revision }])
+      state = useWorkspaceRuntime({
+        bridge, initialProject: project, initialSession: session, sessions,
+        initialMessages: [], reportError: vi.fn(),
+      })
+      return <Probe />
+    }
+    return { bump: (revision: number) => bump(revision), getState: () => state, render: () => act(async () => { root.render(<WorkspaceProbe />); await Promise.resolve(); await Promise.resolve() }) }
+  }
+
+  it('coalesces a burst of external revisions into a single read', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const read = vi.fn().mockResolvedValue([message('loaded:')])
+      const workspace = mountWorkspace(read)
+      await workspace.render()
+      expect(read).toHaveBeenCalledTimes(1)
+
+      for (let revision = 1; revision <= 100; revision += 1) {
+        await act(async () => { workspace.bump(revision); await Promise.resolve() })
+      }
+      expect(read).toHaveBeenCalledTimes(1)
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(600) })
+      expect(read).toHaveBeenCalledTimes(2)
+      expect(workspace.getState().messages[0]?.parts[0]).toMatchObject({ type: 'text', text: 'loaded:' })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('holds external reads while hidden and refreshes once when visible again', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const read = vi.fn().mockResolvedValue([message('loaded:')])
+      const workspace = mountWorkspace(read)
+      await workspace.render()
+      expect(read).toHaveBeenCalledTimes(1)
+
+      setDocumentVisibility('hidden')
+      for (let revision = 1; revision <= 5; revision += 1) {
+        await act(async () => { workspace.bump(revision); await Promise.resolve() })
+      }
+      await act(async () => { await vi.advanceTimersByTimeAsync(2_000) })
+      expect(read).toHaveBeenCalledTimes(1)
+
+      setDocumentVisibility('visible')
+      await act(async () => {
+        document.dispatchEvent(new Event('visibilitychange'))
+        await vi.advanceTimersByTimeAsync(0)
+      })
+      expect(read).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not replace an in-flight read and refreshes once after it settles', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const first = deferred<TranscriptMessage[]>()
+      const read = vi.fn().mockImplementationOnce(() => first.promise).mockResolvedValue([message('second')])
+      const workspace = mountWorkspace(read)
+      await workspace.render()
+      expect(read).toHaveBeenCalledTimes(1)
+
+      await act(async () => { workspace.bump(1); await Promise.resolve() })
+      await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+      expect(read).toHaveBeenCalledTimes(1)
+
+      await act(async () => { first.resolve([message('first')]); await first.promise; await Promise.resolve() })
+      await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+      expect(read).toHaveBeenCalledTimes(2)
+      expect(workspace.getState().messages[0]?.parts[0]).toMatchObject({ type: 'text', text: 'second' })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})

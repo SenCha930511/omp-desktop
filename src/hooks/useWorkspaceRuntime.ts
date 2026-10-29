@@ -22,6 +22,12 @@ import { readPendingQueues, savePendingQueues, type WithdrawnQueue } from '@/lib
 import { parseSessionActionSnapshot } from '@/lib/session-actions'
 import type { HarnessId, MessagePart, DesktopApi, ProjectRecord, PromptDeliveryIntent, QueuedPrompt, RuntimeInfo, SessionActionSnapshot, SessionRecord, TranscriptMessage } from '@/types/api'
 
+/** Minimum spacing between two external-session transcript reads. Catalog
+ *  syncs arrive per appended record, so an unpaced effect would re-read and
+ *  re-parse the whole JSONL once per line. The window is anchored to the last
+ *  read start (not reset per event) so a steady stream still refreshes. */
+const EXTERNAL_TRANSCRIPT_READ_INTERVAL_MS = 500
+
 let queuedPromptSequence = 0
 
 function nextQueuedPromptId(): string {
@@ -49,6 +55,9 @@ interface TranscriptLoad {
   runtimeId?: string
   reconciliation: boolean
   admissionRevision: number
+  /** Set once the IPC was actually issued; a load already in flight must not
+   *  be replaced by a newer admission of the same workspace. */
+  started?: boolean
 }
 
 interface UseWorkspaceRuntimeOptions {
@@ -101,6 +110,12 @@ export function useWorkspaceRuntime({
     sessionFile: initialSession?.filePath,
   })
   const transcriptLoadRef = useRef<TranscriptLoad | null>(null)
+  /** Workspace whose on-disk transcript changed while no read was allowed. */
+  const externalReadDirtyRef = useRef<{ generation: number; sessionFile: string } | null>(null)
+  const externalReadTimerRef = useRef<number | null>(null)
+  const lastExternalReadStartedAtRef = useRef(0)
+  /** Set once the read path exists; a finished read schedules its follow-up. */
+  const scheduleExternalReadRef = useRef<() => void>(() => {})
   const promptAdmissionRevisionRef = useRef(0)
   const promptAdmissionGenerationRef = useRef<number | null>(null)
   const reconciliationNeededRef = useRef<TranscriptReconciliationMarker | null>(null)
@@ -202,6 +217,13 @@ export function useWorkspaceRuntime({
     if (chunkedFlushTimerRef.current !== null) {
       window.clearTimeout(chunkedFlushTimerRef.current)
       chunkedFlushTimerRef.current = null
+    }
+    // A pending external refresh belongs to the workspace being left; carrying
+    // it over would apply the old file's revision to the new session.
+    externalReadDirtyRef.current = null
+    if (externalReadTimerRef.current !== null) {
+      window.clearTimeout(externalReadTimerRef.current)
+      externalReadTimerRef.current = null
     }
     const generation = workspaceRef.current.generation + 1
     workspaceRef.current = {
@@ -323,6 +345,18 @@ export function useWorkspaceRuntime({
       admissionRevision: promptAdmissionRevisionRef.current,
     }
     transcriptLoadRef.current = pendingLoad
+    pendingLoad.started = true
+    // A read that starts now already covers the newest on-disk state, so it
+    // consumes the pending external refresh for this workspace instead of
+    // queueing a second, redundant read behind it.
+    const dirty = externalReadDirtyRef.current
+    if (dirty && dirty.generation === pendingLoad.generation && dirty.sessionFile === pendingLoad.sessionFile) {
+      externalReadDirtyRef.current = null
+      if (externalReadTimerRef.current !== null) {
+        window.clearTimeout(externalReadTimerRef.current)
+        externalReadTimerRef.current = null
+      }
+    }
 
     void runTranscriptRead({
       read: () => bridge.sessions.read(selected.sessionFile!),
@@ -364,6 +398,7 @@ export function useWorkspaceRuntime({
       onFinally: () => {
         const recovering = transcriptLoadRef.current === pendingLoad && pendingLoad.eventBuffer.overflowed
         if (transcriptLoadRef.current === pendingLoad) transcriptLoadRef.current = null
+        scheduleExternalReadRef.current()
         if (recovering && workspaceRef.current.generation === pendingLoad.generation && workspaceRef.current.sessionFile === pendingLoad.sessionFile) {
           if (document.visibilityState === 'visible') {
             reconcileOnVisibleRef.current = false
@@ -385,6 +420,40 @@ export function useWorkspaceRuntime({
       },
     })
   }, [bridge, flushAgentEvents, reportError])
+
+  /** Reads a pending external refresh now. Never replaces a read in flight: the
+   *  running read reconciles that state and schedules the follow-up itself. */
+  const startExternalRead = useCallback(() => {
+    const dirty = externalReadDirtyRef.current
+    if (!dirty || document.visibilityState !== 'visible') return
+    const selected = workspaceRef.current
+    if (selected.generation !== dirty.generation || selected.sessionFile !== dirty.sessionFile) {
+      externalReadDirtyRef.current = null
+      return
+    }
+    const inFlight = transcriptLoadRef.current
+    if (inFlight?.started && inFlight.generation === dirty.generation && inFlight.sessionFile === dirty.sessionFile) return
+    lastExternalReadStartedAtRef.current = Date.now()
+    startTranscriptRead(selected, false)
+  }, [startTranscriptRead])
+
+  const scheduleExternalRead = useCallback(() => {
+    if (externalReadTimerRef.current !== null || !externalReadDirtyRef.current) return
+    const delay = Math.max(0, EXTERNAL_TRANSCRIPT_READ_INTERVAL_MS - (Date.now() - lastExternalReadStartedAtRef.current))
+    externalReadTimerRef.current = window.setTimeout(() => {
+      externalReadTimerRef.current = null
+      startExternalRead()
+    }, delay)
+  }, [startExternalRead])
+
+  scheduleExternalReadRef.current = scheduleExternalRead
+
+  const requestExternalTranscriptRead = useCallback((selected: WorkspaceSnapshot) => {
+    if (!selected.sessionFile) return
+    externalReadDirtyRef.current = { generation: selected.generation, sessionFile: selected.sessionFile }
+    if (document.visibilityState !== 'visible') return
+    scheduleExternalRead()
+  }, [scheduleExternalRead])
 
   const runOverflowReconciliation = useCallback(() => {
     if (transcriptLoadRef.current?.eventBuffer.overflowed) { reconcileOnVisibleRef.current = true; return }
@@ -839,11 +908,19 @@ export function useWorkspaceRuntime({
     if (!workspaceChanged && locallyOwnedActiveSession) return
     const admittedLoad = transcriptLoadRef.current
     if (admittedLoad?.generation === workspaceGeneration && admittedLoad.sessionFile === activeSession.filePath) {
-      if (!admittedLoad.reconciliation) startTranscriptRead(selected, false, undefined, admittedLoad)
-    } else {
-      startTranscriptRead(selected, false)
+      if (admittedLoad.reconciliation) return
+      // An admitted load that already issued its IPC keeps it: re-admitting the
+      // same workspace would start a second read of the same file, and the
+      // newer catalog revision is only a stale marker for the read in flight.
+      if (!admittedLoad.started) { startTranscriptRead(selected, false, undefined, admittedLoad); return }
+      if (!workspaceChanged) requestExternalTranscriptRead(selected)
+      return
     }
-  }, [activeSession?.filePath, bridge, externalSessionSyncRevision, externalSessionUpdatedAt, locallyOwnedActiveSession, startTranscriptRead, workspaceGeneration])
+    // A workspace switch is a first load and stays immediate; a catalog revision
+    // for the file already shown is an external append and is coalesced.
+    if (workspaceChanged) startTranscriptRead(selected, false)
+    else requestExternalTranscriptRead(selected)
+  }, [activeSession?.filePath, bridge, externalSessionSyncRevision, externalSessionUpdatedAt, locallyOwnedActiveSession, requestExternalTranscriptRead, startTranscriptRead, workspaceGeneration])
 
   useEffect(() => {
     const onVisibilityChange = () => {
@@ -853,15 +930,19 @@ export function useWorkspaceRuntime({
         return
       }
       flushAgentEventsChunked()
+      // Returning to the foreground refreshes at once: the reader is looking at
+      // the transcript now, so the coalescing window is not applied here.
+      if (externalReadDirtyRef.current) startExternalRead()
     }
     document.addEventListener('visibilitychange', onVisibilityChange)
     return () => document.removeEventListener('visibilitychange', onVisibilityChange)
-  }, [flushAgentEventsChunked, runOverflowReconciliation])
+  }, [flushAgentEventsChunked, runOverflowReconciliation, startExternalRead])
 
   useEffect(() => () => {
     transcriptLoadRef.current = null
     if (agentEventFrameRef.current !== null) cancelAnimationFrame(agentEventFrameRef.current)
     if (chunkedFlushTimerRef.current !== null) window.clearTimeout(chunkedFlushTimerRef.current)
+    if (externalReadTimerRef.current !== null) window.clearTimeout(externalReadTimerRef.current)
   }, [])
 
   useEffect(() => { savePendingQueues(queuedPromptsByOwnerRef.current) }, [pendingQueuedPrompts, workspaceGeneration])
