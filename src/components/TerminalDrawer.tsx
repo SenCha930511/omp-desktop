@@ -165,6 +165,10 @@ const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(function 
   }
 
   const scheduleActiveContext = () => {
+    // publishActiveContext already discards a hidden tab's publish, so arming
+    // the 100ms timer per PTY chunk while hidden is pure background work. The
+    // visible effect below republishes the retained buffer when the tab shows.
+    if (!visibleRef.current) return
     if (activeContextTimerRef.current !== undefined) return
     activeContextTimerRef.current = window.setTimeout(() => {
       activeContextTimerRef.current = undefined

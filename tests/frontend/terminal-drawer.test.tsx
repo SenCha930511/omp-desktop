@@ -156,4 +156,56 @@ describe('TerminalDrawer project command handle', () => {
     expect(onExit).toHaveBeenCalledOnce()
     expect(onExit).toHaveBeenCalledWith(undefined)
   })
+
+  it('publishes terminal context only while the drawer is visible', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const originalRaf = globalThis.requestAnimationFrame
+    Object.defineProperty(globalThis, 'requestAnimationFrame', {
+      configurable: true,
+      writable: true,
+      value: (callback: FrameRequestCallback) => setTimeout(() => callback(0), 0),
+    })
+    const fakeSetTimeout = globalThis.setTimeout
+    const contextTimers: number[] = []
+    vi.spyOn(globalThis, 'setTimeout').mockImplementation(((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
+      if (timeout === 100) contextTimers.push(timeout)
+      return fakeSetTimeout(handler as never, timeout, ...args)
+    }) as unknown as typeof setTimeout)
+    try {
+      let onData!: (event: { terminalId: string; clientId: string; data: string }) => void
+      vi.mocked(window.desktop.terminal.onData).mockImplementation((callback) => {
+        onData = callback as unknown as typeof onData
+        return () => undefined
+      })
+      vi.spyOn(Terminal.prototype, 'write').mockImplementation((_data, callback) => { callback?.() })
+
+      const props = { cwd: '/repo', height: 200, minHeight: 100, maxHeight: 500, defaultHeight: 200, onHeightChange: vi.fn(), onClose: vi.fn(), onError }
+      const handle = createHandle()
+      act(() => root.render(<TerminalDrawer ref={handle} {...props} visible={false} />))
+      await act(async () => { await Promise.resolve() })
+      const terminalId = createdTerminalIds[0]
+      expect(terminalId).toBeDefined()
+
+      // Nothing may be armed for a tab nobody can see: the publish itself is
+      // already gated, so a leftover 100ms timer is pure background work.
+      expect(contextTimers).toHaveLength(0)
+
+      // Output still lands in the buffer and is acknowledged while hidden.
+      act(() => { onData({ terminalId, clientId: 'client', data: 'hidden output' }) })
+      expect(window.desktop.terminal.acknowledge).toHaveBeenCalledWith(terminalId, 'hidden output'.length)
+      expect(contextTimers).toHaveLength(0)
+      act(() => { vi.advanceTimersByTime(200) })
+      expect(window.desktop.terminal.setActiveContext).not.toHaveBeenCalled()
+
+      // Showing the drawer republishes the retained buffer once.
+      contextTimers.length = 0
+      act(() => root.render(<TerminalDrawer ref={handle} {...props} visible />))
+      act(() => { vi.advanceTimersByTime(200) })
+      expect(contextTimers).toHaveLength(1)
+      expect(window.desktop.terminal.setActiveContext).toHaveBeenCalledTimes(1)
+    } finally {
+      Object.defineProperty(globalThis, 'requestAnimationFrame', { configurable: true, writable: true, value: originalRaf })
+      vi.useRealTimers()
+    }
+  })
 })
