@@ -42,6 +42,8 @@ variants of the same Electron scenario, so the distinct-scenario count is about
 | Responsive layout | Right pane collapses behind a Details overlay under 1100px |
 | Terminal context | `Send selection` quotes the last visible line |
 | Parity harness | `tests/e2e_parity.rs`, 95 tests mapping to about 87 distinct scenarios; 3 browser UI tests are gated off Linux |
+| Notifications | Unread badge clears on open and persists the read marks |
+| Parity harness | `tests/e2e_parity.rs`, 96 tests mapping to about 88 distinct scenarios; 3 browser UI tests are gated off Linux |
 | Updater | `updates.rs` state tests, Settings row render test |
 | Packaging | macOS `.app`, Linux `.deb`, Windows NSIS packaged-smoke CI jobs |
 | Conformance | 10 files, 21 tests against the Rust adapter on macOS, Linux, and Windows |
