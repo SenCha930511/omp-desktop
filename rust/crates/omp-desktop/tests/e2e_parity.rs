@@ -740,6 +740,213 @@ fn extension_toggle_reports_an_unavailable_state_store(cx: &mut TestAppContext) 
         .expect("workspace window");
 }
 
+/// The Extensions page installs a plugin from its source field, re-reads the
+/// catalog and reports the outcome in the page's banner.
+///
+/// `plugins::install` shells out to `omp plugin install` and accepts only
+/// `npm:` specs, which the parity suite cannot run: it never spawns a real
+/// `omp`. The scenario therefore swaps the page's installer for a stand-in
+/// that installs a temp local source. Everything the page owns stays real: the
+/// field is typed into, `submit_plugin_install` reads it, the installer is
+/// handed the app's own `CliContext`, and the catalog refresh and banner are
+/// the production ones.
+#[gpui_kit::test]
+fn extensions_install_row_installs_a_source_and_reports_failures(cx: &mut TestAppContext) {
+    use std::sync::{Arc, Mutex};
+
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let home = root.join("home");
+    let agent_dir = home.join(".omp/agent");
+    std::fs::create_dir_all(&agent_dir).expect("agent dir");
+    // The minimal source discovery accepts: a directory whose `package.json`
+    // names the plugin.
+    let source = root.join("plugin-source");
+    std::fs::create_dir_all(&source).expect("source dir");
+    std::fs::write(
+        source.join("package.json"),
+        json!({ "name": "demo-plugin", "description": "Fixture plugin" }).to_string(),
+    )
+    .expect("source manifest");
+
+    let mut data = test_data(root);
+    data.home_dir = home.clone();
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+
+    let calls: Arc<Mutex<Vec<(String, String)>>> = Arc::default();
+    handle
+        .update(cx, |workspace, _, cx| {
+            let calls = calls.clone();
+            let source_dir = source.clone();
+            workspace.set_plugin_installer(move |context, submitted| {
+                calls.lock().expect("install calls").push((
+                    context.home_dir.display().to_string(),
+                    submitted.to_string(),
+                ));
+                if submitted != source_dir.display().to_string() {
+                    return Err(format!("could not read the plugin source at {submitted}"));
+                }
+                // Stand in for `omp plugin install`: the package lands in the
+                // home's plugin root, which is what discovery reads.
+                let package = context
+                    .home_dir
+                    .join(".omp/plugins/node_modules/demo-plugin");
+                std::fs::create_dir_all(&package).expect("package dir");
+                std::fs::copy(
+                    source_dir.join("package.json"),
+                    package.join("package.json"),
+                )
+                .expect("package manifest");
+                Ok(json!({ "ok": true }))
+            });
+            workspace.refresh_plugins();
+            workspace.set_view(AppView::Plugins, cx);
+        })
+        .expect("install seam");
+
+    // Typing into the field the page draws is what the row's button reads.
+    let field = handle
+        .update(cx, |workspace, _, _| {
+            workspace.plugin_source_entity().clone()
+        })
+        .expect("plugin source field");
+    // `commit_text` renders a frame, so it is driven against the window alone
+    // rather than from inside a root-view update.
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            let bounds = gpui_kit::Bounds::new(point(px(0.0), px(0.0)), size(px(0.0), px(0.0)));
+            let mut input = gpui_kit::test::TestInput::new(
+                gpui_kit::ElementInputHandler::new(bounds, field.clone()),
+                window,
+            );
+            input.commit_text(&source.display().to_string(), cx);
+        })
+        .expect("type source");
+    });
+
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.submit_plugin_install(cx);
+            let snapshot = workspace.debug_snapshot(cx);
+            assert_eq!(snapshot["pluginInstallStatus"]["installing"], json!(true));
+            assert_eq!(
+                snapshot["pluginInstallStatus"]["source"],
+                json!(source.display().to_string())
+            );
+            // The previous banner is cleared before the harness is asked.
+            assert!(snapshot["extensionStatus"]["status"].is_null());
+            assert!(snapshot["extensionStatus"]["error"].is_null());
+        })
+        .expect("submit source");
+    cx.run_until_parked();
+
+    handle
+        .update(cx, |workspace, _, cx| {
+            let snapshot = workspace.debug_snapshot(cx);
+            assert_eq!(
+                snapshot["extensionStatus"]["status"],
+                json!("Plugin installed")
+            );
+            assert!(snapshot["extensionStatus"]["error"].is_null());
+            assert_eq!(snapshot["pluginInstallStatus"]["installing"], json!(false));
+            let catalog = workspace.plugin_catalog().expect("catalog");
+            let installed = catalog
+                .skills
+                .iter()
+                .find(|skill| skill.name == "demo-plugin")
+                .expect("installed plugin row");
+            assert_eq!(installed.kind, "package");
+            assert_eq!(installed.location, "user");
+            assert!(installed.enabled);
+            // The installer saw the app's own home directory and the exact
+            // source the field carried.
+            let calls = calls.lock().expect("install calls").clone();
+            assert_eq!(
+                calls,
+                vec![(home.display().to_string(), source.display().to_string())]
+            );
+        })
+        .expect("installed");
+
+    // A source the installer refuses leaves the field as typed and states the
+    // failure in the banner; the catalog keeps the plugin that did install.
+    let missing = root.join("missing-plugin").display().to_string();
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            let field = field.clone();
+            field.update(cx, |state, cx| state.select_all(window, cx));
+            let bounds = gpui_kit::Bounds::new(point(px(0.0), px(0.0)), size(px(0.0), px(0.0)));
+            let mut input = gpui_kit::test::TestInput::new(
+                gpui_kit::ElementInputHandler::new(bounds, field),
+                window,
+            );
+            input.commit_text(&missing, cx);
+        })
+        .expect("type missing source");
+    });
+    handle
+        .update(cx, |workspace, _, cx| workspace.submit_plugin_install(cx))
+        .expect("submit missing source");
+    cx.run_until_parked();
+
+    handle
+        .update(cx, |workspace, _, cx| {
+            let snapshot = workspace.debug_snapshot(cx);
+            let error = snapshot["extensionStatus"]["error"]
+                .as_str()
+                .expect("install failure banner");
+            assert_eq!(
+                error,
+                format!(
+                    "OMP could not install the plugin: could not read the plugin source at {missing}"
+                )
+            );
+            assert!(snapshot["extensionStatus"]["status"].is_null());
+            assert_eq!(snapshot["pluginInstallStatus"]["source"], json!(missing));
+            assert_eq!(snapshot["pluginInstallStatus"]["installing"], json!(false));
+            assert!(
+                workspace
+                    .plugin_catalog()
+                    .expect("catalog")
+                    .skills
+                    .iter()
+                    .any(|skill| skill.name == "demo-plugin"),
+                "the installed plugin stays in the refreshed catalog"
+            );
+        })
+        .expect("failed install");
+
+    // An empty field is inert: no installer call and no new banner.
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            let field = field.clone();
+            field.update(cx, |state, cx| state.select_all(window, cx));
+            let bounds = gpui_kit::Bounds::new(point(px(0.0), px(0.0)), size(px(0.0), px(0.0)));
+            let mut input = gpui_kit::test::TestInput::new(
+                gpui_kit::ElementInputHandler::new(bounds, field),
+                window,
+            );
+            input.commit_text("", cx);
+        })
+        .expect("clear source");
+    });
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.submit_plugin_install(cx);
+            let snapshot = workspace.debug_snapshot(cx);
+            assert_eq!(snapshot["pluginInstallStatus"]["source"], json!(""));
+            assert_eq!(snapshot["pluginInstallStatus"]["installing"], json!(false));
+            assert!(!snapshot["extensionStatus"]["error"].is_null());
+            assert_eq!(calls.lock().expect("install calls").len(), 2);
+        })
+        .expect("empty source");
+
+    // Drawing the page builds the install row, its field and its button, so a
+    // control that cannot render with this state fails the scenario.
+    draw_frame(cx, handle.into());
+}
+
 #[gpui_kit::test]
 fn composer_draft_survives_a_view_switch(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
