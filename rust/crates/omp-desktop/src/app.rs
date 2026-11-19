@@ -318,6 +318,10 @@ pub struct Workspace {
     agents: AgentManager,
     runtime_id: Option<String>,
     streaming_index: Option<usize>,
+    // Whether a turn is in flight on the main runtime. A prompt is accepted
+    // before the harness finishes streaming, so this stays true from the
+    // accepted send until `agent_end`: a send in between is a follow-up.
+    running: bool,
     drain_task: Option<Task<()>>,
     scheduler_task: Option<Task<()>>,
     scheduled_runs: Vec<ScheduledRun>,
@@ -326,6 +330,10 @@ pub struct Workspace {
     projects: Vec<ProjectRecord>,
     sessions: Vec<SessionRecord>,
     transcript: Vec<TranscriptMessage>,
+    // The harness's own view of the queued follow-ups (`session_action_update`).
+    // The optimistic queued row in the transcript is the immediate trace; this
+    // list is what the harness reports, and the two are never merged.
+    queued_follow_ups: Vec<String>,
     transcript_error: Option<String>,
     runtime_error: Option<String>,
     // The harness's last `get_session_stats` reading. It is cleared on a
@@ -518,6 +526,7 @@ impl Workspace {
             agents: AgentManager::default(),
             runtime_id: None,
             streaming_index: None,
+            running: false,
             drain_task: None,
             scheduler_task: None,
             scheduled_runs: Vec::new(),
@@ -526,6 +535,7 @@ impl Workspace {
             projects: data.projects,
             sessions,
             transcript: Vec::new(),
+            queued_follow_ups: Vec::new(),
             transcript_error: None,
             runtime_error: None,
             context_usage: None,
@@ -840,6 +850,10 @@ impl Workspace {
             "sessions": sessions,
             "selectedSession": self.selected_session,
             "transcript": transcript,
+            // Whether a turn is in flight, so a send would queue a follow-up.
+            "running": self.running,
+            // What the harness reports as queued behind the running turn.
+            "queuedFollowUps": self.queued_follow_ups,
             // The harness's last context-window reading, if one arrived.
             "contextUsage": self.context_usage.map(|usage| json!({
                 "tokens": usage.tokens,
@@ -1813,6 +1827,9 @@ impl Workspace {
         self.reset_live_voice();
         self.reset_dictation();
         self.streaming_index = None;
+        // The stopped runtime took its turn and its queue with it.
+        self.running = false;
+        self.queued_follow_ups.clear();
         self.runtime_error = None;
         self.turn_baseline = None;
         self.turn_changes = TurnChanges::default();
@@ -1972,6 +1989,8 @@ impl Workspace {
                 self.reset_live_voice();
                 self.reset_dictation();
                 self.streaming_index = None;
+                self.running = false;
+                self.queued_follow_ups.clear();
                 self.runtime_error = None;
                 self.selected_session = None;
                 self.transcript.clear();
@@ -2057,6 +2076,9 @@ impl Workspace {
         self.reset_live_voice();
         self.reset_dictation();
         self.streaming_index = None;
+        // The replaced runtime's turn and queue end with it.
+        self.running = false;
+        self.queued_follow_ups.clear();
         self.selected_session = None;
         // A new session starts with a fresh terminal: the draft bucket held
         // the tabs of the session it replaced, so it is dropped rather than
@@ -2187,13 +2209,30 @@ impl Workspace {
                         self.append_assistant_delta(kind, delta);
                     }
                 }
+                Some("agent_start") => self.running = true,
                 Some("agent_end") => {
                     self.streaming_index = None;
+                    self.running = false;
                     self.finish_turn();
                     self.refresh_sessions();
                     // The turn just spent tokens, so the dial catches up now
                     // instead of waiting for the next prompt.
                     self.refresh_context_usage();
+                }
+                Some("session_action_update") => {
+                    // The harness owns the queue: mirror what it reports so the
+                    // composer can show the follow-ups waiting behind the turn.
+                    self.queued_follow_ups = event
+                        .pointer("/actions/followUps")
+                        .and_then(Value::as_array)
+                        .map(|items| {
+                            items
+                                .iter()
+                                .filter_map(Value::as_str)
+                                .map(str::to_string)
+                                .collect()
+                        })
+                        .unwrap_or_default();
                 }
                 Some("compaction_end") => {
                     let before = event
@@ -2902,42 +2941,94 @@ impl Workspace {
             cx.notify();
             return;
         };
-        if self.turn_baseline.is_none() {
+        // A send during a live turn is a follow-up: the harness queues it
+        // behind the running turn instead of rejecting the prompt. Ctrl+Enter
+        // asks for the same queue on an idle turn.
+        let queued = follow_up || self.running;
+        if !queued && self.turn_baseline.is_none() {
             self.turn_changes = TurnChanges::default();
             self.turn_baseline = self.capture_turn_baseline();
         }
-        match self.agents.command(
+        let response = match self.agents.command(
             &runtime_id,
-            &json!({ "type": if follow_up { "follow_up" } else { "prompt" }, "message": text }),
+            &json!({
+                "type": if queued { "follow_up" } else { "prompt" },
+                "message": text,
+            }),
         ) {
-            Ok(response) if response.get("success").and_then(Value::as_bool) == Some(true) => {}
+            Ok(response) if response.get("success").and_then(Value::as_bool) == Some(true) => {
+                response
+            }
             Ok(response) => {
-                self.turn_baseline = None;
-                self.runtime_error = Some(
-                    response
-                        .pointer("/error/message")
-                        .and_then(Value::as_str)
-                        .unwrap_or("OMP rejected the prompt")
-                        .to_string(),
-                );
+                // A queued send never starts a turn, so the running turn keeps
+                // its baseline; only a rejected prompt drops the new one.
+                if !queued {
+                    self.turn_baseline = None;
+                }
+                let message = response
+                    .pointer("/error/message")
+                    .and_then(Value::as_str)
+                    .unwrap_or(if queued {
+                        "OMP rejected the follow-up"
+                    } else {
+                        "OMP rejected the prompt"
+                    });
+                self.runtime_error = Some(if queued {
+                    format!("OMP could not queue the follow-up: {message}")
+                } else {
+                    message.to_string()
+                });
                 cx.notify();
                 return;
             }
             Err(error) => {
-                self.turn_baseline = None;
-                self.runtime_error = Some(error.message);
+                if !queued {
+                    self.turn_baseline = None;
+                }
+                // A follow-up is never retried as a prompt: a harness that
+                // cannot queue it would otherwise be sent the text twice.
+                self.runtime_error = Some(if queued {
+                    format!("OMP could not queue the follow-up: {}", error.message)
+                } else {
+                    error.message
+                });
                 cx.notify();
                 return;
             }
-        }
+        };
         self.runtime_error = None;
-        self.transcript.push(TranscriptMessage {
-            id: format!("user-{}", self.transcript.len()),
-            role: "user".to_string(),
-            timestamp: None,
-            agent_name: None,
-            parts: vec![TranscriptPart::text(text)],
-        });
+        if queued {
+            // The harness owns the queued turn, so this row is only its trace
+            // until the harness starts it. The distinct part kind keeps it
+            // from doubling as the turn's own user message.
+            self.transcript.push(TranscriptMessage {
+                id: format!("queued-{}", self.transcript.len()),
+                role: "user".to_string(),
+                timestamp: None,
+                agent_name: None,
+                parts: vec![TranscriptPart {
+                    kind: "queued".to_string(),
+                    text: Some(text),
+                    ..TranscriptPart::text("")
+                }],
+            });
+        } else {
+            // The harness accepted the prompt and streams until `agent_end`;
+            // sends in between are queued rather than rejected. A pure slash
+            // command resolves without invoking the model, so it starts no
+            // turn and must not leave the composer in the running state.
+            self.running = response
+                .pointer("/data/agentInvoked")
+                .and_then(Value::as_bool)
+                != Some(false);
+            self.transcript.push(TranscriptMessage {
+                id: format!("user-{}", self.transcript.len()),
+                role: "user".to_string(),
+                timestamp: None,
+                agent_name: None,
+                parts: vec![TranscriptPart::text(text)],
+            });
+        }
         let composer = self.composer.clone();
         composer.update(cx, |state, cx| state.set_value("", window, cx));
         cx.notify();
@@ -2989,7 +3080,11 @@ impl Workspace {
                     .children(message.parts.iter().map(|part| {
                         div()
                             .text_sm()
-                            .text_color(colors.foreground)
+                            .text_color(if part.kind == "queued" {
+                                colors.muted_foreground
+                            } else {
+                                colors.foreground
+                            })
                             .child(transcript_part_text(part))
                     }))
             }))
@@ -3206,7 +3301,11 @@ impl Workspace {
                     .gap_2()
                     .text_xs()
                     .text_color(colors.muted_foreground)
-                    .child("Enter to send · Ctrl+Enter to follow up")
+                    .child(if self.running {
+                        "Running · Enter to queue a follow-up"
+                    } else {
+                        "Enter to send · Ctrl+Enter to follow up"
+                    })
                     .child(div().flex_1())
                     .child({
                         let model = self.settings.last_selected_model();
@@ -5778,6 +5877,9 @@ fn transcript_role_label(message: &TranscriptMessage) -> String {
 fn transcript_part_text(part: &TranscriptPart) -> String {
     match part.kind.as_str() {
         "text" | "thinking" => part.text.clone().unwrap_or_default(),
+        // A follow-up waiting behind the running turn: the harness owns the
+        // real user message, so this row only shows what was queued.
+        "queued" => format!("Queued: {}", part.text.clone().unwrap_or_default()),
         "toolCall" => format!(
             "⚙ {}",
             part.name.clone().unwrap_or_else(|| "tool".to_string())
@@ -8157,5 +8259,54 @@ mod tests {
             })
             .expect("workspace window");
         cx.quit();
+    }
+
+    /// A send during a running turn that the harness cannot queue reports a
+    /// clear status error, keeps the draft and never falls back to a prompt.
+    #[test]
+    fn running_send_without_a_queue_reports_an_error_and_keeps_the_draft() {
+        let mut cx = gpui_kit::TestAppContext::single();
+        cx.update(gpui_kit::init);
+        let root = tempfile::TempDir::new().expect("test root");
+        let handle = cx.add_window(|window, cx| {
+            Workspace::new(
+                window,
+                cx,
+                WorkspaceData {
+                    geometry: UiGeometry::default(),
+                    geometry_path: root.path().join("ui-geometry.json"),
+                    home_dir: root.path().join("home"),
+                    user_data_dir: root.path().join("user-data"),
+                    omp_executable: PathBuf::from("omp"),
+                    settings: AppSettings::default(),
+                    projects: Vec::new(),
+                    sessions: Vec::new(),
+                },
+            )
+        });
+        handle
+            .update(&mut cx, |workspace, window, cx| {
+                // A runtime id with no process behind it: the follow-up command
+                // fails the way an unavailable API does.
+                workspace.runtime_id = Some("omp-missing".to_string());
+                workspace.running = true;
+                let composer = workspace.composer.clone();
+                composer.update(cx, |state, cx| {
+                    state.set_value("second thought", window, cx);
+                });
+
+                workspace.send_prompt(window, cx);
+
+                assert!(workspace.transcript.is_empty());
+                assert_eq!(composer.read(cx).value().to_string(), "second thought");
+                assert!(workspace.running);
+                let error = workspace.runtime_error.as_deref().expect("status error");
+                assert!(
+                    error.starts_with("OMP could not queue the follow-up:"),
+                    "error: {error}"
+                );
+                assert!(error.contains("Unknown agent runtime"), "error: {error}");
+            })
+            .expect("workspace window");
     }
 }

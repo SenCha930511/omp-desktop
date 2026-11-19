@@ -4000,3 +4000,166 @@ fn context_usage_appears_with_a_reading_and_clears_on_a_session_switch(cx: &mut 
         .expect("workspace window");
     draw_frame(cx, window);
 }
+
+/// A send while a turn is running is a follow-up, not a prompt: the fixture
+/// reports it on its own queue and the transcript shows a distinct queued row,
+/// while an idle send still starts a normal prompt. The fixture only answers a
+/// `follow_up` by queueing it and a `prompt` by echoing it, so the echo is the
+/// proof that the idle path did not become a follow-up.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn composer_send_while_running_queues_a_follow_up(cx: &mut TestAppContext) {
+    use omp_core::projects;
+    use std::os::unix::fs::PermissionsExt;
+
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let home = root.join("home");
+    let project = root.join("project");
+    let bin = root.join("bin");
+    for folder in [&home, &project, &bin, &root.join("user-data")] {
+        std::fs::create_dir_all(folder).expect("dir");
+    }
+    let project = project.canonicalize().expect("project path");
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../..")
+        .canonicalize()
+        .expect("repo root");
+    let fixture_script = repo.join("tests/conformance/fixtures/omp-fixture.mjs");
+    let fixture = bin.join("omp-fixture");
+    std::fs::write(
+        &fixture,
+        format!(
+            "#!/bin/sh\nexec \"{}\" \"{}\" \"$@\"\n",
+            std::env::var("NODE").unwrap_or_else(|_| "node".to_string()),
+            fixture_script.display()
+        ),
+    )
+    .expect("fixture");
+    std::fs::set_permissions(&fixture, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+    let mut store = open_store(root);
+    projects::grant_project(
+        &mut store,
+        &home,
+        Platform::current(),
+        project.to_str().expect("project path"),
+    )
+    .expect("grant");
+    drop(store);
+
+    let bucket = home.join(".omp/agent/sessions/-omp-project");
+    write_session(
+        &bucket,
+        "2026-04-02T00-00-00-000Z_019fdf24-dddd-7000-8000-000000000010.jsonl",
+        "Follow-up",
+        "2026-04-02T00:00:00.000Z",
+        "first prompt",
+        "first reply",
+        &project,
+    );
+    let store = open_store(root);
+    let catalog = omp_core::sessions::list_sessions(&store, &home, false, None);
+    drop(store);
+
+    let mut data = test_data(root);
+    data.home_dir = home;
+    data.omp_executable = fixture;
+    data.sessions = catalog;
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    handle
+        .update(cx, |workspace, window, cx| {
+            workspace.select_session(0, cx);
+            assert_eq!(snapshot(workspace, cx)["liveVoice"]["runtime"], json!(true));
+
+            // The fixture's `[hold-busy]` prompt stays streaming, so the turn
+            // is still running when the next send arrives.
+            let composer = workspace.composer_entity().clone();
+            composer.update(cx, |state, cx| state.set_value("[hold-busy]", window, cx));
+            workspace.send_prompt(window, cx);
+            let running = snapshot(workspace, cx);
+            assert_eq!(running["running"], json!(true));
+            assert_eq!(running["composer"]["text"], "");
+
+            composer.update(cx, |state, cx| {
+                state.set_value("second thought", window, cx)
+            });
+            workspace.send_prompt(window, cx);
+            let queued = snapshot(workspace, cx);
+            assert_eq!(queued["composer"]["text"], "");
+            let transcript = queued["transcript"].as_array().expect("transcript");
+            let last = transcript.last().expect("queued row");
+            assert_eq!(last["role"], "user");
+            assert_eq!(last["parts"][0]["kind"], "queued");
+            assert_eq!(last["parts"][0]["text"], "second thought");
+            // The optimistic row is the only trace of the text until the
+            // harness starts the queued turn.
+            assert_eq!(
+                transcript
+                    .iter()
+                    .filter(|message| message["parts"][0]["text"] == "second thought")
+                    .count(),
+                1
+            );
+
+            // The fixture's `session_action_update` is the harness's own proof
+            // that the text reached the follow-up queue.
+            workspace.drain_agent_events();
+            let drained = snapshot(workspace, cx);
+            assert_eq!(drained["queuedFollowUps"], json!(["second thought"]));
+            assert_eq!(drained["running"], json!(true));
+        })
+        .expect("workspace window");
+
+    // A fresh runtime for the same session is idle again.
+    handle
+        .update(cx, |workspace, window, cx| {
+            workspace.select_session(0, cx);
+            let idle = snapshot(workspace, cx);
+            assert_eq!(idle["running"], json!(false));
+            assert_eq!(idle["queuedFollowUps"], json!([]));
+
+            let composer = workspace.composer_entity().clone();
+            composer.update(cx, |state, cx| state.set_value("idle hello", window, cx));
+            workspace.send_prompt(window, cx);
+            let sent = snapshot(workspace, cx);
+            assert_eq!(sent["running"], json!(true));
+            assert_eq!(sent["queuedFollowUps"], json!([]));
+            let last = sent["transcript"]
+                .as_array()
+                .and_then(|transcript| transcript.last())
+                .cloned()
+                .expect("user row");
+            assert_eq!(last["role"], "user");
+            assert_eq!(last["parts"][0]["kind"], "text");
+            assert_eq!(last["parts"][0]["text"], "idle hello");
+        })
+        .expect("workspace window");
+
+    // The idle send was a prompt, so the fixture echoed it and ended the turn.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let echoed = loop {
+        std::thread::sleep(Duration::from_millis(50));
+        let done = handle
+            .update(cx, |workspace, _, cx| {
+                workspace.drain_agent_events();
+                let texts = transcript_text(workspace);
+                let done = snapshot(workspace, cx);
+                texts
+                    .iter()
+                    .any(|text| text == "echo:idle hello")
+                    .then_some(done)
+            })
+            .expect("workspace window");
+        if let Some(done) = done {
+            break done;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the fixture never echoed the idle prompt"
+        );
+    };
+    assert_eq!(echoed["running"], json!(false));
+    assert_eq!(echoed["queuedFollowUps"], json!([]));
+}
