@@ -516,6 +516,217 @@ fn plugin_catalog_discovers_project_skills(cx: &mut TestAppContext) {
         .expect("workspace window");
 }
 
+/// The Extensions page writes an MCP server's state to the file its row came
+/// from and reports what the refreshed catalog says.
+///
+/// The user and project rows go through the same `set_extension_enabled` the
+/// row's button calls. A package row is different: the core's
+/// `mutate_capability` accepts the request, so the page must not claim success
+/// when the refreshed catalog still draws the old state — that is the third
+/// assertion below, and the banner carries the failure.
+#[gpui_kit::test]
+fn extension_rows_toggle_mcp_servers_and_report_unapplied_changes(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let home = root.join("home");
+    let agent_dir = home.join(".omp/agent");
+    std::fs::create_dir_all(&agent_dir).expect("agent dir");
+    let user_mcp = agent_dir.join("mcp.json");
+    std::fs::write(
+        &user_mcp,
+        json!({
+            "mcpServers": {
+                "docs": { "type": "stdio", "command": "docs-server" },
+            }
+        })
+        .to_string(),
+    )
+    .expect("user mcp config");
+    let package_dir = home.join(".omp/plugins/node_modules/demo-package");
+    std::fs::create_dir_all(&package_dir).expect("package dir");
+    std::fs::write(
+        package_dir.join("package.json"),
+        json!({ "name": "demo-package", "description": "Fixture package" }).to_string(),
+    )
+    .expect("package manifest");
+
+    let project = root.join("workspace");
+    std::fs::create_dir_all(project.join(".omp")).expect("project dir");
+    let project_mcp = project.join(".omp/mcp.json");
+    std::fs::write(
+        &project_mcp,
+        json!({
+            "mcpServers": {
+                "project-docs": { "type": "stdio", "command": "project-docs-server" },
+            }
+        })
+        .to_string(),
+    )
+    .expect("project mcp config");
+
+    let mut data = test_data(root);
+    data.home_dir = home.clone();
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    handle
+        .update(cx, |workspace, _, cx| {
+            let read = |path: &Path| -> Value {
+                serde_json::from_str(&std::fs::read_to_string(path).expect("read config"))
+                    .expect("config json")
+            };
+            workspace.grant_project(&project, cx);
+            workspace.refresh_plugins();
+            let row = |workspace: &Workspace, name: &str| -> (bool, String) {
+                let record = workspace
+                    .plugin_catalog()
+                    .expect("catalog")
+                    .skills
+                    .iter()
+                    .find(|skill| skill.name == name)
+                    .unwrap_or_else(|| panic!("{name} row"));
+                (record.enabled, record.location.clone())
+            };
+            assert_eq!(row(workspace, "docs"), (true, "user".to_string()));
+            assert_eq!(
+                row(workspace, "project-docs"),
+                (true, "project".to_string())
+            );
+            assert_eq!(row(workspace, "demo-package"), (true, "user".to_string()));
+
+            // Disabling the user server writes `disabledServers` to the user
+            // file and the refreshed row draws the new state.
+            workspace.set_extension_enabled("docs", false, cx);
+            let config = read(&user_mcp);
+            assert_eq!(config["disabledServers"], json!(["docs"]));
+            assert_eq!(config["enabledServers"], json!([]));
+            assert_eq!(row(workspace, "docs"), (false, "user".to_string()));
+            let snapshot = workspace.debug_snapshot(cx);
+            assert_eq!(
+                snapshot["extensionStatus"]["status"],
+                json!("Extensions updated")
+            );
+            assert!(snapshot["extensionStatus"]["error"].is_null());
+            assert_eq!(
+                snapshot["extensionStatus"]["rows"],
+                json!([
+                    { "name": "project-docs", "kind": "mcp", "enabled": true, "scope": "project" },
+                    { "name": "demo-package", "kind": "package", "enabled": true, "scope": "user" },
+                    { "name": "docs", "kind": "mcp", "enabled": false, "scope": "user" },
+                ])
+            );
+
+            // Enabling it again clears the disabled list and records the server
+            // as explicitly enabled.
+            workspace.set_extension_enabled("docs", true, cx);
+            let config = read(&user_mcp);
+            assert_eq!(config["disabledServers"], json!([]));
+            assert_eq!(config["enabledServers"], json!(["docs"]));
+            assert_eq!(row(workspace, "docs"), (true, "user".to_string()));
+            assert_eq!(
+                workspace.debug_snapshot(cx)["extensionStatus"]["status"],
+                json!("Extensions updated")
+            );
+
+            // A project row writes the project's own file; the user file the
+            // previous steps touched stays as they left it.
+            workspace.set_extension_enabled("project-docs", false, cx);
+            assert_eq!(
+                read(&project_mcp)["disabledServers"],
+                json!(["project-docs"])
+            );
+            assert_eq!(
+                row(workspace, "project-docs"),
+                (false, "project".to_string())
+            );
+            let user_config = read(&user_mcp);
+            assert_eq!(user_config["disabledServers"], json!([]));
+            assert_eq!(user_config["enabledServers"], json!(["docs"]));
+
+            // The core accepts a package mutation without changing what
+            // discovery reports, so the page reports the unapplied change
+            // instead of a success the row contradicts.
+            workspace.set_extension_enabled("demo-package", false, cx);
+            assert_eq!(row(workspace, "demo-package"), (true, "user".to_string()));
+            let snapshot = workspace.debug_snapshot(cx);
+            let error = snapshot["extensionStatus"]["error"]
+                .as_str()
+                .expect("package failure banner");
+            assert!(
+                error.starts_with("OMP could not update extensions:"),
+                "{error}"
+            );
+            assert!(error.contains("demo-package is still enabled"), "{error}");
+            assert!(snapshot["extensionStatus"]["status"].is_null());
+
+            // A name the catalog does not carry is refused before any file is
+            // touched.
+            workspace.set_extension_enabled("missing-server", false, cx);
+            let snapshot = workspace.debug_snapshot(cx);
+            let error = snapshot["extensionStatus"]["error"]
+                .as_str()
+                .expect("unknown row banner");
+            assert!(
+                error.contains("missing-server is not in the catalog"),
+                "{error}"
+            );
+            workspace.set_view(AppView::Plugins, cx);
+        })
+        .expect("workspace window");
+    // Drawing the page builds every row, its toggle and the failure banner, so
+    // a control that cannot render with this state fails the scenario.
+    draw_frame(cx, handle.into());
+}
+
+/// Without a state store the Extensions page cannot authorize a write, so the
+/// toggle fails visibly and the config file stays untouched.
+#[gpui_kit::test]
+fn extension_toggle_reports_an_unavailable_state_store(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let home = root.join("home");
+    let agent_dir = home.join(".omp/agent");
+    std::fs::create_dir_all(&agent_dir).expect("agent dir");
+    let user_mcp = agent_dir.join("mcp.json");
+    std::fs::write(
+        &user_mcp,
+        json!({
+            "mcpServers": {
+                "docs": { "type": "stdio", "command": "docs-server" },
+            }
+        })
+        .to_string(),
+    )
+    .expect("user mcp config");
+    // `user-data` is a file, so the workspace's state store cannot open; the
+    // Extensions page still discovers and draws rows, but has nothing to
+    // authorize a project write with and no store to hand the core.
+    std::fs::write(root.join("user-data"), "not a directory").expect("blocked user data");
+
+    let mut data = test_data(root);
+    data.home_dir = home.clone();
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.refresh_plugins();
+            workspace.set_extension_enabled("docs", false, cx);
+            let snapshot = workspace.debug_snapshot(cx);
+            let error = snapshot["extensionStatus"]["error"]
+                .as_str()
+                .expect("store failure banner");
+            assert!(error.contains("state store is unavailable"), "{error}");
+            assert!(snapshot["extensionStatus"]["status"].is_null());
+            let config: Value =
+                serde_json::from_str(&std::fs::read_to_string(&user_mcp).expect("read config"))
+                    .expect("config json");
+            assert!(
+                config.get("disabledServers").is_none(),
+                "a failed toggle must not write the config: {config}"
+            );
+        })
+        .expect("workspace window");
+}
+
 #[gpui_kit::test]
 fn composer_draft_survives_a_view_switch(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
