@@ -23,18 +23,17 @@ variants of the same Electron scenario, so the distinct-scenario count is about
 | Terminal | `terminal.rs` PTY helpers, tabs, per-session restore, panel render test |
 | Live voice | `app.rs` live-event helper tests, pane render test; dictation is not implemented |
 | Updater feed | `prepare-rust-update-feed.mjs` validation tests; release.yml is not wired |
-| Parity harness | `tests/e2e_parity.rs`, 65 tests mapping to about 62 distinct scenarios |
+| Parity harness | `tests/e2e_parity.rs`, 66 tests mapping to about 63 distinct scenarios |
 | Updater | `updates.rs` state tests, Settings row render test |
 | Packaging | macOS `.app`, Linux `.deb`, Windows NSIS packaged-smoke CI jobs |
 | Conformance | 10 files, 20 tests against the Rust adapter on macOS, Linux, and Windows |
 
 ## Groups that remain unclosed
 
-- Dictation credentials and the app-managed STT path; live voice is RPC-driven.
 - Wiring the updater feed and signatures into `release.yml`.
-- The remaining 26 Playwright scenarios, including browser guest lifecycle,
-  agent-driven browser tabs, dictation, and the responsive workspace interactions.
+- The remaining 25 Playwright scenarios, including overview/attention, ask_user,
+  notification capture, terminal selection context, and the responsive workspace.
 - The final Electron cutover gate.
 
-Until the remaining Playwright matrix runs against the Rust app and dictation
-exists, the Electron app remains the shipping desktop application.
+Until the remaining Playwright matrix runs against the Rust app, the Electron
+app remains the shipping desktop application.
