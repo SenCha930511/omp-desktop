@@ -118,6 +118,18 @@ fn window_options(geometry: &UiGeometry) -> WindowOptions {
     }
 }
 
+fn arm_smoke_marker(window: &mut Window, path: PathBuf, version: String, frames: u8) {
+    window.on_next_frame(move |window, cx| {
+        if frames > 1 {
+            arm_smoke_marker(window, path.clone(), version.clone(), frames - 1);
+            return;
+        }
+        if omp_desktop::packaged_smoke::write_marker(&path, SMOKE_URL, &version).is_ok() {
+            cx.quit();
+        }
+    });
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let user_data_dir = parse_arg(&args, "--user-data-dir=")
@@ -136,10 +148,6 @@ fn main() {
             if let Some(path) = smoke_path.clone() {
                 // The native smoke test must prove the window painted; the
                 // Electron version proved an authorized IPC round trip.
-                window.on_next_frame(move |_, cx| {
-                    let _ = omp_desktop::packaged_smoke::write_marker(&path, SMOKE_URL, &version);
-                    cx.quit();
-                });
                 arm_smoke_marker(window, path, version, 3);
             }
             if let Some(path) = dump_layout_path.clone() {

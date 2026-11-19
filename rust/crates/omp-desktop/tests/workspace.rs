@@ -308,3 +308,35 @@ fn settings_updates_persist_to_the_state_file(cx: &mut TestAppContext) {
         omp_core::settings::ConversationDensity::Compact
     );
 }
+
+#[gpui_kit::test]
+fn extensions_page_discovers_project_skills(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let root = tempfile::TempDir::new().expect("test root");
+    let project = root.path().join("workspace");
+    let skill_dir = project.join(".omp/skills/demo");
+    std::fs::create_dir_all(&skill_dir).expect("skill dir");
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: Demo Skill\ndescription: Fixture\n---\nBody\n",
+    )
+    .expect("skill");
+    let mut data = test_data(UiGeometry::default());
+    data.home_dir = root.path().join("home");
+    data.user_data_dir = root.path().join("user-data");
+    std::fs::create_dir_all(&data.home_dir).expect("home");
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.grant_project(&project, cx);
+            workspace.refresh_plugins();
+            let catalog = workspace.plugin_catalog().expect("catalog");
+            assert!(
+                catalog
+                    .skills
+                    .iter()
+                    .any(|skill| skill.kind == "skill" && skill.name == "Demo Skill")
+            );
+        })
+        .expect("workspace window");
+}
