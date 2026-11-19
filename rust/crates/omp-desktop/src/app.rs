@@ -101,6 +101,9 @@ pub struct Workspace {
     schedules: Vec<Value>,
     right_pane: RightPane,
     browser: BrowserPane,
+    files: Vec<omp_core::projects::ProjectFileEntry>,
+    files_skipped: u64,
+    files_error: Option<String>,
     overview_open: bool,
     menu_open: bool,
     turn_changes: TurnChanges,
@@ -172,6 +175,9 @@ impl Workspace {
             schedules: Vec::new(),
             right_pane: RightPane::Launcher,
             browser,
+            files: Vec::new(),
+            files_skipped: 0,
+            files_error: None,
             overview_open: false,
             menu_open: false,
             turn_changes: TurnChanges::default(),
@@ -492,6 +498,9 @@ impl Workspace {
         }
         if self.right_pane == RightPane::Review {
             self.refresh_review();
+        }
+        if self.right_pane == RightPane::Files {
+            self.refresh_files();
         }
         self.ensure_runtime(cx);
         cx.notify();
@@ -1013,6 +1022,33 @@ impl Workspace {
 
     pub fn schedules(&self) -> &[Value] {
         &self.schedules
+    }
+    pub fn refresh_files(&mut self) {
+        let Some(store) = self.store.clone() else {
+            self.files.clear();
+            self.files_skipped = 0;
+            self.files_error = Some("The desktop state store is unavailable.".to_string());
+            return;
+        };
+        let Some(cwd) = self.project_cwd() else {
+            self.files.clear();
+            self.files_skipped = 0;
+            self.files_error = Some("Select a project to browse its files.".to_string());
+            return;
+        };
+        let store = store.lock().expect("state lock");
+        match projects::list_files(&store, Platform::current(), &cwd) {
+            Ok(listing) => {
+                self.files = listing.entries;
+                self.files_skipped = listing.skipped;
+                self.files_error = None;
+            }
+            Err(error) => {
+                self.files.clear();
+                self.files_skipped = 0;
+                self.files_error = Some(error.message);
+            }
+        }
     }
 
     pub fn set_schedule_status(&mut self, id: &str, status: &str, cx: &mut Context<Self>) {
@@ -1913,6 +1949,7 @@ impl Workspace {
             RightPane::Summary => Some(self.summary_content(cx).into_any_element()),
             RightPane::Review => Some(self.review_content(cx).into_any_element()),
             RightPane::Browser => Some(self.browser.content(cx).into_any_element()),
+            RightPane::Files => Some(self.files_content(cx).into_any_element()),
             other => Some(self.placeholder_content(other, cx).into_any_element()),
         };
         let title = match self.right_pane {
@@ -2007,6 +2044,9 @@ impl Workspace {
                             if pane == RightPane::Browser {
                                 this.browser.ensure(window, cx);
                             }
+                            if pane == RightPane::Files {
+                                this.refresh_files();
+                            }
                             cx.notify();
                         }))
                 }))
@@ -2033,6 +2073,105 @@ impl Workspace {
                             .child("0"),
                     ),
             )
+    }
+
+    fn files_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = cx.theme().colors;
+        let mut list = div().flex().flex_col().gap_1();
+        for (index, entry) in self.files.iter().take(200).enumerate() {
+            let icon = if entry.kind == "directory" {
+                IconName::Folder
+            } else {
+                IconName::FileText
+            };
+            list = list.child(
+                div()
+                    .id(format!("file-{index}"))
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_2()
+                    .py_1()
+                    .rounded(px(6.0))
+                    .hover(|style| style.bg(colors.accent))
+                    .child(icon)
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(colors.foreground)
+                            .child(entry.path.clone()),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(colors.muted_foreground)
+                            .child(entry.kind.clone()),
+                    ),
+            );
+        }
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .p_2()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child("Files"),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .id("files-refresh")
+                            .aria_label("Refresh files")
+                            .px_2()
+                            .py_1()
+                            .rounded(px(6.0))
+                            .border_1()
+                            .border_color(colors.border)
+                            .text_xs()
+                            .child("Refresh")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.refresh_files();
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .when(self.files_error.is_some(), |element| {
+                element.child(
+                    div()
+                        .text_sm()
+                        .text_color(colors.danger)
+                        .child(self.files_error.clone().unwrap_or_default()),
+                )
+            })
+            .when(
+                self.files_error.is_none() && self.files.is_empty(),
+                |element| {
+                    element.child(
+                        div()
+                            .text_sm()
+                            .text_color(colors.muted_foreground)
+                            .child("No files found."),
+                    )
+                },
+            )
+            .child(list)
+            .when(self.files_skipped > 0, |element| {
+                element.child(
+                    div()
+                        .text_xs()
+                        .text_color(colors.muted_foreground)
+                        .child(format!("{} entries skipped.", self.files_skipped)),
+                )
+            })
     }
 
     fn summary_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
