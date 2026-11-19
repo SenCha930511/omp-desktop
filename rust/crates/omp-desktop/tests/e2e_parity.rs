@@ -14,7 +14,6 @@
 //! and reads the state back as JSON, so a scenario never has to click a measured
 //! position or spawn a shell or an agent.
 
-
 use gpui_kit::AppContext as _;
 use gpui_kit::ClipboardItem;
 use gpui_kit::Context;
