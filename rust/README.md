@@ -106,8 +106,8 @@ The packaged binary writes the same first-frame marker as the development build.
 
 ## Remaining work
 
-- Full page set: Schedules and Browser remain; Settings, Extensions, Review, and Summary are present.
-- A due-task scheduler that executes persisted schedules; the core currently stores and validates them only.
-- Real worktree checkout creation; worktree requests return a typed refusal instead of switching the main branch.
-- The 88-scenario UI retirement matrix beyond the current layout, IME, and turn-diff tests.
-- Tray, updater, packaging, and the final Electron cutover gate.
+- Terminal and voice surfaces remain; the workspace, Schedules, Browser, Files, Subagents, Side Question, Settings, Extensions, Review, and Summary are present.
+- Linux tray; the macOS and Windows tray is present.
+- The updater release feed and signing pipeline; the check-only client is present but reads `not configured` without `OMP_UPDATER_PUBKEY`.
+- The 88-scenario UI retirement matrix beyond the current layout, IME, turn-diff, and pane tests.
+- The final Electron cutover gate.
