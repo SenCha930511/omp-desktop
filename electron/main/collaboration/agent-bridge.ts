@@ -6,6 +6,7 @@ import { streamingBehaviorForIntent } from '../../../src/lib/session-actions'
 import type { AgentRpcManager } from '../agent-rpc'
 import { CapabilityBridge, type CapabilityClaim } from '../lib/capability-bridge'
 import type { ModelCatalogProvider } from '../model-catalog'
+import { canonicalSessionPath } from '../session-paths'
 import { availableModels, rankedModelMatches, resolveModel, resolveReasoning } from '../model-selection'
 import { requireBoolean, requireId, requireInteger, requireString } from '../validation'
 import { encodeGooeyPiAgentMessage } from './message-envelope'
@@ -227,8 +228,8 @@ export class AgentCollaborationBridge extends CapabilityBridge {
     const cached = this.sourcesByToken.get(claim.token)
     if (cached) return cached
     const sessions = await this.options.sessions[claim.harness].list(undefined, true, true)
-    const sessionPath = resolve(claim.sessionPath)
-    const session = sessions.find((candidate) => resolve(candidate.filePath) === sessionPath)
+    const sessionPath = canonicalSessionPath(claim.sessionPath)
+    const session = sessions.find((candidate) => canonicalSessionPath(candidate.filePath) === sessionPath)
     if (!session) throw new Error('The current collaboration session was not found')
     if (session.depth !== 0) throw new Error('Session collaboration is available only to top-level sessions')
     const source = { session, service: this.options.sessions[claim.harness], manager: this.options.agents[claim.harness] }
@@ -246,10 +247,11 @@ export class AgentCollaborationBridge extends CapabilityBridge {
     const harness = source.session.harness
     const service = this.options.sessions[harness]
     const sessions = await service.list(source.session.projectPath, false, true)
+    const sourceProject = canonicalSessionPath(source.session.projectPath)
     for (const session of sessions) {
       if (session.id === source.session.id) continue
       if (session.depth !== 0) continue
-      if (resolve(session.projectPath) !== resolve(source.session.projectPath)) continue
+      if (canonicalSessionPath(session.projectPath) !== sourceProject) continue
       peers.push({ session, service, manager: this.options.agents[harness] })
     }
     return peers.sort((left, right) => Date.parse(right.session.updatedAt) - Date.parse(left.session.updatedAt))

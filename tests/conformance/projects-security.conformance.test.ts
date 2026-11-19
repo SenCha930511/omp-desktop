@@ -59,7 +59,7 @@ describe('conformance: projects & containment security', () => {
 
     const granted = await client.call<{ id: string; harness: string; primaryFolder: string }>('projects.grant', { path: projectDir })
     expect(granted.harness).toBe('omp')
-    expect(realpathSync(granted.primaryFolder)).toBe(realpathSync(projectDir))
+    expect(realpathSync.native(granted.primaryFolder)).toBe(realpathSync.native(projectDir))
 
     const listing = await client.call<{ entries: Array<{ path: string; type: string }> }>('projects.listFiles', { root: projectDir })
     const paths = listing.entries.map((entry) => entry.path)

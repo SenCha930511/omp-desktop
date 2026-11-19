@@ -30,7 +30,7 @@ describe('conformance: OMP JSONL sessions', () => {
     sandbox = createConformanceSandbox('omp-conf-sess-')
     const projectDir = join(sandbox.rootDir, 'project')
     mkdirSync(projectDir, { recursive: true })
-    const canonicalProject = realpathSync(projectDir)
+    const canonicalProject = realpathSync.native(projectDir)
 
     const olderPath = writeOmpSessionFixture({
       homeDir: sandbox.homeDir,
@@ -165,13 +165,13 @@ describe('conformance: OMP JSONL sessions', () => {
     await client.call('state.close')
     await client.call('state.open')
     const afterReopen = await client.call<Array<{ filePath: string; pinned?: boolean }>>('sessions.list', { force: true })
-    expect(afterReopen.find((s) => realpathSync(s.filePath) === realpathSync(newerPath))?.pinned).toBe(true)
+    expect(afterReopen.find((s) => realpathSync.native(s.filePath) === realpathSync.native(newerPath))?.pinned).toBe(true)
 
     await client.call('sessions.archive', { filePath: addedPath, archived: true })
     const unarchivedOnly = await client.call<Array<{ filePath: string }>>('sessions.list', { includeArchived: false, force: true })
-    expect(unarchivedOnly.some((s) => realpathSync(s.filePath) === realpathSync(addedPath))).toBe(false)
+    expect(unarchivedOnly.some((s) => realpathSync.native(s.filePath) === realpathSync.native(addedPath))).toBe(false)
     const withArchived = await client.call<Array<{ filePath: string }>>('sessions.list', { includeArchived: true, force: true })
-    expect(withArchived.some((s) => realpathSync(s.filePath) === realpathSync(addedPath))).toBe(true)
+    expect(withArchived.some((s) => realpathSync.native(s.filePath) === realpathSync.native(addedPath))).toBe(true)
 
     expect(await client.call<boolean>('sessions.delete', { filePath: newerPath })).toBe(true)
     expect(existsSync(newerPath)).toBe(false)

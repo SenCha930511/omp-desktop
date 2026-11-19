@@ -8,6 +8,7 @@ console.log = redirectToStderr
 console.info = redirectToStderr
 
 import { existsSync } from 'node:fs'
+import { realpath } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import type { WebContents } from 'electron'
@@ -246,15 +247,19 @@ async function openStoreAndServices(): Promise<WorkspaceRuntime> {
     resolveScope: async ({ cwd, sessionPath }) => {
       const catalogList = await projects.list()
       const compare = (value: string) => (process.platform === 'win32' ? value.toLowerCase() : value)
-      const canonicalCwd = compare(resolve(cwd))
-      const project = catalogList.find(
-        (candidate) =>
-          !candidate.inferred &&
-          candidate.folders.some((folder) => {
-            const root = compare(resolve(folder))
-            return canonicalCwd === root || canonicalCwd.startsWith(`${root}${process.platform === 'win32' ? '\\' : '/'}`)
-          }),
-      )
+      const canonicalCwd = compare(await realpath(cwd).catch(() => resolve(cwd)))
+      let project: (typeof catalogList)[number] | undefined
+      for (const candidate of catalogList) {
+        if (candidate.inferred) continue
+        for (const folder of candidate.folders) {
+          const root = compare(await realpath(folder).catch(() => resolve(folder)))
+          if (canonicalCwd === root || canonicalCwd.startsWith(`${root}${process.platform === 'win32' ? '\\' : '/'}`)) {
+            project = candidate
+            break
+          }
+        }
+        if (project) break
+      }
       if (!project) throw new Error('The agent is not running in an explicitly granted OMP Desktop project')
       if (!sessionPath) return { projectId: project.id }
       const scheduledSession = (await sessions.list(undefined, true)).find((candidate) => resolve(candidate.filePath) === resolve(sessionPath))
