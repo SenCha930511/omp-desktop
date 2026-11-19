@@ -16,8 +16,14 @@ path = "src/main.rs"
 [dependencies]
 chrono.workspace = true
 gpui-kit = { version = "0.10", default-features = false, features = ["component", "assets", "gpui-fast"] }
+# The Browser pane hosts a native webview. `gpui-webview`'s `gpui-fast` feature must
+# follow `gpui-kit`'s, which selects the GPUI backend (a mismatch fails to compile).
+gpui-webview = { version = "0.10", default-features = false, features = ["gpui-fast"] }
 omp-core = { version = "2.0.0", path = "../omp-core" }
 serde_json.workspace = true
+# `gpui-webview` builds from a `wry::WebViewBuilder`, which it does not re-export; this is
+# the same `lb-wry` fork and version it depends on.
+wry = { version = "0.53.3", package = "lb-wry", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"

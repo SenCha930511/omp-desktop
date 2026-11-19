@@ -27,6 +27,11 @@ use omp_core::state::{
 use omp_core::turn_changes::{TurnBaseline, TurnChanges, compute_turn_changes};
 use serde_json::{Value, json};
 
+#[path = "browser.rs"]
+mod browser;
+
+use browser::BrowserPane;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppView {
     Workspace,
@@ -86,6 +91,7 @@ pub struct Workspace {
     plugin_error: Option<String>,
     schedules: Vec<Value>,
     right_pane: RightPane,
+    browser: BrowserPane,
     overview_open: bool,
     menu_open: bool,
     turn_changes: TurnChanges,
@@ -124,6 +130,7 @@ impl Workspace {
             omp_core::settings::Theme::System => ThemeMode::from(window.appearance()),
         };
         Theme::change(theme_mode, Some(window), cx);
+        let browser = BrowserPane::new(window, cx);
         let mut workspace = Self {
             geometry: data.geometry,
             geometry_path: data.geometry_path,
@@ -153,6 +160,7 @@ impl Workspace {
             plugin_error: None,
             schedules: Vec::new(),
             right_pane: RightPane::Launcher,
+            browser,
             overview_open: false,
             menu_open: false,
             turn_changes: TurnChanges::default(),
@@ -1822,6 +1830,7 @@ impl Workspace {
             RightPane::Launcher => None,
             RightPane::Summary => Some(self.summary_content(cx).into_any_element()),
             RightPane::Review => Some(self.review_content(cx).into_any_element()),
+            RightPane::Browser => Some(self.browser.content(cx).into_any_element()),
             other => Some(self.placeholder_content(other, cx).into_any_element()),
         };
         let title = match self.right_pane {
@@ -1908,10 +1917,13 @@ impl Workspace {
                         .when(selected, |element| element.bg(colors.accent))
                         .child(icon)
                         .child(label)
-                        .on_click(cx.listener(move |this, _, _, cx| {
+                        .on_click(cx.listener(move |this, _, window, cx| {
                             this.right_pane = pane;
                             if pane == RightPane::Review {
                                 this.refresh_review();
+                            }
+                            if pane == RightPane::Browser {
+                                this.browser.ensure(window, cx);
                             }
                             cx.notify();
                         }))
@@ -2270,11 +2282,16 @@ impl Workspace {
                     .into_iter()
                     .map(|label| {
                         div()
+                            .id(format!("session-action-{label}"))
+                            .aria_label(label)
                             .px_2()
                             .py_1()
                             .rounded(px(6.0))
                             .hover(|style| style.bg(colors.accent))
                             .child(label)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.session_menu_action(label, cx);
+                            }))
                     }),
             )
             .child(div().h(px(1.0)).my_1().bg(colors.border))
@@ -2309,6 +2326,25 @@ impl Render for Workspace {
         let colors = cx.theme().colors;
         let show_sidebar = self.layout.sidebar_docked;
         let show_right = self.layout.right_pane_docked;
+        // A native webview keeps its last frame when the pane stops rendering, and on Windows
+        // it covers everything in its bounds, so it is shown only while the pane is on screen.
+        let browser_visible =
+            self.view == AppView::Workspace && show_right && self.right_pane == RightPane::Browser;
+        self.browser.set_visible(browser_visible, cx);
+        if browser_visible {
+            if self.browser.needs_webview() {
+                cx.defer_in(window, |this, window, cx| {
+                    this.browser.ensure(window, cx);
+                    cx.notify();
+                });
+            }
+            if self.browser.take_navigate_request() {
+                cx.defer_in(window, |this, window, cx| this.browser.submit(window, cx));
+            }
+        } else {
+            // Leaving the pane discards a pending address submission.
+            let _ = self.browser.take_navigate_request();
+        }
         if self.view == AppView::Settings {
             return div()
                 .flex()
@@ -2362,10 +2398,10 @@ impl Render for Workspace {
                     .child(self.composer(cx)),
             )
             .when(show_right, |element| element.child(self.right_pane(cx)))
-            .when(self.overview_open, |element| {
+            .when(self.overview_open && !browser_visible, |element| {
                 element.child(self.overview_popover(cx))
             })
-            .when(self.menu_open, |element| {
+            .when(self.menu_open && !browser_visible, |element| {
                 element.child(self.session_menu(cx))
             })
     }

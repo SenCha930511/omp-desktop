@@ -142,7 +142,13 @@ fn main() {
     let options = window_options(&data.geometry);
     let version = env!("CARGO_PKG_VERSION").to_string();
 
-    gpui_kit::application().run(move |cx| {
+    // WebKitGTK needs an X11 window, so the Browser pane's webview requires X11/XWayland;
+    // `WebView::build` returns an error on a native Wayland window.
+    #[cfg(target_os = "linux")]
+    let application = gpui_kit::platform::linux(gpui_kit::WindowingModes::X11);
+    #[cfg(not(target_os = "linux"))]
+    let application = gpui_kit::application();
+    application.run(move |cx| {
         gpui_kit::init(cx);
         let handle = gpui_kit::open_window(options, cx, move |window, cx| {
             if let Some(path) = smoke_path.clone() {
