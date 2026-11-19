@@ -9,8 +9,9 @@ The v2 desktop application is moving from Electron/React to Rust. This workspace
 | `omp-core` | Persisted state, settings, projects, sessions, git and checkouts, model catalog, plugins/MCP, schedules, collaboration envelopes, loopback brokers |
 | `omp-rpc` | Blocking stdio JSON-RPC client for the `omp` CLI, including protocol v2 base64 chunk reassembly |
 | `omp-conformance` | Conformance Protocol v1 adapter used by `tests/conformance/` |
+| `omp-desktop` | GPUI + `gpui-kit` native shell: first-frame geometry, three-pane workspace, toolbar, right-pane launcher, turn-only diff card, IME guard, packaged-smoke marker |
 
-The GPUI application crate (`omp-desktop`) is not present yet. The core and adapter land first because every screen depends on them.
+The GPUI shell is intentionally narrow today. It proves the native window, persisted geometry, and first-frame paint while the full page set is ported.
 
 ## Verification
 
@@ -37,8 +38,28 @@ npm run test:conformance
 
 Every persisted struct keeps unknown JSON fields through `#[serde(flatten)]`. The state store preserves the Electron migration rules: v1-v3 migration, POSIX legacy retirement, Windows tombstones, downgrade quarantine, and byte-exact backups. `agent-message-signing.key` stays at the same path and the HMAC envelope keeps the Node field order; the Rust tests verify Node-generated v1/v2/v3 fixtures.
 
+## Native smoke and geometry checks
+
+```bash
+cd rust
+cargo run -p omp-desktop -- --packaged-smoke=/tmp/smoke.json --user-data-dir=/tmp/omp-rust
+cat /tmp/smoke.json
+```
+
+The marker is written from `Window::on_next_frame`, so it proves a real GPUI window drew a frame. To inspect the first-frame geometry without opening the UI by hand:
+
+```bash
+mkdir -p /tmp/omp-rust
+printf '%s
+' '{"windowBounds":{"x":80,"y":80,"width":1440,"height":900,"maximized":false},"sidebarOpen":true,"sidebarWidth":300,"rightPaneOpen":true,"rightPaneWidth":400}' > /tmp/omp-rust/ui-geometry.json
+cargo run -p omp-desktop -- --dump-layout=/tmp/layout.json --user-data-dir=/tmp/omp-rust
+cat /tmp/layout.json
+```
+
+`sidebarWidth` and `rightPaneWidth` must match the persisted values in the first frame; bootstrap data never changes them.
+
 ## Remaining work
 
-- GPUI shell and the five UI revisions.
-- `omp-desktop` UI tests against the 88-scenario retirement matrix.
-- Packaging, updater, and the final Electron cutover gate.
+- Full page set: Settings, Plugins, Review/Summary, Browser, Schedules.
+- The 88-scenario UI retirement matrix beyond the current layout, IME, and turn-diff tests.
+- Tray, updater, packaging, and the final Electron cutover gate.
