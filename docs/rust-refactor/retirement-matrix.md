@@ -17,7 +17,7 @@ by the Rust unit and smoke tests below.
 | Schedules | `omp-core` scheduler tests (15), Schedules pane test |
 | Browser | `browser.rs` URL tests, live WKWebView runtime smoke |
 | Files, Subagents, Side Question | `Workspace` pane tests, `omp-core` project-file tests |
-| Tray | `tray.rs` tests, `--tray-smoke` on macOS |
+| Tray | `tray.rs` tests, `--tray-smoke` on macOS; Linux tray construction |
 | Updater | `updates.rs` state tests, Settings row render test |
 | Packaging | macOS `.app`, Linux `.deb`, Windows NSIS packaged-smoke CI jobs |
 | Conformance | 10 files, 20 tests against the Rust adapter on macOS, Linux, and Windows |
