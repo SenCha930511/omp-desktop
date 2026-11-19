@@ -4952,6 +4952,217 @@ fn composer_attachment_rides_with_prompt_and_follow_up(cx: &mut TestAppContext) 
     );
 }
 
+/// The composer's mention menu inserts a session's `@<path>` into the draft and
+/// a send carries it; an empty catalog shows a status and leaves the draft
+/// alone. The menu is bounded, so a large catalog still draws only its newest
+/// rows.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn composer_mention_menu_inserts_a_session_and_sends_the_path(cx: &mut TestAppContext) {
+    use omp_core::projects;
+
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let home = root.join("home");
+    let project = root.join("project");
+    let fixture = install_fixture_omp(root);
+    for folder in [&home, &project, &root.join("user-data")] {
+        std::fs::create_dir_all(folder).expect("dir");
+    }
+    let project = project.canonicalize().expect("project path");
+
+    let mut store = open_store(root);
+    projects::grant_project(
+        &mut store,
+        &home,
+        Platform::current(),
+        project.to_str().expect("project path"),
+    )
+    .expect("grant");
+    drop(store);
+
+    let bucket = home.join(".omp/agent/sessions/-omp-project");
+    let older = write_session(
+        &bucket,
+        "2026-04-02T00-00-00-000Z_019fdf24-1111-7000-8000-000000000040.jsonl",
+        "Mentioned",
+        "2026-04-02T00:00:00.000Z",
+        "older prompt",
+        "older reply",
+        &project,
+    );
+    write_session(
+        &bucket,
+        "2026-04-02T00-00-00-000Z_019fdf24-2222-7000-8000-000000000041.jsonl",
+        "Recent",
+        "2026-04-02T01:00:00.000Z",
+        "recent prompt",
+        "recent reply",
+        &project,
+    );
+    let store = open_store(root);
+    let catalog = omp_core::sessions::list_sessions(&store, &home, false, None);
+    drop(store);
+    assert_eq!(catalog.len(), 2);
+    // The catalog's own path is what the mention carries, so the assertion
+    // does not depend on how the fixture directory is spelled.
+    let older_path = catalog[1].file_path.clone();
+    assert!(same_path(&older_path, &older));
+
+    let mut data = test_data(root);
+    data.home_dir = home;
+    data.omp_executable = fixture;
+    data.sessions = catalog;
+    let handle = cx.open_window(size(px(1280.0), px(900.0)), |window, cx| {
+        Workspace::new(window, cx, data)
+    });
+    let window: gpui_kit::AnyWindowHandle = handle.into();
+    let handle = window.downcast::<Workspace>().expect("workspace handle");
+
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.select_session(0, cx);
+            assert_eq!(snapshot(workspace, cx)["liveVoice"]["runtime"], json!(true));
+
+            // Opening the menu lists both sessions and draws no status.
+            workspace.toggle_mention_menu(cx);
+            let opened = snapshot(workspace, cx);
+            assert_eq!(opened["composer"]["mentionMenuOpen"], json!(true));
+            assert_eq!(opened["composer"]["mentionCount"], json!(2));
+            assert_eq!(opened["composer"]["mentionStatus"], json!(null));
+        })
+        .expect("workspace window");
+
+    // The open popover builds: a menu that cannot render fails here instead of
+    // passing on the snapshot alone.
+    draw_frame(cx, window);
+
+    handle
+        .update(cx, |workspace, window, cx| {
+            // A selection appends `@<path>` to the draft and closes the menu;
+            // the draft and the session selection are both kept.
+            let composer = workspace.composer_entity().clone();
+            composer.update(cx, |state, cx| state.set_value("summarize", window, cx));
+            workspace.select_mention(1, window, cx);
+            let mentioned = snapshot(workspace, cx);
+            assert_eq!(mentioned["composer"]["mentionMenuOpen"], json!(false));
+            assert_eq!(
+                mentioned["composer"]["text"],
+                json!(format!("summarize @{older_path}"))
+            );
+            assert_eq!(mentioned["selectedSession"], json!(0));
+
+            // Send: the harness receives the path as plain prompt text.
+            workspace.send_prompt(window, cx);
+            assert_eq!(snapshot(workspace, cx)["composer"]["text"], json!(""));
+        })
+        .expect("workspace window");
+
+    // The fixture's own log is the proof the mention left the app intact.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let expected = format!("summarize @{older_path}");
+    let prompt = loop {
+        let commands = fixture_commands(root);
+        if let Some(prompt) = commands
+            .iter()
+            .find(|command| command["type"] == "prompt")
+            .cloned()
+        {
+            break prompt;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the fixture never logged the mentioned prompt"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!(prompt["message"], json!(expected));
+
+    // An empty catalog still answers: the status shows and the draft stays.
+    let empty = cx.add_window(|window, cx| Workspace::new(window, cx, test_data(root)));
+    let empty_window: gpui_kit::AnyWindowHandle = empty.into();
+    let empty = empty_window
+        .downcast::<Workspace>()
+        .expect("empty workspace handle");
+    empty
+        .update(cx, |workspace, window, cx| {
+            let composer = workspace.composer_entity().clone();
+            composer.update(cx, |state, cx| state.set_value("keep me", window, cx));
+            workspace.toggle_mention_menu(cx);
+            let opened = snapshot(workspace, cx);
+            assert_eq!(opened["composer"]["mentionMenuOpen"], json!(true));
+            assert_eq!(opened["composer"]["mentionCount"], json!(0));
+            assert_eq!(
+                opened["composer"]["mentionStatus"],
+                json!("No sessions to mention yet.")
+            );
+        })
+        .expect("empty workspace window");
+
+    // The empty status is what the open menu draws.
+    draw_frame(cx, empty_window);
+
+    empty
+        .update(cx, |workspace, window, cx| {
+            // A row the menu does not have leaves the draft alone.
+            workspace.select_mention(0, window, cx);
+            let still = snapshot(workspace, cx);
+            assert_eq!(still["composer"]["text"], json!("keep me"));
+            assert_eq!(still["composer"]["mentionCount"], json!(0));
+            assert_eq!(
+                still["composer"]["mentionStatus"],
+                json!("No sessions to mention yet.")
+            );
+        })
+        .expect("empty workspace window");
+
+    // The menu is bounded: a ten-session catalog still draws the newest eight.
+    let records: Vec<omp_core::sessions::SessionRecord> = (0..10)
+        .map(|index| omp_core::sessions::SessionRecord {
+            id: format!("bounded-{index}"),
+            harness: "omp".to_string(),
+            file_path: root
+                .join(format!("bounded-{index}.jsonl"))
+                .display()
+                .to_string(),
+            project_path: root.display().to_string(),
+            title: format!("Bounded {index}"),
+            created_at: "2026-04-01T00:00:00.000Z".to_string(),
+            updated_at: "2026-04-01T00:00:00.000Z".to_string(),
+            last_user_message_at: None,
+            status: "complete".to_string(),
+            model: None,
+            provider: None,
+            thinking_level: None,
+            depth: 0,
+            parent_session: None,
+            last_user_texts: Vec::new(),
+            pinned: false,
+            unread: false,
+            preview: None,
+            archived: false,
+        })
+        .collect();
+    let mut data = test_data(root);
+    data.sessions = records;
+    let bounded = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    bounded
+        .update(cx, |workspace, window, cx| {
+            workspace.toggle_mention_menu(cx);
+            let opened = snapshot(workspace, cx);
+            assert_eq!(opened["composer"]["mentionCount"], json!(8));
+            // The rows are the newest eight, so row zero is the first record.
+            workspace.select_mention(0, window, cx);
+            let selected = snapshot(workspace, cx);
+            assert_eq!(
+                selected["composer"]["text"],
+                json!(format!("@{}", root.join("bounded-0.jsonl").display()))
+            );
+        })
+        .expect("bounded workspace window");
+}
+
 /// A send the app cannot make leaves the attachment in place: the chip clears
 /// only once the harness accepts the command, so a rejected send never costs
 /// the user the file. No runtime runs here — the send is refused before it

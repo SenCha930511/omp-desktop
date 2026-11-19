@@ -563,6 +563,14 @@ struct ScheduledRun {
 /// lives only until the session list hands out a real id.
 const DRAFT_TERMINAL_KEY: &str = "new-session";
 
+/// How many sessions the composer's mention menu lists at once. The menu is a
+/// popover above the input, so it stays bounded instead of growing with the
+/// catalog.
+const MENTION_MENU_LIMIT: usize = 8;
+
+/// What the mention menu says when the catalog has no session to insert.
+const MENTION_EMPTY_STATUS: &str = "No sessions to mention yet.";
+
 /// The session menu's actionable rows, in draw order. `debug_snapshot` reads
 /// this list, so a scenario can prove a new row is wired and drawn without
 /// measuring the popover.
@@ -648,6 +656,12 @@ pub struct Workspace {
     composer: Entity<InputState>,
     _composer_subscription: Subscription,
     submit_requested: Option<bool>,
+    // The composer's mention menu: the bounded list of sessions it draws, and
+    // the status it shows when the catalog has nothing to mention. A selection
+    // inserts `@<file_path>` into the draft and closes the list; nothing is
+    // sent until the user presses Send.
+    mention_menu_open: bool,
+    mention_status: Option<String>,
     // The image waiting for the next prompt or follow-up, if one is attached.
     // It clears only once the harness accepts the command, so a rejected send
     // keeps it for a retry.
@@ -910,6 +924,8 @@ impl Workspace {
             composer,
             _composer_subscription: composer_subscription,
             submit_requested: None,
+            mention_menu_open: false,
+            mention_status: None,
             pending_image: None,
             image_error: None,
             side_input,
@@ -1500,6 +1516,12 @@ impl Workspace {
                 })),
                 // Why the last attach was refused, while the banner shows it.
                 "imageError": self.image_error,
+                // The mention menu's state: whether the popover is drawn, how
+                // many rows it holds (bounded by `MENTION_MENU_LIMIT`) and the
+                // empty status it shows when that count is zero.
+                "mentionMenuOpen": self.mention_menu_open,
+                "mentionCount": self.mention_candidates().len(),
+                "mentionStatus": self.mention_status,
             },
             "files": {
                 "entries": files,
@@ -2502,6 +2524,10 @@ impl Workspace {
         self.turn_changes = TurnChanges::default();
         // The dial reports the session it was read from, never the previous one.
         self.context_usage = None;
+        // The mention list is a view of this catalog, so a switch closes it
+        // rather than leaving a row that inserts the previous session's path.
+        self.mention_menu_open = false;
+        self.mention_status = None;
         self.selected_session = Some(index);
         // The previous session's shells stop here; the new session's own tabs
         // are reopened from its spec, never handed over from the old one.
@@ -3652,6 +3678,78 @@ impl Workspace {
         cx.notify();
     }
 
+    /// The sessions the mention menu draws, newest first, in catalog order.
+    ///
+    /// The list is bounded by [`MENTION_MENU_LIMIT`] so the popover never
+    /// outgrows the composer, and a record without a file cannot be mentioned.
+    fn mention_candidates(&self) -> Vec<usize> {
+        self.sessions
+            .iter()
+            .enumerate()
+            .filter(|(_, session)| !session.file_path.is_empty())
+            .map(|(index, _)| index)
+            .take(MENTION_MENU_LIMIT)
+            .collect()
+    }
+
+    /// A session's file path as the menu shows it: relative to the harness's
+    /// home directory when the file lives there, else the bare file name. The
+    /// inserted mention always carries the full path.
+    fn mention_relative_path(&self, file_path: &str) -> String {
+        let path = Path::new(file_path);
+        match path.strip_prefix(&self.home_dir) {
+            Ok(relative) => relative.display().to_string(),
+            Err(_) => path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| file_path.to_string()),
+        }
+    }
+
+    /// Opens or closes the mention menu. Opening an empty catalog keeps the
+    /// menu up with the empty status, so the button always answers.
+    pub fn toggle_mention_menu(&mut self, cx: &mut Context<Self>) {
+        if self.mention_menu_open {
+            self.mention_menu_open = false;
+            self.mention_status = None;
+        } else {
+            self.mention_menu_open = true;
+            self.mention_status = self
+                .mention_candidates()
+                .is_empty()
+                .then(|| MENTION_EMPTY_STATUS.to_string());
+        }
+        cx.notify();
+    }
+
+    /// Appends `@<file_path>` for one of the menu's rows to the draft.
+    ///
+    /// The mention is plain prompt text: the harness resolves it, so the app
+    /// only inserts the path (with a leading space when the draft would run
+    /// into it). The draft and the session selection stay put and nothing is
+    /// sent — Send is still the user's press. A row the menu does not have
+    /// leaves the draft alone and shows the empty status.
+    pub fn select_mention(&mut self, row: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(index) = self.mention_candidates().get(row).copied() else {
+            self.mention_status = Some(MENTION_EMPTY_STATUS.to_string());
+            cx.notify();
+            return;
+        };
+        let file_path = self.sessions[index].file_path.clone();
+        let draft = self.composer.read(cx).value().to_string();
+        let mention = format!("@{file_path}");
+        let next = if draft.is_empty() || draft.ends_with(char::is_whitespace) {
+            format!("{draft}{mention}")
+        } else {
+            format!("{draft} {mention}")
+        };
+        let composer = self.composer.clone();
+        composer.update(cx, |state, cx| state.set_value(next, window, cx));
+        self.mention_menu_open = false;
+        self.mention_status = None;
+        cx.notify();
+    }
+
     pub fn send_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.send_prompt_with_action(window, cx, false);
     }
@@ -4129,12 +4227,89 @@ impl Workspace {
                     )
                 },
             )
+            // The mention popover sits directly above the input: one row per
+            // recent session, bounded by `MENTION_MENU_LIMIT`, or the empty
+            // status when the catalog has nothing to mention.
+            .when(self.mention_menu_open, |element| {
+                let candidates = self.mention_candidates();
+                element.child(
+                    div()
+                        .id("mention-menu")
+                        .aria_label("Mention session")
+                        .flex()
+                        .flex_col()
+                        .gap_0p5()
+                        .p_1()
+                        .rounded(px(6.0))
+                        .border_1()
+                        .border_color(colors.border)
+                        .when(candidates.is_empty(), |element| {
+                            element.child(
+                                div()
+                                    .id("mention-empty")
+                                    .px_2()
+                                    .py_1()
+                                    .text_xs()
+                                    .text_color(colors.muted_foreground)
+                                    .child(
+                                        self.mention_status
+                                            .clone()
+                                            .unwrap_or_else(|| MENTION_EMPTY_STATUS.to_string()),
+                                    ),
+                            )
+                        })
+                        .children(candidates.into_iter().enumerate().map(|(row, index)| {
+                            let session = &self.sessions[index];
+                            div()
+                                .id(format!("mention-{row}"))
+                                .aria_label(format!("Mention {}", session.title))
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .px_2()
+                                .py_1()
+                                .rounded(px(6.0))
+                                .text_sm()
+                                .text_color(colors.foreground)
+                                .hover(|style| style.bg(colors.accent))
+                                .child(session.title.clone())
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .text_xs()
+                                        .text_color(colors.muted_foreground)
+                                        .child(self.mention_relative_path(&session.file_path)),
+                                )
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.select_mention(row, window, cx);
+                                }))
+                        })),
+                )
+            })
             .child(
                 div()
                     .flex()
                     .items_center()
                     .gap_2()
                     .child(div().flex_1().child(Input::new(&self.composer)))
+                    .child(
+                        div()
+                            .id("mention-session")
+                            .aria_label("Mention session")
+                            .px_2()
+                            .py_1()
+                            .rounded(px(6.0))
+                            .border_1()
+                            .border_color(colors.border)
+                            .text_sm()
+                            .text_color(if self.mention_menu_open {
+                                colors.primary
+                            } else {
+                                colors.foreground
+                            })
+                            .child("@")
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_mention_menu(cx))),
+                    )
                     .child(
                         div()
                             .id("attach-image")
