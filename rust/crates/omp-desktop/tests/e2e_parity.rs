@@ -4308,6 +4308,63 @@ fn install_fixture_omp(root: &Path) -> PathBuf {
     fixture
 }
 
+/// A stand-in `omp` whose fork is cancelled: every command succeeds
+/// generically (the handshake, `get_session_stats`), while `fork` answers
+/// `{ cancelled: true }` the way the harness does when the user backs out.
+/// The conformance fixture always forks, so this is the only way to prove a
+/// cancelled fork moves nothing. Like the fixture, it logs every command under
+/// the state directory.
+#[cfg(unix)]
+fn install_cancelling_fork_omp(root: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let bin = root.join("bin");
+    std::fs::create_dir_all(&bin).expect("bin");
+    let script = bin.join("omp-cancelling-fork.mjs");
+    std::fs::write(
+        &script,
+        r#"import { appendFileSync, mkdirSync } from 'node:fs'
+import { join } from 'node:path'
+import { createInterface } from 'node:readline'
+
+const stateDir = process.env.OMP_FIXTURE_STATE_DIR || ''
+const log = (command) => {
+  if (!stateDir) return
+  mkdirSync(stateDir, { recursive: true })
+  appendFileSync(join(stateDir, 'omp-commands.jsonl'), `${JSON.stringify(command)}\n`, 'utf8')
+}
+const send = (value) => process.stdout.write(`${JSON.stringify(value)}\n`)
+
+send({ type: 'ready', protocolVersion: 1, supportedProtocolVersions: [1, 2] })
+
+createInterface({ input: process.stdin, crlfDelay: Number.POSITIVE_INFINITY }).on('line', (line) => {
+  let command
+  try {
+    command = JSON.parse(line)
+  } catch {
+    return
+  }
+  log(command)
+  const data = command.type === 'fork' ? { cancelled: true } : {}
+  send({ id: command.id, type: 'response', command: command.type, success: true, data })
+})
+"#,
+    )
+    .expect("script");
+    let omp = bin.join("omp-cancelling-fork");
+    std::fs::write(
+        &omp,
+        format!(
+            "#!/bin/sh\nexec \"{}\" \"{}\" \"$@\"\n",
+            std::env::var("NODE").unwrap_or_else(|_| "node".to_string()),
+            script.display()
+        ),
+    )
+    .expect("omp");
+    std::fs::set_permissions(&omp, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    omp
+}
+
 /// A catalog the Settings picker can list without spawning `omp`, and the
 /// failing shape `load_catalog` reports (no models plus a warning).
 fn model_catalog(
@@ -4599,4 +4656,218 @@ fn settings_loads_the_model_catalog_once_and_caches_it(cx: &mut TestAppContext) 
             );
         })
         .expect("reopened settings");
+}
+
+/// Forking through the session menu sends exactly one `fork` to the live
+/// harness and reports it in the composer banner. The fixture answers without
+/// writing a file, so the catalog cannot grow and the selection, transcript and
+/// draft stay put; a file written out of band is the fork the refresh then
+/// finds and selects.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn session_menu_fork_sends_one_command_and_follows_the_refresh(cx: &mut TestAppContext) {
+    use omp_core::projects;
+
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let home = root.join("home");
+    let project = root.join("project");
+    let fixture = install_fixture_omp(root);
+    for folder in [&home, &project, &root.join("user-data")] {
+        std::fs::create_dir_all(folder).expect("dir");
+    }
+    let project = project.canonicalize().expect("project path");
+
+    let mut store = open_store(root);
+    projects::grant_project(
+        &mut store,
+        &home,
+        Platform::current(),
+        project.to_str().expect("project path"),
+    )
+    .expect("grant");
+    drop(store);
+
+    let bucket = home.join(".omp/agent/sessions/-omp-project");
+    write_session(
+        &bucket,
+        "2026-04-03T00-00-00-000Z_019fdf24-ffff-7000-8000-000000000030.jsonl",
+        "Forked",
+        "2026-04-03T00:00:00.000Z",
+        "fork prompt",
+        "fork reply",
+        &project,
+    );
+    let store = open_store(root);
+    let catalog = omp_core::sessions::list_sessions(&store, &home, false, None);
+    drop(store);
+    assert_eq!(catalog.len(), 1);
+
+    let mut data = test_data(root);
+    data.home_dir = home.clone();
+    data.omp_executable = fixture;
+    data.sessions = catalog;
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    handle
+        .update(cx, |workspace, window, cx| {
+            workspace.select_session(0, cx);
+            assert_eq!(snapshot(workspace, cx)["liveVoice"]["runtime"], json!(true));
+
+            // The menu draws the same list the snapshot reports, so the action
+            // is proven present without measuring the popover.
+            let menu = snapshot(workspace, cx)["sessionMenu"].clone();
+            assert_eq!(
+                menu["actions"],
+                json!([
+                    "Rename",
+                    "Pin",
+                    "Archive",
+                    "Delete",
+                    "Fork session",
+                    "Remote Control",
+                ])
+            );
+
+            // A draft is the composer's, not the session's: a fork keeps it.
+            let composer = workspace.composer_entity().clone();
+            composer.update(cx, |state, cx| {
+                state.set_value("draft after fork", window, cx);
+            });
+
+            workspace.session_menu_action("Fork session", cx);
+            let forked = snapshot(workspace, cx);
+            assert_eq!(forked["forkStatus"], "Forked session");
+            // The fixture wrote no file, so the catalog did not change and the
+            // current session keeps its transcript and its selection.
+            assert_eq!(forked["selectedSession"], json!(0));
+            assert_eq!(forked["sessions"].as_array().map(Vec::len), Some(1));
+            assert_eq!(transcript_text(workspace), ["fork prompt", "fork reply"]);
+            assert_eq!(forked["composer"]["text"], "draft after fork");
+
+            let commands = fixture_commands(root);
+            let forks: Vec<&Value> = commands
+                .iter()
+                .filter(|command| command["type"] == "fork")
+                .collect();
+            assert_eq!(forks.len(), 1, "one fork reached the runtime");
+            assert_eq!(
+                forks[0].get("entryId"),
+                None,
+                "a whole-session fork sends no entryId"
+            );
+
+            // A fork the harness does write: the refresh finds the new file,
+            // selects it as the newest row and reads its transcript.
+            let fork_file = write_session(
+                &bucket,
+                "2026-04-04T00-00-00-000Z_019fdf24-ffff-7000-8000-000000000031.jsonl",
+                "Fork",
+                "2026-04-04T00:00:00.000Z",
+                "continued in the fork",
+                "fork continuation",
+                &project,
+            );
+            assert!(fork_file.exists(), "the out-of-band fork file");
+
+            workspace.session_menu_action("Fork session", cx);
+            let continued = snapshot(workspace, cx);
+            assert_eq!(continued["forkStatus"], "Forked session");
+            assert_eq!(continued["sessions"][0]["title"], "Fork");
+            assert_eq!(continued["sessions"].as_array().map(Vec::len), Some(2));
+            assert_eq!(continued["selectedSession"], json!(0));
+            assert_eq!(
+                transcript_text(workspace),
+                ["continued in the fork", "fork continuation"]
+            );
+            assert_eq!(continued["composer"]["text"], "draft after fork");
+
+            let commands = fixture_commands(root);
+            let forks: Vec<&Value> = commands
+                .iter()
+                .filter(|command| command["type"] == "fork")
+                .collect();
+            assert_eq!(forks.len(), 2, "each action sent its own fork");
+        })
+        .expect("workspace window");
+}
+
+/// A cancelled fork is the user's own "no": the command went out exactly once
+/// and nothing else moved — no notice, no catalog refresh that drops the
+/// transcript, no selection change.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn cancelled_fork_changes_nothing(cx: &mut TestAppContext) {
+    use omp_core::projects;
+
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let home = root.join("home");
+    let project = root.join("project");
+    let fake = install_cancelling_fork_omp(root);
+    for folder in [&home, &project, &root.join("user-data")] {
+        std::fs::create_dir_all(folder).expect("dir");
+    }
+    let project = project.canonicalize().expect("project path");
+
+    let mut store = open_store(root);
+    projects::grant_project(
+        &mut store,
+        &home,
+        Platform::current(),
+        project.to_str().expect("project path"),
+    )
+    .expect("grant");
+    drop(store);
+
+    let bucket = home.join(".omp/agent/sessions/-omp-project");
+    write_session(
+        &bucket,
+        "2026-04-05T00-00-00-000Z_019fdf24-ffff-7000-8000-000000000040.jsonl",
+        "Cancelled",
+        "2026-04-05T00:00:00.000Z",
+        "cancel prompt",
+        "cancel reply",
+        &project,
+    );
+    let store = open_store(root);
+    let catalog = omp_core::sessions::list_sessions(&store, &home, false, None);
+    drop(store);
+
+    let mut data = test_data(root);
+    data.home_dir = home;
+    data.omp_executable = fake;
+    data.sessions = catalog;
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    handle
+        .update(cx, |workspace, window, cx| {
+            workspace.select_session(0, cx);
+            assert_eq!(snapshot(workspace, cx)["liveVoice"]["runtime"], json!(true));
+            let composer = workspace.composer_entity().clone();
+            composer.update(cx, |state, cx| {
+                state.set_value("draft across a cancel", window, cx);
+            });
+            let before = snapshot(workspace, cx);
+
+            workspace.session_menu_action("Fork session", cx);
+            let after = snapshot(workspace, cx);
+            assert_eq!(after["forkStatus"], json!(null), "a cancel claims nothing");
+            assert_eq!(after["selectedSession"], before["selectedSession"]);
+            assert_eq!(after["sessions"], before["sessions"]);
+            assert_eq!(after["transcript"], before["transcript"]);
+            assert_eq!(after["composer"]["text"], "draft across a cancel");
+            assert_eq!(
+                transcript_text(workspace),
+                ["cancel prompt", "cancel reply"]
+            );
+
+            let commands = fixture_commands(root);
+            let forks: Vec<&Value> = commands
+                .iter()
+                .filter(|command| command["type"] == "fork")
+                .collect();
+            assert_eq!(forks.len(), 1, "the fork was sent exactly once");
+        })
+        .expect("workspace window");
 }
