@@ -277,3 +277,34 @@ fn review_panel_reads_and_stages_real_git_changes(cx: &mut TestAppContext) {
         })
         .expect("workspace window");
 }
+
+#[gpui_kit::test]
+fn settings_updates_persist_to_the_state_file(cx: &mut TestAppContext) {
+    use omp_core::state::{CURRENT_DESKTOP_STATE_FILENAME, Platform, StateStore};
+
+    cx.update(gpui_kit::init);
+    let mut data = test_data(UiGeometry::default());
+    let user_data = data.user_data_dir.clone();
+    data.home_dir = user_data.clone();
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.update_setting(
+                serde_json::json!({ "theme": "dark", "conversationDensity": "compact" }),
+                cx,
+            );
+            assert_eq!(workspace.settings().theme, omp_core::settings::Theme::Dark);
+        })
+        .expect("workspace window");
+    let store = StateStore::open(
+        user_data.join(CURRENT_DESKTOP_STATE_FILENAME),
+        None,
+        Platform::current(),
+    )
+    .expect("reopen store");
+    assert_eq!(store.settings().theme, omp_core::settings::Theme::Dark);
+    assert_eq!(
+        store.settings().conversation_density,
+        omp_core::settings::ConversationDensity::Compact
+    );
+}

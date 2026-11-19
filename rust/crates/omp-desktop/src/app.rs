@@ -3,8 +3,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use gpui_kit::assets::IconName;
-use gpui_kit::component::ActiveTheme;
 use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::{ActiveTheme, Theme, ThemeMode};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use omp_core::agent::AgentManager;
@@ -19,6 +19,12 @@ use omp_core::state::{
 };
 use omp_core::turn_changes::{TurnBaseline, TurnChanges, compute_turn_changes};
 use serde_json::{Value, json};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppView {
+    Workspace,
+    Settings,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RightPane {
@@ -61,6 +67,7 @@ pub struct Workspace {
     transcript_error: Option<String>,
     selected_session: Option<usize>,
     composer: Entity<InputState>,
+    view: AppView,
     right_pane: RightPane,
     overview_open: bool,
     menu_open: bool,
@@ -103,6 +110,7 @@ impl Workspace {
             transcript_error: None,
             selected_session: None,
             composer,
+            view: AppView::Workspace,
             right_pane: RightPane::Launcher,
             overview_open: false,
             menu_open: false,
@@ -133,6 +141,10 @@ impl Workspace {
 
     pub fn review_status(&self) -> Option<&GitStatus> {
         self.review_status.as_ref()
+    }
+
+    pub fn settings(&self) -> &AppSettings {
+        &self.settings
     }
 
     fn track_bounds(&mut self, window: &Window, cx: &mut Context<Self>) {
@@ -815,6 +827,173 @@ impl Workspace {
             )
     }
 
+    pub fn set_view(&mut self, view: AppView, cx: &mut Context<Self>) {
+        self.view = view;
+        cx.notify();
+    }
+
+    pub fn update_setting(&mut self, patch: Value, cx: &mut Context<Self>) {
+        if let Some(store) = self.store.clone() {
+            let mut store = store.lock().expect("state lock");
+            if let Ok(next) = store.update_settings(&patch) {
+                self.settings = next;
+            }
+        }
+        cx.notify();
+    }
+
+    fn settings_row(
+        &self,
+        label: &'static str,
+        value: String,
+        colors: gpui_kit::component::ThemeColor,
+        cx: &mut Context<Self>,
+        on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+    ) -> impl IntoElement {
+        div()
+            .id(label)
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_3()
+            .py_2()
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(colors.border)
+            .text_sm()
+            .text_color(colors.foreground)
+            .hover(|style| style.bg(colors.accent))
+            .child(label)
+            .child(div().flex_1())
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(colors.muted_foreground)
+                    .child(value),
+            )
+            .on_click(cx.listener(move |this, _, window, cx| on_click(this, window, cx)))
+    }
+
+    fn settings_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = cx.theme().colors;
+        let theme = match self.settings.theme {
+            omp_core::settings::Theme::System => "system",
+            omp_core::settings::Theme::Light => "light",
+            omp_core::settings::Theme::Dark => "dark",
+        };
+        let density = match self.settings.conversation_density {
+            omp_core::settings::ConversationDensity::Compact => "compact",
+            omp_core::settings::ConversationDensity::Comfortable => "comfortable",
+        };
+        let enter = match self.settings.message_enter_action {
+            omp_core::settings::MessageEnterAction::Steer => "steer",
+            omp_core::settings::MessageEnterAction::Queue => "queue",
+        };
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .h_full()
+            .p_6()
+            .gap_4()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .id("settings-back")
+                            .px_2()
+                            .py_1()
+                            .rounded(px(6.0))
+                            .border_1()
+                            .border_color(colors.border)
+                            .text_xs()
+                            .text_color(colors.muted_foreground)
+                            .child("‹ Workspace")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.view = AppView::Workspace;
+                                cx.notify();
+                            })),
+                    )
+                    .child(div().text_lg().font_weight(gpui::FontWeight::SEMIBOLD).child("Settings")),
+            )
+            .child(div().text_xs().text_color(colors.muted_foreground).child("APPEARANCE"))
+            .child(self.settings_row("Theme", theme.to_string(), colors, cx, |this, window, cx| {
+                let (next, mode) = match this.settings.theme {
+                    omp_core::settings::Theme::System => ("light", ThemeMode::Light),
+                    omp_core::settings::Theme::Light => ("dark", ThemeMode::Dark),
+                    omp_core::settings::Theme::Dark => ("system", ThemeMode::from(window.appearance())),
+                };
+                this.update_setting(json!({ "theme": next }), cx);
+                Theme::change(mode, Some(window), cx);
+            }))
+            .child(self.settings_row("Accent", self.settings.accent_color.clone(), colors, cx, |this, _window, cx| {
+                let colors = ["prime", "blue", "teal", "green", "orange", "pink"];
+                let index = colors.iter().position(|color| *color == this.settings.accent_color).unwrap_or(0);
+                let next = colors[(index + 1) % colors.len()];
+                this.update_setting(json!({ "accentColor": next }), cx);
+            }))
+            .child(self.settings_row("Interface font scale", format!("{}%", self.settings.interface_font_scale), colors, cx, |this, _window, cx| {
+                let next = match this.settings.interface_font_scale {
+                    105 => 110,
+                    110 => 115,
+                    _ => 105,
+                };
+                this.update_setting(json!({ "interfaceFontScale": next }), cx);
+            }))
+            .child(self.settings_row("Conversation density", density.to_string(), colors, cx, |this, _window, cx| {
+                let next = if this.settings.conversation_density == omp_core::settings::ConversationDensity::Compact {
+                    "comfortable"
+                } else {
+                    "compact"
+                };
+                this.update_setting(json!({ "conversationDensity": next }), cx);
+            }))
+            .child(div().text_xs().text_color(colors.muted_foreground).child("CONVERSATION"))
+            .child(self.settings_row("Enter sends", enter.to_string(), colors, cx, |this, _window, cx| {
+                let next = if this.settings.message_enter_action == omp_core::settings::MessageEnterAction::Steer {
+                    "queue"
+                } else {
+                    "steer"
+                };
+                this.update_setting(json!({ "messageEnterAction": next }), cx);
+            }))
+            .child(self.settings_row("Idle session timeout", format!("{} min", self.settings.idle_session_minutes), colors, cx, |this, _window, cx| {
+                let next = match this.settings.idle_session_minutes {
+                    0 => 5,
+                    5 => 15,
+                    15 => 30,
+                    _ => 0,
+                };
+                this.update_setting(json!({ "idleSessionMinutes": next }), cx);
+            }))
+            .child(div().text_xs().text_color(colors.muted_foreground).child("VOICE"))
+            .child(
+                div()
+                    .px_3()
+                    .py_2()
+                    .rounded(px(8.0))
+                    .border_1()
+                    .border_color(colors.border)
+                    .text_sm()
+                    .text_color(colors.muted_foreground)
+                    .child("Voice is configured by the OMP CLI. Set stt.* or live.* with omp config; the composer reads that state when dictation is enabled."),
+            )
+            .child(div().text_xs().text_color(colors.muted_foreground).child("ABOUT"))
+            .child(
+                div()
+                    .px_3()
+                    .py_2()
+                    .rounded(px(8.0))
+                    .border_1()
+                    .border_color(colors.border)
+                    .text_sm()
+                    .child(format!("OMP Desktop {} · Rust/GPUI", env!("CARGO_PKG_VERSION"))),
+            )
+    }
+
     fn right_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.theme().colors;
         let items = [
@@ -1278,6 +1457,16 @@ impl Render for Workspace {
         let colors = cx.theme().colors;
         let show_sidebar = self.layout.sidebar_docked;
         let show_right = self.layout.right_pane_docked;
+        if self.view == AppView::Settings {
+            return div()
+                .flex()
+                .flex_row()
+                .size_full()
+                .bg(colors.background)
+                .text_color(colors.foreground)
+                .when(show_sidebar, |element| element.child(self.sidebar(cx)))
+                .child(self.settings_page(cx));
+        }
         div()
             .relative()
             .flex()
