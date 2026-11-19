@@ -67,3 +67,4 @@ ts	phase	decision	why	evidence	result
 2026-11-20T04:00:00Z	rpc	added a fire-and-forget RPC send for extension_ui_response	request() overwrites the dialog id and waits for a response the harness never emits	rust/crates/omp-rpc/src/lib.rs	71 parity tests green
 2026-11-20T04:02:00Z	ui	added the grouped ask_user dialog with answer and cancel paths	extension_ui_request was dropped by normalization and the app had no questionnaire	rust/crates/omp-desktop/src/app.rs	ask pane test green
 2026-11-20T04:20:00Z	capture	enabled gpui-kit test-support in the shipped app to use render_to_image	the only GPUI frame-capture API is feature-gated and the Electron app captures the workspace	rust/crates/omp-desktop/Cargo.toml	72 parity tests green
+2026-11-20T04:40:00Z	ui	added a close guard and confirmation for window close and tray Quit	GPUI's quit bypasses on_window_should_close, so the tray path shares the guard	rust/crates/omp-desktop/src/app.rs	74 parity tests green
