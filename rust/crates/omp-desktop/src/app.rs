@@ -16,7 +16,9 @@ use gpui_kit::component::{ActiveTheme, Theme, ThemeColor, ThemeMode};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use omp_core::agent::AgentManager;
-use omp_core::geometry::{ResolvedLayout, UiGeometry};
+use omp_core::geometry::{
+    CENTER_MIN_WIDTH, ResolvedLayout, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, UiGeometry,
+};
 use omp_core::git::{self, GitStatus};
 use omp_core::models::{self, CliContext, ModelCatalog, ModelDescriptor};
 use omp_core::plugins::{self, PluginCatalog};
@@ -112,6 +114,21 @@ impl RightPane {
             _ => return None,
         })
     }
+}
+
+/// Window width below which the workspace draws the compact layout.
+///
+/// The geometry module keeps its own breakpoints for the persisted pane
+/// widths; this one is the render's: a narrower window collapses the right
+/// pane and the toolbar's `Details` toggle opens it over the transcript.
+pub const COMPACT_LAYOUT_BREAKPOINT: f32 = 1100.0;
+
+/// Whether a window `width` draws the compact single-pane layout.
+///
+/// Pure so the parity suite and the unit tests can pin the decision without a
+/// window; `Workspace` stores the answer it read from its bounds.
+pub fn compact_layout(width: f32) -> bool {
+    width < COMPACT_LAYOUT_BREAKPOINT
 }
 
 /// Which entry point asked to close, so the confirmation's `Close anyway`
@@ -711,6 +728,13 @@ pub struct Workspace {
     // file is the source of truth, so clearing here goes through `store.update`.
     notifications: Vec<NotificationRecord>,
     right_pane: RightPane,
+    // Whether the window is narrow enough for the compact layout, read from
+    // the bounds in `new` and refreshed by `track_bounds`. The right pane then
+    // collapses into the toolbar's Details toggle.
+    compact_layout: bool,
+    // Whether the compact layout draws the right pane as an overlay. Only
+    // meaningful while `compact_layout`; a wide window clears it.
+    details_open: bool,
     // Live voice is RPC-driven: the harness owns the microphone and the pane only
     // mirrors the normalized `live_*` events plus the commands it sent.
     live_phase: String,
@@ -951,6 +975,8 @@ impl Workspace {
             schedules: Vec::new(),
             notifications: Vec::new(),
             right_pane: RightPane::Launcher,
+            compact_layout: compact_layout(width),
+            details_open: false,
             live_phase: "idle".to_string(),
             live_levels: 0.0,
             live_transcript: Vec::new(),
@@ -1332,6 +1358,11 @@ impl Workspace {
         // The pane only draws while the geometry docks it, so asking for a pane
         // opens it first, exactly like the toolbar's panel button.
         self.geometry.right_pane_open = true;
+        // A compact window has no docked column to put the pane in, so asking
+        // for one raises the same overlay the toolbar's Details toggle draws.
+        if self.compact_layout {
+            self.details_open = true;
+        }
         if let Some(bounds) = self.last_bounds {
             self.layout = self.geometry.resolve(bounds.2 as f64);
         }
@@ -1434,7 +1465,10 @@ impl Workspace {
                     .collect()
             })
             .unwrap_or_default();
-        json!({
+        // Built in one macro literal for the harness, then extended below: two
+        // more keys inside the literal would push the `json!` expansion past
+        // the crate's recursion limit.
+        let mut snapshot = json!({
             "view": self.view.name(),
             "rightPane": self.right_pane.name(),
             // The close confirmation, while a close is waiting on an answer.
@@ -1638,7 +1672,12 @@ impl Workspace {
             },
             "schedules": self.schedules,
             "notifications": self.notifications,
-        })
+        });
+        // The render's breakpoint decision and whether the compact layout is
+        // drawing the right pane as an overlay over the transcript.
+        snapshot["compactLayout"] = json!(self.compact_layout);
+        snapshot["detailsOpen"] = json!(self.compact_layout && self.details_open);
+        snapshot
     }
 
     fn track_bounds(&mut self, window: &Window, cx: &mut Context<Self>) {
@@ -1653,6 +1692,12 @@ impl Workspace {
             return;
         }
         self.last_bounds = Some(current);
+        self.compact_layout = compact_layout(current.2);
+        // Widening the window docks the right pane again; a compact overlay
+        // left open would be drawn nowhere, so it closes with the breakpoint.
+        if !self.compact_layout {
+            self.details_open = false;
+        }
         self.layout = self.geometry.resolve(current.2 as f64);
         self.resize_terminal();
         self.geometry.window_bounds = Some(omp_core::geometry::WindowBounds {
@@ -1690,6 +1735,10 @@ impl Workspace {
             .flex_col()
             .h_full()
             .w(px(self.layout.sidebar_width as f32))
+            // The resolved width is already clamped; the bounds make the
+            // sidebar's floor and ceiling explicit in the layout itself.
+            .min_w(px(SIDEBAR_MIN_WIDTH as f32))
+            .max_w(px(SIDEBAR_MAX_WIDTH as f32))
             .bg(colors.sidebar)
             .border_r_1()
             .border_color(colors.border)
@@ -1953,6 +2002,35 @@ impl Workspace {
                         this.capture_workspace(window, cx);
                     })),
             )
+            // Below the breakpoint the right pane has no column of its own, so
+            // this toggle is its door: it draws the pane over the transcript
+            // and closes it again. A wide window keeps the docked pane and
+            // never draws the toggle.
+            .when(self.compact_layout, |element| {
+                element.child(
+                    div()
+                        .id("details-toggle")
+                        .aria_label("Details")
+                        .px_2()
+                        .py_0p5()
+                        .rounded(px(6.0))
+                        .border_1()
+                        .border_color(if self.details_open {
+                            colors.primary
+                        } else {
+                            colors.border
+                        })
+                        .text_xs()
+                        .text_color(colors.foreground)
+                        .hover(|style| style.bg(colors.accent))
+                        .child("Details")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.details_open = !this.details_open;
+                            cx.notify();
+                        }))
+                        .test_support(),
+                )
+            })
             // The dial joins the left-hand group: it is drawn only once a
             // reading arrived, so the right-hand icons keep their measured
             // positions and an unread session shows nothing.
@@ -1990,6 +2068,9 @@ impl Workspace {
                         this.right_pane = RightPane::Launcher;
                     } else {
                         this.right_pane = RightPane::LiveVoice;
+                        if this.compact_layout {
+                            this.details_open = true;
+                        }
                         this.geometry.right_pane_open = true;
                         if let Some(bounds) = this.last_bounds {
                             this.layout = this.geometry.resolve(bounds.2 as f64);
@@ -2039,12 +2120,18 @@ impl Workspace {
                 IconName::PanelRight,
                 colors.foreground,
                 cx.listener(|this, _, _, cx| {
-                    this.geometry.right_pane_open = !this.geometry.right_pane_open;
-                    if let Some(bounds) = this.last_bounds {
-                        this.layout = this.geometry.resolve(bounds.2 as f64);
+                    if this.compact_layout {
+                        // There is no docked column to toggle here, so the
+                        // panel button raises the Details overlay instead.
+                        this.details_open = !this.details_open;
+                    } else {
+                        this.geometry.right_pane_open = !this.geometry.right_pane_open;
+                        if let Some(bounds) = this.last_bounds {
+                            this.layout = this.geometry.resolve(bounds.2 as f64);
+                        }
+                        this.resize_terminal();
+                        this.schedule_geometry_save(cx);
                     }
-                    this.resize_terminal();
-                    this.schedule_geometry_save(cx);
                     cx.notify();
                 }),
             ))
@@ -6119,14 +6206,19 @@ impl Workspace {
             RightPane::Activity => "Activity",
         };
         div()
+            .id("right-pane")
             .flex()
             .flex_col()
             .h_full()
-            .w(px(if self.layout.right_pane_docked {
-                self.layout.right_pane_width
-            } else {
-                omp_core::geometry::clamp_right_pane(self.geometry.right_pane_width)
-            } as f32))
+            // A compact window always draws the pane over the transcript at
+            // its preferred width, never at the docked column's resolved one.
+            .w(px(
+                if self.layout.right_pane_docked && !self.compact_layout {
+                    self.layout.right_pane_width
+                } else {
+                    omp_core::geometry::clamp_right_pane(self.geometry.right_pane_width)
+                } as f32,
+            ))
             .bg(colors.sidebar)
             .border_l_1()
             .border_color(colors.border)
@@ -6291,6 +6383,24 @@ impl Workspace {
                         this.set_right_pane("activity", cx);
                     })),
             )
+            .test_support()
+    }
+
+    /// The compact layout's right pane, drawn over the transcript from the
+    /// window's right edge. It is the same pane the wide layout docks, so the
+    /// Details toggle, the toolbar's panel button and the launcher rows all
+    /// reach one view; closing it only hides the overlay.
+    fn details_overlay(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .absolute()
+            .top_0()
+            .right_0()
+            .h_full()
+            .flex()
+            .w(px(
+                omp_core::geometry::clamp_right_pane(self.geometry.right_pane_width) as f32,
+            ))
+            .child(self.right_pane(cx))
     }
 
     fn files_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -8248,12 +8358,16 @@ impl Render for Workspace {
         self.track_bounds(window, cx);
         let colors = cx.theme().colors;
         let show_sidebar = self.layout.sidebar_docked;
-        let show_right = self.layout.right_pane_docked;
+        // A wide window docks the right pane as before. Below the render's
+        // breakpoint that column is gone and the same pane is an overlay the
+        // toolbar's Details toggle raises over the transcript.
+        let show_right = self.layout.right_pane_docked && !self.compact_layout;
+        let show_details = self.compact_layout && self.details_open;
         // A native webview keeps its last frame when the pane stops rendering, and on Windows
         // it covers everything in its bounds, so it is shown only while the pane is on screen
         // and no confirmation is covering it.
         let browser_visible = self.view == AppView::Workspace
-            && show_right
+            && (show_right || show_details)
             && self.right_pane == RightPane::Browser
             && !close_prompt;
         self.browser.set_visible(browser_visible, cx);
@@ -8343,7 +8457,10 @@ impl Render for Workspace {
                     .flex_col()
                     .flex_1()
                     .h_full()
-                    .min_w(px(360.0))
+                    // The transcript keeps a usable width even when the
+                    // window is squeezed; the geometry module resolves the
+                    // same floor for the docked widths.
+                    .min_w(px(CENTER_MIN_WIDTH as f32))
                     .child(self.toolbar(cx))
                     // Only drawn once a capture ran, so the transcript keeps
                     // the height it had before the first press.
@@ -8361,6 +8478,9 @@ impl Render for Workspace {
                     .child(self.composer(cx)),
             )
             .when(show_right, |element| element.child(self.right_pane(cx)))
+            .when(show_details, |element| {
+                element.child(self.details_overlay(cx))
+            })
             .when(self.overview_open && !browser_visible, |element| {
                 element.child(self.overview_popover(cx))
             })
@@ -8779,20 +8899,33 @@ mod tests {
 
     use super::{
         ATTACHMENT_MAX_BYTES, AppView, AskDialog, AskOption, AskQuestion, CLOSE_CONFIRM_ACCEPT,
-        CLOSE_CONFIRM_CANCEL, CloseGuard, CloseIntent, ContextUsage, DictationState,
-        LIVE_TRANSCRIPT_LIMIT, LiveVoiceState, MODEL_PROVIDER_LIMIT, MathSegment, MathSegmentKind,
-        RightPane, TERMINAL_MENU_ITEMS, TRANSCRIPT_BOTTOM_THRESHOLD, TerminalMenuAction,
-        TerminalTabSpec, TerminalTabSpecs, UpdateCheckState, Workspace, WorkspaceData,
-        append_clipboard_text, append_dictation_text, append_side_answer, apply_dictation_frame,
-        apply_live_voice_event, ask_answers_ready, ask_cancel_payload, ask_submit_payload,
-        base64_encode, capture_path, close_confirmation, composer_model_label, context_percent,
-        context_usage_label, filter_models, group_digits, image_mime, math_plain_text,
-        math_segments, model_key, parse_ask_questions, parse_context_usage, parse_model_key,
-        provider_chips, read_pending_image, should_confirm_close, side_answer_delta, terminal_menu,
-        terminal_menu_action, terminal_tab_bar, transcript_is_at_bottom, transcript_part_text,
-        updates, write_capture,
+        CLOSE_CONFIRM_CANCEL, COMPACT_LAYOUT_BREAKPOINT, CloseGuard, CloseIntent, ContextUsage,
+        DictationState, LIVE_TRANSCRIPT_LIMIT, LiveVoiceState, MODEL_PROVIDER_LIMIT, MathSegment,
+        MathSegmentKind, RightPane, TERMINAL_MENU_ITEMS, TRANSCRIPT_BOTTOM_THRESHOLD,
+        TerminalMenuAction, TerminalTabSpec, TerminalTabSpecs, UpdateCheckState, Workspace,
+        WorkspaceData, append_clipboard_text, append_dictation_text, append_side_answer,
+        apply_dictation_frame, apply_live_voice_event, ask_answers_ready, ask_cancel_payload,
+        ask_submit_payload, base64_encode, capture_path, close_confirmation, compact_layout,
+        composer_model_label, context_percent, context_usage_label, filter_models, group_digits,
+        image_mime, math_plain_text, math_segments, model_key, parse_ask_questions,
+        parse_context_usage, parse_model_key, provider_chips, read_pending_image,
+        should_confirm_close, side_answer_delta, terminal_menu, terminal_menu_action,
+        terminal_tab_bar, transcript_is_at_bottom, transcript_part_text, updates, write_capture,
     };
     use omp_core::sessions::{TranscriptMessage, TranscriptPart};
+
+    /// The render breakpoint: a wide window keeps the docked right pane, while
+    /// anything narrower collapses it behind the Details toggle. Exactly at
+    /// the breakpoint stays wide, so the existing three-pane layout survives.
+    #[test]
+    fn compact_layout_breakpoint_splits_wide_and_narrow_windows() {
+        assert!(!compact_layout(COMPACT_LAYOUT_BREAKPOINT));
+        assert!(!compact_layout(1400.0));
+        assert!(!compact_layout(1280.0));
+        assert!(compact_layout(COMPACT_LAYOUT_BREAKPOINT - 1.0));
+        assert!(compact_layout(900.0));
+        assert!(compact_layout(0.0));
+    }
 
     /// A model selection is `provider/id`: the key the settings file stores,
     /// the footer prints and `set_model` splits back apart.

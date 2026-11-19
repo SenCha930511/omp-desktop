@@ -183,6 +183,21 @@ fn click_at(cx: &mut TestAppContext, handle: gpui_kit::WindowHandle<Workspace>, 
     });
 }
 
+/// Clicks an element that opted into gpui-kit's registry with `.test_support()`,
+/// so a control can be reached without a measured position.
+fn click_element(
+    cx: &mut TestAppContext,
+    handle: gpui_kit::WindowHandle<Workspace>,
+    id: &'static str,
+) {
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.click(id, cx);
+        })
+        .expect("click element");
+    });
+}
+
 #[gpui_kit::test]
 fn catalog_order_drives_session_selection(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
@@ -1258,6 +1273,87 @@ fn layout_snapshot_reports_the_docked_widths(cx: &mut TestAppContext) {
             assert_eq!(layout["overlay"], json!(null));
         })
         .expect("workspace window");
+}
+
+/// Below the render breakpoint the workspace is one pane: the right pane leaves
+/// the row, the toolbar grows a Details toggle, and pressing it draws the same
+/// pane over the transcript. A wide window keeps the docked pane and no toggle.
+#[gpui_kit::test]
+fn compact_layout_hides_the_right_pane_behind_a_details_toggle(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+
+    // 900px: the sidebar docks, the right pane is collapsed behind Details.
+    let compact = cx.open_window(size(px(900.0), px(800.0)), |window, cx| {
+        Workspace::new(window, cx, test_data(root))
+    });
+    compact
+        .update(cx, |workspace, window, cx| {
+            let state = snapshot(workspace, cx);
+            assert_eq!(state["compactLayout"], json!(true));
+            assert_eq!(state["detailsOpen"], json!(false));
+            assert_eq!(state["layout"]["sidebarDocked"], json!(true));
+            assert_eq!(state["layout"]["rightPaneDocked"], json!(false));
+            assert!(
+                window.try_find("right-pane").is_none(),
+                "the compact layout drew the right pane instead of the toggle"
+            );
+            assert!(
+                window.try_find("details-toggle").is_some(),
+                "the compact toolbar has no Details toggle"
+            );
+        })
+        .expect("compact window");
+
+    // The toggle raises the pane as an overlay.
+    click_element(cx, compact, "details-toggle");
+    compact
+        .update(cx, |workspace, window, cx| {
+            assert_eq!(snapshot(workspace, cx)["detailsOpen"], json!(true));
+            assert!(
+                window.try_find("right-pane").is_some(),
+                "the Details toggle did not draw the right pane"
+            );
+        })
+        .expect("opened details");
+
+    // A second press closes it, and a third reopens it: the control is a
+    // toggle, not a one-way door.
+    click_element(cx, compact, "details-toggle");
+    compact
+        .update(cx, |workspace, window, cx| {
+            assert_eq!(snapshot(workspace, cx)["detailsOpen"], json!(false));
+            assert!(window.try_find("right-pane").is_none());
+        })
+        .expect("closed details");
+    click_element(cx, compact, "details-toggle");
+    compact
+        .update(cx, |workspace, window, cx| {
+            assert_eq!(snapshot(workspace, cx)["detailsOpen"], json!(true));
+            assert!(window.try_find("right-pane").is_some());
+        })
+        .expect("reopened details");
+
+    // 1400px stays three-pane: the pane is in the row and there is no toggle.
+    let wide = cx.open_window(size(px(1400.0), px(800.0)), |window, cx| {
+        Workspace::new(window, cx, test_data(root))
+    });
+    wide.update(cx, |workspace, window, cx| {
+        let state = snapshot(workspace, cx);
+        assert_eq!(state["compactLayout"], json!(false));
+        assert_eq!(state["detailsOpen"], json!(false));
+        assert_eq!(state["layout"]["rightPaneDocked"], json!(true));
+        assert!(
+            window.try_find("right-pane").is_some(),
+            "the wide layout dropped the docked right pane"
+        );
+        assert!(
+            window.try_find("details-toggle").is_none(),
+            "the wide layout drew the compact Details toggle"
+        );
+    })
+    .expect("wide window");
 }
 
 /// A draft is part of the snapshot and outlives any pane switch.
