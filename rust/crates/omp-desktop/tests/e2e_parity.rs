@@ -4220,7 +4220,10 @@ fn activity_notifications_survive_a_reload_and_clear_all_persists(cx: &mut TestA
             let notifications = state["notifications"].as_array().expect("notifications");
             assert_eq!(notifications.len(), 2);
             assert_eq!(notifications[0]["title"], "Build finished");
-            assert_eq!(notifications[0]["read"], json!(false));
+            // Opening the pane acknowledged the list, so the record the seed
+            // left unread is persisted as read and the badge is empty.
+            assert_eq!(notifications[0]["read"], json!(true));
+            assert_eq!(state["unreadNotifications"], json!(0));
             assert_eq!(notifications[0]["createdAt"], "2026-11-19T10:00:00.000Z");
             assert_eq!(notifications[1]["body"], "Review the staged changes.");
             assert_eq!(notifications[1]["read"], json!(true));
@@ -4238,6 +4241,118 @@ fn activity_notifications_survive_a_reload_and_clear_all_persists(cx: &mut TestA
 
     let store = open_store(root);
     assert!(store.state().notifications.is_empty());
+}
+
+/// The toolbar's unread badge counts persisted notifications, drops when the
+/// Activity pane opens (which marks them read), and a finished turn appends a
+/// fresh unread record. Both the read marks and the new record survive a
+/// reload because they go through the state file.
+#[gpui_kit::test]
+fn unread_notification_badge_clears_on_open_and_a_finished_turn_raises_it(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+
+    {
+        let mut store = open_store(root);
+        store
+            .update(|state| {
+                state.notifications = vec![
+                    NotificationRecord {
+                        id: "build-finished".to_string(),
+                        title: "Build finished".to_string(),
+                        body: "The parity suite passed.".to_string(),
+                        created_at: "2026-11-19T10:00:00.000Z".to_string(),
+                        read: false,
+                        unknown: Default::default(),
+                    },
+                    NotificationRecord {
+                        id: "already-read".to_string(),
+                        title: "Already read".to_string(),
+                        body: String::new(),
+                        created_at: "2026-11-19T09:00:00.000Z".to_string(),
+                        read: true,
+                        unknown: Default::default(),
+                    },
+                ];
+                Ok(())
+            })
+            .expect("seed notifications");
+    }
+
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, test_data(root)));
+    handle
+        .update(cx, |workspace, _, cx| {
+            let closed = snapshot(workspace, cx);
+            assert_eq!(closed["rightPane"], "launcher");
+            assert_eq!(
+                closed["unreadNotifications"],
+                json!(1),
+                "only the seeded unread record is counted"
+            );
+            assert_eq!(closed["attention"], json!(1));
+
+            // A finished turn records its completion unread, so the badge grows
+            // without the Activity pane ever being opened. This is the same
+            // helper `agent_end` calls, so no agent runtime is spawned.
+            workspace.record_completion_notification("Task complete", "The parity suite passed.");
+            let recorded = snapshot(workspace, cx);
+            assert_eq!(recorded["unreadNotifications"], json!(2));
+            let notifications = recorded["notifications"].as_array().expect("notifications");
+            assert_eq!(notifications.len(), 3);
+            let newest = notifications.last().expect("newest notification");
+            assert_eq!(newest["title"], "Task complete");
+            assert_eq!(newest["body"], "The parity suite passed.");
+            assert_eq!(newest["read"], json!(false));
+
+            // Opening the pane acknowledges the list: every record is marked
+            // read and the badge is gone.
+            workspace.set_right_pane("activity", cx);
+            let opened = snapshot(workspace, cx);
+            assert_eq!(opened["rightPane"], "activity");
+            assert_eq!(opened["unreadNotifications"], json!(0));
+            assert_eq!(opened["attention"], json!(0));
+            assert!(
+                opened["notifications"]
+                    .as_array()
+                    .expect("notifications")
+                    .iter()
+                    .all(|notification| notification["read"] == json!(true))
+            );
+        })
+        .expect("workspace window");
+
+    handle
+        .update(cx, |_, window, _| window.remove_window())
+        .expect("close the first window");
+
+    // The read marks and the completion record are on disk: a reload reads the
+    // same three records, all read.
+    let store = open_store(root);
+    let persisted = &store.state().notifications;
+    assert_eq!(persisted.len(), 3);
+    assert!(persisted.iter().all(|notification| notification.read));
+    assert_eq!(persisted[2].title, "Task complete");
+    drop(store);
+
+    // A fresh window reads the persisted list back: the badge stays cleared,
+    // and only a later completion raises it again.
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, test_data(root)));
+    handle
+        .update(cx, |workspace, _, cx| {
+            let reloaded = snapshot(workspace, cx);
+            assert_eq!(reloaded["unreadNotifications"], json!(0));
+            assert_eq!(
+                reloaded["notifications"]
+                    .as_array()
+                    .expect("notifications")
+                    .len(),
+                3
+            );
+            workspace.record_completion_notification("Task complete", "Second run");
+            assert_eq!(snapshot(workspace, cx)["unreadNotifications"], json!(1));
+        })
+        .expect("reloaded workspace window");
 }
 
 /// Seeds both attention sources: one unread and one read notification, plus an

@@ -296,6 +296,10 @@ struct PendingImage {
 /// is a whole-message limit, not a rendering one.
 const ATTACHMENT_MAX_BYTES: u64 = 10 * 1024 * 1024;
 
+/// How many activity notifications the list keeps. The state parser prunes to
+/// the same number, so a record the app appends here survives the next reload.
+const MAX_ACTIVITY_NOTIFICATIONS: usize = 200;
+
 /// The mime for a supported image, decided by its magic bytes.
 ///
 /// The extension only says what the user expects; the harness needs the type
@@ -735,6 +739,9 @@ pub struct Workspace {
     // The in-app activity list mirrors the persisted notifications: the state
     // file is the source of truth, so clearing here goes through `store.update`.
     notifications: Vec<NotificationRecord>,
+    // The activity entries this window appended, so a completion notice id
+    // stays unique even when two turns end in the same millisecond.
+    notification_counter: u64,
     right_pane: RightPane,
     // Whether the window is narrow enough for the compact layout, read from
     // the bounds in `new` and refreshed by `track_bounds`. The right pane then
@@ -985,6 +992,7 @@ impl Workspace {
             model_status: None,
             schedules: Vec::new(),
             notifications: Vec::new(),
+            notification_counter: 0,
             right_pane: RightPane::Launcher,
             compact_layout: compact_layout(width),
             details_open: false,
@@ -1383,7 +1391,9 @@ impl Workspace {
         match target {
             RightPane::Review => self.refresh_review(),
             RightPane::Files => self.refresh_files(),
-            RightPane::Activity => self.refresh_notifications(),
+            // Opening the pane is the acknowledgement: the list is shown, so
+            // its records are marked read and the toolbar badge clears.
+            RightPane::Activity => self.mark_notifications_read(cx),
             // The Browser pane opens one blank tab; its webview needs a window,
             // so `render` builds it on the next frame.
             RightPane::Browser => self.browser.prepare(),
@@ -1689,6 +1699,9 @@ impl Workspace {
         // drawing the right pane as an overlay over the transcript.
         snapshot["compactLayout"] = json!(self.compact_layout);
         snapshot["detailsOpen"] = json!(self.compact_layout && self.details_open);
+        // The toolbar badge's own count: unread notifications only, so a
+        // scenario can watch it clear when the Activity pane opens.
+        snapshot["unreadNotifications"] = json!(self.unread_notifications());
         // The terminal's `Send selection` state: what the action would quote
         // and what it last reported. Both are derived, so a scenario can prove
         // the screen survived a send by comparing the selection around it.
@@ -2061,23 +2074,51 @@ impl Workspace {
                 element.child(context_usage_dial(usage, colors))
             })
             .child(div().flex_1())
-            .child(self.toolbar_icon(
-                "notifications",
-                IconName::Bell,
-                if self.right_pane == RightPane::Activity {
-                    colors.primary
-                } else {
-                    colors.foreground
-                },
-                cx.listener(|this, _, _, cx| {
-                    if this.right_pane == RightPane::Activity {
-                        this.right_pane = RightPane::Launcher;
-                        cx.notify();
-                    } else {
-                        this.set_right_pane("activity", cx);
-                    }
-                }),
-            ))
+            // The bell carries the unread count as a pill: opening the
+            // Activity pane marks the list read, which drops the pill.
+            .child({
+                let unread = self.unread_notifications();
+                div()
+                    .relative()
+                    .child(self.toolbar_icon(
+                        "notifications",
+                        IconName::Bell,
+                        if self.right_pane == RightPane::Activity {
+                            colors.primary
+                        } else {
+                            colors.foreground
+                        },
+                        cx.listener(|this, _, _, cx| {
+                            if this.right_pane == RightPane::Activity {
+                                this.right_pane = RightPane::Launcher;
+                                cx.notify();
+                            } else {
+                                this.set_right_pane("activity", cx);
+                            }
+                        }),
+                    ))
+                    .when(unread > 0, |element| {
+                        element.child(
+                            div()
+                                .id("notifications-badge")
+                                .aria_label("Unread notifications")
+                                .absolute()
+                                .top(px(-2.0))
+                                .right(px(-2.0))
+                                .min_w(px(14.0))
+                                .h(px(14.0))
+                                .px_0p5()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded(px(999.0))
+                                .bg(colors.danger)
+                                .text_size(px(9.0))
+                                .text_color(colors.danger_foreground)
+                                .child(unread.to_string()),
+                        )
+                    })
+            })
             .child(self.toolbar_icon(
                 "live-voice",
                 IconName::Mic,
@@ -3141,6 +3182,14 @@ impl Workspace {
                     self.streaming_index = None;
                     self.running = false;
                     self.finish_turn();
+                    // A finished turn leaves one unread Activity entry, the
+                    // persisted form of the Electron app's completion notice.
+                    let body = self
+                        .selected_session
+                        .and_then(|index| self.sessions.get(index))
+                        .map(|session| session.title.clone())
+                        .unwrap_or_else(|| "OMP finished its work.".to_string());
+                    self.record_completion_notification("Task complete", &body);
                     self.refresh_sessions();
                     // The turn just spent tokens, so the dial catches up now
                     // instead of waiting for the next prompt.
@@ -4633,11 +4682,18 @@ impl Workspace {
         self.refresh_attention();
     }
 
+    /// How many notifications still want the user's eyes. The toolbar's badge
+    /// and the launcher's attention count both read this, so the two never
+    /// disagree about what is unread.
+    pub fn unread_notifications(&self) -> usize {
+        self.notifications.iter().filter(|item| !item.read).count()
+    }
+
     /// Counts what still wants the user's eyes: unread notifications plus
     /// unread sessions. Every reload of either list ends here, so the badge
     /// never reports a count the lists no longer back.
     fn refresh_attention(&mut self) {
-        let notifications = self.notifications.iter().filter(|item| !item.read).count();
+        let notifications = self.unread_notifications();
         let sessions = self
             .sessions
             .iter()
@@ -4687,6 +4743,61 @@ impl Workspace {
         }
         self.refresh_notifications();
         cx.notify();
+    }
+
+    /// Marks every notification the Activity pane lists as read through
+    /// `store.update`, so opening the pane clears the badge and a reload reads
+    /// the same state back. An already-read list is not rewritten.
+    pub fn mark_notifications_read(&mut self, cx: &mut Context<Self>) {
+        // The store owns the list, so read what it holds before deciding: a
+        // record another window appended is marked read too, not missed.
+        self.refresh_notifications();
+        if self.unread_notifications() > 0
+            && let Some(store) = self.store.clone()
+        {
+            let mut store = store.lock().expect("state lock");
+            let _ = store.update(|state| {
+                for notification in &mut state.notifications {
+                    notification.read = true;
+                }
+                Ok(())
+            });
+        }
+        self.refresh_notifications();
+        cx.notify();
+    }
+
+    /// Appends one agent completion to the persisted activity list. It is
+    /// recorded unread, so the toolbar badge counts it until the Activity pane
+    /// is opened; the list keeps the newest `MAX_ACTIVITY_NOTIFICATIONS`
+    /// entries, matching the state parser's own prune.
+    pub fn record_completion_notification(&mut self, title: &str, body: &str) {
+        let Some(store) = self.store.clone() else {
+            return;
+        };
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let record = NotificationRecord {
+            id: format!("agent-end-{now}-{}", self.notification_counter),
+            title: title.to_string(),
+            body: body.to_string(),
+            created_at: now,
+            read: false,
+            unknown: Default::default(),
+        };
+        self.notification_counter = self.notification_counter.wrapping_add(1);
+        {
+            let mut store = store.lock().expect("state lock");
+            let _ = store.update(|state| {
+                state.notifications.push(record);
+                let excess = state
+                    .notifications
+                    .len()
+                    .saturating_sub(MAX_ACTIVITY_NOTIFICATIONS);
+                state.notifications.drain(0..excess);
+                Ok(())
+            });
+        }
+        self.refresh_notifications();
     }
 
     pub fn refresh_files(&mut self) {
