@@ -3475,3 +3475,149 @@ fn unpinned_overview_returns_to_the_transcript(cx: &mut TestAppContext) {
         })
         .expect("workspace return");
 }
+
+/// Removing a project through its row menu drops the grant and the project's
+/// sessions from the sidebar while another project's open session survives, and
+/// leaves the folders and the session files on disk alone.
+#[gpui_kit::test]
+fn removing_a_project_drops_the_grant_and_its_sessions(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let project = seed_project(root);
+    // A second project keeps a session open while the first one goes away.
+    let other = root.join("other-project");
+    std::fs::create_dir_all(&other).expect("other project");
+    std::fs::write(other.join("notes.md"), "# Other\n").expect("notes");
+    let home = root.join("home");
+    let bucket = home.join(".omp/agent/sessions/-omp-project");
+    let doomed_session = write_session(
+        &bucket,
+        "2026-04-01T00-00-00-000Z_019fdf24-dddd-7000-8000-000000000004.jsonl",
+        "Doomed project session",
+        "2026-04-01T05:00:00.000Z",
+        "project prompt",
+        "project reply",
+        &project,
+    );
+    let kept_session = write_session(
+        &bucket,
+        "2026-04-01T00-00-00-000Z_019fdf24-eeee-7000-8000-000000000005.jsonl",
+        "Kept project session",
+        "2026-04-01T04:00:00.000Z",
+        "other prompt",
+        "other reply",
+        &other,
+    );
+
+    let store = open_store(root);
+    let catalog = omp_core::sessions::list_sessions(&store, &home, false, None);
+    drop(store);
+    // Newest first, so the doomed session is row 0 and the kept one row 1.
+    assert_eq!(catalog.len(), 2);
+    assert!(same_path(&catalog[0].file_path, &doomed_session));
+    assert!(same_path(&catalog[1].file_path, &kept_session));
+
+    let mut data = test_data(root);
+    data.home_dir = home.clone();
+    data.sessions = catalog;
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    let removed_id = handle
+        .update(cx, |workspace, _, cx| {
+            workspace.grant_project(&project, cx);
+            workspace.grant_project(&other, cx);
+            assert_eq!(workspace.projects().len(), 2);
+            let id = workspace.projects()[0].id.clone();
+            assert_eq!(snapshot(workspace, cx)["projects"][0]["name"], "project");
+
+            // The other project's session is the one on screen.
+            workspace.select_session(1, cx);
+            assert_eq!(transcript_text(workspace), ["other prompt", "other reply"]);
+
+            // The row's ellipsis opens the menu under it.
+            workspace.toggle_project_menu(&id, cx);
+            assert_eq!(snapshot(workspace, cx)["projectMenu"], json!(id));
+            id
+        })
+        .expect("workspace window");
+
+    // The open menu draws on the next frame, before its one row is used.
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.draw(cx).clear(cx);
+        })
+        .expect("project menu frame");
+    });
+
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.project_menu_action(&removed_id, "Remove project", cx);
+
+            let state = snapshot(workspace, cx);
+            // Only the removed project left, and the action closed its menu.
+            let projects = state["projects"].as_array().expect("projects");
+            assert_eq!(projects.len(), 1);
+            assert_eq!(projects[0]["name"], "other-project");
+            assert_eq!(state["projectMenu"], json!(null));
+            // Its session left the catalog with it; the open session of the
+            // other project stays, at the index the shorter catalog gives it.
+            let sessions = state["sessions"].as_array().expect("sessions");
+            assert_eq!(sessions.len(), 1);
+            assert_eq!(sessions[0]["title"], "Kept project session");
+            assert_eq!(state["selectedSession"], json!(0));
+            assert_eq!(transcript_text(workspace), ["other prompt", "other reply"]);
+
+            // Removing the project the open session belongs to clears it.
+            let other_id = projects[0]["id"].as_str().expect("other id").to_string();
+            workspace.project_menu_action(&other_id, "Remove project", cx);
+            let state = snapshot(workspace, cx);
+            assert_eq!(state["projects"], json!([]));
+            assert_eq!(state["sessions"], json!([]));
+            assert_eq!(state["selectedSession"], json!(null));
+            assert!(workspace.transcript_messages().is_empty());
+        })
+        .expect("workspace window");
+
+    // Only the grants went away: the folders and their saved sessions stay.
+    assert!(project.exists(), "removing a project keeps the folder");
+    assert!(other.exists(), "removing a project keeps the folder");
+    assert!(
+        doomed_session.exists(),
+        "removing a project keeps its session files"
+    );
+    assert!(
+        kept_session.exists(),
+        "removing a project keeps its session files"
+    );
+
+    let store = open_store(root);
+    assert!(omp_core::projects::list_projects(&store).is_empty());
+    let dismissed: Vec<PathBuf> = store
+        .state()
+        .dismissed_project_paths
+        .iter()
+        .map(PathBuf::from)
+        .collect();
+    for folder in [&project, &other] {
+        let canonical = omp_core::paths::canonicalize(folder).expect("canonical project");
+        assert!(
+            dismissed.contains(&canonical),
+            "the removed folder is dismissed so a scan cannot re-add it"
+        );
+    }
+
+    // A fresh window scans the same files, and the dismissed folders keep their
+    // sessions out of the sidebar catalog.
+    let rescanned = omp_core::sessions::list_sessions(&store, &home, false, None);
+    assert_eq!(rescanned.len(), 2, "the JSONL files are still on disk");
+    drop(store);
+    let mut data = test_data(root);
+    data.home_dir = home.clone();
+    data.sessions = rescanned;
+    let reopened = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    reopened
+        .update(cx, |workspace, _, cx| {
+            assert_eq!(snapshot(workspace, cx)["sessions"], json!([]));
+        })
+        .expect("reopened workspace");
+}
