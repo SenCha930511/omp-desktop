@@ -3927,6 +3927,11 @@ impl Workspace {
     }
 }
 
+/// A tab bar click that names the tab it came from.
+type TabClick = dyn Fn(usize, &mut Window, &mut App);
+/// The tab bar's `+` click, which names no tab.
+type NewTabClick = dyn Fn(&mut Window, &mut App);
+
 /// Draws the terminal panel's tab bar: one tab per shell, then a `+` button.
 ///
 /// Labels and callbacks are all it reads, so a test can render it without a
@@ -3939,9 +3944,9 @@ fn terminal_tab_bar(
     on_close: impl Fn(usize, &mut Window, &mut App) + 'static,
     on_new: impl Fn(&mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
-    let on_select: Rc<dyn Fn(usize, &mut Window, &mut App)> = Rc::new(on_select);
-    let on_close: Rc<dyn Fn(usize, &mut Window, &mut App)> = Rc::new(on_close);
-    let on_new: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(on_new);
+    let on_select: Rc<TabClick> = Rc::new(on_select);
+    let on_close: Rc<TabClick> = Rc::new(on_close);
+    let on_new: Rc<NewTabClick> = Rc::new(on_new);
     div()
         .id("terminal-tabs")
         .flex()
@@ -3978,9 +3983,14 @@ fn terminal_tab_bar(
                         .rounded(px(4.0))
                         .hover(|style| style.bg(colors.background))
                         .child(IconName::X)
-                        .on_click(move |event, window, cx| close(index, window, cx)),
+                        .on_click(move |_, window, cx| {
+                            close(index, window, cx);
+                            // The tab under the button would otherwise also be
+                            // selected, moving the active tab as it closes.
+                            cx.stop_propagation();
+                        }),
                 )
-                .on_click(move |event, window, cx| select(index, window, cx))
+                .on_click(move |_, window, cx| select(index, window, cx))
         }))
         .child(
             div()
@@ -3993,7 +4003,7 @@ fn terminal_tab_bar(
                 .text_color(colors.muted_foreground)
                 .hover(|style| style.bg(colors.accent))
                 .child("+")
-                .on_click(move |event, window, cx| on_new(event, window, cx)),
+                .on_click(move |_, window, cx| on_new(window, cx)),
         )
 }
 
@@ -4352,7 +4362,8 @@ mod tests {
     use super::{
         AppView, DictationState, LIVE_TRANSCRIPT_LIMIT, LiveVoiceState, RightPane,
         UpdateCheckState, Workspace, WorkspaceData, append_dictation_text, append_side_answer,
-        apply_dictation_frame, apply_live_voice_event, side_answer_delta, updates,
+        apply_dictation_frame, apply_live_voice_event, side_answer_delta, terminal_tab_bar,
+        updates,
     };
 
     /// The Settings page must render the update row, and an unconfigured build
@@ -4513,6 +4524,85 @@ mod tests {
         assert_eq!(transcript, 0);
         assert!(open);
         assert_eq!(tabs, 0);
+    }
+
+    /// The tab bar draws with no tabs (just `+`) and with one tab, without a
+    /// shell: it only reads labels and callbacks.
+    #[test]
+    fn terminal_tab_bar_renders_with_zero_and_one_tab() {
+        use gpui_kit::component::ActiveTheme as _;
+
+        struct TestTabBar {
+            labels: Vec<String>,
+        }
+
+        impl gpui_kit::Render for TestTabBar {
+            fn render(
+                &mut self,
+                _window: &mut gpui_kit::Window,
+                cx: &mut gpui_kit::Context<Self>,
+            ) -> impl gpui_kit::IntoElement {
+                terminal_tab_bar(
+                    &self.labels,
+                    0,
+                    cx.theme().colors,
+                    |_, _, _| {},
+                    |_, _, _| {},
+                    |_, _| {},
+                )
+            }
+        }
+
+        let mut cx = gpui_kit::TestAppContext::single();
+        cx.update(gpui_kit::init);
+        for labels in [Vec::new(), vec!["/bin/sh · home".to_string()]] {
+            let handle = cx.add_window(|_, _| TestTabBar { labels });
+            cx.update(|cx| {
+                cx.update_window(handle.into(), |_, window, cx| {
+                    window.draw(cx).clear(cx);
+                })
+                .expect("draw tab bar frame");
+            });
+        }
+        cx.quit();
+    }
+
+    /// Selecting or closing a tab with no sessions is a no-op, and closing the
+    /// panel afterwards clears the open flag: neither path panics.
+    #[test]
+    fn terminal_tab_actions_without_sessions_do_not_panic() {
+        let mut cx = gpui_kit::TestAppContext::single();
+        cx.update(gpui_kit::init);
+        let root = tempfile::TempDir::new().expect("test root").keep();
+        let handle = cx.add_window(|window, cx| {
+            Workspace::new(
+                window,
+                cx,
+                WorkspaceData {
+                    geometry: UiGeometry::default(),
+                    geometry_path: root.join("ui-geometry.json"),
+                    home_dir: root.clone(),
+                    user_data_dir: root.clone(),
+                    omp_executable: PathBuf::from("omp"),
+                    settings: AppSettings::default(),
+                    projects: Vec::new(),
+                    sessions: Vec::new(),
+                },
+            )
+        });
+        handle
+            .update(&mut cx, |workspace, _, cx| {
+                workspace.terminal_open = true;
+                workspace.close_terminal_tab(0, cx);
+                workspace.select_terminal_tab(3, cx);
+                assert!(workspace.terminal_open);
+                assert_eq!(workspace.active_terminal, 0);
+                assert!(workspace.terminals.is_empty());
+                workspace.close_terminal(cx);
+                assert!(!workspace.terminal_open);
+            })
+            .expect("workspace window");
+        cx.quit();
     }
 
     /// Side-question deltas accumulate in order; thinking deltas are skipped.
