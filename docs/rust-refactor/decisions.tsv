@@ -46,3 +46,6 @@ ts	phase	decision	why	evidence	result
 2026-11-20T00:37:00Z	packaging	added a Windows NSIS packaged smoke and the Linux WebKit runtime dependencies	Windows and Linux installers are part of the v2 packaging matrix	.github/workflows/ci.yml	Windows job pending first run
 2026-11-20T00:38:00Z	worktrees	normalized Windows worktree paths to forward slashes	git reports worktree paths with forward slashes on Windows and the tests compared raw strings	rust/crates/omp-core/src/git.rs	worktree tests green on macOS
 2026-11-20T00:39:00Z	ui	wired the session Pin, Archive, and Delete menu actions	the menu rendered labels without click handlers	rust/crates/omp-desktop/src/app.rs	app tests green
+2026-11-20T00:50:00Z	tray	shipped a macOS/Windows tray with Open and Quit and a runtime smoke	the native shell had no tray and the spike showed the GPUI main thread can host it	rust/crates/omp-desktop/src/tray.rs	macOS tray smoke green
+2026-11-20T00:52:00Z	updater	added a check-only updater client that stays unconfigured without a pubkey	the release feed and signing pipeline do not exist yet, so an install path would be dishonest	rust/crates/omp-desktop/src/updates.rs	app tests green
+2026-11-20T00:54:00Z	ui	added Files, Subagents, and Side Question panes	the right pane still had placeholders and the core APIs already existed	rust/crates/omp-desktop/src/app.rs	app tests green
