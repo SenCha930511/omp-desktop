@@ -196,9 +196,11 @@ export function useTranscriptScroll(messages: TranscriptMessage[], active = true
           const section = target.closest('.activity-line') ?? target.closest('.work-disclosure')
           if (section) {
             window.setTimeout(() => {
+              const view = scroller.ownerDocument?.defaultView
+              if (!view) return
               const rect = section.getBoundingClientRect()
               const scrollerRect = scroller.getBoundingClientRect()
-              const reserved = parseFloat(getComputedStyle(scroller).paddingBottom) || 0
+              const reserved = parseFloat(view.getComputedStyle(scroller).paddingBottom) || 0
               const visibleBottom = scrollerRect.bottom - reserved
               const overshoot = rect.bottom - visibleBottom
               if (overshoot <= 0) return

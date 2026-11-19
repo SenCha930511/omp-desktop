@@ -3298,3 +3298,180 @@ fn activity_notifications_survive_a_reload_and_clear_all_persists(cx: &mut TestA
     let store = open_store(root);
     assert!(store.state().notifications.is_empty());
 }
+
+/// Seeds both attention sources: one unread and one read notification, plus an
+/// unread session in the catalog. `list_sessions` does not set the flag yet, so
+/// it is flipped here, the way a reload would once the catalog reports it.
+fn seed_attention(root: &Path, home: &Path) -> Vec<omp_core::sessions::SessionRecord> {
+    let mut store = open_store(root);
+    store
+        .update(|state| {
+            state.notifications = vec![
+                NotificationRecord {
+                    id: "build-finished".to_string(),
+                    title: "Build finished".to_string(),
+                    body: "The parity suite passed.".to_string(),
+                    created_at: "2026-11-20T09:00:00.000Z".to_string(),
+                    read: false,
+                    unknown: Default::default(),
+                },
+                NotificationRecord {
+                    id: "already-read".to_string(),
+                    title: "Already read".to_string(),
+                    body: "Nothing to see.".to_string(),
+                    created_at: "2026-11-20T08:00:00.000Z".to_string(),
+                    read: true,
+                    unknown: Default::default(),
+                },
+            ];
+            Ok(())
+        })
+        .expect("seed notifications");
+    let mut catalog = omp_core::sessions::list_sessions(&store, home, false, None);
+    catalog[0].unread = true;
+    catalog
+}
+
+/// The launcher's pin keeps the Overview on screen across a view switch, and
+/// its badge counts what still wants attention: unread notifications plus
+/// unread sessions.
+#[gpui_kit::test]
+fn pinned_overview_survives_a_view_switch_and_reports_attention(cx: &mut TestAppContext) {
+    // The launcher's title row sits below the pane rows so those rows keep the
+    // positions the other launcher tests click. The pin is therefore clicked at
+    // its own measured position: a 22px control at (951, 300) in a 1280x800
+    // window, whose 360px right pane starts at x=920.
+    const PIN_X: f32 = 951.0;
+    const PIN_Y: f32 = 300.0;
+
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let (home, _older, _newer) = seed_two_sessions(root);
+    let catalog = seed_attention(root, &home);
+
+    let mut data = test_data(root);
+    data.home_dir = home;
+    data.sessions = catalog;
+    let handle = cx.open_window(size(px(1280.0), px(800.0)), |window, cx| {
+        Workspace::new(window, cx, data)
+    });
+    handle
+        .update(cx, |workspace, _, cx| {
+            let launcher = snapshot(workspace, cx);
+            assert_eq!(launcher["view"], "workspace");
+            assert_eq!(launcher["rightPane"], "launcher");
+            assert_eq!(launcher["overviewPinned"], json!(false));
+            assert_eq!(launcher["overviewVisible"], json!(true));
+            assert_eq!(
+                launcher["attention"],
+                json!(2),
+                "one unread notification and one unread session"
+            );
+        })
+        .expect("launcher window");
+
+    click_at(cx, handle, PIN_X, PIN_Y);
+
+    handle
+        .update(cx, |workspace, _, cx| {
+            let pinned = snapshot(workspace, cx);
+            assert_eq!(
+                pinned["overviewPinned"],
+                json!(true),
+                "the pin control toggled the overview pin"
+            );
+            assert_eq!(pinned["overviewVisible"], json!(true));
+        })
+        .expect("pin toggle");
+
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.set_view(AppView::Schedules, cx)
+        })
+        .expect("schedules view");
+
+    handle
+        .update(cx, |workspace, _, cx| {
+            let schedules = snapshot(workspace, cx);
+            assert_eq!(schedules["view"], "schedules");
+            // The pinned launcher rides along: the right pane is still the
+            // Overview and it is on screen next to the Schedules page.
+            assert_eq!(schedules["rightPane"], "launcher");
+            assert_eq!(schedules["overviewVisible"], json!(true));
+            assert_eq!(schedules["attention"], json!(2));
+        })
+        .expect("pinned schedules");
+
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.set_view(AppView::Workspace, cx);
+            let back = snapshot(workspace, cx);
+            assert_eq!(back["view"], "workspace");
+            assert_eq!(back["rightPane"], "launcher");
+            assert_eq!(back["overviewPinned"], json!(true));
+            assert_eq!(back["overviewVisible"], json!(true));
+
+            // Attention follows the unread state, not the pin: clearing the
+            // notifications leaves the unread session counted.
+            workspace.clear_notifications(cx);
+            assert_eq!(snapshot(workspace, cx)["attention"], json!(1));
+        })
+        .expect("pinned workspace");
+}
+
+/// Unpinned, the launcher stays where it belongs: the Schedules page stands
+/// alone instead of sharing the window with the Overview, and the workspace
+/// comes back to the transcript.
+#[gpui_kit::test]
+fn unpinned_overview_returns_to_the_transcript(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let (home, _older, _newer) = seed_two_sessions(root);
+    let catalog = seed_attention(root, &home);
+
+    let mut data = test_data(root);
+    data.home_dir = home;
+    data.sessions = catalog;
+    let handle = cx.open_window(size(px(1280.0), px(800.0)), |window, cx| {
+        Workspace::new(window, cx, data)
+    });
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.select_session(0, cx);
+            assert_eq!(transcript_text(workspace), ["newer prompt", "newer reply"]);
+            let launcher = snapshot(workspace, cx);
+            assert_eq!(launcher["rightPane"], "launcher");
+            assert_eq!(launcher["overviewPinned"], json!(false));
+            assert_eq!(launcher["overviewVisible"], json!(true));
+            assert_eq!(launcher["attention"], json!(2));
+        })
+        .expect("workspace window");
+
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.set_view(AppView::Schedules, cx);
+            let schedules = snapshot(workspace, cx);
+            assert_eq!(schedules["view"], "schedules");
+            // Nothing was pinned, so the launcher stays behind and the page
+            // owns the window.
+            assert_eq!(schedules["overviewPinned"], json!(false));
+            assert_eq!(schedules["overviewVisible"], json!(false));
+        })
+        .expect("schedules view");
+
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.set_view(AppView::Workspace, cx);
+            let back = snapshot(workspace, cx);
+            assert_eq!(back["view"], "workspace");
+            // The switch returns to the transcript with the launcher back in
+            // the pane it owns, never pinned to another view.
+            assert_eq!(back["selectedSession"], json!(0));
+            assert_eq!(back["rightPane"], "launcher");
+            assert_eq!(back["overviewVisible"], json!(true));
+            assert_eq!(transcript_text(workspace), ["newer prompt", "newer reply"]);
+        })
+        .expect("workspace return");
+}

@@ -206,7 +206,15 @@ pub struct Workspace {
     files: Vec<omp_core::projects::ProjectFileEntry>,
     files_skipped: u64,
     files_error: Option<String>,
+    // The toolbar's overview popover is a different control from the launcher
+    // pane; `overview_pinned` belongs to the launcher below.
     overview_open: bool,
+    // Session-only, like the launcher itself: a pinned Overview rides along to
+    // the next view or session instead of being left behind by the switch.
+    overview_pinned: bool,
+    // Unread notifications plus unread sessions. Both lists reload on their own
+    // paths, so this is recomputed after each of them and read by the launcher.
+    attention_count: usize,
     menu_open: bool,
     turn_changes: TurnChanges,
     turn_baseline: Option<TurnBaseline>,
@@ -335,6 +343,8 @@ impl Workspace {
             files_skipped: 0,
             files_error: None,
             overview_open: false,
+            overview_pinned: false,
+            attention_count: 0,
             menu_open: false,
             turn_changes: TurnChanges::default(),
             turn_baseline: None,
@@ -450,6 +460,12 @@ impl Workspace {
         json!({
             "view": self.view.name(),
             "rightPane": self.right_pane.name(),
+            // The launcher's pin and what it is counting. `overviewVisible`
+            // is derived: the launcher is drawn for the workspace view, and for
+            // every other view only while it is pinned.
+            "overviewPinned": self.overview_pinned,
+            "overviewVisible": self.overview_visible(),
+            "attention": self.attention_count,
             "layout": {
                 "sidebarDocked": self.layout.sidebar_docked,
                 "sidebarWidth": self.layout.sidebar_width,
@@ -1221,6 +1237,7 @@ impl Workspace {
         if self.right_pane == RightPane::Files {
             self.refresh_files();
         }
+        self.apply_overview_pin();
         self.ensure_runtime(cx);
         cx.notify();
     }
@@ -1358,6 +1375,7 @@ impl Workspace {
         };
         let store = store.lock().expect("state lock");
         self.sessions = sessions::list_sessions(&store, &self.home_dir, false, None);
+        self.refresh_attention();
     }
 
     fn start_drain(&mut self, cx: &mut Context<Self>) {
@@ -2235,6 +2253,7 @@ impl Workspace {
         if view == AppView::Schedules {
             self.refresh_schedules();
         }
+        self.apply_overview_pin();
         cx.notify();
     }
 
@@ -2261,6 +2280,45 @@ impl Workspace {
             }
             None => Vec::new(),
         };
+        self.refresh_attention();
+    }
+
+    /// Counts what still wants the user's eyes: unread notifications plus
+    /// unread sessions. Every reload of either list ends here, so the badge
+    /// never reports a count the lists no longer back.
+    fn refresh_attention(&mut self) {
+        let notifications = self.notifications.iter().filter(|item| !item.read).count();
+        let sessions = self
+            .sessions
+            .iter()
+            .filter(|session| session.unread)
+            .count();
+        self.attention_count = notifications + sessions;
+    }
+
+    /// Whether the Overview launcher is on screen. The launcher is the pane the
+    /// workspace view starts on; a pinned one also rides along to the other
+    /// views, which is what keeps it visible across a view switch.
+    fn overview_visible(&self) -> bool {
+        self.right_pane == RightPane::Launcher
+            && self.layout.right_pane_docked
+            && (self.view == AppView::Workspace || self.overview_pinned)
+    }
+
+    /// Keeps the launcher on screen across a view or session switch while the
+    /// overview is pinned. Unpinned, the switch leaves the right pane alone.
+    fn apply_overview_pin(&mut self) {
+        if self.overview_pinned {
+            self.right_pane = RightPane::Launcher;
+        }
+    }
+
+    /// The launcher's pin control. The pin is session-only: the scenario that
+    /// needs it is the view switch, not the next launch.
+    fn toggle_overview_pin(&mut self, cx: &mut Context<Self>) {
+        self.overview_pinned = !self.overview_pinned;
+        self.apply_overview_pin();
+        cx.notify();
     }
 
     pub fn notifications(&self) -> &[NotificationRecord] {
@@ -3314,6 +3372,58 @@ impl Workspace {
                         }))
                 }))
             })
+            // The launcher's title row: the pin and the attention badge live
+            // here. It sits below the pane rows so those rows keep the measured
+            // positions the parity suite clicks, and it is a plain row, so only
+            // the pin itself takes a click.
+            .when(self.right_pane == RightPane::Launcher, |element| {
+                element.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .px_2()
+                        .py_1()
+                        .rounded(px(6.0))
+                        .text_sm()
+                        .text_color(colors.foreground)
+                        .child(
+                            div()
+                                .id("overview-pin")
+                                .aria_label("Pin overview")
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .size(px(22.0))
+                                .rounded(px(6.0))
+                                .text_color(if self.overview_pinned {
+                                    colors.primary
+                                } else {
+                                    colors.muted_foreground
+                                })
+                                .hover(|style| style.bg(colors.accent))
+                                .child(if self.overview_pinned {
+                                    IconName::Pin
+                                } else {
+                                    IconName::PinOff
+                                })
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.toggle_overview_pin(cx);
+                                })),
+                        )
+                        .child(title)
+                        .child(
+                            div()
+                                .id("overview-attention")
+                                .aria_label("Attention")
+                                .px_2()
+                                .rounded(px(999.0))
+                                .bg(colors.accent)
+                                .text_xs()
+                                .child(self.attention_count.to_string()),
+                        ),
+                )
+            })
             .child(div().h(px(1.0)).my_2().bg(colors.border))
             .child(
                 div()
@@ -4139,6 +4249,7 @@ impl Workspace {
             _ => {}
         }
         self.sessions = sessions::list_sessions(&store, &self.home_dir, false, None);
+        self.refresh_attention();
         drop(store);
         self.menu_open = false;
         cx.notify();
@@ -4403,6 +4514,11 @@ impl Render for Workspace {
                 .bg(colors.background)
                 .text_color(colors.foreground)
                 .when(show_sidebar, |element| element.child(self.sidebar(cx)))
+                // A pinned overview keeps the launcher on screen while another
+                // view is active; unpinned, the page stands alone.
+                .when(self.overview_visible(), |element| {
+                    element.child(self.right_pane(cx))
+                })
                 .child(self.settings_page(cx));
         }
         if self.view == AppView::Plugins {
@@ -4413,6 +4529,9 @@ impl Render for Workspace {
                 .bg(colors.background)
                 .text_color(colors.foreground)
                 .when(show_sidebar, |element| element.child(self.sidebar(cx)))
+                .when(self.overview_visible(), |element| {
+                    element.child(self.right_pane(cx))
+                })
                 .child(self.plugins_page(cx));
         }
         if self.view == AppView::Schedules {
@@ -4423,6 +4542,9 @@ impl Render for Workspace {
                 .bg(colors.background)
                 .text_color(colors.foreground)
                 .when(show_sidebar, |element| element.child(self.sidebar(cx)))
+                .when(self.overview_visible(), |element| {
+                    element.child(self.right_pane(cx))
+                })
                 .child(self.schedules_page(cx));
         }
         div()
