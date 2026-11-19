@@ -73,6 +73,8 @@ The packaged binary writes the same first-frame marker as the development build.
 
 ## Remaining work
 
-- Full page set: Settings, Plugins, Review/Summary, Browser, Schedules.
+- Full page set: Schedules and Browser remain; Settings, Extensions, Review, and Summary are present.
+- A due-task scheduler that executes persisted schedules; the core currently stores and validates them only.
+- Real worktree checkout creation; worktree requests return a typed refusal instead of switching the main branch.
 - The 88-scenario UI retirement matrix beyond the current layout, IME, and turn-diff tests.
 - Tray, updater, packaging, and the final Electron cutover gate.
