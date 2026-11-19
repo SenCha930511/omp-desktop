@@ -1,19 +1,19 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { findUnpackedDirectory, packagedExecutablePath } from './verify-cross-platform-package.mjs'
 
 /**
- * Functional launch smoke for a packaged Linux or Windows build: the real
- * unpacked executable is started with an isolated user-data directory and must
- * report renderer readiness through the documented `--packaged-smoke` marker
- * before a single bounded deadline elapses. The structural verifier proves the
- * package's shape; this proves the package actually boots main, preload and the
- * trusted renderer. Contract values are asserted against
- * electron/main/packaged-smoke.ts by tests/packaged-smoke.test.ts.
+ * Functional launch smoke for a packaged desktop build (or standalone compiled
+ * binary): the executable is started with an isolated user-data directory and
+ * must report renderer readiness through the documented `--packaged-smoke`
+ * marker before a single bounded deadline elapses. The structural verifier
+ * proves the package's shape; this proves the package actually boots. Contract
+ * values are asserted against electron/main/packaged-smoke.ts by
+ * tests/packaged-smoke.test.ts.
  */
 export const PACKAGED_SMOKE_FLAG = '--packaged-smoke='
 export const PACKAGED_SMOKE_READY_EVENT = 'gooeypi-packaged-smoke-ready'
@@ -140,21 +140,45 @@ function runPackagedApp(executable, args, { cwd, timeoutMs, platform = process.p
   })
 }
 
-export async function smokePackagedApp(target, architecture, { timeoutMs = SMOKE_TIMEOUT_MS, diagnosticsPath = '' } = {}) {
-  const outputDirectory = resolve('release', target, architecture)
-  const report = diagnosticsPath || join(outputDirectory, 'packaged-smoke-diagnostics.log')
+export function findMacPackagedExecutable(outputDirectory) {
+  if (!existsSync(outputDirectory)) throw new Error(`Expected macOS release directory to exist: ${outputDirectory}`)
+  const searchDirectories = [outputDirectory]
+  for (const entry of readdirSync(outputDirectory, { withFileTypes: true })) {
+    if (entry.isDirectory() && (entry.name === 'mac' || entry.name.startsWith('mac-'))) {
+      searchDirectories.push(join(outputDirectory, entry.name))
+    }
+  }
+  const apps = []
+  for (const dir of searchDirectories) {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isDirectory() && entry.name.endsWith('.app')) apps.push(join(dir, entry.name))
+    }
+  }
+  if (apps.length !== 1) throw new Error(`Expected exactly one packaged macOS .app in ${outputDirectory}, found ${apps.length}`)
+  const appBundle = apps[0]
+  const productName = basename(appBundle, '.app')
+  const executable = join(appBundle, 'Contents', 'MacOS', productName)
+  if (!existsSync(executable) || !lstatSync(executable).isFile()) {
+    throw new Error(`Packaged mac application is missing its executable: ${executable}`)
+  }
+  return { executable, cwd: dirname(appBundle) }
+}
+
+export async function smokeExecutable(executable, { cwd = dirname(executable), timeoutMs = SMOKE_TIMEOUT_MS, diagnosticsPath = '', label = executable } = {}) {
+  const report = diagnosticsPath || join(cwd, 'packaged-smoke-diagnostics.log')
   let workspace = ''
   let launch = null
   try {
-    const unpacked = findUnpackedDirectory(outputDirectory, target)
-    const executable = packagedExecutablePath(unpacked, target)
+    if (!existsSync(executable) || !lstatSync(executable).isFile()) {
+      throw new Error(`Packaged application is missing its executable: ${executable}`)
+    }
     workspace = mkdtempSync(join(tmpdir(), 'gooeypi-packaged-smoke-'))
     const markerPath = join(workspace, 'ready.json')
-    launch = await runPackagedApp(executable, smokeArguments(markerPath, join(workspace, 'user-data')), { cwd: unpacked, timeoutMs })
+    launch = await runPackagedApp(executable, smokeArguments(markerPath, join(workspace, 'user-data')), { cwd, timeoutMs })
     if (launch.timedOut) throw new Error(`Packaged application did not report renderer readiness within ${timeoutMs}ms`)
     if (launch.code !== 0) throw new Error(`Packaged application exited with code ${launch.code ?? 'null'} (signal ${launch.signal ?? 'none'})`)
     const marker = readMarker(markerPath)
-    console.log(`Smoked ${target}/${architecture} packaged application: ${executable} reported ${marker.event} for ${marker.url} (version ${marker.version}).`)
+    console.log(`Smoked ${label}: ${executable} reported ${marker.event} for ${marker.url} (version ${marker.version}).`)
     return marker
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
@@ -166,6 +190,31 @@ export async function smokePackagedApp(target, architecture, { timeoutMs = SMOKE
   } finally {
     // The isolated user data and marker never outlive the smoke, however it ended.
     if (workspace) rmSync(workspace, { recursive: true, force: true })
+  }
+}
+
+export async function smokePackagedApp(target, architecture, { timeoutMs = SMOKE_TIMEOUT_MS, diagnosticsPath = '' } = {}) {
+  const outputDirectory = resolve('release', target, architecture)
+  const report = diagnosticsPath || join(outputDirectory, 'packaged-smoke-diagnostics.log')
+  try {
+    const resolved =
+      target === 'mac'
+        ? findMacPackagedExecutable(outputDirectory)
+        : (() => {
+            const unpacked = findUnpackedDirectory(outputDirectory, target)
+            return { executable: packagedExecutablePath(unpacked, target), cwd: unpacked }
+          })()
+    return await smokeExecutable(resolved.executable, {
+      cwd: resolved.cwd,
+      timeoutMs,
+      diagnosticsPath: report,
+      label: `${target}/${architecture} packaged application`,
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (!existsSync(report)) writeDiagnostics(report, `${message}\n`)
+    if (message.includes(`(diagnostics: ${report})`)) throw error
+    throw new Error(`${message} (diagnostics: ${report})`)
   }
 }
 
@@ -181,9 +230,14 @@ if (invokedDirectly) {
     return index === -1 ? undefined : process.argv[index + 1]
   }
   try {
-    await smokePackagedApp(requireOption(option('--platform'), 'platform', ['linux', 'win']), requireOption(option('--arch'), 'arch', ['arm64', 'x64']), {
-      diagnosticsPath: option('--diagnostics') ?? '',
-    })
+    const executable = option('--executable') ?? process.env.OMP_SMOKE_EXECUTABLE?.trim()
+    if (executable) {
+      await smokeExecutable(resolve(executable), { diagnosticsPath: option('--diagnostics') ?? '' })
+    } else {
+      await smokePackagedApp(requireOption(option('--platform'), 'platform', ['mac', 'linux', 'win']), requireOption(option('--arch'), 'arch', ['arm64', 'x64']), {
+        diagnosticsPath: option('--diagnostics') ?? '',
+      })
+    }
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error))
     process.exitCode = 1

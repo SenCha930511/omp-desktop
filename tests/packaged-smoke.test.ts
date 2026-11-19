@@ -179,4 +179,42 @@ describe('packaged smoke launch', () => {
     // Every failure leaves the diagnostics artifact CI uploads.
     expect(readFileSync(join(sandbox, 'release', 'linux', 'x64', 'packaged-smoke-diagnostics.log'), 'utf8')).toContain('missing its executable')
   })
+
+  it('resolves and smokes packaged macOS .app bundles and custom standalone binaries', async () => {
+    const macAppDir = join(sandbox, 'release', 'mac', 'arm64', 'mac-arm64', 'OMP Desktop.app', 'Contents', 'MacOS')
+    mkdirSync(macAppDir, { recursive: true })
+    const macExecutable = join(macAppDir, 'OMP Desktop')
+    writeFileSync(
+      macExecutable,
+      `#!/usr/bin/env bash\nset -euo pipefail\n${markerArgument}\nprintf '{"event":"${PACKAGED_SMOKE_READY_EVENT}","url":"${PACKAGED_RENDERER_URL}","version":"2.0.0"}' > "$marker"\n`,
+      { encoding: 'utf8' },
+    )
+    chmodSync(macExecutable, 0o755)
+
+    const resolved = launcher.findMacPackagedExecutable(join(sandbox, 'release', 'mac', 'arm64'))
+    expect(resolved.executable).toBe(macExecutable)
+    await expect(launcher.smokePackagedApp('mac', 'arm64')).resolves.toEqual({
+      event: PACKAGED_SMOKE_READY_EVENT,
+      url: PACKAGED_RENDERER_URL,
+      version: '2.0.0',
+    })
+
+    // Custom binary smoke (e.g., future Rust native executable).
+    const customExe = join(sandbox, 'omp-desktop-rust')
+    writeFileSync(
+      customExe,
+      `#!/usr/bin/env bash\nset -euo pipefail\n${markerArgument}\nprintf '{"event":"${PACKAGED_SMOKE_READY_EVENT}","url":"${PACKAGED_RENDERER_URL}","version":"3.0.0"}' > "$marker"\n`,
+      { encoding: 'utf8' },
+    )
+    chmodSync(customExe, 0o755)
+    await expect(launcher.smokeExecutable(customExe, { label: 'rust-native' })).resolves.toEqual({
+      event: PACKAGED_SMOKE_READY_EVENT,
+      url: PACKAGED_RENDERER_URL,
+      version: '3.0.0',
+    })
+
+    rmSync(macExecutable, { force: true })
+    await expect(launcher.smokePackagedApp('mac', 'arm64')).rejects.toThrow('missing its executable')
+    expect(readFileSync(join(sandbox, 'release', 'mac', 'arm64', 'packaged-smoke-diagnostics.log'), 'utf8')).toContain('missing its executable')
+  })
 })

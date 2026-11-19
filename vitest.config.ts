@@ -12,6 +12,7 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['tests/**/*.test.{ts,tsx}'],
+    exclude: ['tests/conformance/**'],
     coverage: {
       provider: 'v8',
       include: coverageInventory.includePatterns,

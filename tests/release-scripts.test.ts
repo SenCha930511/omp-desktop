@@ -684,6 +684,20 @@ else if (JSON.stringify(args) === ${JSON.stringify(JSON.stringify(expectedInstal
     expect(ciWorkflow).toContain('verify-cross-platform-package.mjs --platform ${{ matrix.target }} --arch ${{ matrix.arch }} --unpacked-only')
   })
 
+  test('runs the cross-platform conformance suite and macOS launch smoke in CI', () => {
+    type Workflow = {
+      jobs: Record<string, { strategy?: { matrix?: { include?: Array<Record<string, string>> } }; steps?: Array<{ name?: string; if?: string; run?: string }> }>
+    }
+    const ci = load(readFileSync('.github/workflows/ci.yml', 'utf8')) as Workflow
+    const conformanceRunners = (ci.jobs.conformance?.strategy?.matrix?.include ?? []).map((entry) => entry.runner).sort()
+    expect(conformanceRunners).toEqual(['macos-14', 'ubuntu-22.04', 'windows-2022'])
+    expect(ci.jobs.conformance?.steps?.some((step) => step.run === 'npm run test:conformance')).toBe(true)
+
+    const smokeLaunchStep = ci.jobs['packaging-smoke']?.steps?.find((step) => step.name === 'Launch the packaged application')
+    expect(smokeLaunchStep?.run).toBe('node scripts/release/smoke-packaged-app.mjs --platform ${{ matrix.target }} --arch ${{ matrix.arch }}')
+    expect(smokeLaunchStep?.if).toBeUndefined()
+  })
+
   test('gates every pull-request head and pinned release SHA on the named production audit', () => {
     type WorkflowJob = {
       name?: string
@@ -713,7 +727,7 @@ else if (JSON.stringify(args) === ${JSON.stringify(JSON.stringify(expectedInstal
     expect(releaseAuditSteps[0].name).toBe(ciAuditSteps[0].name)
 
     for (const jobName of ['package', 'package-linux', 'package-windows']) {
-      expect(release.jobs[jobName].needs, `${jobName} must wait for the pinned production audit`).toEqual(['validate', 'production-audit', 'quality', 'hermetic-e2e'])
+      expect(release.jobs[jobName].needs, `${jobName} must wait for the pinned production audit`).toEqual(['validate', 'production-audit', 'quality', 'conformance', 'hermetic-e2e'])
     }
     expect(release.jobs['release-packages'].needs).toEqual(['validate', 'production-audit', 'package', 'package-linux', 'package-windows'])
     expect(release.jobs['release-packages'].steps?.find((step) => step.name === 'Fail if a release prerequisite did not succeed')?.if).toContain("needs.production-audit.result != 'success'")
@@ -870,7 +884,7 @@ else if (JSON.stringify(args) === ${JSON.stringify(JSON.stringify(expectedInstal
 
   test('ships both Linux architectures as separately labeled native builds', () => {
     const releaseWorkflow = readFileSync('.github/workflows/release.yml', 'utf8')
-    expect(releaseWorkflow).toMatch(/package-linux:\n {4}needs: \[validate, production-audit, quality, hermetic-e2e\]\n {4}strategy:/)
+    expect(releaseWorkflow).toMatch(/package-linux:\n {4}needs: \[validate, production-audit, quality, conformance, hermetic-e2e\]\n {4}strategy:/)
     expect(releaseWorkflow).toMatch(/- arch: arm64\n {12}runner: ubuntu-24\.04-arm/)
     expect(releaseWorkflow).toMatch(/- arch: x64\n {12}runner: ubuntu-22\.04/)
     expect(releaseWorkflow).toContain('runs-on: ${{ matrix.runner }}')
