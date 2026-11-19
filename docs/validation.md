@@ -6,7 +6,7 @@ This page explains how to reproduce and interpret OMP Desktop's validation gates
 
 The repository's `main` branch protection must require pull requests and require status checks to pass with **Require branches to be up to date before merging** enabled (`required_status_checks.strict: true`). This strict latest-main requirement prevents a PR from merging on a newer base than the integration state validated by CI.
 
-The required checks are exactly the twelve normal pull-request gates:
+The required checks are exactly the sixteen normal pull-request gates:
 
 - `Production dependency audit`
 - `quality`
@@ -15,12 +15,12 @@ The required checks are exactly the twelve normal pull-request gates:
 - `conformance (macos-14)`
 - `conformance (ubuntu-22.04)`
 - `conformance (windows-2022)`
-- `rust (macos-14)`
-- `rust (ubuntu-22.04)`
-- `rust (windows-2022)`
-- `rust-conformance (macos-14)`
-- `rust-conformance (ubuntu-22.04)`
-- `rust-conformance (windows-2022)`
+- `Rust workspace (macos-14)`
+- `Rust workspace (ubuntu-22.04)`
+- `Rust workspace (windows-2022)`
+- `Rust conformance (macos-14)`
+- `Rust conformance (ubuntu-22.04)`
+- `Rust conformance (windows-2022)`
 - `packaging-smoke (macos-14, mac, arm64, --config.mac.identity=null)`
 - `packaging-smoke (ubuntu-22.04, linux, x64)`
 - `packaging-smoke (windows-2022, win, x64)`
