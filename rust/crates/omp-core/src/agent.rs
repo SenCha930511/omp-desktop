@@ -29,6 +29,22 @@ const DICTATION_CAPTURE_ID_MAX: usize = 128;
 /// Cap for transcribed text; longer frames are malformed or truncated.
 const DICTATION_TEXT_MAX: usize = 64 * 1024;
 const DICTATION_ERROR_MAX: usize = 4_000;
+/// Dialog ids are the harness's own; anything longer cannot be one of ours.
+const EXTENSION_UI_ID_MAX: usize = 200;
+/// Method names are short (`ask`, `select`, `setStatus`, ...).
+const EXTENSION_UI_METHOD_MAX: usize = 64;
+/// `ask`/`select` titles carry whole approval prompts, so they stay generous.
+const EXTENSION_UI_TITLE_MAX: usize = 200_000;
+const EXTENSION_UI_MESSAGE_MAX: usize = 200_000;
+/// One `ask` request groups at most this many questions.
+const EXTENSION_UI_QUESTIONS_MAX: usize = 25;
+const EXTENSION_UI_HEADER_MAX: usize = 4_000;
+const EXTENSION_UI_OPTIONS_MAX: usize = 32;
+const EXTENSION_UI_OPTION_LABEL_MAX: usize = 500;
+const EXTENSION_UI_OPTION_DESCRIPTION_MAX: usize = 4_000;
+const EXTENSION_UI_OPTION_PREVIEW_MAX: usize = 32_000;
+/// The harness's own dialog deadline, in milliseconds (24 hours).
+const EXTENSION_UI_TIMEOUT_MAX_MS: f64 = 86_400_000.0;
 const UNSUPPORTED_COMMANDS: [&str; 12] = [
     "send_message",
     "clone",
@@ -290,6 +306,22 @@ impl AgentManager {
         Ok(response)
     }
 
+    /// Answers an extension UI request (`extension_ui_response`).
+    ///
+    /// These are fire-and-forget on the wire: the harness settles the dialog by
+    /// the payload `id` and emits no response envelope, so this never waits.
+    pub fn respond(&self, runtime_id: &str, response: &Value) -> Result<()> {
+        let runtime = self
+            .runtimes
+            .iter()
+            .find(|runtime| runtime.runtime_id == runtime_id)
+            .ok_or_else(|| CoreError::invalid("Unknown agent runtime"))?;
+        runtime
+            .client
+            .send(response.clone())
+            .map_err(|error| CoreError::new("Error", error.to_string()))
+    }
+
     pub fn drain_events(&mut self, runtime_id: Option<&str>) -> Vec<Value> {
         let mut envelopes = Vec::new();
         for runtime in &mut self.runtimes {
@@ -490,6 +522,79 @@ fn truncate_chars(text: &str, max: usize) -> String {
     text.chars().take(max).collect()
 }
 
+/// One bounded string field: absent, blank, oversized or non-string is `None`.
+fn bounded_field(value: Option<&Value>, max: usize) -> Option<String> {
+    value
+        .and_then(Value::as_str)
+        .filter(|text| !text.trim().is_empty() && text.len() <= max)
+        .map(str::to_string)
+}
+
+/// Validates and bounds the questions of an `ask` request.
+///
+/// `None` means the request cannot be answered with option labels (no
+/// questions, duplicate ids or labels, out-of-range `recommended`, ...), so the
+/// app answers it `cancelled` instead of rendering a half-filled dialog.
+fn normalize_ask_questions(value: Option<&Value>) -> Option<Vec<Value>> {
+    let questions = value?.as_array()?;
+    if questions.is_empty() || questions.len() > EXTENSION_UI_QUESTIONS_MAX {
+        return None;
+    }
+    let mut seen_ids: Vec<String> = Vec::with_capacity(questions.len());
+    let mut normalized = Vec::with_capacity(questions.len());
+    for question in questions {
+        let id = bounded_field(question.get("id"), EXTENSION_UI_ID_MAX)?;
+        if seen_ids.contains(&id) {
+            return None;
+        }
+        let text = bounded_field(question.get("question"), EXTENSION_UI_TITLE_MAX)?;
+        let options = question.get("options")?.as_array()?;
+        if options.is_empty() || options.len() > EXTENSION_UI_OPTIONS_MAX {
+            return None;
+        }
+        let mut labels: Vec<String> = Vec::with_capacity(options.len());
+        let mut normalized_options = Vec::with_capacity(options.len());
+        for option in options {
+            let label = bounded_field(option.get("label"), EXTENSION_UI_OPTION_LABEL_MAX)?;
+            if labels.contains(&label) {
+                return None;
+            }
+            labels.push(label.clone());
+            let mut frame = json!({ "label": label });
+            if let Some(description) = bounded_field(
+                option.get("description"),
+                EXTENSION_UI_OPTION_DESCRIPTION_MAX,
+            ) {
+                frame["description"] = Value::String(description);
+            }
+            if let Some(preview) =
+                bounded_field(option.get("preview"), EXTENSION_UI_OPTION_PREVIEW_MAX)
+            {
+                frame["preview"] = Value::String(preview);
+            }
+            normalized_options.push(frame);
+        }
+        let mut frame = json!({ "id": id, "question": text, "options": normalized_options });
+        if let Some(header) = bounded_field(question.get("header"), EXTENSION_UI_HEADER_MAX) {
+            frame["header"] = Value::String(header);
+        }
+        match question.get("multi") {
+            None | Some(Value::Bool(false)) => {}
+            Some(Value::Bool(true)) => frame["multi"] = Value::Bool(true),
+            Some(_) => return None,
+        }
+        if let Some(recommended) = question.get("recommended") {
+            let index = recommended
+                .as_u64()
+                .filter(|index| (*index as usize) < labels.len())?;
+            frame["recommended"] = json!(index);
+        }
+        seen_ids.push(id);
+        normalized.push(frame);
+    }
+    Some(normalized)
+}
+
 fn normalize_event(event: &Value) -> Option<Value> {
     let kind = event.get("type").and_then(Value::as_str)?;
     match kind {
@@ -592,6 +697,71 @@ fn normalize_event(event: &Value) -> Option<Value> {
                 if !error.is_empty() {
                     frame["error"] = Value::String(truncate_chars(error, DICTATION_ERROR_MAX));
                 }
+            }
+            Some(frame)
+        }
+        "extension_ui_request" => {
+            let id = bounded_field(event.get("id"), EXTENSION_UI_ID_MAX)?;
+            let method = bounded_field(event.get("method"), EXTENSION_UI_METHOD_MAX)?;
+            if method == "cancel" {
+                // The harness settled the dialog itself: name the request to
+                // close, never answer it.
+                let target = bounded_field(event.get("targetId"), EXTENSION_UI_ID_MAX)?;
+                return Some(json!({
+                    "type": "extension_ui_request",
+                    "id": id,
+                    "method": "cancel",
+                    "targetId": target,
+                }));
+            }
+            let mut frame = json!({
+                "type": "extension_ui_request",
+                "id": id,
+                "method": method,
+            });
+            for (key, max) in [
+                ("title", EXTENSION_UI_TITLE_MAX),
+                ("message", EXTENSION_UI_MESSAGE_MAX),
+                ("placeholder", EXTENSION_UI_OPTION_LABEL_MAX),
+                ("prefill", EXTENSION_UI_OPTION_PREVIEW_MAX),
+            ] {
+                if let Some(text) = bounded_field(event.get(key), max) {
+                    frame[key] = Value::String(text);
+                }
+            }
+            // Keep the harness's own numeric form: an integer millisecond
+            // deadline stays an integer instead of drifting to a float.
+            if let Some(timeout) = event.get("timeout")
+                && timeout
+                    .as_f64()
+                    .is_some_and(|value| value > 0.0 && value <= EXTENSION_UI_TIMEOUT_MAX_MS)
+            {
+                frame["timeout"] = timeout.clone();
+            }
+            match method.as_str() {
+                "ask" => {
+                    // A malformed ask still reaches the app with no questions,
+                    // so it is answered `cancelled` instead of left hanging.
+                    frame["questions"] =
+                        json!(normalize_ask_questions(event.get("questions")).unwrap_or_default());
+                }
+                "select" => {
+                    let options: Vec<String> = event
+                        .get("options")
+                        .and_then(Value::as_array)
+                        .map(|options| {
+                            options
+                                .iter()
+                                .take(EXTENSION_UI_OPTIONS_MAX)
+                                .filter_map(|option| {
+                                    bounded_field(Some(option), EXTENSION_UI_OPTION_LABEL_MAX)
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    frame["options"] = json!(options);
+                }
+                _ => {}
             }
             Some(frame)
         }
@@ -739,5 +909,149 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn normalizes_ask_requests_and_keeps_unanswerable_frames_out() {
+        let ask = json!({
+            "type": "extension_ui_request",
+            "id": "ask-1",
+            "method": "ask",
+            "timeout": 120_000,
+            "questions": [
+                {
+                    "id": "q1",
+                    "question": "Which channel?",
+                    "header": "Release",
+                    "options": [
+                        { "label": "Stable", "description": "Ship the current build" },
+                        { "label": "Beta", "preview": "beta notes" },
+                    ],
+                    "recommended": 0,
+                },
+                {
+                    "id": "q2",
+                    "question": "What should OMP optimize for?",
+                    "options": [{ "label": "Speed" }, { "label": "Safety" }],
+                    "multi": true,
+                },
+            ],
+        });
+        let normalized = normalize_event(&ask).expect("valid ask request");
+        assert_eq!(normalized["type"], "extension_ui_request");
+        assert_eq!(normalized["method"], "ask");
+        assert_eq!(normalized["id"], "ask-1");
+        assert_eq!(normalized["timeout"], 120_000);
+        assert_eq!(normalized["questions"][0]["header"], "Release");
+        assert_eq!(normalized["questions"][0]["recommended"], 0);
+        assert_eq!(
+            normalized["questions"][0]["options"][0]["description"],
+            "Ship the current build"
+        );
+        assert_eq!(
+            normalized["questions"][0]["options"][1]["preview"],
+            "beta notes"
+        );
+        assert_eq!(normalized["questions"][1]["multi"], true);
+        assert!(normalized["questions"][1].get("header").is_none());
+        assert!(normalized["questions"][1].get("recommended").is_none());
+
+        // A select keeps its bounded labels; unknown methods stay minimal so
+        // the app can answer them cancelled.
+        let select = normalize_event(&json!({
+            "type": "extension_ui_request",
+            "id": "select-1",
+            "method": "select",
+            "title": "Allow tool: bash",
+            "options": ["Approve", "Deny"],
+        }))
+        .expect("valid select request");
+        assert_eq!(select["options"], json!(["Approve", "Deny"]));
+        assert_eq!(select["title"], "Allow tool: bash");
+        let unknown = normalize_event(&json!({
+            "type": "extension_ui_request",
+            "id": "notify-1",
+            "method": "notify",
+            "message": "Preset list loaded",
+        }))
+        .expect("unknown methods are forwarded");
+        assert_eq!(unknown["method"], "notify");
+        assert_eq!(unknown["message"], "Preset list loaded");
+        assert!(unknown.get("questions").is_none());
+
+        // A harness-side cancel names the request to close and is never
+        // answered; without a target it cannot be routed.
+        assert_eq!(
+            normalize_event(&json!({
+                "type": "extension_ui_request",
+                "id": "cancel-1",
+                "method": "cancel",
+                "targetId": "ask-1",
+            })),
+            Some(json!({
+                "type": "extension_ui_request",
+                "id": "cancel-1",
+                "method": "cancel",
+                "targetId": "ask-1",
+            }))
+        );
+        assert!(
+            normalize_event(&json!({
+                "type": "extension_ui_request",
+                "id": "cancel-1",
+                "method": "cancel",
+            }))
+            .is_none()
+        );
+
+        // Unanswerable frames are dropped: no id, blank id, oversized id, no
+        // method, non-string method.
+        for malformed in [
+            json!({ "type": "extension_ui_request", "method": "ask" }),
+            json!({ "type": "extension_ui_request", "id": "", "method": "ask" }),
+            json!({ "type": "extension_ui_request", "id": "x".repeat(EXTENSION_UI_ID_MAX + 1), "method": "ask" }),
+            json!({ "type": "extension_ui_request", "id": "ask-1" }),
+            json!({ "type": "extension_ui_request", "id": "ask-1", "method": 7 }),
+        ] {
+            assert!(normalize_event(&malformed).is_none(), "{malformed}");
+        }
+
+        // A malformed ask body still reaches the app, with no questions, so it
+        // is answered cancelled instead of hanging the harness.
+        for malformed in [
+            json!({ "type": "extension_ui_request", "id": "ask-2", "method": "ask" }),
+            json!({ "type": "extension_ui_request", "id": "ask-2", "method": "ask", "questions": [] }),
+            json!({
+                "type": "extension_ui_request",
+                "id": "ask-2",
+                "method": "ask",
+                "questions": [{ "id": "q1", "question": "Pick", "options": [] }],
+            }),
+            json!({
+                "type": "extension_ui_request",
+                "id": "ask-2",
+                "method": "ask",
+                "questions": [{ "id": "q1", "question": "Pick", "options": [{ "label": "A" }], "recommended": 3 }],
+            }),
+            json!({
+                "type": "extension_ui_request",
+                "id": "ask-2",
+                "method": "ask",
+                "questions": [
+                    { "id": "q1", "question": "Pick", "options": [{ "label": "A" }] },
+                    { "id": "q1", "question": "Again", "options": [{ "label": "B" }] },
+                ],
+            }),
+            json!({
+                "type": "extension_ui_request",
+                "id": "ask-2",
+                "method": "ask",
+                "questions": [{ "id": "q1", "question": "Pick", "options": [{ "label": "A" }], "multi": "yes" }],
+            }),
+        ] {
+            let normalized = normalize_event(&malformed).expect("malformed ask is forwarded");
+            assert_eq!(normalized["method"], "ask");
+            assert_eq!(normalized["questions"], json!([]), "{malformed}");
+        }
     }
 }

@@ -253,6 +253,28 @@ impl RpcClient {
         }
     }
 
+    /// Writes one command without correlating a response.
+    ///
+    /// Some commands (`extension_ui_response`) are answered by the harness
+    /// through events only and carry the dialog id in their own `id` field, so
+    /// [`Self::request`]'s counter would both break the payload and wait for an
+    /// envelope that never arrives.
+    pub fn send(&self, command: Value) -> Result<()> {
+        if self.shared.closed.load(Ordering::SeqCst) {
+            return Err(RpcError::Closed(
+                "The OMP runtime is not running".to_string(),
+            ));
+        }
+        let line = format!(
+            "{}\n",
+            serde_json::to_string(&command)
+                .map_err(|error| RpcError::Protocol(error.to_string()))?
+        );
+        self.writer
+            .try_send(line)
+            .map_err(|_| RpcError::Timeout("The OMP runtime is not accepting commands".to_string()))
+    }
+
     pub fn inject_event(&self, event: Value) {
         self.shared.push_event(event);
     }
@@ -373,4 +395,57 @@ fn reassemble(shared: &Shared, frame: &Value) -> Option<Value> {
         payload.extend_from_slice(&part);
     }
     serde_json::from_slice(&payload).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// A child that exits at once: the client under test owns a writer channel
+    /// built by the test, so the process is only there for `Drop` to reap.
+    fn idle_child() -> Child {
+        #[cfg(windows)]
+        let child = Command::new("cmd").args(["/C", "exit"]).spawn();
+        #[cfg(not(windows))]
+        let child = Command::new("sh").args(["-c", "exit 0"]).spawn();
+        child.expect("no-op child")
+    }
+
+    /// `send` is fire-and-forget: the command's own `id` reaches the wire
+    /// untouched and nothing is registered to wait for a response envelope.
+    #[test]
+    fn send_keeps_the_payload_id_and_awaits_no_response() {
+        let (writer, receiver) = mpsc::sync_channel::<String>(4);
+        let client = RpcClient {
+            child: Mutex::new(idle_child()),
+            writer,
+            shared: Arc::new(Shared {
+                pending: Mutex::new(HashMap::new()),
+                events: Mutex::new(Vec::new()),
+                chunks: Mutex::new(HashMap::new()),
+                closed: AtomicBool::new(false),
+                stderr: Mutex::new(String::new()),
+            }),
+            next_id: AtomicU64::new(1),
+        };
+        let command = json!({
+            "type": "extension_ui_response",
+            "id": "ask-1",
+            "answers": [{ "id": "q1", "selectedOptions": ["Stable"] }],
+        });
+        client.send(command.clone()).expect("queued");
+
+        let line = receiver
+            .recv_timeout(Duration::from_millis(500))
+            .expect("line written");
+        assert!(line.ends_with('\n'));
+        let sent: Value = serde_json::from_str(line.trim_end()).expect("json line");
+        assert_eq!(sent, command);
+        // The RPC counter never touched the payload, and no correlation entry
+        // was made: the harness answers these commands with events only.
+        assert_eq!(client.next_id.load(Ordering::SeqCst), 1);
+        assert!(client.shared.pending.lock().expect("pending").is_empty());
+        assert!(receiver.try_recv().is_err());
+    }
 }

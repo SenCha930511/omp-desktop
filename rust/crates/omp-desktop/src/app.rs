@@ -70,6 +70,9 @@ enum RightPane {
     Files,
     Browser,
     SideQuestion,
+    // The harness's `ask` dialog: opened by an `extension_ui_request`, never
+    // by a launcher row, and it owns no transcript entries.
+    Ask,
     LiveVoice,
     Subagents,
     Activity,
@@ -85,6 +88,7 @@ impl RightPane {
             RightPane::Files => "files",
             RightPane::Browser => "browser",
             RightPane::SideQuestion => "side-question",
+            RightPane::Ask => "ask",
             RightPane::Subagents => "subagents",
             RightPane::LiveVoice => "live-voice",
             RightPane::Activity => "activity",
@@ -99,6 +103,7 @@ impl RightPane {
             "files" => RightPane::Files,
             "browser" => RightPane::Browser,
             "side-question" => RightPane::SideQuestion,
+            "ask" => RightPane::Ask,
             "subagents" => RightPane::Subagents,
             "live-voice" => RightPane::LiveVoice,
             "activity" => RightPane::Activity,
@@ -185,6 +190,12 @@ pub struct Workspace {
     // The terminal text waits here until `render` has a window to insert it.
     dictation_pending_text: Option<String>,
     dictation_counter: u64,
+    // The `ask` dialog is RPC-driven like live voice: the harness pushes an
+    // `extension_ui_request` and the pane answers it with one
+    // `extension_ui_response`. Only one dialog is live at a time, and its free
+    // text lives in per-question inputs created while the pane draws.
+    ask_dialog: Option<AskDialog>,
+    ask_inputs: HashMap<String, Entity<InputState>>,
     browser: BrowserPane,
     // Each tab owns its own shell; `active_terminal` indexes the one the panel
     // draws and sends input to, and stays in range while any tab is open.
@@ -357,6 +368,8 @@ impl Workspace {
             dictation_active: false,
             dictation_pending_text: None,
             dictation_counter: 0,
+            ask_dialog: None,
+            ask_inputs: HashMap::new(),
             browser,
             terminals: Vec::new(),
             active_terminal: 0,
@@ -551,6 +564,31 @@ impl Workspace {
                 "muted": self.live_muted,
                 "error": self.live_error,
             },
+            // The live `ask` dialog, if one is waiting. Questions carry only
+            // what the pane draws; the selection map is the pane's own state.
+            "askDialog": self.ask_dialog.as_ref().map(|dialog| json!({
+                "id": dialog.request_id,
+                "runtimeId": dialog.runtime_id,
+                "title": dialog.title,
+                "error": dialog.error,
+                "questions": dialog
+                    .questions
+                    .iter()
+                    .map(|question| json!({
+                        "id": question.id,
+                        "question": question.question,
+                        "header": question.header,
+                        "multi": question.multi,
+                        "recommended": question.recommended,
+                        "options": question
+                            .options
+                            .iter()
+                            .map(|option| option.label.clone())
+                            .collect::<Vec<String>>(),
+                    }))
+                    .collect::<Vec<Value>>(),
+                "selected": dialog.selected,
+            })),
             "terminal": {
                 "open": self.terminal_open,
                 "session": !self.terminals.is_empty(),
@@ -1785,6 +1823,15 @@ impl Workspace {
                     // Dictation never touches the transcript: the composer owns these frames.
                     self.apply_dictation_event(event);
                 }
+                Some("extension_ui_request") => {
+                    // Dialogs never touch the transcript: the Ask pane answers
+                    // them, and every unsupported method is dismissed here.
+                    let runtime_id = envelope
+                        .get("runtimeId")
+                        .and_then(Value::as_str)
+                        .unwrap_or(&runtime_id);
+                    self.apply_extension_ui_request(runtime_id, event);
+                }
                 _ => {}
             }
         }
@@ -1811,6 +1858,16 @@ impl Workspace {
                         .to_string();
                     self.stop_side_runtime();
                     self.side_error = Some(message);
+                }
+                Some("extension_ui_request") => {
+                    // The side runtime opts into dialogs too, but this pane can
+                    // only show one dialog: dismiss its requests so the harness
+                    // never waits on a question nobody can see.
+                    if let Some(id) = event.get("id").and_then(Value::as_str)
+                        && event.get("method").and_then(Value::as_str) != Some("cancel")
+                    {
+                        let _ = self.agents.respond(&runtime_id, &ask_cancel_payload(id));
+                    }
                 }
                 _ => {}
             }
@@ -2085,6 +2142,214 @@ impl Workspace {
             "recording" => "Stop",
             "transcribing" => "Transcribing…",
             _ => "Dictate",
+        }
+    }
+
+    /// Opens the pane for one normalized `extension_ui_request`.
+    ///
+    /// An `ask` request with renderable questions opens the Ask pane; every
+    /// other dialog method (and an ask that cannot be rendered) is answered
+    /// `cancelled` so the harness is never left waiting. A harness-side
+    /// `cancel` frame closes the matching dialog without a response. Nothing
+    /// here touches the transcript.
+    fn apply_extension_ui_request(&mut self, runtime_id: &str, event: &Value) -> bool {
+        if event.get("type").and_then(Value::as_str) != Some("extension_ui_request") {
+            return false;
+        }
+        let Some(request_id) = event.get("id").and_then(Value::as_str) else {
+            return false;
+        };
+        let Some(method) = event.get("method").and_then(Value::as_str) else {
+            return false;
+        };
+        if method == "cancel" {
+            let Some(target) = event.get("targetId").and_then(Value::as_str) else {
+                return false;
+            };
+            if self
+                .ask_dialog
+                .as_ref()
+                .is_some_and(|dialog| dialog.request_id == target)
+            {
+                self.close_ask_dialog();
+            }
+            return true;
+        }
+        let questions = if method == "ask" {
+            parse_ask_questions(event)
+        } else {
+            None
+        };
+        let Some(questions) = questions else {
+            // Unsupported methods and unusable asks are dismissed, never shown.
+            let _ = self
+                .agents
+                .respond(runtime_id, &ask_cancel_payload(request_id));
+            return true;
+        };
+        // One dialog at a time: dismissing the previous request keeps the
+        // harness from waiting on a pane the user can no longer see.
+        if let Some(previous) = self.ask_dialog.take()
+            && previous.request_id != request_id
+        {
+            let previous_runtime = previous.runtime_id.as_deref().unwrap_or(runtime_id);
+            let _ = self
+                .agents
+                .respond(previous_runtime, &ask_cancel_payload(&previous.request_id));
+        }
+        self.ask_inputs.clear();
+        self.ask_dialog = Some(AskDialog {
+            request_id: request_id.to_string(),
+            runtime_id: Some(runtime_id.to_string()),
+            title: ask_title(event, &questions),
+            questions,
+            selected: HashMap::new(),
+            error: None,
+        });
+        self.right_pane = RightPane::Ask;
+        self.geometry.right_pane_open = true;
+        if let Some(bounds) = self.last_bounds {
+            self.layout = self.geometry.resolve(bounds.2 as f64);
+        }
+        self.resize_terminal();
+        true
+    }
+
+    /// Forgets the live dialog and its inputs, returning to the launcher.
+    fn close_ask_dialog(&mut self) {
+        self.ask_dialog = None;
+        self.ask_inputs.clear();
+        if self.right_pane == RightPane::Ask {
+            self.right_pane = RightPane::Launcher;
+        }
+    }
+
+    /// Toggles one option of the live dialog.
+    ///
+    /// Multi-select questions toggle independently; single-select ones keep at
+    /// most one label and clear the question's free-text field, because an
+    /// answer is exactly one of the two.
+    fn toggle_ask_option(
+        &mut self,
+        question_id: &str,
+        label: &str,
+        multi: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(dialog) = self.ask_dialog.as_mut() else {
+            return;
+        };
+        let selected = dialog.selected.entry(question_id.to_string()).or_default();
+        let mut clear_custom = false;
+        if multi {
+            match selected.iter().position(|item| item == label) {
+                Some(index) => {
+                    selected.remove(index);
+                }
+                None => selected.push(label.to_string()),
+            }
+        } else if selected.len() == 1 && selected[0] == label {
+            selected.clear();
+        } else {
+            *selected = vec![label.to_string()];
+            clear_custom = true;
+        }
+        if clear_custom && let Some(input) = self.ask_inputs.get(question_id) {
+            input.update(cx, |state, cx| state.set_value("", window, cx));
+        }
+        cx.notify();
+    }
+
+    /// Reads the free-text field of every question, keyed by question id.
+    fn ask_custom_values(&self, dialog: &AskDialog, cx: &Context<Self>) -> HashMap<String, String> {
+        dialog
+            .questions
+            .iter()
+            .filter_map(|question| {
+                self.ask_inputs
+                    .get(&question.id)
+                    .map(|input| (question.id.clone(), input.read(cx).value().to_string()))
+            })
+            .collect()
+    }
+
+    /// Sends the dialog's answers and settles the pane.
+    fn submit_ask(&mut self, cx: &mut Context<Self>) {
+        let Some(dialog) = self.ask_dialog.clone() else {
+            return;
+        };
+        let custom = self.ask_custom_values(&dialog, cx);
+        if !ask_answers_ready(&dialog.questions, &dialog.selected, &custom) {
+            if let Some(open) = self.ask_dialog.as_mut() {
+                open.error = Some("Answer every question before submitting.".to_string());
+            }
+            cx.notify();
+            return;
+        }
+        let payload = ask_submit_payload(&dialog, &custom);
+        self.send_ask_response(&dialog, payload, cx);
+    }
+
+    /// Dismisses the dialog without answers.
+    fn cancel_ask(&mut self, cx: &mut Context<Self>) {
+        let Some(dialog) = self.ask_dialog.clone() else {
+            return;
+        };
+        self.send_ask_response(&dialog, ask_cancel_payload(&dialog.request_id), cx);
+    }
+
+    /// Writes one `extension_ui_response` and settles the pane.
+    ///
+    /// The response is fire-and-forget: the harness answers it with events, so
+    /// a closed pane is the whole acknowledgement.
+    fn send_ask_response(&mut self, dialog: &AskDialog, payload: Value, cx: &mut Context<Self>) {
+        let runtime_id = dialog
+            .runtime_id
+            .clone()
+            .or_else(|| self.runtime_id.clone());
+        let Some(runtime_id) = runtime_id else {
+            if let Some(open) = self.ask_dialog.as_mut() {
+                open.error = Some("No OMP runtime is selected.".to_string());
+            }
+            cx.notify();
+            return;
+        };
+        match self.agents.respond(&runtime_id, &payload) {
+            Ok(()) => self.close_ask_dialog(),
+            Err(error) => {
+                if let Some(open) = self.ask_dialog.as_mut() {
+                    open.error = Some(error.message);
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    /// Creates one free-text input per question of the live dialog.
+    ///
+    /// The entities need a window, so they are built while the pane draws and
+    /// kept until the dialog settles.
+    fn ensure_ask_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let ids: Vec<String> = match self.ask_dialog.as_ref() {
+            Some(dialog) => dialog
+                .questions
+                .iter()
+                .map(|question| question.id.clone())
+                .collect(),
+            None => {
+                self.ask_inputs.clear();
+                return;
+            }
+        };
+        self.ask_inputs.retain(|id, _| ids.contains(id));
+        for id in ids {
+            if self.ask_inputs.contains_key(&id) {
+                continue;
+            }
+            let input =
+                cx.new(|cx| InputState::new(window, cx).placeholder("Type your own answer…"));
+            self.ask_inputs.insert(id, input);
         }
     }
 
@@ -3574,6 +3839,7 @@ impl Workspace {
             RightPane::Files => Some(self.files_content(cx).into_any_element()),
             RightPane::Subagents => Some(self.subagents_content(cx).into_any_element()),
             RightPane::SideQuestion => Some(self.side_question_content(cx).into_any_element()),
+            RightPane::Ask => Some(self.ask_content(cx).into_any_element()),
             RightPane::LiveVoice => Some(self.live_voice_content(cx).into_any_element()),
             RightPane::Activity => Some(self.activity_content(cx).into_any_element()),
         };
@@ -3584,6 +3850,7 @@ impl Workspace {
             RightPane::Files => "Files",
             RightPane::Browser => "Browser",
             RightPane::SideQuestion => "Side Question",
+            RightPane::Ask => "Ask",
             RightPane::Subagents => "Subagents",
             RightPane::LiveVoice => "Live Voice",
             RightPane::Activity => "Activity",
@@ -3638,8 +3905,15 @@ impl Workspace {
                                 .hover(|style| style.bg(colors.accent))
                                 .child("‹ Back")
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    this.right_pane = RightPane::Launcher;
-                                    cx.notify();
+                                    if this.right_pane == RightPane::Ask {
+                                        // Backing out of a live dialog dismisses
+                                        // it: the harness must not wait on a
+                                        // question that is no longer shown.
+                                        this.cancel_ask(cx);
+                                    } else {
+                                        this.right_pane = RightPane::Launcher;
+                                        cx.notify();
+                                    }
                                 })),
                         )
                         .child(title),
@@ -4250,6 +4524,199 @@ impl Workspace {
                             })),
                     )
             }))
+    }
+
+    /// Ask pane: one card per question with its header, options (radio for
+    /// single select, checkbox for multi), the recommended marker and a
+    /// free-text field, plus the two ways to settle the dialog.
+    ///
+    /// The inputs themselves are created in `render`; a question whose input is
+    /// not built yet simply draws without one for a frame.
+    fn ask_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = cx.theme().colors;
+        let Some(dialog) = self.ask_dialog.as_ref() else {
+            return div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .gap_2()
+                .p_2()
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(colors.muted_foreground)
+                        .child("No ask request is waiting."),
+                )
+                .into_any_element();
+        };
+        let mut cards = div()
+            .id("ask-questions")
+            .flex()
+            .flex_col()
+            .flex_1()
+            .gap_2()
+            .overflow_y_scroll();
+        for question in &dialog.questions {
+            let selected = dialog
+                .selected
+                .get(&question.id)
+                .cloned()
+                .unwrap_or_default();
+            let mut options = div().flex().flex_col().gap_1();
+            for (index, option) in question.options.iter().enumerate() {
+                let is_selected = selected.iter().any(|label| label == &option.label);
+                let marker = match (question.multi, is_selected) {
+                    (true, true) => "☑",
+                    (true, false) => "☐",
+                    (false, true) => "●",
+                    (false, false) => "○",
+                };
+                let question_id = question.id.clone();
+                let label = option.label.clone();
+                let multi = question.multi;
+                let mut row = div()
+                    .id(SharedString::from(format!(
+                        "ask-option-{}-{index}",
+                        question.id
+                    )))
+                    .aria_label(option.label.clone())
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_2()
+                    .py_1()
+                    .rounded(px(6.0))
+                    .hover(|style| style.bg(colors.accent))
+                    .when(is_selected, |element| element.bg(colors.accent))
+                    .child(div().text_sm().text_color(colors.foreground).child(marker))
+                    .child(
+                        div().flex().flex_col().flex_1().child(
+                            div()
+                                .text_sm()
+                                .text_color(colors.foreground)
+                                .child(option.label.clone()),
+                        ),
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.toggle_ask_option(&question_id, &label, multi, window, cx);
+                    }));
+                if question.recommended == Some(index) {
+                    row = row.child(
+                        div()
+                            .px_2()
+                            .rounded(px(999.0))
+                            .bg(colors.accent)
+                            .text_xs()
+                            .text_color(colors.accent_foreground)
+                            .child("Recommended"),
+                    );
+                }
+                if let Some(description) = &option.description {
+                    row = row.child(
+                        div()
+                            .text_xs()
+                            .text_color(colors.muted_foreground)
+                            .child(description.clone()),
+                    );
+                }
+                options = options.child(row);
+            }
+            let mut card = div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .p_2()
+                .rounded(px(8.0))
+                .border_1()
+                .border_color(colors.border)
+                .bg(colors.background);
+            if let Some(header) = &question.header {
+                card = card.child(
+                    div()
+                        .text_xs()
+                        .text_color(colors.muted_foreground)
+                        .child(header.clone()),
+                );
+            }
+            card = card.child(
+                div()
+                    .text_sm()
+                    .text_color(colors.foreground)
+                    .child(question.question.clone()),
+            );
+            card = card.child(options);
+            if let Some(input) = self.ask_inputs.get(&question.id) {
+                card = card.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(colors.muted_foreground)
+                                .child("Your own answer"),
+                        )
+                        .child(Input::new(input)),
+                );
+            }
+            cards = cards.child(card);
+        }
+        let mut footer = div().flex().items_center().gap_2();
+        if let Some(error) = &dialog.error {
+            footer = footer.child(
+                div()
+                    .flex_1()
+                    .text_xs()
+                    .text_color(colors.danger)
+                    .child(error.clone()),
+            );
+        } else {
+            footer = footer.child(div().flex_1());
+        }
+        footer = footer
+            .child(
+                div()
+                    .id("ask-submit")
+                    .aria_label("Submit answers")
+                    .px_3()
+                    .py_1()
+                    .rounded(px(6.0))
+                    .bg(colors.primary)
+                    .text_color(colors.primary_foreground)
+                    .text_sm()
+                    .child("Submit")
+                    .on_click(cx.listener(|this, _, _, cx| this.submit_ask(cx))),
+            )
+            .child(
+                div()
+                    .id("ask-cancel")
+                    .aria_label("Cancel ask")
+                    .px_3()
+                    .py_1()
+                    .rounded(px(6.0))
+                    .border_1()
+                    .border_color(colors.border)
+                    .text_sm()
+                    .text_color(colors.foreground)
+                    .child("Cancel")
+                    .on_click(cx.listener(|this, _, _, cx| this.cancel_ask(cx))),
+            );
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .gap_2()
+            .p_2()
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(colors.foreground)
+                    .child(dialog.title.clone()),
+            )
+            .child(cards)
+            .child(footer)
+            .into_any_element()
     }
 
     fn side_question_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -4951,6 +5418,11 @@ impl Render for Workspace {
                 cx.notify();
             });
         }
+        // The Ask pane's free-text fields are entities, and only a window can
+        // build one, so they are created here before the pane draws.
+        if self.right_pane == RightPane::Ask {
+            self.ensure_ask_inputs(window, cx);
+        }
         self.track_bounds(window, cx);
         let colors = cx.theme().colors;
         let show_sidebar = self.layout.sidebar_docked;
@@ -5256,6 +5728,191 @@ fn append_dictation_text(draft: &str, text: &str) -> String {
     }
 }
 
+/// One option of an `ask` question, as the pane renders it.
+#[derive(Debug, Clone, PartialEq)]
+struct AskOption {
+    label: String,
+    description: Option<String>,
+    preview: Option<String>,
+}
+
+/// One question of a grouped `ask` request.
+#[derive(Debug, Clone, PartialEq)]
+struct AskQuestion {
+    id: String,
+    question: String,
+    header: Option<String>,
+    options: Vec<AskOption>,
+    multi: bool,
+    recommended: Option<usize>,
+}
+
+/// The live `ask` dialog plus what the user has picked so far.
+#[derive(Debug, Clone, Default)]
+struct AskDialog {
+    request_id: String,
+    runtime_id: Option<String>,
+    title: String,
+    questions: Vec<AskQuestion>,
+    selected: HashMap<String, Vec<String>>,
+    error: Option<String>,
+}
+
+/// Reads the `ask` questions out of a normalized request frame.
+///
+/// `None` when the frame cannot be rendered faithfully (no questions, a
+/// duplicate id, an empty option list); those requests are answered
+/// `cancelled` instead of guessing at answers the harness would reject.
+fn parse_ask_questions(event: &Value) -> Option<Vec<AskQuestion>> {
+    let questions = event.get("questions")?.as_array()?;
+    if questions.is_empty() {
+        return None;
+    }
+    let mut seen: Vec<&str> = Vec::with_capacity(questions.len());
+    let mut parsed = Vec::with_capacity(questions.len());
+    for question in questions {
+        let id = question
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())?;
+        if seen.contains(&id) {
+            return None;
+        }
+        seen.push(id);
+        let text = question
+            .get("question")
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty())?;
+        let options = question.get("options")?.as_array()?;
+        if options.is_empty() {
+            return None;
+        }
+        let mut parsed_options = Vec::with_capacity(options.len());
+        for option in options {
+            let label = option
+                .get("label")
+                .and_then(Value::as_str)
+                .filter(|label| !label.is_empty())?;
+            parsed_options.push(AskOption {
+                label: label.to_string(),
+                description: option
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                preview: option
+                    .get("preview")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            });
+        }
+        let recommended = question
+            .get("recommended")
+            .and_then(Value::as_u64)
+            .map(|index| index as usize)
+            .filter(|index| *index < parsed_options.len());
+        parsed.push(AskQuestion {
+            id: id.to_string(),
+            question: text.to_string(),
+            header: question
+                .get("header")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            options: parsed_options,
+            multi: question.get("multi").and_then(Value::as_bool) == Some(true),
+            recommended,
+        });
+    }
+    Some(parsed)
+}
+
+/// The pane's title: the request's own title, else the first question's header.
+fn ask_title(event: &Value, questions: &[AskQuestion]) -> String {
+    event
+        .get("title")
+        .and_then(Value::as_str)
+        .filter(|title| !title.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            questions
+                .first()
+                .and_then(|question| question.header.clone())
+        })
+        .or_else(|| questions.first().map(|question| question.question.clone()))
+        .unwrap_or_else(|| "Question from OMP".to_string())
+}
+
+/// Builds the `answers` array of an `ask` response.
+///
+/// One entry per question, in question order, carrying the selected option
+/// labels and any custom text. A single-select question is exactly one of an
+/// option or custom text, so custom text wins over a stale selection; labels
+/// that are unknown or repeated are dropped because the harness rejects them.
+fn ask_answers(
+    questions: &[AskQuestion],
+    selected: &HashMap<String, Vec<String>>,
+    custom: &HashMap<String, String>,
+) -> Vec<Value> {
+    questions
+        .iter()
+        .map(|question| {
+            let custom = custom
+                .get(&question.id)
+                .map(|text| text.trim())
+                .unwrap_or_default();
+            let mut labels: Vec<String> = Vec::new();
+            for label in selected.get(&question.id).into_iter().flatten() {
+                if question.options.iter().any(|option| &option.label == label)
+                    && !labels.contains(label)
+                {
+                    labels.push(label.clone());
+                }
+            }
+            if !question.multi && !custom.is_empty() {
+                labels.clear();
+            }
+            let mut answer = json!({ "id": question.id, "selectedOptions": labels });
+            if !custom.is_empty() {
+                answer["customInput"] = json!(custom);
+            }
+            answer
+        })
+        .collect()
+}
+
+/// Whether every question has an answer the harness accepts.
+///
+/// Multi-select questions may be answered with nothing; single-select ones need
+/// exactly one option or custom text.
+fn ask_answers_ready(
+    questions: &[AskQuestion],
+    selected: &HashMap<String, Vec<String>>,
+    custom: &HashMap<String, String>,
+) -> bool {
+    questions.iter().all(|question| {
+        question.multi
+            || selected
+                .get(&question.id)
+                .is_some_and(|labels| !labels.is_empty())
+            || custom
+                .get(&question.id)
+                .is_some_and(|text| !text.trim().is_empty())
+    })
+}
+
+/// The response that settles a dialog with the current selections.
+fn ask_submit_payload(dialog: &AskDialog, custom: &HashMap<String, String>) -> Value {
+    json!({
+        "type": "extension_ui_response",
+        "id": dialog.request_id,
+        "answers": ask_answers(&dialog.questions, &dialog.selected, custom),
+    })
+}
+
+/// The response that dismisses a dialog without answers.
+fn ask_cancel_payload(request_id: &str) -> Value {
+    json!({ "type": "extension_ui_response", "id": request_id, "cancelled": true })
+}
+
 #[cfg(test)]
 mod tests {
     // Imported explicitly: `use super::*` would also pull in `gpui_kit`'s
@@ -5263,17 +5920,19 @@ mod tests {
     // expand under this crate root's default `recursion_limit`.
     use gpui_kit::AppContext as _;
     use serde_json::json;
+    use std::collections::HashMap;
     use std::path::PathBuf;
 
     use omp_core::geometry::UiGeometry;
     use omp_core::settings::AppSettings;
 
     use super::{
-        AppView, DictationState, LIVE_TRANSCRIPT_LIMIT, LiveVoiceState, RightPane,
-        TERMINAL_MENU_ITEMS, TerminalMenuAction, TerminalTabSpec, TerminalTabSpecs,
-        UpdateCheckState, Workspace, WorkspaceData, append_clipboard_text, append_dictation_text,
-        append_side_answer, apply_dictation_frame, apply_live_voice_event, side_answer_delta,
-        terminal_menu, terminal_menu_action, terminal_tab_bar, updates,
+        AppView, AskDialog, AskOption, AskQuestion, DictationState, LIVE_TRANSCRIPT_LIMIT,
+        LiveVoiceState, RightPane, TERMINAL_MENU_ITEMS, TerminalMenuAction, TerminalTabSpec,
+        TerminalTabSpecs, UpdateCheckState, Workspace, WorkspaceData, append_clipboard_text,
+        append_dictation_text, append_side_answer, apply_dictation_frame, apply_live_voice_event,
+        ask_answers_ready, ask_cancel_payload, ask_submit_payload, parse_ask_questions,
+        side_answer_delta, terminal_menu, terminal_menu_action, terminal_tab_bar, updates,
     };
 
     /// The Settings page must render the update row, and an unconfigured build
@@ -6238,5 +6897,281 @@ mod tests {
         cx.quit();
         assert_eq!(value, "draft hello world");
         assert!(pending.is_none());
+    }
+
+    /// The two questions every ask test builds: a single-select one with a
+    /// header, a description and a recommendation, and a multi-select one.
+    fn ask_questions_fixture() -> Vec<AskQuestion> {
+        vec![
+            AskQuestion {
+                id: "q1".to_string(),
+                question: "Which channel?".to_string(),
+                header: Some("Release".to_string()),
+                options: vec![
+                    AskOption {
+                        label: "Stable".to_string(),
+                        description: Some("Ship the current build".to_string()),
+                        preview: None,
+                    },
+                    AskOption {
+                        label: "Beta".to_string(),
+                        description: None,
+                        preview: Some("beta notes".to_string()),
+                    },
+                ],
+                multi: false,
+                recommended: Some(0),
+            },
+            AskQuestion {
+                id: "q2".to_string(),
+                question: "What should OMP optimize for?".to_string(),
+                header: None,
+                options: vec![
+                    AskOption {
+                        label: "Speed".to_string(),
+                        description: None,
+                        preview: None,
+                    },
+                    AskOption {
+                        label: "Safety".to_string(),
+                        description: None,
+                        preview: None,
+                    },
+                ],
+                multi: true,
+                recommended: None,
+            },
+        ]
+    }
+
+    fn ask_request_frame() -> serde_json::Value {
+        json!({
+            "type": "extension_ui_request",
+            "id": "ask-1",
+            "method": "ask",
+            "questions": [
+                {
+                    "id": "q1",
+                    "question": "Which channel?",
+                    "header": "Release",
+                    "options": [
+                        { "label": "Stable", "description": "Ship the current build" },
+                        { "label": "Beta", "preview": "beta notes" },
+                    ],
+                    "recommended": 0,
+                },
+                {
+                    "id": "q2",
+                    "question": "What should OMP optimize for?",
+                    "options": [{ "label": "Speed" }, { "label": "Safety" }],
+                    "multi": true,
+                },
+            ],
+        })
+    }
+
+    /// Answers are built in question order, carry only labels the harness
+    /// knows, and never mix a single-select option with custom text.
+    #[test]
+    fn ask_answers_are_built_in_question_order() {
+        let questions = ask_questions_fixture();
+        let mut selected: HashMap<String, Vec<String>> = HashMap::new();
+        let mut custom: HashMap<String, String> = HashMap::new();
+
+        // A single-select question needs an option or custom text first.
+        assert!(!ask_answers_ready(&questions, &selected, &custom));
+        selected.insert("q1".to_string(), vec!["Stable".to_string()]);
+        assert!(ask_answers_ready(&questions, &selected, &custom));
+
+        let mut dialog = AskDialog {
+            request_id: "ask-1".to_string(),
+            runtime_id: Some("omp-1".to_string()),
+            title: "Release".to_string(),
+            questions: questions.clone(),
+            selected: selected.clone(),
+            error: None,
+        };
+        assert_eq!(
+            ask_submit_payload(&dialog, &custom),
+            json!({
+                "type": "extension_ui_response",
+                "id": "ask-1",
+                "answers": [
+                    { "id": "q1", "selectedOptions": ["Stable"] },
+                    { "id": "q2", "selectedOptions": [] },
+                ],
+            })
+        );
+
+        // Custom text answers a single-select question on its own and replaces
+        // a stale selection; a multi-select keeps its labels and the text, and
+        // unknown or repeated labels are dropped.
+        custom.insert("q1".to_string(), "  Nightly  ".to_string());
+        custom.insert("q2".to_string(), "Both".to_string());
+        selected.insert(
+            "q2".to_string(),
+            vec![
+                "Speed".to_string(),
+                "Speed".to_string(),
+                "Unknown".to_string(),
+            ],
+        );
+        // The dialog reads its own selection map, so refresh it before asking
+        // for a payload with the multi-select answer added.
+        dialog.selected = selected.clone();
+        assert_eq!(
+            ask_submit_payload(&dialog, &custom),
+            json!({
+                "type": "extension_ui_response",
+                "id": "ask-1",
+                "answers": [
+                    { "id": "q1", "selectedOptions": [], "customInput": "Nightly" },
+                    { "id": "q2", "selectedOptions": ["Speed"], "customInput": "Both" },
+                ],
+            })
+        );
+        assert_eq!(
+            ask_cancel_payload("ask-1"),
+            json!({ "type": "extension_ui_response", "id": "ask-1", "cancelled": true })
+        );
+
+        // The parser keeps exactly what the pane draws, and refuses frames it
+        // could not answer faithfully.
+        assert_eq!(
+            parse_ask_questions(&ask_request_frame()).expect("renderable ask"),
+            questions
+        );
+        assert!(parse_ask_questions(&json!({ "questions": [] })).is_none());
+        assert!(
+            parse_ask_questions(&json!({
+                "questions": [
+                    { "id": "q", "question": "One", "options": [{ "label": "A" }] },
+                    { "id": "q", "question": "Two", "options": [{ "label": "B" }] },
+                ],
+            }))
+            .is_none()
+        );
+    }
+
+    /// A grouped ask request opens the pane and draws every question; an
+    /// unsupported method is dismissed without touching the pane, and a
+    /// harness-side cancel closes the dialog. None of it reaches the
+    /// transcript, and no agent runtime is involved.
+    #[test]
+    fn ask_pane_renders_a_seeded_request_without_the_transcript() {
+        let mut cx = gpui_kit::TestAppContext::single();
+        cx.update(gpui_kit::init);
+        let root = tempfile::TempDir::new().expect("test root").keep();
+        let handle = cx.add_window(|window, cx| {
+            Workspace::new(
+                window,
+                cx,
+                WorkspaceData {
+                    geometry: UiGeometry::default(),
+                    geometry_path: root.join("ui-geometry.json"),
+                    home_dir: root.clone(),
+                    user_data_dir: root.clone(),
+                    omp_executable: PathBuf::from("omp"),
+                    settings: AppSettings::default(),
+                    projects: Vec::new(),
+                    sessions: Vec::new(),
+                },
+            )
+        });
+        handle
+            .update(&mut cx, |workspace, _, cx| {
+                workspace.layout = workspace.geometry.resolve(1600.0);
+                assert!(workspace.apply_extension_ui_request("omp-1", &ask_request_frame()));
+                // The drain loop notifies after applying a frame; the test
+                // stands in for it so the pane is rebuilt on the next draw.
+                cx.notify();
+                assert_eq!(workspace.right_pane, RightPane::Ask);
+                assert_eq!(workspace.transcript.len(), 0);
+                let dialog = workspace.ask_dialog.as_ref().expect("ask dialog");
+                assert_eq!(dialog.request_id, "ask-1");
+                assert_eq!(dialog.runtime_id.as_deref(), Some("omp-1"));
+                // Upstream sends no title for `ask`: the first header stands in.
+                assert_eq!(dialog.title, "Release");
+                assert_eq!(dialog.questions, ask_questions_fixture());
+            })
+            .expect("workspace window");
+
+        // Two frames: the first builds the per-question inputs, the second
+        // draws the pane with them.
+        for _ in 0..2 {
+            cx.update(|cx| {
+                cx.update_window(handle.into(), |_, window, cx| {
+                    window.draw(cx).clear(cx);
+                })
+                .expect("draw ask frame");
+            });
+        }
+
+        handle
+            .update(&mut cx, |workspace, window, cx| {
+                assert_eq!(workspace.ask_inputs.len(), 2);
+                assert_eq!(workspace.transcript.len(), 0);
+                // Picking an option is pane state only; picking it again clears it.
+                workspace.toggle_ask_option("q1", "Stable", false, window, cx);
+                let dialog = workspace.ask_dialog.as_ref().expect("ask dialog");
+                assert_eq!(
+                    dialog.selected.get("q1").map(Vec::as_slice),
+                    Some(["Stable".to_string()].as_slice())
+                );
+                workspace.toggle_ask_option("q1", "Stable", false, window, cx);
+                let dialog = workspace.ask_dialog.as_ref().expect("ask dialog");
+                assert!(dialog.selected.get("q1").is_none_or(Vec::is_empty));
+
+                // An unsupported method is answered cancelled (no runtime here,
+                // so the write fails silently) and never replaces the pane.
+                assert!(workspace.apply_extension_ui_request(
+                    "omp-1",
+                    &json!({
+                        "type": "extension_ui_request",
+                        "id": "select-1",
+                        "method": "select",
+                        "title": "Allow tool: bash",
+                        "options": ["Approve", "Deny"],
+                    }),
+                ));
+                assert_eq!(workspace.right_pane, RightPane::Ask);
+                assert_eq!(
+                    workspace
+                        .ask_dialog
+                        .as_ref()
+                        .map(|dialog| dialog.request_id.as_str()),
+                    Some("ask-1")
+                );
+                assert_eq!(workspace.transcript.len(), 0);
+
+                // Submit without an answer explains itself instead of sending
+                // an answer the harness would reject.
+                workspace.submit_ask(cx);
+                assert_eq!(
+                    workspace
+                        .ask_dialog
+                        .as_ref()
+                        .and_then(|dialog| dialog.error.as_deref()),
+                    Some("Answer every question before submitting.")
+                );
+
+                // A harness-side cancel closes the dialog and the pane.
+                assert!(workspace.apply_extension_ui_request(
+                    "omp-1",
+                    &json!({
+                        "type": "extension_ui_request",
+                        "id": "cancel-1",
+                        "method": "cancel",
+                        "targetId": "ask-1",
+                    }),
+                ));
+                assert!(workspace.ask_dialog.is_none());
+                assert!(workspace.ask_inputs.is_empty());
+                assert_eq!(workspace.right_pane, RightPane::Launcher);
+                assert_eq!(workspace.transcript.len(), 0);
+                assert_eq!(workspace.debug_snapshot(cx)["askDialog"], json!(null));
+            })
+            .expect("workspace window");
+        cx.quit();
     }
 }

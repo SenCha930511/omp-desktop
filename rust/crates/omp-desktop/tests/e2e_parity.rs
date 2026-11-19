@@ -3160,12 +3160,13 @@ fn agent_frame_normalization_never_reaches_the_panes_without_a_runtime(cx: &mut 
 fn launcher_overview_reaches_every_right_pane_name(cx: &mut TestAppContext) {
     const PANE_X: f32 = 1100.0;
     const SUMMARY_ROW_Y: f32 = 70.0;
-    const NAMES: [&str; 8] = [
+    const NAMES: [&str; 9] = [
         "summary",
         "review",
         "files",
         "browser",
         "side-question",
+        "ask",
         "subagents",
         "live-voice",
         "activity",
@@ -3210,6 +3211,50 @@ fn launcher_overview_reaches_every_right_pane_name(cx: &mut TestAppContext) {
             assert_eq!(snapshot(workspace, cx)["rightPane"], "launcher");
         })
         .expect("pane names");
+}
+
+/// The Ask pane is reached through the same funnel as every other pane, and a
+/// fresh workspace has no dialog: the snapshot reports `askDialog: null` before
+/// and after opening it, and neither the transcript nor the composer changes.
+///
+/// The request path itself (an `extension_ui_request` opening the pane, Submit
+/// and Cancel responses) is unit-tested in `app.rs`: a normalized frame only
+/// arrives through a spawned `omp` runtime, which this suite never starts.
+#[gpui_kit::test]
+fn ask_pane_opens_empty_without_a_request(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let handle = cx.open_window(size(px(1280.0), px(800.0)), |window, cx| {
+        Workspace::new(window, cx, test_data(root))
+    });
+    handle
+        .update(cx, |workspace, _, cx| {
+            assert_eq!(snapshot(workspace, cx)["askDialog"], json!(null));
+            workspace.set_right_pane("ask", cx);
+            let state = snapshot(workspace, cx);
+            assert_eq!(state["rightPane"], "ask");
+            assert_eq!(state["layout"]["rightPaneDocked"], json!(true));
+            assert_eq!(state["askDialog"], json!(null));
+            assert_eq!(state["transcript"], json!([]));
+            assert_eq!(state["composer"]["text"], "");
+        })
+        .expect("ask pane window");
+    // Drawing the empty pane exercises its placeholder branch.
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.draw(cx).clear(cx);
+        })
+        .expect("draw ask frame");
+    });
+    handle
+        .update(cx, |workspace, _, cx| {
+            assert_eq!(snapshot(workspace, cx)["askDialog"], json!(null));
+            assert_eq!(snapshot(workspace, cx)["transcript"], json!([]));
+            workspace.set_right_pane("launcher", cx);
+            assert_eq!(snapshot(workspace, cx)["rightPane"], "launcher");
+        })
+        .expect("ask pane round trip");
 }
 
 /// Below the compact breakpoint the right pane stops docking and becomes an
