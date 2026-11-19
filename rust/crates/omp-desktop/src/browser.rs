@@ -488,6 +488,16 @@ impl BrowserPane {
         // The directory exists before the webview does, so a build that fails leaves
         // nothing behind and a tab that closes always has a profile to clean up.
         let _ = std::fs::create_dir_all(&data_dir);
+        // WebKitGTK's WebContext creates a GTK application info object, so GTK must
+        // already be initialized before the context is built. `WebView::build` would
+        // initialize it later, which is too late for the context.
+        #[cfg(target_os = "linux")]
+        if let Err(error) = ensure_gtk_for_webview() {
+            if let Some(tab) = self.tab_mut(id) {
+                tab.error = Some(error);
+            }
+            return;
+        }
         // wry reads the profile from the context: WebView2's user data folder and
         // WebKitGTK's data manager both come from it, so this tab's cookies and storage
         // stay in `data_dir` instead of the engine's default profile.
@@ -1009,6 +1019,15 @@ type NewTabClick = dyn Fn(&mut Window, &mut App);
 ///
 /// Labels and callbacks are all it reads, so a test can render it without a
 /// webview: selecting, closing and opening tabs are the caller's jobs.
+#[cfg(target_os = "linux")]
+fn ensure_gtk_for_webview() -> Result<(), String> {
+    if gtk::is_initialized_main_thread() {
+        return Ok(());
+    }
+    gtk::gdk::set_allowed_backends("x11");
+    gtk::init().map_err(|error| format!("GTK could not be initialized for the browser: {error}"))
+}
+
 fn browser_tab_bar(
     labels: &[String],
     active: usize,

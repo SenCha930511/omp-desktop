@@ -105,8 +105,11 @@ static SENDER: Mutex<Option<async_channel::Sender<TrayCommand>>> = Mutex::new(No
 /// has started (so the platform's menu bar exists).
 pub fn init(cx: &mut App, window: AnyWindowHandle) -> Result<Tray, TrayError> {
     #[cfg(target_os = "linux")]
-    if gtk::init().is_err() {
-        return Err(TrayError::new("GTK could not be initialized for the tray"));
+    if !gtk::is_initialized_main_thread() {
+        gtk::gdk::set_allowed_backends("x11");
+        if gtk::init().is_err() {
+            return Err(TrayError::new("GTK could not be initialized for the tray"));
+        }
     }
     let menu = build_menu()?;
     let rgba = tray_icon_rgba(ICON_PNG, ICON_PIXELS)?;
