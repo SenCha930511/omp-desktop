@@ -219,6 +219,9 @@ pub struct Workspace {
     // paths, so this is recomputed after each of them and read by the launcher.
     attention_count: usize,
     menu_open: bool,
+    // Which project row has its menu open. One at a time: the row's ellipsis
+    // button toggles it, and every menu row closes it again.
+    project_menu: Option<String>,
     turn_changes: TurnChanges,
     turn_baseline: Option<TurnBaseline>,
     review_status: Option<GitStatus>,
@@ -275,6 +278,28 @@ impl Workspace {
         )
         .ok()
         .map(|store| Arc::new(Mutex::new(store)));
+        // A removed project's session files outlive its grant, so the catalog
+        // the caller scanned is filtered against what the state file dismisses.
+        let (dismissed, granted) = match &store {
+            Some(store) => {
+                let store = store.lock().expect("state lock");
+                let state = store.state();
+                (
+                    state.dismissed_project_paths.clone(),
+                    state
+                        .projects
+                        .iter()
+                        .flat_map(|project| project.folders.clone())
+                        .collect::<Vec<String>>(),
+                )
+            }
+            None => (Vec::new(), Vec::new()),
+        };
+        let sessions = data
+            .sessions
+            .into_iter()
+            .filter(|session| !session_hidden(&dismissed, &granted, &session.project_path))
+            .collect();
         let theme_mode = match data.settings.theme {
             omp_core::settings::Theme::Light => ThemeMode::Light,
             omp_core::settings::Theme::Dark => ThemeMode::Dark,
@@ -298,7 +323,7 @@ impl Workspace {
             layout,
             settings: data.settings,
             projects: data.projects,
-            sessions: data.sessions,
+            sessions,
             transcript: Vec::new(),
             transcript_error: None,
             runtime_error: None,
@@ -350,6 +375,7 @@ impl Workspace {
             overview_pinned: false,
             attention_count: 0,
             menu_open: false,
+            project_menu: None,
             turn_changes: TurnChanges::default(),
             turn_baseline: None,
             review_status: None,
@@ -461,6 +487,17 @@ impl Workspace {
             .iter()
             .map(|entry| json!({ "path": entry.path, "kind": entry.kind }))
             .collect();
+        let projects: Vec<Value> = self
+            .projects
+            .iter()
+            .map(|project| {
+                json!({
+                    "id": project.id,
+                    "name": project.name,
+                    "path": project.path,
+                })
+            })
+            .collect();
         json!({
             "view": self.view.name(),
             "rightPane": self.right_pane.name(),
@@ -478,6 +515,9 @@ impl Workspace {
                 "centerWidth": self.layout.center_width,
                 "overlay": self.layout.overlay,
             },
+            "projects": projects,
+            // Which project row has its menu open, if any.
+            "projectMenu": self.project_menu,
             "sessions": sessions,
             "selectedSession": self.selected_session,
             "transcript": transcript,
@@ -645,22 +685,77 @@ impl Workspace {
                     )
                     .children(self.projects.iter().map(|project| {
                         let project = project.clone();
+                        let row_id = project.id.clone();
+                        let menu_id = project.id.clone();
+                        let remove_id = project.id.clone();
+                        let open = self.project_menu.as_deref() == Some(project.id.as_str());
                         div()
-                            .id(format!("project-{}", project.id))
                             .flex()
-                            .items_center()
-                            .gap_2()
-                            .px_2()
-                            .py_1()
-                            .rounded(px(6.0))
-                            .text_sm()
-                            .text_color(colors.foreground)
-                            .hover(|style| style.bg(colors.accent))
-                            .child(IconName::Folder)
-                            .child(project.name.clone())
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.start_new_session(project.clone(), cx);
-                            }))
+                            .flex_col()
+                            .gap_0p5()
+                            .child(
+                                div()
+                                    .id(format!("project-{row_id}"))
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .px_2()
+                                    .py_1()
+                                    .rounded(px(6.0))
+                                    .text_sm()
+                                    .text_color(colors.foreground)
+                                    .hover(|style| style.bg(colors.accent))
+                                    .child(IconName::Folder)
+                                    .child(project.name.clone())
+                                    .child(
+                                        div()
+                                            .id(format!("project-menu-{menu_id}"))
+                                            .aria_label("Project menu")
+                                            .ml_auto()
+                                            .rounded(px(4.0))
+                                            .text_color(colors.muted_foreground)
+                                            .hover(|style| style.bg(colors.background))
+                                            .child(IconName::EllipsisVertical)
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.toggle_project_menu(&menu_id, cx);
+                                                // The row under the button starts a
+                                                // new session; its menu must not.
+                                                cx.stop_propagation();
+                                            })),
+                                    )
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.start_new_session(project.clone(), cx);
+                                    })),
+                            )
+                            .when(open, |element| {
+                                element.child(
+                                    div()
+                                        .id(format!("project-menu-panel-{row_id}"))
+                                        .ml(px(24.0))
+                                        .flex()
+                                        .flex_col()
+                                        .gap_0p5()
+                                        .child(
+                                            div()
+                                                .id(format!("project-remove-{remove_id}"))
+                                                .aria_label("Remove project")
+                                                .px_2()
+                                                .py_1()
+                                                .rounded(px(6.0))
+                                                .text_sm()
+                                                .text_color(colors.foreground)
+                                                .hover(|style| style.bg(colors.accent))
+                                                .child("Remove project")
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.project_menu_action(
+                                                        &remove_id,
+                                                        "Remove project",
+                                                        cx,
+                                                    );
+                                                })),
+                                        ),
+                                )
+                            })
                     }))
                     .child(
                         div()
@@ -1360,6 +1455,125 @@ impl Workspace {
                 self.transcript_error = None;
             }
             Err(error) => self.transcript_error = Some(error.message),
+        }
+        cx.notify();
+    }
+
+    /// Opens or closes one project row's menu.
+    ///
+    /// The row's ellipsis button and the parity harness both come through here,
+    /// so the menu never needs a measured click position.
+    pub fn toggle_project_menu(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.project_menu = if self.project_menu.as_deref() == Some(id) {
+            None
+        } else {
+            Some(id.to_string())
+        };
+        cx.notify();
+    }
+
+    /// Dispatches one row of the project menu. The menu closes after the row
+    /// runs, the same way the session menu does.
+    pub fn project_menu_action(&mut self, id: &str, action: &str, cx: &mut Context<Self>) {
+        if action == "Remove project" {
+            self.remove_project(id, cx);
+        }
+    }
+
+    /// Removes a project's grant and drops its sessions from the sidebar.
+    ///
+    /// Only the grant goes away: the folder on disk and the session JSONL files
+    /// under the omp home are left alone, so granting the folder again finds its
+    /// history. The Electron app deletes the saved sessions with the project;
+    /// here the harness owns those files, so removal hides them from the catalog
+    /// instead of deleting them.
+    pub fn remove_project(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.project_menu = None;
+        let Some(store) = self.store.clone() else {
+            self.transcript_error = Some("The desktop state store is unavailable.".to_string());
+            cx.notify();
+            return;
+        };
+        let folders = self
+            .projects
+            .iter()
+            .find(|project| project.id == id)
+            .map(|project| project.folders.clone())
+            .unwrap_or_default();
+        // The selected session is judged before the catalog is filtered: once
+        // its row is gone the index would point at its neighbour. A session from
+        // another project is kept, but its index moves with the catalog.
+        let selected = self
+            .selected_session
+            .and_then(|index| self.sessions.get(index));
+        let doomed = selected
+            .filter(|session| session_in_folders(&folders, &session.project_path))
+            .map(|session| session.id.clone());
+        let selected_file = selected.map(|session| session.file_path.clone());
+        let mut store = store.lock().expect("state lock");
+        let result = projects::remove_project(&mut store, id);
+        let mut removed = false;
+        match result {
+            Ok(true) => {
+                self.projects = projects::list_projects(&store);
+                // A scan still finds the JSONL files, so the catalog hides the
+                // folders the state file dismisses — this removal and the ones
+                // before it — unless a grant still covers them.
+                let dismissed = store.state().dismissed_project_paths.clone();
+                let granted: Vec<String> = self
+                    .projects
+                    .iter()
+                    .flat_map(|project| project.folders.clone())
+                    .collect();
+                self.sessions = sessions::list_sessions(&store, &self.home_dir, false, None)
+                    .into_iter()
+                    .filter(|session| !session_hidden(&dismissed, &granted, &session.project_path))
+                    .collect();
+                self.refresh_attention();
+                self.transcript_error = None;
+                removed = true;
+            }
+            Ok(false) => {}
+            Err(error) => self.transcript_error = Some(error.message),
+        }
+        drop(store);
+        if removed {
+            if let Some(session_id) = doomed {
+                // The removed project's session cannot stay open: stop its
+                // runtime and drop the shells filed under it, like the
+                // single-session delete path does.
+                if let Some(runtime_id) = self.runtime_id.take() {
+                    self.agents.stop(&runtime_id);
+                }
+                self.reset_live_voice();
+                self.reset_dictation();
+                self.streaming_index = None;
+                self.runtime_error = None;
+                self.selected_session = None;
+                self.transcript.clear();
+                self.turn_baseline = None;
+                self.turn_changes = TurnChanges::default();
+                self.terminal_specs.remove(&session_id);
+                self.terminals.clear();
+                self.terminal_tasks.clear();
+                self.active_terminal = 0;
+            } else if let Some(file_path) = selected_file {
+                // Another project's session stays open, at its new index.
+                match self
+                    .sessions
+                    .iter()
+                    .position(|session| session.file_path == file_path)
+                {
+                    Some(index) => self.selected_session = Some(index),
+                    None => {
+                        self.selected_session = None;
+                        self.transcript.clear();
+                    }
+                }
+            }
+            // Neither pane can keep showing a folder that is no longer granted.
+            self.refresh_files();
+            self.refresh_review();
         }
         cx.notify();
     }
@@ -4605,6 +4819,29 @@ fn terminal_tab_bar(
                 .child("+")
                 .on_click(move |_, window, cx| on_new(window, cx)),
         )
+}
+
+/// Whether a session's recorded cwd sits inside one of a project's folders.
+///
+/// Session files keep the cwd exactly as the harness saw it, which can differ
+/// from the granted folder by a symlink (`/var` versus `/private/var`), so both
+/// sides are canonicalized before the prefix check.
+fn session_in_folders(folders: &[String], project_path: &str) -> bool {
+    let path =
+        omp_core::paths::canonicalize(project_path).unwrap_or_else(|_| PathBuf::from(project_path));
+    folders.iter().any(|folder| {
+        let root = omp_core::paths::canonicalize(folder).unwrap_or_else(|_| PathBuf::from(folder));
+        projects::path_within(&root, &path)
+    })
+}
+
+/// Whether a session row is hidden from the sidebar catalog.
+///
+/// A session disappears once its folder is dismissed — the project it belonged
+/// to was removed — unless a grant still covers it: a removed parent folder must
+/// not hide the sessions of a project granted inside it later.
+fn session_hidden(dismissed: &[String], granted: &[String], project_path: &str) -> bool {
+    session_in_folders(dismissed, project_path) && !session_in_folders(granted, project_path)
 }
 
 impl Render for Workspace {
