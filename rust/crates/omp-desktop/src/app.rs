@@ -262,6 +262,8 @@ impl Workspace {
                     .children(self.sessions.iter().enumerate().map(|(index, session)| {
                         let selected = self.selected_session == Some(index);
                         div()
+                            .id(format!("session-{index}"))
+                            .aria_label(session.title.clone())
                             .flex()
                             .flex_col()
                             .gap_0p5()
@@ -359,6 +361,7 @@ impl Workspace {
     ) -> impl IntoElement {
         div()
             .id(id)
+            .aria_label(id)
             .flex()
             .items_center()
             .justify_center()
@@ -765,6 +768,7 @@ impl Workspace {
             .child(
                 div()
                     .id("turn-review")
+                    .aria_label("Review this turn's changes")
                     .px_2()
                     .py_0p5()
                     .rounded(px(6.0))
@@ -811,6 +815,7 @@ impl Workspace {
                     .child(
                         div()
                             .id("send-prompt")
+                            .aria_label("Send prompt")
                             .px_3()
                             .py_1()
                             .rounded(px(6.0))
@@ -868,6 +873,7 @@ impl Workspace {
     ) -> impl IntoElement {
         div()
             .id(label)
+            .aria_label(label)
             .flex()
             .items_center()
             .gap_2()
@@ -1098,6 +1104,7 @@ impl Workspace {
                     let selected = self.right_pane == pane;
                     div()
                         .id(label)
+                        .aria_label(label)
                         .flex()
                         .items_center()
                         .gap_2()
@@ -1319,6 +1326,7 @@ impl Workspace {
                     .child(
                         div()
                             .id(format!("toggle-{path}"))
+                            .aria_label(if staged { "Unstage file" } else { "Stage file" })
                             .px_2()
                             .rounded(px(6.0))
                             .border_1()
