@@ -5373,6 +5373,190 @@ fn cancelled_fork_changes_nothing(cx: &mut TestAppContext) {
         .expect("workspace window");
 }
 
+/// A transcript row can be forked from: the action sends one `fork` carrying
+/// that message's id, so the harness continues the new session at the row
+/// instead of the end of the session, and the whole-session shape is never
+/// sent. Rows the view minted itself have no harness entry, so asking to fork
+/// one reaches the runtime with nothing.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn message_fork_sends_the_entry_id_and_keeps_the_session_fork(cx: &mut TestAppContext) {
+    use omp_core::projects;
+
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let home = root.join("home");
+    let project = root.join("project");
+    let fixture = install_fixture_omp(root);
+    for folder in [&home, &project, &root.join("user-data")] {
+        std::fs::create_dir_all(folder).expect("dir");
+    }
+    let project = project.canonicalize().expect("project path");
+
+    let mut store = open_store(root);
+    projects::grant_project(
+        &mut store,
+        &home,
+        Platform::current(),
+        project.to_str().expect("project path"),
+    )
+    .expect("grant");
+    drop(store);
+
+    // `write_session` seeds the harness ids `u1` and `a1`, which is what a
+    // real session file carries on its message rows.
+    let bucket = home.join(".omp/agent/sessions/-omp-project");
+    write_session(
+        &bucket,
+        "2026-04-06T00-00-00-000Z_019fdf24-ffff-7000-8000-000000000050.jsonl",
+        "Entry fork",
+        "2026-04-06T00:00:00.000Z",
+        "fork from this prompt",
+        "fork from this reply",
+        &project,
+    );
+    let store = open_store(root);
+    let catalog = omp_core::sessions::list_sessions(&store, &home, false, None);
+    drop(store);
+    assert_eq!(catalog.len(), 1);
+
+    let mut data = test_data(root);
+    data.home_dir = home;
+    data.omp_executable = fixture;
+    data.sessions = catalog;
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    handle
+        .update(cx, |workspace, window, cx| {
+            workspace.select_session(0, cx);
+            assert_eq!(snapshot(workspace, cx)["liveVoice"]["runtime"], json!(true));
+            let ids: Vec<String> = workspace
+                .transcript_messages()
+                .iter()
+                .map(|message| message.id.clone())
+                .collect();
+            assert_eq!(ids, ["u1", "a1"], "the rows carry the harness ids");
+
+            let composer = workspace.composer_entity().clone();
+            composer.update(cx, |state, cx| {
+                state.set_value("draft across an entry fork", window, cx);
+            });
+
+            workspace.fork_from_message("u1", cx);
+            let forked = snapshot(workspace, cx);
+            assert_eq!(forked["forkStatus"], "Forked session");
+            // The fixture wrote no file, so the fork changes nothing else.
+            assert_eq!(forked["selectedSession"], json!(0));
+            assert_eq!(forked["sessions"].as_array().map(Vec::len), Some(1));
+            assert_eq!(
+                transcript_text(workspace),
+                ["fork from this prompt", "fork from this reply"]
+            );
+            assert_eq!(forked["composer"]["text"], "draft across an entry fork");
+
+            let forks = |root: &Path| -> Vec<Value> {
+                fixture_commands(root)
+                    .into_iter()
+                    .filter(|command| command["type"] == "fork")
+                    .collect()
+            };
+            let sent = forks(root);
+            assert_eq!(sent.len(), 1, "one fork reached the runtime");
+            assert_eq!(
+                sent[0]["entryId"],
+                json!("u1"),
+                "an entry fork names the message it continues from"
+            );
+
+            // A row the view minted itself has no entry: the action refuses it
+            // before the runtime hears anything.
+            workspace.fork_from_message("queued-7", cx);
+            workspace.fork_from_message("", cx);
+            assert_eq!(forks(root).len(), 1, "no fork left for a local row");
+        })
+        .expect("workspace window");
+}
+
+/// A cancelled entry fork is the same silent no-op as a cancelled session
+/// fork: the command went out once with its `entryId`, and no notice, refresh
+/// or selection follows it.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn cancelled_message_fork_changes_nothing(cx: &mut TestAppContext) {
+    use omp_core::projects;
+
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let home = root.join("home");
+    let project = root.join("project");
+    let fake = install_cancelling_fork_omp(root);
+    for folder in [&home, &project, &root.join("user-data")] {
+        std::fs::create_dir_all(folder).expect("dir");
+    }
+    let project = project.canonicalize().expect("project path");
+
+    let mut store = open_store(root);
+    projects::grant_project(
+        &mut store,
+        &home,
+        Platform::current(),
+        project.to_str().expect("project path"),
+    )
+    .expect("grant");
+    drop(store);
+
+    let bucket = home.join(".omp/agent/sessions/-omp-project");
+    write_session(
+        &bucket,
+        "2026-04-07T00-00-00-000Z_019fdf24-ffff-7000-8000-000000000060.jsonl",
+        "Cancelled entry",
+        "2026-04-07T00:00:00.000Z",
+        "entry cancel prompt",
+        "entry cancel reply",
+        &project,
+    );
+    let store = open_store(root);
+    let catalog = omp_core::sessions::list_sessions(&store, &home, false, None);
+    drop(store);
+
+    let mut data = test_data(root);
+    data.home_dir = home;
+    data.omp_executable = fake;
+    data.sessions = catalog;
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    handle
+        .update(cx, |workspace, window, cx| {
+            workspace.select_session(0, cx);
+            assert_eq!(snapshot(workspace, cx)["liveVoice"]["runtime"], json!(true));
+            let composer = workspace.composer_entity().clone();
+            composer.update(cx, |state, cx| {
+                state.set_value("draft across an entry cancel", window, cx);
+            });
+            let before = snapshot(workspace, cx);
+
+            workspace.fork_from_message("a1", cx);
+            let after = snapshot(workspace, cx);
+            assert_eq!(after["forkStatus"], json!(null), "a cancel claims nothing");
+            assert_eq!(after["selectedSession"], before["selectedSession"]);
+            assert_eq!(after["sessions"], before["sessions"]);
+            assert_eq!(after["transcript"], before["transcript"]);
+            assert_eq!(after["composer"]["text"], "draft across an entry cancel");
+            assert_eq!(
+                transcript_text(workspace),
+                ["entry cancel prompt", "entry cancel reply"]
+            );
+
+            let forks: Vec<Value> = fixture_commands(root)
+                .into_iter()
+                .filter(|command| command["type"] == "fork")
+                .collect();
+            assert_eq!(forks.len(), 1, "the entry fork was sent exactly once");
+            assert_eq!(forks[0]["entryId"], json!("a1"));
+        })
+        .expect("workspace window");
+}
+
 /// The Electron harness appends to the session JSONL from its own process, so
 /// the view polls the selected file: a valid append shows up on the next tick
 /// of its timer without a manual reload, a reader who scrolled up keeps their
