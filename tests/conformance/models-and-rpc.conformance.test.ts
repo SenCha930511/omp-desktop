@@ -246,4 +246,60 @@ describe('conformance: models & OMP RPC v2', () => {
     }
     expect(isPidAlive(childPid)).toBe(false)
   })
+
+  it('forwards dictation frames and the terminal stop text', async () => {
+    if (!requireCapability(info, 'agent') || !requireCapability(info, 'projects')) return
+    // The Electron reference adapter predates RPC dictation and rejects the
+    // command; the Rust adapter owns this contract.
+    if (info.implementation !== 'rust-omp-core') return
+    sandbox = createConformanceSandbox('omp-conf-dictation-')
+    const projectDir = join(sandbox.rootDir, 'project')
+    mkdirSync(projectDir, { recursive: true })
+    await client.call('workspace.reset', {
+      rootDir: sandbox.rootDir,
+      homeDir: sandbox.homeDir,
+      userDataDir: sandbox.userDataDir,
+      appDataDir: sandbox.appDataDir,
+      ompExecutable: sandbox.ompExecutable,
+      extraEnv: {
+        NODE_OPTIONS: '--max-old-space-size=1024',
+        ELECTRON_RUN_AS_NODE: '1',
+      },
+    })
+    await client.call('projects.grant', { path: projectDir })
+    const runtime = await client.call<{ runtimeId: string }>('agent.start', { cwd: projectDir })
+
+    await client.call('agent.command', {
+      runtimeId: runtime.runtimeId,
+      command: { type: 'dictation_start', captureId: 'conf-dictation-1' },
+    })
+    const startEvents = await drainUntil(runtime.runtimeId, (events) => events.some((e) => e.event.type === 'dictation_transcript'))
+    expect(startEvents.filter((e) => e.event.type === 'dictation_state').map((e) => e.event.state)).toEqual(['starting', 'recording'])
+    expect(startEvents.find((e) => e.event.type === 'dictation_transcript')).toMatchObject({
+      event: { type: 'dictation_transcript', captureId: 'conf-dictation-1', text: 'Hello dictated' },
+    })
+
+    // The stop response mirrors the text, but `dictation_end` is the terminal
+    // result the host applies to the composer.
+    const stopped = await client.call<{ data: { text: string } }>('agent.command', {
+      runtimeId: runtime.runtimeId,
+      command: { type: 'dictation_stop' },
+    })
+    expect(stopped.data.text).toBe('Hello dictated world')
+    const endEvents = await drainUntil(runtime.runtimeId, (events) => events.some((e) => e.event.type === 'dictation_end'))
+    expect(endEvents.filter((e) => e.event.type === 'dictation_state').map((e) => e.event.state)).toContain('transcribing')
+    expect(endEvents.find((e) => e.event.type === 'dictation_end')?.event).toMatchObject({
+      type: 'dictation_end',
+      captureId: 'conf-dictation-1',
+      text: 'Hello dictated world',
+    })
+
+    const wireCommands = readFileSync(join(sandbox.rootDir, 'fixture-state', 'omp-commands.jsonl'), 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { type: string; captureId?: string })
+    expect(wireCommands.some((c) => c.type === 'dictation_start' && c.captureId === 'conf-dictation-1')).toBe(true)
+    expect(wireCommands.some((c) => c.type === 'dictation_stop')).toBe(true)
+    await client.call('agent.stop', { runtimeId: runtime.runtimeId })
+  })
 })

@@ -120,6 +120,16 @@ pub struct Workspace {
     live_muted: bool,
     live_active: bool,
     live_error: Option<String>,
+    // Dictation is RPC-driven as well: the harness owns the microphone, and the
+    // host only sends `dictation_start`/`dictation_stop` and renders the frames.
+    dictation_phase: String,
+    dictation_capture_id: Option<String>,
+    dictation_preview: String,
+    dictation_error: Option<String>,
+    dictation_active: bool,
+    // The terminal text waits here until `render` has a window to insert it.
+    dictation_pending_text: Option<String>,
+    dictation_counter: u64,
     browser: BrowserPane,
     terminal: Option<TerminalSession>,
     terminal_open: bool,
@@ -238,6 +248,13 @@ impl Workspace {
             live_muted: false,
             live_active: false,
             live_error: None,
+            dictation_phase: "idle".to_string(),
+            dictation_capture_id: None,
+            dictation_preview: String::new(),
+            dictation_error: None,
+            dictation_active: false,
+            dictation_pending_text: None,
+            dictation_counter: 0,
             browser,
             terminal: None,
             terminal_open: false,
@@ -791,6 +808,7 @@ impl Workspace {
             self.agents.stop(&runtime_id);
         }
         self.reset_live_voice();
+        self.reset_dictation();
         self.streaming_index = None;
         self.runtime_error = None;
         self.turn_baseline = None;
@@ -899,6 +917,7 @@ impl Workspace {
             self.agents.stop(&runtime_id);
         }
         self.reset_live_voice();
+        self.reset_dictation();
         self.streaming_index = None;
         self.selected_session = None;
         self.transcript.clear();
@@ -1023,6 +1042,10 @@ impl Workspace {
                 Some("live_phase" | "live_levels" | "live_transcript" | "live_end") => {
                     // Live voice never touches the transcript: the pane owns these frames.
                     self.apply_live_event(event);
+                }
+                Some("dictation_state" | "dictation_transcript" | "dictation_end") => {
+                    // Dictation never touches the transcript: the composer owns these frames.
+                    self.apply_dictation_event(event);
                 }
                 _ => {}
             }
@@ -1183,6 +1206,148 @@ impl Workspace {
         self.live_muted = false;
         self.live_levels = 0.0;
         self.live_phase = "idle".to_string();
+    }
+
+    /// Starts a dictation capture on the main runtime.
+    ///
+    /// Live voice owns the microphone as well, so an active live session is
+    /// stopped first; the harness then captures and transcribes the audio. The
+    /// generated capture id lets the harness tag every frame of this session.
+    fn start_dictation(&mut self, cx: &mut Context<Self>) {
+        if self.dictation_active {
+            return;
+        }
+        let Some(runtime_id) = self.runtime_id.clone() else {
+            self.dictation_error = Some("Select a session before starting dictation.".to_string());
+            cx.notify();
+            return;
+        };
+        if self.live_active {
+            self.stop_live_voice(cx);
+        }
+        let capture_id = self.next_dictation_capture_id();
+        self.dictation_error = None;
+        self.dictation_preview.clear();
+        self.dictation_pending_text = None;
+        match self.agents.command(
+            &runtime_id,
+            &json!({ "type": "dictation_start", "captureId": capture_id }),
+        ) {
+            Ok(response) if response.get("success").and_then(Value::as_bool) == Some(true) => {
+                self.dictation_active = true;
+                self.dictation_phase = "starting".to_string();
+                self.dictation_capture_id = Some(capture_id);
+                self.start_drain(cx);
+            }
+            Ok(response) => {
+                self.dictation_active = false;
+                self.dictation_phase = "idle".to_string();
+                self.dictation_capture_id = None;
+                self.dictation_error = Some(
+                    response
+                        .pointer("/error/message")
+                        .and_then(Value::as_str)
+                        .unwrap_or("OMP rejected the dictation start")
+                        .to_string(),
+                );
+            }
+            Err(error) => {
+                self.dictation_active = false;
+                self.dictation_phase = "idle".to_string();
+                self.dictation_capture_id = None;
+                self.dictation_error = Some(error.message);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Asks the harness to finish the capture.
+    ///
+    /// The stop response may carry the transcribed text, but `dictation_end`
+    /// is the single terminal result, so the response is not applied here.
+    fn stop_dictation(&mut self, cx: &mut Context<Self>) {
+        if !self.dictation_active || self.dictation_phase == "transcribing" {
+            return;
+        }
+        let Some(runtime_id) = self.runtime_id.clone() else {
+            self.dictation_error = Some("Select a session before stopping dictation.".to_string());
+            cx.notify();
+            return;
+        };
+        match self
+            .agents
+            .command(&runtime_id, &json!({ "type": "dictation_stop" }))
+        {
+            Ok(response) if response.get("success").and_then(Value::as_bool) == Some(true) => {
+                self.dictation_phase = "transcribing".to_string();
+                self.dictation_error = None;
+            }
+            Ok(response) => {
+                self.dictation_error = Some(
+                    response
+                        .pointer("/error/message")
+                        .and_then(Value::as_str)
+                        .unwrap_or("OMP rejected the dictation stop")
+                        .to_string(),
+                );
+            }
+            Err(error) => self.dictation_error = Some(error.message),
+        }
+        cx.notify();
+    }
+
+    /// Starts or finishes a capture from the single composer button.
+    fn toggle_dictation(&mut self, cx: &mut Context<Self>) {
+        if self.dictation_active {
+            self.stop_dictation(cx);
+        } else {
+            self.start_dictation(cx);
+        }
+    }
+
+    /// Clears the running flags after the runtime goes away; preview and error
+    /// belong to the capture that produced them.
+    fn reset_dictation(&mut self) {
+        self.dictation_active = false;
+        self.dictation_phase = "idle".to_string();
+        self.dictation_capture_id = None;
+        self.dictation_preview.clear();
+        self.dictation_error = None;
+        self.dictation_pending_text = None;
+    }
+
+    /// A per-session id: the timestamp keeps ids distinct across runs, and the
+    /// counter keeps them distinct within one millisecond.
+    fn next_dictation_capture_id(&mut self) -> String {
+        self.dictation_counter += 1;
+        format!(
+            "dictation-{}-{}",
+            Utc::now().timestamp_millis(),
+            self.dictation_counter
+        )
+    }
+
+    /// Mirrors one normalized `dictation_*` frame into the composer state.
+    fn apply_dictation_event(&mut self, event: &Value) -> bool {
+        let mut state = DictationState {
+            phase: &mut self.dictation_phase,
+            capture_id: &mut self.dictation_capture_id,
+            preview: &mut self.dictation_preview,
+            error: &mut self.dictation_error,
+            active: &mut self.dictation_active,
+            pending_text: &mut self.dictation_pending_text,
+        };
+        apply_dictation_frame(&mut state, event)
+    }
+
+    /// Label for the composer button and its status row.
+    fn dictation_label(&self) -> &'static str {
+        match self.dictation_phase.as_str() {
+            "starting" => "Starting…",
+            "recording" => "Stop",
+            "transcribing" => "Transcribing…",
+            _ => "Dictate",
+        }
     }
 
     fn ask_side_question(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1560,6 +1725,11 @@ impl Workspace {
 
     fn composer(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.theme().colors;
+        let dictation_status = self
+            .dictation_error
+            .clone()
+            .unwrap_or_else(|| format!("Dictation: {}", self.dictation_phase));
+        let dictation_preview = self.dictation_preview.clone();
         div()
             .flex()
             .flex_col()
@@ -1575,12 +1745,58 @@ impl Workspace {
                         .child(self.runtime_error.clone().unwrap_or_default()),
                 )
             })
+            .when(
+                self.dictation_active
+                    || self.dictation_error.is_some()
+                    || !dictation_preview.is_empty(),
+                |element| {
+                    element.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .text_xs()
+                            .text_color(if self.dictation_error.is_some() {
+                                colors.danger
+                            } else {
+                                colors.muted_foreground
+                            })
+                            .child(dictation_status.clone())
+                            .when(!dictation_preview.is_empty(), |element| {
+                                element.child(
+                                    div()
+                                        .flex_1()
+                                        .overflow_hidden()
+                                        .child(dictation_preview.clone()),
+                                )
+                            }),
+                    )
+                },
+            )
             .child(
                 div()
                     .flex()
                     .items_center()
                     .gap_2()
                     .child(div().flex_1().child(Input::new(&self.composer)))
+                    .child(
+                        div()
+                            .id("dictate")
+                            .aria_label(self.dictation_label())
+                            .px_3()
+                            .py_1()
+                            .rounded(px(6.0))
+                            .border_1()
+                            .border_color(colors.border)
+                            .text_sm()
+                            .text_color(if self.dictation_active {
+                                colors.danger
+                            } else {
+                                colors.foreground
+                            })
+                            .child(self.dictation_label())
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_dictation(cx))),
+                    )
                     .child(
                         div()
                             .id("send-prompt")
@@ -2527,7 +2743,7 @@ impl Workspace {
                     .border_color(colors.border)
                     .text_sm()
                     .text_color(colors.muted_foreground)
-                    .child("Live voice is RPC-driven: the Live Voice pane sends live_start, live_stop, and live_mute to the OMP harness, which owns the microphone, audio, and transcription. Dictation in this app is not implemented yet."),
+                    .child("Live voice is RPC-driven: the Live Voice pane sends live_start, live_stop, and live_mute to the OMP harness, which owns the microphone, audio, and transcription. Dictation works the same way: the composer's Dictate button sends dictation_start/dictation_stop and inserts the transcript the harness returns."),
             )
             .child(div().text_xs().text_color(colors.muted_foreground).child("ABOUT"))
             .child(
@@ -3508,6 +3724,21 @@ impl Render for Workspace {
                 cx.notify();
             });
         }
+        // A finished dictation parks its text here because `render` is the only
+        // place with a window to write into the composer. `take` makes the
+        // insert happen once: the stop response is never applied as well.
+        if let Some(text) = self.dictation_pending_text.take() {
+            // The preview's job is done once its text is in the composer.
+            self.dictation_preview.clear();
+            cx.defer_in(window, move |this, window, cx| {
+                let composer = this.composer.clone();
+                composer.update(cx, |state, cx| {
+                    let next = append_dictation_text(&state.value(), &text);
+                    state.set_value(next, window, cx);
+                });
+                cx.notify();
+            });
+        }
         self.track_bounds(window, cx);
         let colors = cx.theme().colors;
         let show_sidebar = self.layout.sidebar_docked;
@@ -3712,6 +3943,96 @@ fn clamp_live_level(level: f64) -> f32 {
     }
 }
 
+/// Mutable view of the dictation fields, mirroring [`LiveVoiceState`].
+///
+/// The composer and the event drain share one state, and this view lets frame
+/// application stay a pure function tests can drive without a window or an
+/// agent runtime.
+struct DictationState<'a> {
+    phase: &'a mut String,
+    capture_id: &'a mut Option<String>,
+    preview: &'a mut String,
+    error: &'a mut Option<String>,
+    active: &'a mut bool,
+    pending_text: &'a mut Option<String>,
+}
+
+/// Mirrors one normalized `dictation_*` frame into the host state.
+///
+/// Returns whether the event belonged to dictation. The harness owns the audio;
+/// `dictation_end` is the single terminal result, so its text is parked in
+/// `pending_text` for the render loop to append to the composer exactly once.
+fn apply_dictation_frame(state: &mut DictationState<'_>, event: &Value) -> bool {
+    match event.get("type").and_then(Value::as_str) {
+        Some("dictation_state") => {
+            let Some(phase) = event.get("state").and_then(Value::as_str) else {
+                return false;
+            };
+            if !matches!(phase, "starting" | "recording" | "transcribing") {
+                return false;
+            }
+            if let Some(capture_id) = event.get("captureId").and_then(Value::as_str) {
+                *state.capture_id = Some(capture_id.to_string());
+            }
+            *state.phase = phase.to_string();
+            *state.active = true;
+            if phase == "starting" {
+                // A new capture starts clean; the previous preview is stale.
+                state.preview.clear();
+                *state.error = None;
+            }
+            true
+        }
+        Some("dictation_transcript") => {
+            let Some(text) = event.get("text").and_then(Value::as_str) else {
+                return false;
+            };
+            if let Some(capture_id) = event.get("captureId").and_then(Value::as_str) {
+                *state.capture_id = Some(capture_id.to_string());
+            }
+            // The newest transcript frame is the live preview; the terminal
+            // text arrives once more in `dictation_end`.
+            *state.preview = text.to_string();
+            true
+        }
+        Some("dictation_end") => {
+            let text = event
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            *state.active = false;
+            *state.phase = "idle".to_string();
+            *state.capture_id = None;
+            if let Some(error) = event.get("error").and_then(Value::as_str)
+                && !error.is_empty()
+            {
+                // A failed capture keeps its text out of the composer.
+                *state.error = Some(error.to_string());
+                *state.pending_text = None;
+                state.preview.clear();
+                return true;
+            }
+            *state.error = None;
+            if !text.trim().is_empty() {
+                *state.pending_text = Some(text.to_string());
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Appends a finished dictation to the draft, keeping any text already typed.
+fn append_dictation_text(draft: &str, text: &str) -> String {
+    let text = text.trim();
+    let draft = draft.trim_end();
+    if draft.is_empty() {
+        text.to_string()
+    } else {
+        format!("{draft} {text}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     // Imported explicitly: `use super::*` would also pull in `gpui_kit`'s
@@ -3725,8 +4046,9 @@ mod tests {
     use omp_core::settings::AppSettings;
 
     use super::{
-        AppView, LIVE_TRANSCRIPT_LIMIT, LiveVoiceState, RightPane, UpdateCheckState, Workspace,
-        WorkspaceData, append_side_answer, apply_live_voice_event, side_answer_delta, updates,
+        AppView, DictationState, LIVE_TRANSCRIPT_LIMIT, LiveVoiceState, RightPane,
+        UpdateCheckState, Workspace, WorkspaceData, append_dictation_text, append_side_answer,
+        apply_dictation_frame, apply_live_voice_event, side_answer_delta, updates,
     };
 
     /// The Settings page must render the update row, and an unconfigured build
@@ -4078,5 +4400,159 @@ mod tests {
         assert!(!muted);
         assert!(active);
         assert!(error.is_none());
+    }
+
+    /// The dictation helper tracks the harness state, previews transcripts, and
+    /// parks the terminal text for a single insert — all without a window or an
+    /// agent runtime.
+    #[test]
+    fn dictation_frames_preview_and_hand_back_text_once() {
+        let mut phase = String::from("idle");
+        let mut capture_id: Option<String> = None;
+        let mut preview = String::new();
+        let mut error: Option<String> = None;
+        let mut active = false;
+        let mut pending: Option<String> = None;
+        let mut state = DictationState {
+            phase: &mut phase,
+            capture_id: &mut capture_id,
+            preview: &mut preview,
+            error: &mut error,
+            active: &mut active,
+            pending_text: &mut pending,
+        };
+
+        assert!(apply_dictation_frame(
+            &mut state,
+            &json!({ "type": "dictation_state", "captureId": "cap-1", "state": "starting" })
+        ));
+        assert_eq!(*state.phase, "starting");
+        assert!(*state.active);
+        assert_eq!(state.capture_id.as_deref(), Some("cap-1"));
+
+        assert!(apply_dictation_frame(
+            &mut state,
+            &json!({ "type": "dictation_state", "captureId": "cap-1", "state": "recording" })
+        ));
+        assert_eq!(*state.phase, "recording");
+
+        assert!(apply_dictation_frame(
+            &mut state,
+            &json!({ "type": "dictation_transcript", "captureId": "cap-1", "text": "hello" })
+        ));
+        assert_eq!(*state.preview, "hello");
+        assert!(state.pending_text.is_none());
+
+        // The terminal frame hands the text over exactly once; the stop
+        // response carrying the same text never reaches this state.
+        assert!(apply_dictation_frame(
+            &mut state,
+            &json!({ "type": "dictation_end", "captureId": "cap-1", "text": "hello world" })
+        ));
+        assert!(!*state.active);
+        assert_eq!(*state.phase, "idle");
+        assert!(state.capture_id.is_none());
+        assert_eq!(state.pending_text.as_deref(), Some("hello world"));
+        let text = state.pending_text.take().expect("terminal text");
+        assert!(state.pending_text.is_none());
+        assert_eq!(append_dictation_text("draft", &text), "draft hello world");
+        assert_eq!(append_dictation_text("", &text), "hello world");
+        assert_eq!(
+            append_dictation_text("trailing  ", &text),
+            "trailing hello world"
+        );
+
+        // A failed capture reports the error and leaves the composer alone.
+        assert!(apply_dictation_frame(
+            &mut state,
+            &json!({ "type": "dictation_state", "captureId": "cap-2", "state": "recording" })
+        ));
+        assert!(apply_dictation_frame(
+            &mut state,
+            &json!({
+                "type": "dictation_end",
+                "captureId": "cap-2",
+                "text": "ignored",
+                "error": "microphone denied",
+            })
+        ));
+        assert_eq!(state.error.as_deref(), Some("microphone denied"));
+        assert!(state.preview.is_empty());
+        assert!(state.pending_text.is_none());
+        assert!(!*state.active);
+
+        // Blank text is not worth inserting, and other frames are ignored.
+        assert!(apply_dictation_frame(
+            &mut state,
+            &json!({ "type": "dictation_end", "captureId": "cap-3", "text": "   " })
+        ));
+        assert!(state.pending_text.is_none());
+        assert!(!apply_dictation_frame(
+            &mut state,
+            &json!({ "type": "agent_end" })
+        ));
+        assert!(!apply_dictation_frame(
+            &mut state,
+            &json!({ "type": "dictation_state", "captureId": "cap-4", "state": "bogus" })
+        ));
+        assert!(!apply_dictation_frame(
+            &mut state,
+            &json!({ "type": "dictation_transcript" })
+        ));
+    }
+
+    /// A finished dictation is inserted into the composer by the render pass,
+    /// once, and keeps whatever the user had already typed.
+    #[test]
+    fn finished_dictation_lands_in_the_composer_once() {
+        let mut cx = gpui_kit::TestAppContext::single();
+        cx.update(gpui_kit::init);
+        let root = tempfile::TempDir::new().expect("test root").keep();
+        let handle = cx.add_window(|window, cx| {
+            Workspace::new(
+                window,
+                cx,
+                WorkspaceData {
+                    geometry: UiGeometry::default(),
+                    geometry_path: root.join("ui-geometry.json"),
+                    home_dir: root.clone(),
+                    user_data_dir: root.clone(),
+                    omp_executable: PathBuf::from("omp"),
+                    settings: AppSettings::default(),
+                    projects: Vec::new(),
+                    sessions: Vec::new(),
+                },
+            )
+        });
+        handle
+            .update(&mut cx, |workspace, window, cx| {
+                workspace.composer.update(cx, |state, cx| {
+                    state.set_value("draft", window, cx);
+                });
+                workspace.dictation_pending_text = Some("hello world".to_string());
+                workspace.layout = workspace.geometry.resolve(1600.0);
+            })
+            .expect("workspace window");
+        // Two frames: the deferred insert runs after the first, and the second
+        // proves the pending text is not inserted twice.
+        for _ in 0..2 {
+            cx.update(|cx| {
+                cx.update_window(handle.into(), |_, window, cx| {
+                    window.draw(cx).clear(cx);
+                })
+                .expect("draw workspace frame");
+            });
+        }
+        let (value, pending) = handle
+            .update(&mut cx, |workspace, _, cx| {
+                (
+                    workspace.composer.read(cx).value().to_string(),
+                    workspace.dictation_pending_text.clone(),
+                )
+            })
+            .expect("workspace window");
+        cx.quit();
+        assert_eq!(value, "draft hello world");
+        assert!(pending.is_none());
     }
 }

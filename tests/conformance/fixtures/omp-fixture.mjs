@@ -168,6 +168,7 @@ let streaming = false
 const steeringQueue = []
 const followUpQueue = []
 let negotiated = false
+let dictationCaptureId = ''
 
 const send = (value) => {
   process.stdout.write(`${JSON.stringify(value)}\n`)
@@ -373,6 +374,22 @@ rl.on('line', (line) => {
     case 'live_stop': {
       replySuccess(command, { stopped: true })
       send({ type: 'live_end' })
+      break
+    }
+    case 'dictation_start': {
+      dictationCaptureId = String(command.captureId ?? 'dictation-capture')
+      replySuccess(command, { captureId: dictationCaptureId })
+      send({ type: 'dictation_state', captureId: dictationCaptureId, state: 'starting' })
+      send({ type: 'dictation_state', captureId: dictationCaptureId, state: 'recording' })
+      send({ type: 'dictation_transcript', captureId: dictationCaptureId, text: 'Hello dictated' })
+      break
+    }
+    case 'dictation_stop': {
+      // The stop response may carry the text; `dictation_end` is the single
+      // terminal result the host applies.
+      replySuccess(command, { text: 'Hello dictated world' })
+      send({ type: 'dictation_state', captureId: dictationCaptureId, state: 'transcribing' })
+      send({ type: 'dictation_end', captureId: dictationCaptureId, text: 'Hello dictated world' })
       break
     }
     case 'prompt': {

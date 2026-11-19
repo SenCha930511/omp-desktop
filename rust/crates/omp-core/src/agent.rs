@@ -21,6 +21,14 @@ const LIVE_PHASES: [&str; 6] = [
     "muted",
     "error",
 ];
+/// Capture states the harness reports for a dictation session; anything else
+/// is a malformed frame and is dropped.
+const DICTATION_STATES: [&str; 3] = ["starting", "recording", "transcribing"];
+/// Host-generated capture ids are short; a longer id cannot be one of ours.
+const DICTATION_CAPTURE_ID_MAX: usize = 128;
+/// Cap for transcribed text; longer frames are malformed or truncated.
+const DICTATION_TEXT_MAX: usize = 64 * 1024;
+const DICTATION_ERROR_MAX: usize = 4_000;
 const UNSUPPORTED_COMMANDS: [&str; 12] = [
     "send_message",
     "clone",
@@ -469,6 +477,18 @@ fn last_compaction_record(path: &Path) -> Option<(u64, u64)> {
 fn clamp_level(value: f64) -> f64 {
     if value <= 0.0 { 0.0 } else { value.min(1.0) }
 }
+/// Returns the capture id when it is a plausible host-generated id.
+fn dictation_capture_id(event: &Value) -> Option<&str> {
+    event
+        .get("captureId")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty() && id.len() <= DICTATION_CAPTURE_ID_MAX)
+}
+
+/// Truncates to a character cap so an oversized frame cannot reach the UI.
+fn truncate_chars(text: &str, max: usize) -> String {
+    text.chars().take(max).collect()
+}
 
 fn normalize_event(event: &Value) -> Option<Value> {
     let kind = event.get("type").and_then(Value::as_str)?;
@@ -541,6 +561,40 @@ fn normalize_event(event: &Value) -> Option<Value> {
             }
             Some(json!({ "type": "live_end" }))
         }
+        "dictation_state" => {
+            let capture_id = dictation_capture_id(event)?;
+            let state = event.get("state").and_then(Value::as_str)?;
+            DICTATION_STATES.contains(&state).then(
+                || json!({ "type": "dictation_state", "captureId": capture_id, "state": state }),
+            )
+        }
+        "dictation_transcript" => {
+            let capture_id = dictation_capture_id(event)?;
+            let text = event.get("text").and_then(Value::as_str)?;
+            if text.len() > DICTATION_TEXT_MAX {
+                return None;
+            }
+            Some(json!({ "type": "dictation_transcript", "captureId": capture_id, "text": text }))
+        }
+        "dictation_end" => {
+            let capture_id = dictation_capture_id(event)?;
+            let text = truncate_chars(
+                event
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+                DICTATION_TEXT_MAX,
+            );
+            let mut frame =
+                json!({ "type": "dictation_end", "captureId": capture_id, "text": text });
+            if let Some(error) = event.get("error") {
+                let error = error.as_str()?;
+                if !error.is_empty() {
+                    frame["error"] = Value::String(truncate_chars(error, DICTATION_ERROR_MAX));
+                }
+            }
+            Some(frame)
+        }
         _ => Some(event.clone()),
     }
 }
@@ -605,6 +659,85 @@ mod tests {
                 &root
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn normalizes_dictation_frames_and_drops_malformed_ones() {
+        let capture = "dictation-1-1";
+        assert_eq!(
+            normalize_event(
+                &json!({ "type": "dictation_state", "captureId": capture, "state": "recording" })
+            ),
+            Some(json!({ "type": "dictation_state", "captureId": capture, "state": "recording" }))
+        );
+        assert_eq!(
+            normalize_event(
+                &json!({ "type": "dictation_transcript", "captureId": capture, "text": "hello" })
+            ),
+            Some(json!({ "type": "dictation_transcript", "captureId": capture, "text": "hello" }))
+        );
+
+        // The state whitelist and capture id shape are enforced.
+        assert!(
+            normalize_event(
+                &json!({ "type": "dictation_state", "captureId": capture, "state": "bogus" })
+            )
+            .is_none()
+        );
+        assert!(
+            normalize_event(&json!({ "type": "dictation_state", "state": "recording" })).is_none()
+        );
+        assert!(
+            normalize_event(
+                &json!({ "type": "dictation_state", "captureId": "", "state": "starting" })
+            )
+            .is_none()
+        );
+        let long_id = "c".repeat(DICTATION_CAPTURE_ID_MAX + 1);
+        assert!(
+            normalize_event(
+                &json!({ "type": "dictation_transcript", "captureId": long_id, "text": "hi" })
+            )
+            .is_none()
+        );
+        assert!(
+            normalize_event(&json!({
+                "type": "dictation_transcript",
+                "captureId": capture,
+                "text": "x".repeat(DICTATION_TEXT_MAX + 1),
+            }))
+            .is_none()
+        );
+
+        // The terminal frame carries the text and an optional error, capped.
+        let end = normalize_event(
+            &json!({ "type": "dictation_end", "captureId": capture, "text": "done", "error": "boom" }),
+        )
+        .expect("dictation_end");
+        assert_eq!(end["type"], "dictation_end");
+        assert_eq!(end["captureId"], capture);
+        assert_eq!(end["text"], "done");
+        assert_eq!(end["error"], "boom");
+        let bare_end =
+            normalize_event(&json!({ "type": "dictation_end", "captureId": capture, "text": "" }))
+                .expect("bare dictation_end");
+        assert!(bare_end.get("error").is_none());
+        let oversized = normalize_event(&json!({
+            "type": "dictation_end",
+            "captureId": capture,
+            "text": "y".repeat(DICTATION_TEXT_MAX + 5),
+        }))
+        .expect("oversized dictation_end is truncated, not dropped");
+        assert_eq!(
+            oversized["text"].as_str().map(str::len),
+            Some(DICTATION_TEXT_MAX)
+        );
+        assert!(
+            normalize_event(
+                &json!({ "type": "dictation_end", "captureId": capture, "text": "x", "error": 7 })
+            )
+            .is_none()
         );
     }
 }
