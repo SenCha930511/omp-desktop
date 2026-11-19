@@ -11193,6 +11193,7 @@ mod tests {
     #[test]
     fn transcript_math_part_wraps_inside_its_row() {
         use gpui_kit::InteractiveElement as _;
+        use gpui_kit::component::ActiveTheme as _;
         use gpui_kit::{AvailableSpace, ParentElement as _, Styled as _, div, point, px, size};
 
         use super::transcript_part_element;
