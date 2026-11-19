@@ -49,3 +49,5 @@ ts	phase	decision	why	evidence	result
 2026-11-20T00:50:00Z	tray	shipped a macOS/Windows tray with Open and Quit and a runtime smoke	the native shell had no tray and the spike showed the GPUI main thread can host it	rust/crates/omp-desktop/src/tray.rs	macOS tray smoke green
 2026-11-20T00:52:00Z	updater	added a check-only updater client that stays unconfigured without a pubkey	the release feed and signing pipeline do not exist yet, so an install path would be dishonest	rust/crates/omp-desktop/src/updates.rs	app tests green
 2026-11-20T00:54:00Z	ui	added Files, Subagents, and Side Question panes	the right pane still had placeholders and the core APIs already existed	rust/crates/omp-desktop/src/app.rs	app tests green
+2026-11-20T01:00:00Z	tray	enabled the Linux tray with a runtime AppIndicator load	the tray now covers all desktop platforms and a missing host only logs	rust/crates/omp-desktop/src/tray.rs	Linux compile pending CI
+2026-11-20T01:02:00Z	ui	wired session rows, project rows, and New session to real runtimes	the shell rendered sessions and projects without click handlers	rust/crates/omp-desktop/src/app.rs	app tests green
