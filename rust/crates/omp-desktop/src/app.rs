@@ -575,6 +575,18 @@ const SESSION_MENU_ACTIONS: [&str; 6] = [
     "Remote Control",
 ];
 
+/// How the Extensions page runs a plugin install.
+///
+/// The default calls [`plugins::install`], which shells out to the harness's
+/// `omp plugin install`. The parity suite never spawns a real `omp`, so a
+/// scenario replaces this with a stand-in to prove the page submits the
+/// source, refreshes the catalog and reports the outcome.
+pub type PluginInstaller = Arc<dyn Fn(&CliContext, &str) -> Result<Value, String> + Send + Sync>;
+
+fn default_plugin_installer() -> PluginInstaller {
+    Arc::new(|context, source| plugins::install(context, source).map_err(|error| error.message))
+}
+
 pub struct Workspace {
     geometry: UiGeometry,
     geometry_path: PathBuf,
@@ -658,6 +670,15 @@ pub struct Workspace {
     // Only one is set, and both are cleared by a refresh.
     plugin_status: Option<String>,
     plugin_error: Option<String>,
+    // The Extensions page's install row: `plugin_source` is the field the
+    // button submits, and `plugin_install_task` is the background install
+    // while it runs. The field keeps its text after a failure, so a source
+    // the harness rejects is still there to correct.
+    plugin_source: Entity<InputState>,
+    _plugin_source_subscription: Subscription,
+    plugin_submit_requested: bool,
+    plugin_installer: PluginInstaller,
+    plugin_install_task: Option<Task<()>>,
     // The Settings picker's model list. It is loaded once from the harness
     // when Settings opens and cached here, so switching views never spawns
     // `omp models` again.
@@ -798,6 +819,26 @@ impl Workspace {
                     cx.notify();
                 }
             });
+        let plugin_source = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("npm:package-name or a plugin path")
+                .submit_on_enter(true)
+        });
+        let plugin_source_subscription = cx.subscribe(
+            &plugin_source,
+            |this, _, event: &InputEvent, cx| match event {
+                // The row's Enter key and its button both submit. The key is
+                // only recorded here: the field cannot be read while it is
+                // emitting its own event, so `render` runs the submit.
+                InputEvent::PressEnter { .. } => {
+                    this.plugin_submit_requested = true;
+                    cx.notify();
+                }
+                // The install button is live only while the field has text.
+                InputEvent::Change => cx.notify(),
+                _ => {}
+            },
+        );
         let store = StateStore::open(
             data.user_data_dir.join(CURRENT_DESKTOP_STATE_FILENAME),
             Some(data.user_data_dir.join(LEGACY_DESKTOP_STATE_FILENAME)),
@@ -882,6 +923,11 @@ impl Workspace {
             plugin_catalog: None,
             plugin_status: None,
             plugin_error: None,
+            plugin_source,
+            _plugin_source_subscription: plugin_source_subscription,
+            plugin_submit_requested: false,
+            plugin_installer: default_plugin_installer(),
+            plugin_install_task: None,
             model_catalog: None,
             model_load_task: None,
             provider_filter: None,
@@ -1553,6 +1599,14 @@ impl Workspace {
                             .collect::<Vec<Value>>()
                     })
                     .unwrap_or_default(),
+            },
+            // The Extensions install row's field and in-flight state. The
+            // source stays here after a failure, so the next attempt can fix
+            // it instead of retyping it; the outcome itself is the page's
+            // banner, read back through `extensionStatus`.
+            "pluginInstallStatus": {
+                "source": self.plugin_source.read(cx).value().to_string(),
+                "installing": self.plugin_install_task.is_some(),
             },
             "schedules": self.schedules,
             "notifications": self.notifications,
@@ -5118,6 +5172,96 @@ impl Workspace {
         self.plugin_catalog.as_ref()
     }
 
+    /// The Extensions page's install field, so a scenario can type a source
+    /// into the same control the page draws.
+    pub fn plugin_source_entity(&self) -> &Entity<InputState> {
+        &self.plugin_source
+    }
+
+    /// Replaces how the Extensions page installs a plugin.
+    ///
+    /// The real installer spawns `omp`, which the parity suite never does, so a
+    /// scenario substitutes a stand-in for the harness. The seam is the whole
+    /// contract: the same `CliContext` the rest of the app builds, the source
+    /// exactly as submitted, and the install's JSON answer.
+    pub fn set_plugin_installer(
+        &mut self,
+        installer: impl Fn(&CliContext, &str) -> Result<Value, String> + Send + Sync + 'static,
+    ) {
+        self.plugin_installer = Arc::new(installer);
+    }
+
+    /// Submits the Extensions page's install field.
+    ///
+    /// The field is the only source: an empty one does nothing, so a stray
+    /// Enter on the page never spawns the harness.
+    pub fn submit_plugin_install(&mut self, cx: &mut Context<Self>) {
+        let source = self.plugin_source.read(cx).value().trim().to_string();
+        if source.is_empty() {
+            return;
+        }
+        self.install_plugin(&source, cx);
+    }
+
+    /// Installs one plugin source and refreshes the catalog.
+    ///
+    /// `plugins::install` shells out to the harness, so the call runs on the
+    /// background executor and its result is applied on the UI thread: the
+    /// catalog is re-read and the page's banner states the outcome. One install
+    /// runs at a time, so a second submit while one is in flight is ignored
+    /// rather than spawning the harness twice. A result without `ok: true`
+    /// counts as a failure: the core's install reports a command that exited
+    /// non-zero as `{ "ok": false }`, not as an error.
+    pub fn install_plugin(&mut self, source: &str, cx: &mut Context<Self>) {
+        if self.plugin_install_task.is_some() {
+            return;
+        }
+        let source = source.trim().to_string();
+        if source.is_empty() {
+            return;
+        }
+        let context = CliContext {
+            executable: self.omp_executable.clone(),
+            home_dir: self.home_dir.clone(),
+            root_dir: self.user_data_dir.clone(),
+            extra_env: Vec::new(),
+        };
+        let installer = self.plugin_installer.clone();
+        // The previous outcome is not this install's, so it is cleared before
+        // the harness is asked: the page never shows a stale banner.
+        self.plugin_status = None;
+        self.plugin_error = None;
+        self.plugin_install_task = Some(cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { installer(&context, &source) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.plugin_install_task = None;
+                // `refresh_plugins` clears the banner, so the outcome is set
+                // after the catalog has been re-read.
+                this.refresh_plugins();
+                match result {
+                    Ok(value) if value.get("ok").and_then(Value::as_bool) == Some(true) => {
+                        this.plugin_status = Some("Plugin installed".to_string());
+                    }
+                    Ok(_) => {
+                        this.plugin_error = Some(
+                            "OMP could not install the plugin: the install command did not report success"
+                                .to_string(),
+                        );
+                    }
+                    Err(error) => {
+                        this.plugin_error =
+                            Some(format!("OMP could not install the plugin: {error}"));
+                    }
+                }
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
     /// Enables or disables one MCP server or package row.
     ///
     /// The page's toggle and the parity harness both come through here. The
@@ -5401,6 +5545,53 @@ impl Workspace {
                     )
                 },
             )
+            // The install row: the field's source goes to the harness as-is
+            // and the catalog below is re-read when it returns. The button is
+            // inert while the field is empty or an install is in flight.
+            .child({
+                let has_source = !self.plugin_source.read(cx).value().trim().is_empty();
+                let installing = self.plugin_install_task.is_some();
+                let mut install = div()
+                    .id("plugins-install")
+                    .aria_label("Install plugin")
+                    .px_2()
+                    .py_1()
+                    .rounded(px(6.0))
+                    .border_1()
+                    .border_color(colors.border)
+                    .text_xs()
+                    .child(if installing {
+                        "Installing…"
+                    } else {
+                        "Install"
+                    });
+                if has_source && !installing {
+                    install = install
+                        .text_color(colors.foreground)
+                        .hover(|style| style.bg(colors.accent))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.submit_plugin_install(cx);
+                        }));
+                } else {
+                    install = install.text_color(colors.muted_foreground);
+                }
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(colors.muted_foreground)
+                            .child("Install plugin"),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .child(Input::new(&self.plugin_source).aria_label("Plugin source")),
+                    )
+                    .child(install)
+            })
             .child(
                 div()
                     .text_xs()
@@ -7623,6 +7814,10 @@ impl Render for Workspace {
         // view owns the truth, so every frame mirrors it and the confirmation
         // below only exists while a close is being asked about.
         self.sync_close_guard();
+        if self.plugin_submit_requested {
+            self.plugin_submit_requested = false;
+            self.submit_plugin_install(cx);
+        }
         let close_prompt = self.close_prompt.is_some();
         if let Some(follow_up) = self.submit_requested.take() {
             cx.defer_in(window, move |this, window, cx| {
