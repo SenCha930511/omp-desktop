@@ -106,8 +106,8 @@ The packaged binary writes the same first-frame marker as the development build.
 
 ## Remaining work
 
-- Terminal and voice surfaces remain; the workspace, Schedules, Browser, Files, Subagents, Side Question, Settings, Extensions, Review, and Summary are present.
+- Terminal, live voice, and browser element annotations are present; dictation remains.
+- The workspace, Schedules, Browser, Files, Subagents, Side Question, Settings, Extensions, Review, and Summary are present.
 - The tray is present on macOS, Windows, and Linux; a Linux session without an AppIndicator host logs and continues.
-- The updater release feed and signing pipeline; the check-only client is present but reads `not configured` without `OMP_UPDATER_PUBKEY`.
-- The 88-scenario UI retirement matrix beyond the current layout, IME, turn-diff, and pane tests.
-- The final Electron cutover gate.
+- The updater feed generator is present; wiring it into `release.yml` and signing remains. The client reads `not configured` without `OMP_UPDATER_PUBKEY`.
+- 10 of the 88 UI retirement scenarios are ported; the remaining 78 and the final Electron cutover gate remain.
