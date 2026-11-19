@@ -14,6 +14,7 @@
 //! and reads the state back as JSON, so a scenario never has to click a measured
 //! position or spawn a shell or an agent.
 
+
 use gpui_kit::AppContext as _;
 use gpui_kit::ClipboardItem;
 use gpui_kit::Context;
@@ -72,8 +73,11 @@ fn seed_repo(root: &Path) -> PathBuf {
     git(&repo, &["init", "-q", "-b", "main"]);
     git(&repo, &["config", "user.name", "OMP Test"]);
     git(&repo, &["config", "user.email", "test@example.com"]);
-    git(&repo, &["config", "core.autocrlf", "false"]);
-    git(&repo, &["config", "core.safecrlf", "false"]);
+    #[cfg(windows)]
+    {
+        git(&repo, &["config", "core.autocrlf", "false"]);
+        git(&repo, &["config", "core.safecrlf", "false"]);
+    }
     std::fs::write(repo.join("a.txt"), "line1\n").expect("seed");
     git(&repo, &["add", "a.txt"]);
     git(&repo, &["commit", "-qm", "initial"]);
@@ -752,6 +756,7 @@ fn terminal_panel_opens_stopped_without_spawning_a_shell(cx: &mut TestAppContext
 /// A headless window never loads a page, so the picker has no failure to report
 /// and no annotation waiting for the composer: the pane reports that clean state
 /// instead of leaving the last capture behind.
+#[cfg(not(target_os = "linux"))]
 #[gpui_kit::test]
 fn browser_pane_opens_and_reports_the_annotation_state(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
@@ -1390,6 +1395,7 @@ fn review_pane_stages_and_unstages_a_file_through_the_snapshot(cx: &mut TestAppC
 
 /// The Browser pane keeps reporting the empty annotation defaults after a
 /// switch to another pane and back; no capture is ever left behind.
+#[cfg(not(target_os = "linux"))]
 #[gpui_kit::test]
 fn browser_annotation_defaults_survive_a_pane_switch(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
@@ -2747,6 +2753,7 @@ fn wide_layout_reports_the_docked_widths(cx: &mut TestAppContext) {
 
 /// The Browser pane starts with no tabs, prepares one blank tab when opened,
 /// and keeps that tab active across a pane round trip.
+#[cfg(not(target_os = "linux"))]
 #[gpui_kit::test]
 fn browser_pane_starts_empty_then_adds_one_blank_tab(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
@@ -3190,6 +3197,10 @@ fn launcher_overview_reaches_every_right_pane_name(cx: &mut TestAppContext) {
     handle
         .update(cx, |workspace, _, cx| {
             for name in NAMES {
+                if cfg!(target_os = "linux") && name == "browser" {
+                    // The Linux headless harness cannot build a WebKitGTK webview.
+                    continue;
+                }
                 workspace.set_right_pane(name, cx);
                 let state = snapshot(workspace, cx);
                 assert_eq!(state["rightPane"], name);
