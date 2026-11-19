@@ -296,11 +296,19 @@ impl Workspace {
             .border_color(colors.border)
             .child(
                 div()
+                    .id("new-session")
+                    .aria_label("New session")
                     .flex()
                     .items_center()
                     .gap_2()
                     .px_3()
                     .py_3()
+                    .hover(|style| style.bg(colors.accent))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(project) = this.projects.first().cloned() {
+                            this.start_new_session(project, cx);
+                        }
+                    }))
                     .child(
                         div()
                             .flex()
@@ -344,7 +352,9 @@ impl Workspace {
                             .child("PROJECTS"),
                     )
                     .children(self.projects.iter().map(|project| {
+                        let project = project.clone();
                         div()
+                            .id(format!("project-{}", project.id))
                             .flex()
                             .items_center()
                             .gap_2()
@@ -353,8 +363,12 @@ impl Workspace {
                             .rounded(px(6.0))
                             .text_sm()
                             .text_color(colors.foreground)
+                            .hover(|style| style.bg(colors.accent))
                             .child(IconName::Folder)
                             .child(project.name.clone())
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.start_new_session(project.clone(), cx);
+                            }))
                     }))
                     .child(
                         div()
@@ -388,6 +402,9 @@ impl Workspace {
                                     .text_color(colors.muted_foreground)
                                     .child(session.project_path.clone()),
                             )
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.select_session(index, cx);
+                            }))
                     })),
             )
             .child(
@@ -611,6 +628,55 @@ impl Workspace {
         }
     }
 
+    fn start_new_session(&mut self, project: ProjectRecord, cx: &mut Context<Self>) {
+        if let Some(runtime_id) = self.runtime_id.take() {
+            self.agents.stop(&runtime_id);
+        }
+        self.streaming_index = None;
+        self.selected_session = None;
+        self.transcript.clear();
+        self.transcript_error = None;
+        self.runtime_error = None;
+        self.turn_baseline = None;
+        self.turn_changes = TurnChanges::default();
+        let Some(store) = self.store.clone() else {
+            self.runtime_error = Some("The desktop state store is unavailable.".to_string());
+            cx.notify();
+            return;
+        };
+        let context = CliContext {
+            executable: self.omp_executable.clone(),
+            home_dir: self.home_dir.clone(),
+            root_dir: self.user_data_dir.clone(),
+            extra_env: Vec::new(),
+        };
+        let store = store.lock().expect("state lock");
+        match self.agents.start(
+            &store,
+            Platform::current(),
+            &context,
+            &json!({ "cwd": project.primary_folder }),
+        ) {
+            Ok(info) => {
+                self.runtime_id = info
+                    .get("runtimeId")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                self.start_drain(cx);
+            }
+            Err(error) => self.runtime_error = Some(error.message),
+        }
+        cx.notify();
+    }
+
+    fn refresh_sessions(&mut self) {
+        let Some(store) = self.store.clone() else {
+            return;
+        };
+        let store = store.lock().expect("state lock");
+        self.sessions = sessions::list_sessions(&store, &self.home_dir, false, None);
+    }
+
     fn start_drain(&mut self, cx: &mut Context<Self>) {
         if self.drain_task.is_some() {
             return;
@@ -660,6 +726,7 @@ impl Workspace {
                 Some("agent_end") => {
                     self.streaming_index = None;
                     self.finish_turn();
+                    self.refresh_sessions();
                 }
                 Some("compaction_end") => {
                     let before = event
