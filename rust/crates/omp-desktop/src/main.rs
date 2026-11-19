@@ -137,7 +137,6 @@ fn arm_smoke_marker(window: &mut Window, path: PathBuf, version: String, frames:
 
 /// The tray smoke writes a marker once the icon exists and the menu command path has
 /// run, then quits — it must never leave the process behind.
-#[cfg(any(target_os = "macos", windows))]
 fn arm_tray_smoke_marker(window: &mut Window, path: PathBuf, tray: tray::Tray, frames: u8) {
     window.on_next_frame(move |window, cx| {
         if frames > 1 {
@@ -164,7 +163,6 @@ fn main() {
     let smoke_path = parse_arg(&args, "--packaged-smoke=").map(PathBuf::from);
     // `--tray-smoke=<path>`: writes a marker after the tray is up and the menu command
     // path has run, then quits.
-    #[cfg(any(target_os = "macos", windows))]
     let tray_smoke_path = parse_arg(&args, "--tray-smoke=").map(PathBuf::from);
     let dump_layout_path = parse_arg(&args, "--dump-layout=").map(PathBuf::from);
     let data = load_workspace_data(&user_data_dir);
