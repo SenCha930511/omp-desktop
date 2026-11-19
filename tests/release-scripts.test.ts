@@ -53,6 +53,7 @@ import {
   prepareGitHubRelease,
   releaseAssetNames,
 } from '../scripts/release/prepare-github-release.mjs'
+import { buildUpdateFeed, prepareRustUpdateFeed, serializeUpdateFeed, validateUpdateBaseUrl, validateUpdateVersion } from '../scripts/release/prepare-rust-update-feed.mjs'
 import { parseDraftAssetNames, staleDraftReleaseAssets } from '../scripts/release/prune-draft-release-assets.mjs'
 import { assertBundleSizeBudgets, assertPackageSizeBudgets, BUNDLE_SIZE_BUDGETS, collectBundleSizeMetrics, collectPackageSizeMetrics, PACKAGE_SIZE_BUDGETS } from '../scripts/release/size-budgets.mjs'
 import { assertReleaseTag } from '../scripts/release/validate-release-tag.mjs'
@@ -1943,6 +1944,198 @@ describe('packaged extension resources', () => {
       expect(() => assertPackagedExtensions(nonFile.resources)).toThrow(/non-file:/)
     } finally {
       for (const fixture of [exact, missing, extra, nonFile]) rmSync(fixture.directory, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('Rust update feed', () => {
+  const signatureBox = 'untrusted comment: signature from cargo-packager secret key\nRWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3\ntrusted comment: timestamp:1\tfile:fixture\nAAAA\n'
+  const signature = Buffer.from(signatureBox).toString('base64')
+
+  type ManifestEntry = { platform: string; artifact: string; signature?: string; format: string }
+
+  function createFeedDirectory() {
+    return mkdtempSync(join(tmpdir(), 'omp-desktop-rust-update-feed-'))
+  }
+
+  function writeManifest(directory: string, platforms: unknown) {
+    const manifestPath = join(directory, 'updates-manifest.json')
+    writeFileSync(manifestPath, JSON.stringify({ platforms }))
+    return manifestPath
+  }
+
+  function writeSignedArtifact(directory: string, entry: ManifestEntry) {
+    writeFileSync(join(directory, entry.artifact), `artifact ${entry.platform}`)
+    writeFileSync(join(directory, entry.signature ?? `${entry.artifact}.sig`), signature)
+    return { ...entry, signature: entry.signature ?? `${entry.artifact}.sig` }
+  }
+
+  function readFeed(directory: string, platforms: ManifestEntry[], options: { version?: string; baseUrl?: string; outputPath?: string } = {}) {
+    const entries = platforms.map((entry) => writeSignedArtifact(directory, entry))
+    const manifestPath = writeManifest(directory, entries)
+    const outputPath = options.outputPath ?? join(directory, 'out', 'updates.json')
+    const result = prepareRustUpdateFeed({
+      version: options.version ?? '0.1.0',
+      baseUrl: options.baseUrl ?? 'https://github.com/SenCha930511/omp-desktop/releases/download/v0.1.0',
+      manifestPath,
+      outputPath,
+    })
+    return { result, outputPath, manifestPath }
+  }
+
+  test('writes a cargo-packager-updater 0.2.3 feed with sorted platform keys and a trailing newline', () => {
+    const directory = createFeedDirectory()
+    try {
+      const { result, outputPath } = readFeed(directory, [
+        { platform: 'macos-aarch64', artifact: 'OMP Desktop_0.1.0_aarch64.app.tar.gz', format: 'app' },
+        { platform: 'linux-x86_64', artifact: 'omp-desktop_0.1.0_amd64.AppImage', format: 'appimage' },
+      ])
+      expect(result.written).toBe(true)
+      const source = readFileSync(outputPath, 'utf8')
+      expect(source.endsWith('\n')).toBe(true)
+      expect(source).toBe(
+        `${JSON.stringify(
+          {
+            version: '0.1.0',
+            platforms: {
+              'linux-x86_64': {
+                url: 'https://github.com/SenCha930511/omp-desktop/releases/download/v0.1.0/omp-desktop_0.1.0_amd64.AppImage',
+                signature,
+                format: 'appimage',
+              },
+              'macos-aarch64': {
+                url: 'https://github.com/SenCha930511/omp-desktop/releases/download/v0.1.0/OMP%20Desktop_0.1.0_aarch64.app.tar.gz',
+                signature,
+                format: 'app',
+              },
+            },
+          },
+          null,
+          2,
+        )}\n`,
+      )
+      expect(Object.keys(JSON.parse(source).platforms)).toEqual(['linux-x86_64', 'macos-aarch64'])
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  test('serializes identically regardless of manifest order and check mode writes nothing', () => {
+    const directory = createFeedDirectory()
+    try {
+      const entries: ManifestEntry[] = [
+        { platform: 'windows-x86_64', artifact: 'omp-desktop_0.1.0_x64-setup.exe', format: 'nsis' },
+        { platform: 'macos-x86_64', artifact: 'OMP Desktop_0.1.0_x64.app.tar.gz', format: 'app' },
+        { platform: 'linux-aarch64', artifact: 'omp-desktop_0.1.0_aarch64.AppImage', format: 'appimage' },
+      ]
+      const signed = entries.map((entry) => writeSignedArtifact(directory, entry))
+      const forwardManifest = writeManifest(directory, signed)
+      const reverseManifest = writeManifest(directory, [...signed].reverse())
+      const forward = buildUpdateFeed({ version: '0.1.0', baseUrl: 'https://example.com/releases/', manifestSource: readFileSync(forwardManifest, 'utf8'), manifestPath: forwardManifest })
+      const reverse = buildUpdateFeed({ version: '0.1.0', baseUrl: 'https://example.com/releases/', manifestSource: readFileSync(reverseManifest, 'utf8'), manifestPath: reverseManifest })
+      expect(serializeUpdateFeed(forward)).toBe(serializeUpdateFeed(reverse))
+      expect(Object.keys(forward.platforms)).toEqual(['linux-aarch64', 'macos-x86_64', 'windows-x86_64'])
+
+      const outputPath = join(directory, 'check', 'updates.json')
+      const checked = prepareRustUpdateFeed({ version: '0.1.0', baseUrl: 'https://example.com/releases/', manifestPath: forwardManifest, outputPath, check: true })
+      expect(checked.written).toBe(false)
+      expect(checked.contents).toBe(serializeUpdateFeed(forward))
+      expect(existsSync(outputPath)).toBe(false)
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  test('runs --check from the command line without writing and fails closed on an http base URL', () => {
+    const directory = createFeedDirectory()
+    try {
+      const entry = writeSignedArtifact(directory, { platform: 'linux-x86_64', artifact: 'omp-desktop.AppImage', format: 'appimage' })
+      const manifestPath = writeManifest(directory, [entry])
+      const outputPath = join(directory, 'cli', 'updates.json')
+      const scriptPath = fileURLToPath(new URL('../scripts/release/prepare-rust-update-feed.mjs', import.meta.url))
+      const args = ['--version', '0.1.0', '--base-url', 'https://example.com/releases/', '--manifest', manifestPath, '--output', outputPath]
+      const checked = spawnSync(process.execPath, [scriptPath, ...args, '--check'], { encoding: 'utf8' })
+      expect(checked.status).toBe(0)
+      expect(checked.stdout).toContain('Validated 1 platform(s) for 0.1.0; no file written.')
+      expect(existsSync(outputPath)).toBe(false)
+
+      const written = spawnSync(process.execPath, [scriptPath, ...args], { encoding: 'utf8' })
+      expect(written.status).toBe(0)
+      expect(JSON.parse(readFileSync(outputPath, 'utf8')).platforms['linux-x86_64'].format).toBe('appimage')
+
+      const rejected = spawnSync(process.execPath, [scriptPath, '--version', '0.1.0', '--base-url', 'http://example.com/releases/', '--manifest', manifestPath, '--output', outputPath], {
+        encoding: 'utf8',
+      })
+      expect(rejected.status).toBe(1)
+      expect(rejected.stderr).toContain('Update base URL must use https')
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  test('accepts canonical and v-prefixed semver but rejects everything else', () => {
+    expect(validateUpdateVersion('0.1.0')).toBe('0.1.0')
+    expect(validateUpdateVersion('v1.2.3-beta.1')).toBe('1.2.3-beta.1')
+    expect(() => validateUpdateVersion('')).toThrow(/required/)
+    for (const version of ['0.1', 'v', '01.0.0', '1.0.0.0', '1.0.0-', 'latest']) {
+      expect(() => validateUpdateVersion(version)).toThrow(/semver/)
+    }
+  })
+
+  test('requires an https base URL without credentials, query, or fragment and normalizes the trailing slash', () => {
+    expect(validateUpdateBaseUrl('https://github.com/SenCha930511/omp-desktop/releases/download/v0.1.0').href).toBe('https://github.com/SenCha930511/omp-desktop/releases/download/v0.1.0/')
+    expect(() => validateUpdateBaseUrl('http://example.com/releases/')).toThrow(/https/)
+    expect(() => validateUpdateBaseUrl('https://user:password@example.com/releases/')).toThrow(/credentials/)
+    expect(() => validateUpdateBaseUrl('https://example.com/releases/?token=1')).toThrow(/query/)
+    expect(() => validateUpdateBaseUrl('https://example.com/releases/#feed')).toThrow(/fragment/)
+    expect(() => validateUpdateBaseUrl('not a url')).toThrow(/valid URL/)
+  })
+
+  test('rejects malformed manifests, missing platform lists, duplicates, and unknown platforms or formats', () => {
+    const directory = createFeedDirectory()
+    try {
+      const manifestPath = writeManifest(directory, [])
+      const build = (platforms: unknown) => {
+        const path = writeManifest(directory, platforms)
+        return buildUpdateFeed({ version: '0.1.0', baseUrl: 'https://example.com/releases/', manifestSource: readFileSync(path, 'utf8'), manifestPath: path })
+      }
+      expect(() => build([])).toThrow(/at least one platform/)
+      expect(() => buildUpdateFeed({ version: '0.1.0', baseUrl: 'https://example.com/releases/', manifestSource: '[]', manifestPath })).toThrow(/JSON object/)
+      expect(() => buildUpdateFeed({ version: '0.1.0', baseUrl: 'https://example.com/releases/', manifestSource: '{', manifestPath })).toThrow(/Cannot parse update manifest/)
+      const artifact = writeSignedArtifact(directory, { platform: 'linux-x86_64', artifact: 'omp-desktop.AppImage', format: 'appimage' })
+      expect(() => build([artifact, artifact])).toThrow(/duplicate platform: linux-x86_64/)
+      expect(() => build([{ ...artifact, platform: 'darwin-x86_64' }])).toThrow(/unsupported platform: darwin-x86_64/)
+      expect(() => build([{ ...artifact, format: 'dmg' }])).toThrow(/unsupported format: dmg/)
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  test('fails closed on missing artifacts, missing signatures, empty signatures, and non-cargo-packager signatures', () => {
+    const directory = createFeedDirectory()
+    try {
+      const entry: ManifestEntry = { platform: 'linux-x86_64', artifact: 'omp-desktop.AppImage', signature: 'omp-desktop.AppImage.sig', format: 'appimage' }
+      const manifestPath = writeManifest(directory, [entry])
+      const build = () => buildUpdateFeed({ version: '0.1.0', baseUrl: 'https://example.com/releases/', manifestSource: readFileSync(manifestPath, 'utf8'), manifestPath })
+      expect(build).toThrow(/artifact does not exist as a file/)
+      writeFileSync(join(directory, entry.artifact), 'artifact')
+      expect(build).toThrow(/signature does not exist as a file/)
+      const unsignedManifestPath = join(directory, 'unsigned-manifest.json')
+      writeFileSync(unsignedManifestPath, JSON.stringify({ platforms: [{ platform: entry.platform, artifact: entry.artifact, format: entry.format }] }))
+      expect(() =>
+        buildUpdateFeed({ version: '0.1.0', baseUrl: 'https://example.com/releases/', manifestSource: readFileSync(unsignedManifestPath, 'utf8'), manifestPath: unsignedManifestPath }),
+      ).toThrow(/signature must name a single-line file path/)
+      writeFileSync(join(directory, entry.signature!), '   \n')
+      expect(build).toThrow(/signature is empty/)
+      writeFileSync(join(directory, entry.signature!), signatureBox)
+      expect(build).toThrow(/base64 signature box/)
+      writeFileSync(join(directory, entry.signature!), Buffer.from('not a minisign box').toString('base64'))
+      expect(build).toThrow(/does not decode to a minisign signature box/)
+      expect(() =>
+        prepareRustUpdateFeed({ version: '0.1.0', baseUrl: 'https://example.com/releases/', manifestPath: join(directory, 'missing.json'), outputPath: join(directory, 'updates.json') }),
+      ).toThrow(/manifest is missing or unreadable/)
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
     }
   })
 })

@@ -199,3 +199,44 @@ npm run test:conformance
 `OMP_CONFORMANCE_PARTIAL=1` lets the adapter omit the deliberately removed `terminal` capability. `OMP_CONFORMANCE_REQUIRED_CAPABILITIES` is enforced even in partial mode, so a phase gate cannot pass by skipping a capability it claims to require. The Node reference adapter remains the oracle; the Rust adapter must satisfy the same tests.
 
 `node scripts/rust/generate-hmac-fixtures.mjs` regenerates the Node-signed v1/v2/v3 collaboration envelopes consumed by `cargo test`. Regenerate them only when the envelope format changes; the Rust test fails on any signature drift.
+
+## Rust updater feed
+
+The v2 app has a check-only updater client in `rust/crates/omp-desktop/src/updates.rs`. It reads `updates.json` from the latest GitHub Release and verifies its minisign signature against the public key baked in as `OMP_UPDATER_PUBKEY`. A build without that key reports the updater as unconfigured and never opens a socket.
+
+`scripts/release/prepare-rust-update-feed.mjs` builds that feed from signed artifacts. It uses only Node builtins and writes deterministic JSON (two-space indent, platform keys sorted, trailing newline) in the `cargo-packager-updater` 0.2.3 format: `version` plus `platforms.<os>-<arch>.{url,signature,format}`, where `<os>` is `macos`, `linux`, or `windows` and `format` is `app`, `nsis`, or `appimage`.
+
+Create a manifest listing every platform with its artifact, `.sig` file, and format. Relative paths resolve against the manifest file's directory:
+
+```json
+{
+  "platforms": [
+    { "platform": "macos-aarch64", "artifact": "OMP Desktop_0.1.0_aarch64.app.tar.gz", "signature": "OMP Desktop_0.1.0_aarch64.app.tar.gz.sig", "format": "app" },
+    { "platform": "linux-x86_64", "artifact": "omp-desktop_0.1.0_amd64.AppImage", "signature": "omp-desktop_0.1.0_amd64.AppImage.sig", "format": "appimage" },
+    { "platform": "windows-x86_64", "artifact": "omp-desktop_0.1.0_x64-setup.exe", "signature": "omp-desktop_0.1.0_x64-setup.exe.sig", "format": "nsis" }
+  ]
+}
+```
+
+Generate the feed, or validate it without writing with `--check`:
+
+```bash
+npm run release:rust-update-feed -- \
+  --version 0.1.0 \
+  --base-url https://github.com/SenCha930511/omp-desktop/releases/download/v0.1.0/ \
+  --manifest path/to/updates-manifest.json \
+  --output updates.json
+```
+
+The script fails closed on a non-semver version, a non-HTTPS base URL (or one with credentials, a query, or a fragment), an empty or duplicate platform list, an unknown `<os>-<arch>` key, an unsupported format, a missing artifact or signature file, and a signature that is not the base64 signature box cargo-packager writes to a `.sig` file.
+
+Signing prerequisite: the feed is only usable with a minisign keypair whose public key is baked into the app at build time. Generate the keypair once and sign each artifact with cargo-packager:
+
+```bash
+cargo packager signer generate --path ~/.config/omp/updater.key
+cargo packager signer sign --private-key ~/.config/omp/updater.key path/to/artifact
+```
+
+The `.sig` file cargo-packager writes is already the base64 signature box the updater expects, so pass that file to the manifest. The generated `.pub` file is the exact `OMP_UPDATER_PUBKEY` value; build with `OMP_UPDATER_PUBKEY="$(cat ~/.config/omp/updater.key.pub)"`.
+
+The release workflow does not build or publish this feed yet. Run the command against downloaded release artifacts and attach the resulting `updates.json` to the release by hand; the client reads `https://github.com/SenCha930511/omp-desktop/releases/latest/download/updates.json`.

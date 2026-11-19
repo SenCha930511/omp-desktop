@@ -31,6 +31,10 @@ use serde_json::{Value, json};
 mod browser;
 
 use browser::BrowserPane;
+#[path = "terminal.rs"]
+mod terminal;
+
+use terminal::TerminalSession;
 use updates::UpdateCheckState;
 #[path = "updates.rs"]
 mod updates;
@@ -108,6 +112,13 @@ pub struct Workspace {
     schedules: Vec<Value>,
     right_pane: RightPane,
     browser: BrowserPane,
+    terminal: Option<TerminalSession>,
+    terminal_open: bool,
+    terminal_input: Entity<InputState>,
+    _terminal_input_subscription: Subscription,
+    terminal_submit_requested: bool,
+    terminal_error: Option<String>,
+    terminal_task: Option<Task<()>>,
     files: Vec<omp_core::projects::ProjectFileEntry>,
     files_skipped: u64,
     files_error: Option<String>,
@@ -147,6 +158,18 @@ impl Workspace {
             cx.subscribe(&side_input, |this, _, event: &InputEvent, cx| {
                 if let InputEvent::PressEnter { .. } = event {
                     this.side_submit_requested = true;
+                    cx.notify();
+                }
+            });
+        let terminal_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Run a shell command…")
+                .submit_on_enter(true)
+        });
+        let terminal_input_subscription =
+            cx.subscribe(&terminal_input, |this, _, event: &InputEvent, cx| {
+                if let InputEvent::PressEnter { .. } = event {
+                    this.terminal_submit_requested = true;
                     cx.notify();
                 }
             });
@@ -201,6 +224,13 @@ impl Workspace {
             schedules: Vec::new(),
             right_pane: RightPane::Launcher,
             browser,
+            terminal: None,
+            terminal_open: false,
+            terminal_input,
+            _terminal_input_subscription: terminal_input_subscription,
+            terminal_submit_requested: false,
+            terminal_error: None,
+            terminal_task: None,
             files: Vec::new(),
             files_skipped: 0,
             files_error: None,
@@ -256,6 +286,7 @@ impl Workspace {
         }
         self.last_bounds = Some(current);
         self.layout = self.geometry.resolve(current.2 as f64);
+        self.resize_terminal();
         self.geometry.window_bounds = Some(omp_core::geometry::WindowBounds {
             x: current.0 as f64,
             y: current.1 as f64,
@@ -467,6 +498,22 @@ impl Workspace {
             )
             .child(div().flex_1())
             .child(self.toolbar_icon(
+                "terminal-panel",
+                IconName::Terminal,
+                if self.terminal_open {
+                    colors.primary
+                } else {
+                    colors.foreground
+                },
+                cx.listener(|this, _, _, cx| {
+                    if this.terminal_open {
+                        this.close_terminal(cx);
+                    } else {
+                        this.start_terminal(cx);
+                    }
+                }),
+            ))
+            .child(self.toolbar_icon(
                 "session-menu",
                 IconName::EllipsisVertical,
                 colors.foreground,
@@ -519,6 +566,187 @@ impl Workspace {
             .hover(|style| style.bg(color.opacity(0.12)))
             .child(icon)
             .on_click(on_click)
+    }
+
+    /// Opens the terminal panel and, on first use, starts the user's shell in
+    /// the selected project's directory (falling back to the process's own).
+    /// A PTY or spawn failure is shown inside the panel instead of panicking.
+    fn start_terminal(&mut self, cx: &mut Context<Self>) {
+        self.terminal_open = true;
+        if self.terminal.is_some() {
+            cx.notify();
+            return;
+        }
+        let cwd = self
+            .project_cwd()
+            .map(PathBuf::from)
+            .filter(|path| path.is_dir());
+        let (rows, cols) = terminal::size_for_width(self.layout.center_width);
+        match TerminalSession::spawn(cwd.as_deref(), rows, cols) {
+            Ok(session) => {
+                let notifications = session.notifications();
+                self.terminal = Some(session);
+                self.terminal_error = None;
+                // Wake on output bursts rather than polling; the channel closes
+                // when the session is dropped, which ends this task.
+                self.terminal_task = Some(cx.spawn(async move |this, cx| {
+                    while notifications.recv().await.is_ok() {
+                        let still_open = this
+                            .update(cx, |this, cx| {
+                                cx.notify();
+                                this.terminal.is_some()
+                            })
+                            .unwrap_or(false);
+                        if !still_open {
+                            break;
+                        }
+                    }
+                }));
+            }
+            Err(error) => self.terminal_error = Some(error),
+        }
+        cx.notify();
+    }
+
+    /// Closes the panel; dropping the session kills the shell.
+    fn close_terminal(&mut self, cx: &mut Context<Self>) {
+        self.terminal = None;
+        self.terminal_task = None;
+        self.terminal_open = false;
+        self.terminal_error = None;
+        cx.notify();
+    }
+
+    /// Keeps the shell's column count in step with the center column.
+    fn resize_terminal(&mut self) {
+        let (rows, cols) = terminal::size_for_width(self.layout.center_width);
+        let Some(session) = self.terminal.as_mut() else {
+            return;
+        };
+        if let Err(error) = session.resize(rows, cols) {
+            self.terminal_error = Some(error);
+        }
+    }
+
+    /// Sends the input line to the shell and clears it.
+    fn send_terminal_line(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let line = self.terminal_input.read(cx).value().to_string();
+        self.terminal_input
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        if let Some(session) = self.terminal.as_mut()
+            && let Err(error) = session.send_line(&line)
+        {
+            self.terminal_error = Some(error);
+        }
+        cx.notify();
+    }
+
+    fn terminal_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = cx.theme().colors;
+        let (screen, running, location) = match self.terminal.as_ref() {
+            Some(session) => (
+                session.screen_text(),
+                session.is_running(),
+                format!(
+                    "{} · {}",
+                    session.shell(),
+                    session
+                        .cwd()
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_else(|| "home".to_string())
+                ),
+            ),
+            None => (String::new(), false, "not started".to_string()),
+        };
+        let error = self
+            .terminal_error
+            .clone()
+            .or_else(|| self.terminal.as_ref().and_then(TerminalSession::error));
+        div()
+            .flex()
+            .flex_col()
+            .flex_shrink_0()
+            .border_t_1()
+            .border_color(colors.border)
+            .bg(colors.sidebar)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_3()
+                    .py_1()
+                    .text_xs()
+                    .text_color(colors.muted_foreground)
+                    .child(IconName::Terminal)
+                    .child("Terminal")
+                    .child(location)
+                    .child(div().flex_1())
+                    .child(if running { "running" } else { "stopped" })
+                    .child(
+                        div()
+                            .id("terminal-close")
+                            .aria_label("Close terminal")
+                            .px_2()
+                            .rounded(px(6.0))
+                            .hover(|style| style.bg(colors.accent))
+                            .child(IconName::X)
+                            .on_click(
+                                cx.listener(|this, _, _, cx| this.close_terminal(cx)),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .id("terminal-screen")
+                    .mx_3()
+                    .h(px(232.0))
+                    .overflow_hidden()
+                    .rounded(px(6.0))
+                    .border_1()
+                    .border_color(colors.border)
+                    .bg(colors.background)
+                    .p_2()
+                    .font_family(terminal::monospace_font())
+                    .text_size(px(11.0))
+                    .whitespace_nowrap()
+                    .text_color(colors.foreground)
+                    .child(screen),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_3()
+                    .py_2()
+                    .child(div().flex_1().child(Input::new(&self.terminal_input)))
+                    .child(
+                        div()
+                            .id("terminal-send")
+                            .aria_label("Send to terminal")
+                            .px_3()
+                            .py_1()
+                            .rounded(px(6.0))
+                            .bg(colors.primary)
+                            .text_color(colors.primary_foreground)
+                            .text_sm()
+                            .child("Send")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.send_terminal_line(window, cx);
+                            })),
+                    ),
+            )
+            .when(error.is_some(), |element| {
+                element.child(
+                    div()
+                        .px_3()
+                        .pb_2()
+                        .text_xs()
+                        .text_color(colors.danger)
+                        .child(error.unwrap_or_default()),
+                )
+            })
     }
 
     pub fn select_session(&mut self, index: usize, cx: &mut Context<Self>) {
@@ -2929,6 +3157,12 @@ impl Render for Workspace {
                 this.ask_side_question(window, cx);
             });
         }
+        if self.terminal_submit_requested {
+            self.terminal_submit_requested = false;
+            cx.defer_in(window, |this, window, cx| {
+                this.send_terminal_line(window, cx);
+            });
+        }
         self.track_bounds(window, cx);
         let colors = cx.theme().colors;
         let show_sidebar = self.layout.sidebar_docked;
@@ -2999,6 +3233,9 @@ impl Render for Workspace {
                     .min_w(px(360.0))
                     .child(self.toolbar(cx))
                     .child(self.transcript(cx))
+                    .when(self.terminal_open, |element| {
+                        element.child(self.terminal_panel(cx))
+                    })
                     .when(!self.turn_changes.is_empty(), |element| {
                         element.child(self.turn_changes_card(cx))
                     })
