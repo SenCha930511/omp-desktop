@@ -103,16 +103,11 @@ cargo packager --formats nsis
 `Packager.toml` lists all three formats: `app` is macOS-only, `deb` is Linux-only, and `nsis` is Windows-only. cargo-packager still iterates every configured format instead of filtering to the host, so pass `--formats` for the package you want; CI does exactly that. The deb uses `assets/icon.png` for the hicolor icon and `assets/icon.icns` stays the macOS bundle icon. No `assets/icon.ico` is checked in, so the NSIS installer uses its default icon until that file is added and wired through `[nsis] installer_icon`.
 
 The packaged binary writes the same first-frame marker as the development build. CI repeats this on macOS (`Rust packaged smoke`), on Ubuntu under Xvfb (`Rust packaged smoke (Linux deb)`), and on `windows-2022` from the silently installed NSIS package (`Rust packaged smoke (Windows nsis)`).
-`/S` installs silently, `/NS` skips the desktop and Start menu shortcuts, and `/D=` must be the last argument and unquoted; keep the target path free of spaces so PowerShell cannot quote it. cargo-packager 0.11.8 downloads its own pinned NSIS 3.09 toolchain on Windows, so no system NSIS install is required.
-
-`Packager.toml` lists all three formats: `app` is macOS-only, `deb` is Linux-only, and `nsis` is Windows-only. cargo-packager still iterates every configured format instead of filtering to the host, so pass `--formats` for the package you want; CI does exactly that. The deb uses `assets/icon.png` for the hicolor icon and `assets/icon.icns` stays the macOS bundle icon. No `assets/icon.ico` is checked in, so the NSIS installer uses its default icon until that file is added and wired through `[nsis] installer_icon`.
-
-The packaged binary writes the same first-frame marker as the development build. CI repeats this on macOS (`Rust packaged smoke`), on Ubuntu under Xvfb (`Rust packaged smoke (Linux deb)`), and on `windows-2022` from the silently installed NSIS package (`Rust packaged smoke (Windows nsis)`).
 
 ## Remaining work
 
 - Terminal, live voice, dictation, and browser element annotations are present.
 - The workspace, Schedules, Browser, Files, Subagents, Side Question, Settings, Extensions, Review, and Summary are present.
 - The tray is present on macOS, Windows, and Linux; a Linux session without an AppIndicator host logs and continues.
-- The updater feed generator is present; wiring it into `release.yml` and signing remains. The client reads `not configured` without `OMP_UPDATER_PUBKEY`.
-- 95 parity tests map to about 87 distinct UI retirement scenarios; the remaining 1 and the final Electron cutover gate remain.
+- The updater feed generator is wired into `release.yml`; signing requires `RUST_UPDATER_SIGNING_KEY` and the client reads `OMP_UPDATER_PUBKEY`.
+- 96 parity tests map to about 88 distinct UI retirement scenarios; the final Electron cutover gate remains.
