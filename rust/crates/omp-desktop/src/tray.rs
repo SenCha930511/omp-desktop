@@ -104,6 +104,10 @@ static SENDER: Mutex<Option<async_channel::Sender<TrayCommand>>> = Mutex::new(No
 /// menu events into GPUI calls. Must run on the main thread, after the application
 /// has started (so the platform's menu bar exists).
 pub fn init(cx: &mut App, window: AnyWindowHandle) -> Result<Tray, TrayError> {
+    #[cfg(target_os = "linux")]
+    if gtk::init().is_err() {
+        return Err(TrayError::new("GTK could not be initialized for the tray"));
+    }
     let menu = build_menu()?;
     let rgba = tray_icon_rgba(ICON_PNG, ICON_PIXELS)?;
     let icon = Icon::from_rgba(rgba, ICON_PIXELS, ICON_PIXELS)

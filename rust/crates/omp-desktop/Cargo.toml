@@ -42,6 +42,10 @@ async-channel = "2"
 # tray asset ships. Only the PNG decoder is needed.
 image = { version = "0.25", default-features = false, features = ["png"] }
 
+# The Linux tray builds a GTK menu; GTK must be initialized before `muda` creates it.
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+
 [dev-dependencies]
 tempfile = "3"
 gpui-kit = { version = "0.10", default-features = false, features = ["component", "assets", "gpui-fast", "test-support"] }

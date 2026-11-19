@@ -5772,6 +5772,7 @@ dependencies = [
  "chrono",
  "gpui-kit",
  "gpui-webview",
+ "gtk",
  "image",
  "lb-wry",
  "omp-core",
