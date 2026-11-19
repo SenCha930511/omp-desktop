@@ -4504,6 +4504,280 @@ fn composer_send_while_running_queues_a_follow_up(cx: &mut TestAppContext) {
     assert_eq!(echoed["queuedFollowUps"], json!([]));
 }
 
+/// A real one-pixel PNG: its magic is what the composer trusts, and its bytes
+/// round-trip through base64 into the fixture's log.
+#[cfg(unix)]
+const ONE_PIXEL_PNG: [u8; 70] = [
+    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44,
+    0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F,
+    0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41, 0x54, 0x78, 0xDA, 0x63, 0xFC,
+    0xCF, 0xC0, 0x50, 0x0F, 0x00, 0x04, 0x85, 0x01, 0x80, 0x84, 0xA9, 0x8C, 0x21, 0x00, 0x00,
+    0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+];
+
+/// The base64 `ImageContent.data` for `ONE_PIXEL_PNG`.
+#[cfg(unix)]
+const ONE_PIXEL_PNG_BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+/// An attached image rides with the accepted prompt and follow-up, clears
+/// once the harness accepts it, and a rejected file never becomes a chip.
+///
+/// The conformance fixture logs every RPC command it receives, so the exact
+/// base64 and mime the harness would see are read back from its own record
+/// rather than from the app's state. The picker is the only path that needs a
+/// native dialog; the harness attaches through `attach_image_from_path`, which
+/// is where the picker's selection lands.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn composer_attachment_rides_with_prompt_and_follow_up(cx: &mut TestAppContext) {
+    use omp_core::projects;
+
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let home = root.join("home");
+    let project = root.join("project");
+    let fixture = install_fixture_omp(root);
+    for folder in [&home, &project, &root.join("user-data")] {
+        std::fs::create_dir_all(folder).expect("dir");
+    }
+    let project = project.canonicalize().expect("project path");
+
+    let mut store = open_store(root);
+    projects::grant_project(
+        &mut store,
+        &home,
+        Platform::current(),
+        project.to_str().expect("project path"),
+    )
+    .expect("grant");
+    drop(store);
+
+    let bucket = home.join(".omp/agent/sessions/-omp-project");
+    write_session(
+        &bucket,
+        "2026-04-02T00-00-00-000Z_019fdf24-aaaa-7000-8000-000000000030.jsonl",
+        "Attachments",
+        "2026-04-02T00:00:00.000Z",
+        "first prompt",
+        "first reply",
+        &project,
+    );
+    let store = open_store(root);
+    let catalog = omp_core::sessions::list_sessions(&store, &home, false, None);
+    drop(store);
+
+    // A real one-pixel PNG, so the magic check and the base64 round-trip are
+    // exercised on real bytes rather than a stand-in.
+    let png = root.join("dot.png");
+    std::fs::write(&png, ONE_PIXEL_PNG).expect("png");
+
+    let mut data = test_data(root);
+    data.home_dir = home;
+    data.omp_executable = fixture;
+    data.sessions = catalog;
+    let handle = cx.open_window(size(px(1280.0), px(900.0)), |window, cx| {
+        Workspace::new(window, cx, data)
+    });
+    let window: gpui_kit::AnyWindowHandle = handle.into();
+    let handle = window.downcast::<Workspace>().expect("workspace handle");
+
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.select_session(0, cx);
+            assert_eq!(snapshot(workspace, cx)["liveVoice"]["runtime"], json!(true));
+
+            workspace.attach_image_from_path(&png, cx);
+            let attached = snapshot(workspace, cx);
+            assert_eq!(
+                attached["composer"]["pendingImage"],
+                json!({
+                    "name": "dot.png",
+                    "mime": "image/png",
+                    "size": ONE_PIXEL_PNG.len(),
+                    "dataLength": ONE_PIXEL_PNG_BASE64.len(),
+                })
+            );
+            assert_eq!(attached["composer"]["imageError"], json!(null));
+        })
+        .expect("workspace window");
+
+    // The chip draws while the image waits for the next send.
+    draw_frame(cx, window);
+
+    handle
+        .update(cx, |workspace, window, cx| {
+            // The fixture's `[hold-busy]` prompt stays streaming, so the next
+            // send is a follow-up and this one is a plain prompt.
+            let composer = workspace.composer_entity().clone();
+            composer.update(cx, |state, cx| state.set_value("[hold-busy]", window, cx));
+            workspace.send_prompt(window, cx);
+            let sent = snapshot(workspace, cx);
+            assert_eq!(sent["running"], json!(true));
+            // The harness accepted the prompt, so the chip is gone.
+            assert_eq!(sent["composer"]["pendingImage"], json!(null));
+        })
+        .expect("workspace window");
+
+    draw_frame(cx, window);
+
+    handle
+        .update(cx, |workspace, window, cx| {
+            // A follow-up carries its own image: the queued command is a
+            // separate message, not a mutation of the running prompt.
+            workspace.attach_image_from_path(&png, cx);
+            let composer = workspace.composer_entity().clone();
+            composer.update(cx, |state, cx| state.set_value("queued image", window, cx));
+            workspace.send_prompt(window, cx);
+            let queued = snapshot(workspace, cx);
+            assert_eq!(queued["running"], json!(true));
+            assert_eq!(queued["composer"]["pendingImage"], json!(null));
+            let last = queued["transcript"]
+                .as_array()
+                .and_then(|transcript| transcript.last())
+                .cloned()
+                .expect("queued row");
+            assert_eq!(last["role"], "user");
+            assert_eq!(last["parts"][0]["kind"], "queued");
+            assert_eq!(last["parts"][0]["text"], "queued image");
+        })
+        .expect("workspace window");
+
+    handle
+        .update(cx, |workspace, _, cx| {
+            // An oversized file is refused from its metadata, before it is
+            // read, and never becomes a chip.
+            let oversized = root.join("big.png");
+            std::fs::File::create(&oversized)
+                .expect("big")
+                .set_len(10 * 1024 * 1024 + 1)
+                .expect("size");
+            workspace.attach_image_from_path(&oversized, cx);
+            let rejected = snapshot(workspace, cx);
+            assert_eq!(rejected["composer"]["pendingImage"], json!(null));
+            let error = rejected["composer"]["imageError"]
+                .as_str()
+                .expect("oversized error")
+                .to_string();
+            assert!(error.contains("11 MB"), "{error}");
+
+            // A name the composer does not accept is refused even when its
+            // bytes are a PNG, and a supported name with other bytes is
+            // refused by the magic check.
+            let text = root.join("note.txt");
+            std::fs::write(&text, ONE_PIXEL_PNG).expect("text");
+            workspace.attach_image_from_path(&text, cx);
+            let unsupported = snapshot(workspace, cx);
+            assert_eq!(unsupported["composer"]["pendingImage"], json!(null));
+            let error = unsupported["composer"]["imageError"]
+                .as_str()
+                .expect("unsupported error")
+                .to_string();
+            assert!(error.contains("Unsupported"), "{error}");
+
+            let mislabelled = root.join("fake.png");
+            std::fs::write(&mislabelled, b"hello").expect("fake");
+            workspace.attach_image_from_path(&mislabelled, cx);
+            let mismatched = snapshot(workspace, cx);
+            assert_eq!(mismatched["composer"]["pendingImage"], json!(null));
+            let error = mismatched["composer"]["imageError"]
+                .as_str()
+                .expect("mismatched error")
+                .to_string();
+            assert!(error.contains("not a PNG"), "{error}");
+
+            // The composer stays usable after a rejection: a valid image
+            // attaches, and removing the chip clears the error with it.
+            workspace.attach_image_from_path(&png, cx);
+            let retried = snapshot(workspace, cx);
+            assert_eq!(retried["composer"]["pendingImage"]["name"], json!("dot.png"));
+            assert_eq!(retried["composer"]["imageError"], json!(null));
+            workspace.clear_pending_image(cx);
+            let cleared = snapshot(workspace, cx);
+            assert_eq!(cleared["composer"]["pendingImage"], json!(null));
+            assert_eq!(cleared["composer"]["imageError"], json!(null));
+        })
+        .expect("workspace window");
+
+    // The fixture's log is the harness's own record of what arrived; the
+    // writes are asynchronous, so wait for the queued command to land.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let commands = loop {
+        let commands = fixture_commands(root);
+        if commands
+            .iter()
+            .any(|command| command["type"] == "follow_up")
+        {
+            break commands;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the fixture never logged the follow-up"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let expected = json!([{
+        "type": "image",
+        "data": ONE_PIXEL_PNG_BASE64,
+        "mimeType": "image/png",
+    }]);
+    let prompt = commands
+        .iter()
+        .find(|command| command["type"] == "prompt" && command["message"] == "[hold-busy]")
+        .expect("prompt command");
+    assert_eq!(prompt["images"], expected);
+    let follow_up = commands
+        .iter()
+        .find(|command| command["type"] == "follow_up")
+        .expect("follow-up command");
+    assert_eq!(follow_up["message"], "queued image");
+    assert_eq!(follow_up["images"], expected);
+    // The attachment is per send: only those two commands carried one.
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|command| command.get("images").is_some())
+            .count(),
+        2
+    );
+}
+
+/// A send the app cannot make leaves the attachment in place: the chip clears
+/// only once the harness accepts the command, so a rejected send never costs
+/// the user the file. No runtime runs here — the send is refused before it
+/// leaves the app, through the same early return a rejected prompt takes.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn composer_attachment_survives_a_rejected_send(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("home")).expect("home");
+    std::fs::create_dir_all(root.join("user-data")).expect("user-data");
+    let png = root.join("dot.png");
+    std::fs::write(&png, ONE_PIXEL_PNG).expect("png");
+
+    let mut data = test_data(root);
+    data.home_dir = root.join("home");
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    handle
+        .update(cx, |workspace, window, cx| {
+            workspace.attach_image_from_path(&png, cx);
+            let composer = workspace.composer_entity().clone();
+            composer.update(cx, |state, cx| state.set_value("no runtime", window, cx));
+            workspace.send_prompt(window, cx);
+            let rejected = snapshot(workspace, cx);
+            assert_eq!(
+                rejected["composer"]["pendingImage"]["name"],
+                json!("dot.png")
+            );
+            assert_eq!(rejected["running"], json!(false));
+            // The draft survives with it, so the retry is one click.
+            assert_eq!(rejected["composer"]["text"], "no runtime");
+        })
+        .expect("workspace window");
+}
+
 /// A stand-in `omp` for the model tests: the conformance fixture already
 /// answers `models --json` with a catalog and logs every RPC command under the
 /// state directory, so a selection can be proven to reach a live runtime.

@@ -260,6 +260,127 @@ fn context_usage_label(usage: &ContextUsage) -> String {
     )
 }
 
+/// One image waiting to ride along with the next prompt or follow-up.
+///
+/// The bytes are kept encoded rather than as a path: the send happens later,
+/// possibly after the file moved or changed, and the harness wants the image
+/// inline in the command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingImage {
+    name: String,
+    mime: &'static str,
+    data: String,
+    size: u64,
+}
+
+/// The largest attachment the composer reads, in bytes.
+///
+/// The image travels as base64 inside one JSON line to the harness, so the cap
+/// is a whole-message limit, not a rendering one.
+const ATTACHMENT_MAX_BYTES: u64 = 10 * 1024 * 1024;
+
+/// The mime for a supported image, decided by its magic bytes.
+///
+/// The extension only says what the user expects; the harness needs the type
+/// the bytes actually are, and a mismatch is a rejection, not a guess.
+fn image_mime(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Some("image/png");
+    }
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return Some("image/jpeg");
+    }
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        return Some("image/gif");
+    }
+    if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        return Some("image/webp");
+    }
+    None
+}
+
+/// Whether the file name advertises one of the four accepted image types.
+///
+/// The magic check decides the mime; this keeps a file named `.txt` from
+/// attaching just because its bytes happen to be a PNG.
+fn image_extension_supported(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .map(|extension| extension.to_ascii_lowercase())
+            .as_deref(),
+        Some("png" | "jpg" | "jpeg" | "webp" | "gif")
+    )
+}
+
+/// Standard base64 with padding, which is what `ImageContent.data` carries.
+///
+/// An attachment is the only thing in this crate that encodes bytes, so the
+/// encoder lives here instead of pulling in another dependency.
+fn base64_encode(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let triple = (u32::from(chunk[0]) << 16)
+            | (u32::from(chunk.get(1).copied().unwrap_or(0)) << 8)
+            | u32::from(chunk.get(2).copied().unwrap_or(0));
+        encoded.push(ALPHABET[(triple >> 18) as usize & 0x3F] as char);
+        encoded.push(ALPHABET[(triple >> 12) as usize & 0x3F] as char);
+        encoded.push(if chunk.len() > 1 {
+            ALPHABET[(triple >> 6) as usize & 0x3F] as char
+        } else {
+            '='
+        });
+        encoded.push(if chunk.len() > 2 {
+            ALPHABET[triple as usize & 0x3F] as char
+        } else {
+            '='
+        });
+    }
+    encoded
+}
+
+/// Reads one image for the composer, or explains why it cannot be attached.
+///
+/// The size is checked before the bytes are read, so an oversized file is a
+/// message instead of a multi-megabyte allocation. An unsupported name, bytes
+/// that are not one of the four image types and an unreadable file are all
+/// errors: the caller keeps whatever it already had.
+fn read_pending_image(path: &Path) -> Result<PendingImage, String> {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("image")
+        .to_string();
+    if !image_extension_supported(path) {
+        return Err(format!(
+            "Unsupported attachment {name}: choose a PNG, JPEG, WebP or GIF image."
+        ));
+    }
+    let metadata =
+        std::fs::metadata(path).map_err(|error| format!("Could not read {name}: {error}"))?;
+    if metadata.len() > ATTACHMENT_MAX_BYTES {
+        return Err(format!(
+            "Attachment {name} is {} MB; images must be 10 MB or smaller.",
+            metadata.len().div_ceil(1024 * 1024)
+        ));
+    }
+    let bytes =
+        std::fs::read(path).map_err(|error| format!("Could not read {name}: {error}"))?;
+    let Some(mime) = image_mime(&bytes) else {
+        return Err(format!(
+            "Unsupported attachment {name}: the file is not a PNG, JPEG, WebP or GIF image."
+        ));
+    };
+    Ok(PendingImage {
+        name,
+        mime,
+        data: base64_encode(&bytes),
+        size: bytes.len() as u64,
+    })
+}
+
 /// How many catalog models the Settings picker lists at once.
 ///
 /// The catalog is the harness's whole provider list, which can run to
@@ -430,6 +551,14 @@ pub struct Workspace {
     composer: Entity<InputState>,
     _composer_subscription: Subscription,
     submit_requested: Option<bool>,
+    // The image waiting for the next prompt or follow-up, if one is attached.
+    // It clears only once the harness accepts the command, so a rejected send
+    // keeps it for a retry.
+    pending_image: Option<PendingImage>,
+    // Why the last attach was refused: an unsupported or oversized file. It
+    // is the composer banner's own line, so a failed attach never overwrites
+    // a prompt's error and a successful attach clears it.
+    image_error: Option<String>,
     side_input: Entity<InputState>,
     _side_input_subscription: Subscription,
     side_submit_requested: bool,
@@ -645,6 +774,8 @@ impl Workspace {
             composer,
             _composer_subscription: composer_subscription,
             submit_requested: None,
+            pending_image: None,
+            image_error: None,
             side_input,
             _side_input_subscription: side_input_subscription,
             side_submit_requested: false,
@@ -1055,7 +1186,21 @@ impl Workspace {
                 "loading": self.model_load_task.is_some(),
                 "status": self.model_status,
             },
-            "composer": { "text": self.composer.read(cx).value().to_string() },
+            "composer": {
+                "text": self.composer.read(cx).value().to_string(),
+                // The image waiting for the next send. The name, mime and
+                // byte size are what the chip draws; the encoded length is
+                // enough to prove the bytes are held without copying a whole
+                // attachment into the snapshot.
+                "pendingImage": self.pending_image.as_ref().map(|image| json!({
+                    "name": image.name,
+                    "mime": image.mime,
+                    "size": image.size,
+                    "dataLength": image.data.len(),
+                })),
+                // Why the last attach was refused, while the banner shows it.
+                "imageError": self.image_error,
+            },
             "files": {
                 "entries": files,
                 "skipped": self.files_skipped,
@@ -3147,6 +3292,52 @@ impl Workspace {
         self.follow_transcript_tail();
     }
 
+    /// Opens the native file picker and attaches the chosen image.
+    ///
+    /// The picker answers on the app's task queue, so the click only starts
+    /// it; the selection lands in `attach_image_from_path`, which is also the
+    /// parity harness's entry point and never opens a dialog.
+    pub fn pick_image(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let _ = window;
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Attach image".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = receiver.await
+                && let Some(path) = paths.first().cloned()
+            {
+                let _ = this.update(cx, |this, cx| this.attach_image_from_path(&path, cx));
+            }
+        })
+        .detach();
+    }
+
+    /// Attaches one image to the next prompt or follow-up.
+    ///
+    /// A rejected file leaves the composer as it was — including an image that
+    /// is already attached — and reports why in the status banner, so the
+    /// draft stays usable.
+    pub fn attach_image_from_path(&mut self, path: &Path, cx: &mut Context<Self>) {
+        match read_pending_image(path) {
+            Ok(image) => {
+                self.pending_image = Some(image);
+                self.image_error = None;
+            }
+            Err(error) => self.image_error = Some(error),
+        }
+        cx.notify();
+    }
+
+    /// Drops the pending attachment, leaving the draft text alone.
+    pub fn clear_pending_image(&mut self, cx: &mut Context<Self>) {
+        self.pending_image = None;
+        self.image_error = None;
+        cx.notify();
+    }
+
     pub fn send_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.send_prompt_with_action(window, cx, false);
     }
@@ -3175,13 +3366,21 @@ impl Workspace {
             self.turn_changes = TurnChanges::default();
             self.turn_baseline = self.capture_turn_baseline();
         }
-        let response = match self.agents.command(
-            &runtime_id,
-            &json!({
-                "type": if queued { "follow_up" } else { "prompt" },
-                "message": text,
-            }),
-        ) {
+        // An attachment rides with both a prompt and a follow-up: the harness
+        // reads `images` on either, and a queued turn must not lose its image
+        // just because it waits behind a running one.
+        let mut payload = json!({
+            "type": if queued { "follow_up" } else { "prompt" },
+            "message": text,
+        });
+        if let Some(image) = &self.pending_image {
+            payload["images"] = json!([{
+                "type": "image",
+                "data": image.data,
+                "mimeType": image.mime,
+            }]);
+        }
+        let response = match self.agents.command(&runtime_id, &payload) {
             Ok(response) if response.get("success").and_then(Value::as_bool) == Some(true) => {
                 response
             }
@@ -3222,6 +3421,11 @@ impl Workspace {
                 return;
             }
         };
+        // The image rode with the accepted command; a rejected send returned
+        // above with it still attached, so the user can retry without picking
+        // the file again.
+        self.pending_image = None;
+        self.image_error = None;
         self.runtime_error = None;
         if queued {
             // The harness owns the queued turn, so this row is only its trace
@@ -3491,11 +3695,13 @@ impl Workspace {
             .clone()
             .unwrap_or_else(|| format!("Dictation: {}", self.dictation_phase));
         let dictation_preview = self.dictation_preview.clone();
-        // One status banner above the input: a runtime error outranks the last
-        // fork notice, and a notice keeps the plain color of a confirmation.
+        // One status banner above the input: a runtime error outranks a
+        // refused attachment, and the last fork notice comes last. Both
+        // failures are errors; a notice keeps the plain confirmation color.
         let banner = self
             .runtime_error
             .clone()
+            .or_else(|| self.image_error.clone())
             .map(|error| (error, colors.danger))
             .or_else(|| {
                 self.fork_status
@@ -3517,6 +3723,43 @@ impl Workspace {
                         .text_xs()
                         .text_color(color)
                         .child(text),
+                )
+            })
+            // The pending attachment sits above the input as one chip: the
+            // file the next prompt will carry, and the control that drops it.
+            .when_some(self.pending_image.clone(), |element, image| {
+                element.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .id("pending-image")
+                                .aria_label(format!("Image: {}", image.name))
+                                .px_2()
+                                .py_1()
+                                .rounded(px(6.0))
+                                .border_1()
+                                .border_color(colors.border)
+                                .text_xs()
+                                .text_color(colors.foreground)
+                                .child(format!("Image: {}", image.name)),
+                        )
+                        .child(
+                            div()
+                                .id("clear-image")
+                                .aria_label("Remove image")
+                                .px_2()
+                                .py_1()
+                                .rounded(px(6.0))
+                                .text_xs()
+                                .text_color(colors.muted_foreground)
+                                .child("×")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.clear_pending_image(cx);
+                                })),
+                        ),
                 )
             })
             .when(
@@ -3553,6 +3796,22 @@ impl Workspace {
                     .items_center()
                     .gap_2()
                     .child(div().flex_1().child(Input::new(&self.composer)))
+                    .child(
+                        div()
+                            .id("attach-image")
+                            .aria_label("Attach image")
+                            .px_2()
+                            .py_1()
+                            .rounded(px(6.0))
+                            .border_1()
+                            .border_color(colors.border)
+                            .text_sm()
+                            .text_color(colors.foreground)
+                            .child("📎")
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.pick_image(window, cx)),
+                            ),
+                    )
                     .child(
                         div()
                             .id("dictate")
@@ -7445,17 +7704,17 @@ mod tests {
     use omp_core::settings::AppSettings;
 
     use super::{
-        AppView, AskDialog, AskOption, AskQuestion, CLOSE_CONFIRM_ACCEPT, CLOSE_CONFIRM_CANCEL,
-        CloseGuard, CloseIntent, ContextUsage, DictationState, LIVE_TRANSCRIPT_LIMIT,
-        LiveVoiceState, RightPane, TERMINAL_MENU_ITEMS, TRANSCRIPT_BOTTOM_THRESHOLD,
-        TerminalMenuAction, TerminalTabSpec, TerminalTabSpecs, UpdateCheckState, Workspace,
-        WorkspaceData, append_clipboard_text, append_dictation_text, append_side_answer,
-        apply_dictation_frame, apply_live_voice_event, ask_answers_ready, ask_cancel_payload,
-        ask_submit_payload, capture_path, close_confirmation, composer_model_label,
-        context_percent, context_usage_label, group_digits, model_key, parse_ask_questions,
-        parse_context_usage, parse_model_key, should_confirm_close, side_answer_delta,
-        terminal_menu, terminal_menu_action, terminal_tab_bar, transcript_is_at_bottom, updates,
-        write_capture,
+        ATTACHMENT_MAX_BYTES, AppView, AskDialog, AskOption, AskQuestion, CLOSE_CONFIRM_ACCEPT,
+        CLOSE_CONFIRM_CANCEL, CloseGuard, CloseIntent, ContextUsage, DictationState,
+        LIVE_TRANSCRIPT_LIMIT, LiveVoiceState, RightPane, TERMINAL_MENU_ITEMS,
+        TRANSCRIPT_BOTTOM_THRESHOLD, TerminalMenuAction, TerminalTabSpec, TerminalTabSpecs,
+        UpdateCheckState, Workspace, WorkspaceData, append_clipboard_text, append_dictation_text,
+        append_side_answer, apply_dictation_frame, apply_live_voice_event, ask_answers_ready,
+        ask_cancel_payload, ask_submit_payload, base64_encode, capture_path, close_confirmation,
+        composer_model_label, context_percent, context_usage_label, group_digits, image_mime,
+        model_key, parse_ask_questions, parse_context_usage, parse_model_key, read_pending_image,
+        should_confirm_close, side_answer_delta, terminal_menu, terminal_menu_action,
+        terminal_tab_bar, transcript_is_at_bottom, updates, write_capture,
     };
     use omp_core::sessions::{TranscriptMessage, TranscriptPart};
 
@@ -7520,6 +7779,78 @@ mod tests {
             .expect("timestamp")
             .with_timezone(&chrono::Utc);
         assert_ne!(capture_path(root.path(), later), saved);
+    }
+
+    /// The one-pixel PNG the attachment tests write, magic included: the
+    /// composer trusts the bytes, not the file name.
+    const ONE_PIXEL_PNG: [u8; 70] = [
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
+        0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+        0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41, 0x54, 0x78,
+        0xDA, 0x63, 0xFC, 0xCF, 0xC0, 0x50, 0x0F, 0x00, 0x04, 0x85, 0x01, 0x80, 0x84, 0xA9,
+        0x8C, 0x21, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+    ];
+
+    /// An attachment is standard padded base64 of the file's bytes, and the
+    /// magic decides the mime the harness receives.
+    #[test]
+    fn attachments_encode_to_base64_and_identify_their_mime() {
+        // The vectors are RFC 4648's, padding included.
+        assert_eq!(base64_encode(b""), "");
+        assert_eq!(base64_encode(b"f"), "Zg==");
+        assert_eq!(base64_encode(b"fo"), "Zm8=");
+        assert_eq!(base64_encode(b"foo"), "Zm9v");
+        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+        assert_eq!(
+            base64_encode(&ONE_PIXEL_PNG),
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+        );
+
+        assert_eq!(image_mime(&ONE_PIXEL_PNG), Some("image/png"));
+        assert_eq!(image_mime(&[0xFF, 0xD8, 0xFF, 0xE0]), Some("image/jpeg"));
+        assert_eq!(image_mime(b"GIF89a...."), Some("image/gif"));
+        assert_eq!(image_mime(b"RIFF\x00\x00\x00\x00WEBP"), Some("image/webp"));
+        assert_eq!(image_mime(b"not an image"), None);
+    }
+
+    /// A file only attaches when its name and bytes agree with one of the four
+    /// image types, and an oversized file is rejected before it is read.
+    #[test]
+    fn attachments_reject_unsupported_and_oversized_files() {
+        let root = tempfile::TempDir::new().expect("test root");
+        let png = root.path().join("dot.png");
+        std::fs::write(&png, ONE_PIXEL_PNG).expect("png");
+        let attached = read_pending_image(&png).expect("attached png");
+        assert_eq!(attached.name, "dot.png");
+        assert_eq!(attached.mime, "image/png");
+        assert_eq!(attached.size, ONE_PIXEL_PNG.len() as u64);
+
+        // A name the composer does not accept is refused even when the bytes
+        // are an image; a supported name with other bytes is refused too.
+        let text = root.path().join("note.txt");
+        std::fs::write(&text, ONE_PIXEL_PNG).expect("text");
+        assert!(
+            read_pending_image(&text)
+                .expect_err("unsupported name")
+                .contains("Unsupported")
+        );
+
+        let mislabelled = root.path().join("fake.png");
+        std::fs::write(&mislabelled, b"hello").expect("fake");
+        assert!(
+            read_pending_image(&mislabelled)
+                .expect_err("unsupported bytes")
+                .contains("not a PNG")
+        );
+
+        // The size comes from the metadata, so the sparse file is never read.
+        let oversized = root.path().join("big.png");
+        std::fs::File::create(&oversized)
+            .expect("big")
+            .set_len(ATTACHMENT_MAX_BYTES + 1)
+            .expect("size");
+        let error = read_pending_image(&oversized).expect_err("oversized");
+        assert!(error.contains("11 MB"), "{error}");
     }
 
     /// A reading needs every field: a missing `contextUsage`, a zero window, a
