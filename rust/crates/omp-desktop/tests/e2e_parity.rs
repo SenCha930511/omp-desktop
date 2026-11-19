@@ -3552,6 +3552,68 @@ fn terminal_panel_reports_no_tabs_without_a_shell(cx: &mut TestAppContext) {
         .expect("workspace window");
 }
 
+/// The terminal's `Send selection` action quotes the screen's last output row
+/// into the composer draft, leaves the terminal screen untouched and sends
+/// nothing; an empty screen is a no-op that reports a status.
+///
+/// The panel is opened through the shell-less seam, so the scenario drives a
+/// real `vt100` mirror without spawning a PTY.
+#[gpui_kit::test]
+fn terminal_selection_reaches_the_composer_without_changing_the_screen(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, test_data(root)));
+    handle
+        .update(cx, |workspace, window, cx| {
+            // An empty screen first: the action reports and inserts nothing.
+            workspace.open_terminal_screen(cx);
+            workspace.send_terminal_selection(window, cx);
+            let empty = snapshot(workspace, cx);
+            assert_eq!(
+                empty["terminal"]["status"],
+                json!("No terminal output to send.")
+            );
+            assert_eq!(empty["terminal"]["selection"], json!(""));
+            assert_eq!(empty["composer"]["text"], json!(""));
+            assert_eq!(empty["terminal"]["session"], json!(true));
+            assert_eq!(empty["terminal"]["running"], json!(false));
+
+            // Feed output: the last visible row is what the action quotes.
+            assert!(workspace.feed_terminal_output(b"$ npm run build\r\nok\r\n", cx));
+            let before = snapshot(workspace, cx);
+            assert_eq!(before["terminal"]["selection"], json!("ok"));
+            assert_eq!(before["terminal"]["screen"], json!("$ npm run build\nok"));
+            // New output cleared the empty-screen status.
+            assert_eq!(before["terminal"]["status"], json!(null));
+
+            workspace.send_terminal_selection(window, cx);
+            let after = snapshot(workspace, cx);
+            assert_eq!(after["composer"]["text"], json!("Terminal output: ok"));
+            // Nothing was sent: the transcript is empty and no turn started.
+            assert_eq!(after["running"], json!(false));
+            assert!(
+                after["transcript"]
+                    .as_array()
+                    .expect("transcript")
+                    .is_empty()
+            );
+            // The send reads the screen; it never clears or edits it.
+            assert_eq!(after["terminal"]["screen"], before["terminal"]["screen"]);
+            assert_eq!(
+                after["terminal"]["selection"],
+                before["terminal"]["selection"]
+            );
+            assert_eq!(after["terminal"]["tabs"], before["terminal"]["tabs"]);
+            assert_eq!(
+                after["terminal"]["activeTab"],
+                before["terminal"]["activeTab"]
+            );
+            assert_eq!(after["terminal"]["status"], json!(null));
+        })
+        .expect("workspace window");
+}
+
 /// Live Voice opens idle and stays idle while no runtime carries the audio:
 /// the pane never fabricates a phase, level or transcript line on its own.
 ///

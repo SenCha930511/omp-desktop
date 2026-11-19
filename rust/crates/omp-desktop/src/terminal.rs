@@ -94,6 +94,21 @@ pub fn normalize_screen_text(contents: &str) -> String {
     lines.join("\n")
 }
 
+/// The text `Send selection` offers for a screen: the last non-empty visible
+/// line, with trailing padding dropped and leading indentation kept.
+///
+/// The `vt100` mirror tracks no mouse selection, so the last output row is the
+/// closest thing to a selection the panel has; a blank screen yields nothing.
+pub fn last_visible_line(contents: &str) -> String {
+    normalize_screen_text(contents)
+        .lines()
+        .rev()
+        .map(str::trim_end)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default()
+        .to_string()
+}
+
 /// The label one tab shows: the shell it started and the directory it is in.
 pub fn tab_label(shell: &str, cwd: Option<&Path>) -> String {
     format!(
@@ -243,10 +258,14 @@ impl TerminalState {
 ///
 /// Output is read on a dedicated thread; the panel waits on [`Self::notifications`]
 /// instead of polling. Dropping the session kills the child.
+///
+/// A session may also be [`Self::detached`]: a screen mirror with no process
+/// behind it, which the parity harness feeds so the selection and copy paths
+/// can be exercised without spawning a shell.
 pub struct TerminalSession {
     shared: Arc<Mutex<TerminalState>>,
-    master: Box<dyn MasterPty + Send>,
-    writer: Box<dyn Write + Send>,
+    master: Option<Box<dyn MasterPty + Send>>,
+    writer: Option<Box<dyn Write + Send>>,
     child: Option<Box<dyn Child + Send + Sync>>,
     notifications: Receiver<()>,
     shell: String,
@@ -333,8 +352,8 @@ impl TerminalSession {
 
         Ok(Self {
             shared,
-            master: pty.master,
-            writer,
+            master: Some(pty.master),
+            writer: Some(writer),
             child: Some(child),
             notifications,
             shell,
@@ -342,6 +361,51 @@ impl TerminalSession {
             rows,
             cols,
         })
+    }
+
+    /// A screen mirror with no shell behind it.
+    ///
+    /// The parity harness feeds it terminal output so the selection and copy
+    /// paths run against a real `vt100` screen without opening a PTY. Nothing
+    /// here reads or writes a process: `send_line` reports the missing shell
+    /// instead, and `resize` only resizes the mirror.
+    #[doc(hidden)]
+    pub fn detached(rows: u16, cols: u16) -> Self {
+        let rows = clamp_dimension(rows, DEFAULT_ROWS);
+        let cols = clamp_dimension(cols, DEFAULT_COLS);
+        // The sender is dropped on return, so the panel's wake-up channel is
+        // closed from the start: a watcher ends immediately, as it would for
+        // a shell that already exited.
+        let (_sender, notifications) = async_channel::bounded(1);
+        Self {
+            shared: Arc::new(Mutex::new(TerminalState {
+                parser: Parser::new(rows, cols, 0),
+                running: false,
+                error: None,
+            })),
+            master: None,
+            writer: None,
+            child: None,
+            notifications,
+            shell: "detached".to_string(),
+            cwd: None,
+            rows,
+            cols,
+        }
+    }
+
+    /// Parses `bytes` into the screen mirror as if the shell had printed them.
+    ///
+    /// Only a detached session accepts output; a live shell's screen is fed by
+    /// its reader thread. Returns false when a shell is attached, so a caller
+    /// cannot fake output into a real terminal.
+    #[doc(hidden)]
+    pub fn feed(&mut self, bytes: &[u8]) -> bool {
+        if self.writer.is_some() {
+            return false;
+        }
+        TerminalState::lock(&self.shared).parser.process(bytes);
+        true
     }
 
     /// Wakes once per burst of terminal output; the panel re-reads the screen
@@ -354,6 +418,16 @@ impl TerminalSession {
     pub fn screen_text(&self) -> String {
         let state = TerminalState::lock(&self.shared);
         normalize_screen_text(&state.parser.screen().contents())
+    }
+
+    /// The text `Send selection` hands to the composer.
+    ///
+    /// The mirror keeps no mouse selection, so this is the last non-empty
+    /// visible line — the output row a user would point at — and an empty
+    /// screen yields nothing at all.
+    pub fn selection_text(&self) -> String {
+        let state = TerminalState::lock(&self.shared);
+        last_visible_line(&state.parser.screen().contents())
     }
 
     /// Resets the screen mirror without touching the shell.
@@ -389,27 +463,34 @@ impl TerminalSession {
     /// Sends one line to the shell, as if the user typed it and pressed Enter.
     pub fn send_line(&mut self, line: &str) -> Result<(), String> {
         let bytes = encode_input(line);
-        self.writer
+        let Some(writer) = self.writer.as_mut() else {
+            return Err(self.record_error("This terminal has no shell to send to.".to_string()));
+        };
+        writer
             .write_all(&bytes)
-            .and_then(|()| self.writer.flush())
+            .and_then(|()| writer.flush())
             .map_err(|error| self.record_error(format!("Could not write to the terminal: {error}")))
     }
 
     /// Resizes the PTY and its screen mirror. Unchanged sizes are a no-op.
+    ///
+    /// A detached session has no PTY to resize; only its mirror changes.
     pub fn resize(&mut self, rows: u16, cols: u16) -> Result<(), String> {
         let rows = clamp_dimension(rows, DEFAULT_ROWS);
         let cols = clamp_dimension(cols, DEFAULT_COLS);
         if (rows, cols) == (self.rows, self.cols) {
             return Ok(());
         }
-        self.master
-            .resize(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .map_err(|error| format!("Could not resize the terminal: {error}"))?;
+        if let Some(master) = self.master.as_mut() {
+            master
+                .resize(PtySize {
+                    rows,
+                    cols,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                })
+                .map_err(|error| format!("Could not resize the terminal: {error}"))?;
+        }
         TerminalState::lock(&self.shared)
             .parser
             .screen_mut()
@@ -481,8 +562,8 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        TerminalTabSpec, TerminalTabSpecs, clamp_dimension, encode_input, normalize_screen_text,
-        size_for_width, tab_after_close, tab_label,
+        TerminalSession, TerminalTabSpec, TerminalTabSpecs, clamp_dimension, encode_input,
+        last_visible_line, normalize_screen_text, size_for_width, tab_after_close, tab_label,
     };
 
     #[test]
@@ -498,6 +579,44 @@ mod tests {
         assert_eq!(normalize_screen_text(contents), "  total 4\n  file.txt");
         assert_eq!(normalize_screen_text("\n \n\t\n"), "");
         assert_eq!(normalize_screen_text("one\ntwo"), "one\ntwo");
+    }
+
+    /// The selection fallback is the last output row: trailing padding goes,
+    /// leading indentation stays, and blank rows above it are skipped.
+    #[test]
+    fn selection_takes_the_last_non_empty_line() {
+        assert_eq!(last_visible_line("one\ntwo\n\n\n"), "two");
+        assert_eq!(
+            last_visible_line("  total 4\n  file.txt     \n\n"),
+            "  file.txt"
+        );
+        assert_eq!(last_visible_line("single"), "single");
+        assert_eq!(last_visible_line("\n \n\t\n"), "");
+        assert_eq!(last_visible_line(""), "");
+    }
+
+    /// A detached session parses fed output into a real screen, so selection
+    /// and copy read the same text a live shell would produce; an empty feed
+    /// leaves the screen blank.
+    #[test]
+    fn detached_session_mirrors_fed_output_without_a_shell() {
+        let mut session = TerminalSession::detached(4, 40);
+        assert!(session.selection_text().is_empty());
+        assert!(session.screen_text().is_empty());
+        assert!(!session.is_running());
+
+        assert!(session.feed(b"npm run build\r\n"));
+        assert_eq!(session.screen_text(), "npm run build");
+        assert_eq!(session.selection_text(), "npm run build");
+
+        // A later row becomes the selection; the earlier rows stay on screen.
+        assert!(session.feed(b"ok\r\n"));
+        assert_eq!(session.screen_text(), "npm run build\nok");
+        assert_eq!(session.selection_text(), "ok");
+
+        // There is no shell behind a detached session to write to.
+        assert!(session.send_line("echo hi").is_err());
+        assert!(session.error().is_some());
     }
 
     #[test]

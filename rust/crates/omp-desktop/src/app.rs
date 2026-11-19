@@ -580,6 +580,14 @@ struct ScheduledRun {
 /// lives only until the session list hands out a real id.
 const DRAFT_TERMINAL_KEY: &str = "new-session";
 
+/// The label a sent terminal selection carries into the composer draft, so the
+/// prompt says where the quoted output came from.
+const TERMINAL_SELECTION_LABEL: &str = "Terminal output:";
+
+/// What `Send selection` reports when the screen has nothing to send. The
+/// composer is left untouched: an empty quote is not a prompt.
+const TERMINAL_EMPTY_SELECTION_STATUS: &str = "No terminal output to send.";
+
 /// How many sessions the composer's mention menu lists at once. The menu is a
 /// popover above the input, so it stays bounded instead of growing with the
 /// catalog.
@@ -774,6 +782,9 @@ pub struct Workspace {
     _terminal_input_subscription: Subscription,
     terminal_submit_requested: bool,
     terminal_error: Option<String>,
+    // The last `Send selection` outcome, shown under the screen: a no-op on a
+    // blank terminal explains itself instead of silently doing nothing.
+    terminal_status: Option<String>,
     // The header's menu is a popup of the panel itself: it is only drawn while
     // the panel is open, and any row closes it again.
     terminal_menu_open: bool,
@@ -1001,6 +1012,7 @@ impl Workspace {
             _terminal_input_subscription: terminal_input_subscription,
             terminal_submit_requested: false,
             terminal_error: None,
+            terminal_status: None,
             terminal_menu_open: false,
             terminal_tasks: Vec::new(),
             files: Vec::new(),
@@ -1677,6 +1689,17 @@ impl Workspace {
         // drawing the right pane as an overlay over the transcript.
         snapshot["compactLayout"] = json!(self.compact_layout);
         snapshot["detailsOpen"] = json!(self.compact_layout && self.details_open);
+        // The terminal's `Send selection` state: what the action would quote
+        // and what it last reported. Both are derived, so a scenario can prove
+        // the screen survived a send by comparing the selection around it.
+        snapshot["terminal"]["selection"] = json!(self.terminal_selection_text());
+        snapshot["terminal"]["status"] = json!(self.terminal_status);
+        snapshot["terminal"]["screen"] = json!(
+            self.terminals
+                .get(self.active_terminal)
+                .map(TerminalSession::screen_text)
+                .unwrap_or_default()
+        );
         snapshot
     }
 
@@ -2278,6 +2301,7 @@ impl Workspace {
         self.terminal_tasks.clear();
         self.active_terminal = 0;
         self.terminal_error = None;
+        self.terminal_status = None;
         self.terminal_menu_open = false;
         if !self.terminal_open {
             return;
@@ -2292,12 +2316,16 @@ impl Workspace {
         self.terminals.push(session);
         self.active_terminal = self.terminals.len() - 1;
         self.terminal_error = None;
+        self.terminal_status = None;
         // Wake on output bursts rather than polling; the channel closes when
         // this tab's session is dropped, which ends this task.
         self.terminal_tasks.push(cx.spawn(async move |this, cx| {
             while notifications.recv().await.is_ok() {
                 let still_open = this
                     .update(cx, |this, cx| {
+                        // Fresh output supersedes the last send notice, so an
+                        // empty-screen status never outlives the blank screen.
+                        this.terminal_status = None;
                         cx.notify();
                         !this.terminals.is_empty()
                     })
@@ -2356,6 +2384,7 @@ impl Workspace {
         self.active_terminal = 0;
         self.terminal_open = false;
         self.terminal_error = None;
+        self.terminal_status = None;
         self.terminal_menu_open = false;
         let key = self.terminal_key();
         if self
@@ -2394,14 +2423,18 @@ impl Workspace {
     /// Runs one row of the terminal header menu and closes it.
     ///
     /// Copy puts the active screen's text on the clipboard, Paste appends the
-    /// clipboard to the input line (never to the PTY), and Clear resets the
-    /// screen mirror while the shell keeps running. An unknown id closes the
-    /// menu and does nothing else.
+    /// clipboard to the input line (never to the PTY), Send selection quotes
+    /// the screen's last output row into the composer draft without sending,
+    /// and Clear resets the screen mirror while the shell keeps running. An
+    /// unknown id closes the menu and does nothing else.
     fn terminal_menu_click(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.terminal_menu_open = false;
         match terminal_menu_action(id) {
             Some(TerminalMenuAction::Copy) => self.copy_terminal_screen(cx),
             Some(TerminalMenuAction::Paste) => self.paste_terminal_clipboard(window, cx),
+            Some(TerminalMenuAction::SendSelection) => {
+                self.send_terminal_selection(window, cx);
+            }
             Some(TerminalMenuAction::Clear) => self.clear_terminal_screen(cx),
             None => {}
         }
@@ -2441,7 +2474,91 @@ impl Workspace {
         if let Some(session) = self.terminals.get_mut(self.active_terminal) {
             session.clear();
         }
+        self.terminal_status = None;
         cx.notify();
+    }
+
+    /// The text `Send selection` would quote: the active tab's selection, or
+    /// the last non-empty visible line when the mirror has none.
+    pub fn terminal_selection_text(&self) -> String {
+        self.terminals
+            .get(self.active_terminal)
+            .map(TerminalSession::selection_text)
+            .unwrap_or_default()
+    }
+
+    /// Quotes the terminal's selection into the composer draft.
+    ///
+    /// The row lands after a short `Terminal output:` label, separated from an
+    /// existing draft by one space, and nothing is sent: Send is still the
+    /// user's press. The terminal keeps its screen and its focus; a blank
+    /// terminal is a no-op that reports a status instead of inserting a bare
+    /// label.
+    pub fn send_terminal_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let selection = self.terminal_selection_text();
+        if selection.is_empty() {
+            self.terminal_status = Some(TERMINAL_EMPTY_SELECTION_STATUS.to_string());
+            cx.notify();
+            return;
+        }
+        let text = terminal_selection_text_block(&selection);
+        self.insert_composer_text(&text, window, cx);
+        self.terminal_status = None;
+        cx.notify();
+    }
+
+    /// Appends `text` to the composer draft, without sending.
+    ///
+    /// The draft the user already typed is kept and separated by one space, so
+    /// inserted text does not run into the word before it. Focus is untouched:
+    /// the composer is not raised and the menu that inserted the text keeps
+    /// the keyboard.
+    pub fn insert_composer_text(
+        &mut self,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if text.is_empty() {
+            return;
+        }
+        let draft = self.composer.read(cx).value().to_string();
+        let next = append_composer_text(&draft, text);
+        if next == draft {
+            return;
+        }
+        let composer = self.composer.clone();
+        composer.update(cx, |state, cx| state.set_value(next, window, cx));
+        cx.notify();
+    }
+
+    /// Test seam: opens the panel with one shell-less tab and a blank screen.
+    ///
+    /// The parity harness drives `Send selection` through this so the action
+    /// runs against a real `vt100` mirror without spawning a PTY. The tab is
+    /// not filed as a spec: there is no shell to reopen later.
+    #[doc(hidden)]
+    pub fn open_terminal_screen(&mut self, cx: &mut Context<Self>) {
+        let (rows, cols) = terminal::size_for_width(self.layout.center_width);
+        self.terminal_open = true;
+        self.adopt_terminal(TerminalSession::detached(rows, cols), cx);
+        cx.notify();
+    }
+
+    /// Test seam: parses `bytes` into the active tab's mirror, as if the shell
+    /// had printed them. Returns false when no tab accepts output.
+    #[doc(hidden)]
+    pub fn feed_terminal_output(&mut self, bytes: &[u8], cx: &mut Context<Self>) -> bool {
+        let fed = self
+            .terminals
+            .get_mut(self.active_terminal)
+            .is_some_and(|session| session.feed(bytes));
+        if fed {
+            // Mirrors the live watcher: new output clears the last notice.
+            self.terminal_status = None;
+            cx.notify();
+        }
+        fed
     }
 
     fn terminal_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2593,6 +2710,16 @@ impl Workspace {
                         .text_xs()
                         .text_color(colors.danger)
                         .child(error.unwrap_or_default()),
+                )
+            })
+            .when_some(self.terminal_status.clone(), |element, status| {
+                element.child(
+                    div()
+                        .px_3()
+                        .pb_2()
+                        .text_xs()
+                        .text_color(colors.muted_foreground)
+                        .child(status),
                 )
             })
             .when(self.terminal_menu_open, |element| {
@@ -7741,17 +7868,23 @@ type NewTabClick = dyn Fn(&mut Window, &mut App);
 enum TerminalMenuAction {
     Copy,
     Paste,
+    SendSelection,
     Clear,
 }
 
 /// The terminal header menu's rows, in order: element id, label and action.
-const TERMINAL_MENU_ITEMS: [(&str, &str, TerminalMenuAction); 3] = [
+const TERMINAL_MENU_ITEMS: [(&str, &str, TerminalMenuAction); 4] = [
     (
         "terminal-menu-copy",
         "Copy screen",
         TerminalMenuAction::Copy,
     ),
     ("terminal-menu-paste", "Paste", TerminalMenuAction::Paste),
+    (
+        "terminal-menu-send-selection",
+        "Send selection",
+        TerminalMenuAction::SendSelection,
+    ),
     ("terminal-menu-clear", "Clear", TerminalMenuAction::Clear),
 ];
 
@@ -7767,8 +7900,9 @@ fn terminal_menu_action(id: &str) -> Option<TerminalMenuAction> {
 type TerminalMenuPick = dyn Fn(&'static str, &mut Window, &mut App);
 
 /// Draws the terminal header's menu: copy the screen, paste into the input
-/// line, or clear the screen. It is anchored to the panel, which is relative,
-/// and the caller owns both the open flag and the actions.
+/// line, quote the selection into the composer, or clear the screen. It is
+/// anchored to the panel, which is relative, and the caller owns both the open
+/// flag and the actions.
 fn terminal_menu(
     colors: ThemeColor,
     on_pick: impl Fn(&'static str, &mut Window, &mut App) + 'static,
@@ -7822,6 +7956,27 @@ fn append_clipboard_text(current: &str, clipboard: &str) -> String {
         next.push_str(line.trim_end_matches('\r'));
     }
     next
+}
+
+/// The text `Send selection` inserts: the quoted row after its label.
+///
+/// The composer is a single-line prompt, so the quote stays on one line; the
+/// label is what keeps it readable next to the user's own draft.
+fn terminal_selection_text_block(selection: &str) -> String {
+    format!("{TERMINAL_SELECTION_LABEL} {selection}")
+}
+
+/// Appends `text` to `draft`, separated by one space.
+///
+/// The composer holds a single line, so a newline separator would be stripped
+/// by the input itself; a space keeps the inserted text apart from the draft
+/// without rewriting it.
+fn append_composer_text(draft: &str, text: &str) -> String {
+    if draft.is_empty() || draft.ends_with(char::is_whitespace) {
+        format!("{draft}{text}")
+    } else {
+        format!("{draft} {text}")
+    }
 }
 
 /// How close to the transcript's bottom edge still counts as pinned: a few
@@ -8901,16 +9056,18 @@ mod tests {
         ATTACHMENT_MAX_BYTES, AppView, AskDialog, AskOption, AskQuestion, CLOSE_CONFIRM_ACCEPT,
         CLOSE_CONFIRM_CANCEL, COMPACT_LAYOUT_BREAKPOINT, CloseGuard, CloseIntent, ContextUsage,
         DictationState, LIVE_TRANSCRIPT_LIMIT, LiveVoiceState, MODEL_PROVIDER_LIMIT, MathSegment,
-        MathSegmentKind, RightPane, TERMINAL_MENU_ITEMS, TRANSCRIPT_BOTTOM_THRESHOLD,
-        TerminalMenuAction, TerminalTabSpec, TerminalTabSpecs, UpdateCheckState, Workspace,
-        WorkspaceData, append_clipboard_text, append_dictation_text, append_side_answer,
+        MathSegmentKind, RightPane, TERMINAL_EMPTY_SELECTION_STATUS, TERMINAL_MENU_ITEMS,
+        TERMINAL_SELECTION_LABEL, TRANSCRIPT_BOTTOM_THRESHOLD, TerminalMenuAction, TerminalSession,
+        TerminalTabSpec, TerminalTabSpecs, UpdateCheckState, Workspace, WorkspaceData,
+        append_clipboard_text, append_composer_text, append_dictation_text, append_side_answer,
         apply_dictation_frame, apply_live_voice_event, ask_answers_ready, ask_cancel_payload,
         ask_submit_payload, base64_encode, capture_path, close_confirmation, compact_layout,
         composer_model_label, context_percent, context_usage_label, filter_models, group_digits,
         image_mime, math_plain_text, math_segments, model_key, parse_ask_questions,
         parse_context_usage, parse_model_key, provider_chips, read_pending_image,
         should_confirm_close, side_answer_delta, terminal_menu, terminal_menu_action,
-        terminal_tab_bar, transcript_is_at_bottom, transcript_part_text, updates, write_capture,
+        terminal_selection_text_block, terminal_tab_bar, transcript_is_at_bottom,
+        transcript_part_text, updates, write_capture,
     };
     use omp_core::sessions::{TranscriptMessage, TranscriptPart};
 
@@ -9891,12 +10048,13 @@ mod tests {
     /// The menu's rows name their ids, labels and actions in one order: the
     /// renderer and the click handler read the same table.
     #[test]
-    fn terminal_menu_rows_copy_paste_and_clear() {
+    fn terminal_menu_rows_copy_paste_send_and_clear() {
         assert_eq!(
             TERMINAL_MENU_ITEMS.map(|(id, label, _)| (id, label)),
             [
                 ("terminal-menu-copy", "Copy screen"),
                 ("terminal-menu-paste", "Paste"),
+                ("terminal-menu-send-selection", "Send selection"),
                 ("terminal-menu-clear", "Clear"),
             ]
         );
@@ -9907,6 +10065,10 @@ mod tests {
         assert_eq!(
             terminal_menu_action("terminal-menu-paste"),
             Some(TerminalMenuAction::Paste)
+        );
+        assert_eq!(
+            terminal_menu_action("terminal-menu-send-selection"),
+            Some(TerminalMenuAction::SendSelection)
         );
         assert_eq!(
             terminal_menu_action("terminal-menu-clear"),
@@ -9974,9 +10136,10 @@ mod tests {
         assert_eq!(terminals, 0);
     }
 
-    /// Copy, Paste and Clear with no session leave the panel usable: Paste
-    /// fills the input line from the clipboard instead of writing to a PTY,
-    /// and every row closes the menu.
+    /// Copy, Paste, Send selection and Clear with no session leave the panel
+    /// usable: Paste fills the input line from the clipboard instead of
+    /// writing to a PTY, Send selection reports the empty screen, and every
+    /// row closes the menu.
     #[test]
     fn terminal_menu_actions_without_a_session_do_not_panic() {
         let mut cx = gpui_kit::TestAppContext::single();
@@ -10012,6 +10175,13 @@ mod tests {
                 // Paste lands in the input line, never in a shell.
                 workspace.terminal_menu_click("terminal-menu-paste", window, cx);
                 assert_eq!(workspace.terminal_input.read(cx).value().as_ref(), "ls -la");
+                // Send selection has no screen to quote, so it only reports.
+                workspace.terminal_menu_click("terminal-menu-send-selection", window, cx);
+                assert_eq!(
+                    workspace.terminal_status.as_deref(),
+                    Some(TERMINAL_EMPTY_SELECTION_STATUS)
+                );
+                assert_eq!(workspace.composer.read(cx).value().as_ref(), "");
                 workspace.terminal_menu_click("terminal-menu-unknown", window, cx);
                 assert!(workspace.terminals.is_empty());
             })
@@ -10019,7 +10189,178 @@ mod tests {
         cx.quit();
     }
 
-    /// The menu element itself draws all three rows without a workspace.
+    /// The composer text keeps the draft the user typed and separates the
+    /// quote with one space, so inserted text does not run into the word
+    /// before it.
+    #[test]
+    fn composer_text_appends_without_rewriting_the_draft() {
+        let text = terminal_selection_text_block("ok");
+        assert_eq!(text, format!("{TERMINAL_SELECTION_LABEL} ok"));
+        assert_eq!(append_composer_text("", &text), text);
+        assert_eq!(
+            append_composer_text("draft", &text),
+            format!("draft {text}")
+        );
+        assert_eq!(
+            append_composer_text("draft ", &text),
+            format!("draft {text}")
+        );
+        // Trailing spaces the user typed are kept: only the separator is new.
+        assert_eq!(
+            append_composer_text("  keep me  ", &text),
+            format!("  keep me  {text}")
+        );
+    }
+
+    /// `Send selection` quotes the screen's last output row into the composer
+    /// under its label, keeps the terminal screen and input untouched, and
+    /// never sends: the transcript stays empty and no turn starts.
+    #[test]
+    fn terminal_selection_reaches_the_composer_without_clearing_the_screen() {
+        let mut cx = gpui_kit::TestAppContext::single();
+        cx.update(gpui_kit::init);
+        let root = tempfile::TempDir::new().expect("test root").keep();
+        let handle = cx.add_window(|window, cx| {
+            Workspace::new(
+                window,
+                cx,
+                WorkspaceData {
+                    geometry: UiGeometry::default(),
+                    geometry_path: root.join("ui-geometry.json"),
+                    home_dir: root.clone(),
+                    user_data_dir: root.clone(),
+                    omp_executable: root.join("missing-omp"),
+                    settings: AppSettings::default(),
+                    projects: Vec::new(),
+                    sessions: Vec::new(),
+                },
+            )
+        });
+        let (draft, before, after, screen, input, sent) = handle
+            .update(&mut cx, |workspace, window, cx| {
+                workspace.layout = workspace.geometry.resolve(1600.0);
+                workspace.open_terminal_screen(cx);
+                assert!(workspace.feed_terminal_output(b"npm run build\r\nok\r\n", cx));
+                let before = workspace.terminal_selection_text();
+                let screen = workspace
+                    .terminals
+                    .get(workspace.active_terminal)
+                    .map(TerminalSession::screen_text);
+                workspace.terminal_menu_click("terminal-menu-send-selection", window, cx);
+                (
+                    workspace.composer.read(cx).value().to_string(),
+                    before,
+                    workspace.terminal_selection_text(),
+                    screen,
+                    workspace.terminal_input.read(cx).value().to_string(),
+                    (
+                        workspace.transcript.len(),
+                        workspace.running,
+                        workspace.terminal_status.clone(),
+                    ),
+                )
+            })
+            .expect("workspace window");
+        cx.quit();
+        assert_eq!(before, "ok");
+        assert_eq!(draft, format!("{TERMINAL_SELECTION_LABEL} ok"));
+        // The send reads the screen; it never edits or clears it.
+        assert_eq!(after, before);
+        assert_eq!(screen.as_deref(), Some("npm run build\nok"));
+        assert_eq!(input, "");
+        assert_eq!(sent, (0, false, None));
+    }
+
+    /// Sending with an empty screen is a no-op that reports a status: the
+    /// composer keeps its draft, and nothing is quoted.
+    #[test]
+    fn sending_an_empty_terminal_reports_a_status_and_keeps_the_draft() {
+        let mut cx = gpui_kit::TestAppContext::single();
+        cx.update(gpui_kit::init);
+        let root = tempfile::TempDir::new().expect("test root").keep();
+        let handle = cx.add_window(|window, cx| {
+            Workspace::new(
+                window,
+                cx,
+                WorkspaceData {
+                    geometry: UiGeometry::default(),
+                    geometry_path: root.join("ui-geometry.json"),
+                    home_dir: root.clone(),
+                    user_data_dir: root.clone(),
+                    omp_executable: root.join("missing-omp"),
+                    settings: AppSettings::default(),
+                    projects: Vec::new(),
+                    sessions: Vec::new(),
+                },
+            )
+        });
+        let (draft, status, selection) = handle
+            .update(&mut cx, |workspace, window, cx| {
+                workspace.layout = workspace.geometry.resolve(1600.0);
+                workspace
+                    .composer
+                    .update(cx, |state, cx| state.set_value("keep this", window, cx));
+                workspace.open_terminal_screen(cx);
+                workspace.send_terminal_selection(window, cx);
+                let state = workspace.debug_snapshot(cx);
+                (
+                    workspace.composer.read(cx).value().to_string(),
+                    state["terminal"]["status"].clone(),
+                    state["terminal"]["selection"].clone(),
+                )
+            })
+            .expect("workspace window");
+        cx.quit();
+        assert_eq!(draft, "keep this");
+        assert_eq!(status, json!(TERMINAL_EMPTY_SELECTION_STATUS));
+        assert_eq!(selection, json!(""));
+    }
+
+    /// A second send appends another quote instead of replacing the first, and
+    /// the existing draft stays ahead of both.
+    #[test]
+    fn repeated_sends_append_to_the_draft() {
+        let mut cx = gpui_kit::TestAppContext::single();
+        cx.update(gpui_kit::init);
+        let root = tempfile::TempDir::new().expect("test root").keep();
+        let handle = cx.add_window(|window, cx| {
+            Workspace::new(
+                window,
+                cx,
+                WorkspaceData {
+                    geometry: UiGeometry::default(),
+                    geometry_path: root.join("ui-geometry.json"),
+                    home_dir: root.clone(),
+                    user_data_dir: root.clone(),
+                    omp_executable: root.join("missing-omp"),
+                    settings: AppSettings::default(),
+                    projects: Vec::new(),
+                    sessions: Vec::new(),
+                },
+            )
+        });
+        let draft = handle
+            .update(&mut cx, |workspace, window, cx| {
+                workspace.layout = workspace.geometry.resolve(1600.0);
+                workspace
+                    .composer
+                    .update(cx, |state, cx| state.set_value("ask about", window, cx));
+                workspace.open_terminal_screen(cx);
+                assert!(workspace.feed_terminal_output(b"first\r\n", cx));
+                workspace.send_terminal_selection(window, cx);
+                assert!(workspace.feed_terminal_output(b"second\r\n", cx));
+                workspace.send_terminal_selection(window, cx);
+                workspace.composer.read(cx).value().to_string()
+            })
+            .expect("workspace window");
+        cx.quit();
+        assert_eq!(
+            draft,
+            "ask about Terminal output: first Terminal output: second"
+        );
+    }
+
+    /// The menu element itself draws all four rows without a workspace.
     #[test]
     fn terminal_menu_draws_its_rows() {
         use gpui_kit::component::ActiveTheme as _;
