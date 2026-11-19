@@ -7043,6 +7043,12 @@ mod tests {
         );
         assert!(parse_ask_questions(&json!({ "questions": [] })).is_none());
         assert!(
+            parse_ask_questions(
+                &json!({ "questions": [{ "id": "q", "question": "Pick", "options": [] }] })
+            )
+            .is_none()
+        );
+        assert!(
             parse_ask_questions(&json!({
                 "questions": [
                     { "id": "q", "question": "One", "options": [{ "label": "A" }] },
