@@ -405,6 +405,15 @@ jobs:
           subject-path: release-assets/*
       - name: Publish GitHub Release
         run: |
+          tag_sha=$(gh api repos/${{ github.repository }}/commits/$RELEASE_TAG --jq .sha)
+          if [ "$tag_sha" != "${{ needs.validate.outputs.sha }}" ]; then
+            echo "Release tag $RELEASE_TAG moved from validated commit ${{ needs.validate.outputs.sha }} to $tag_sha."
+            exit 1
+          fi
+          release_channel_args=(--latest)
+          if [ "$RELEASE_MAC_UNSIGNED_ENABLED" = 'true' ] || [ "$RELEASE_WINDOWS_UNSIGNED_ENABLED" = 'true' ]; then
+            release_channel_args=(--prerelease)
+          fi
           existing=$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft 2>/dev/null || true)
           if [ "$existing" = 'false' ]; then
             echo "Release $RELEASE_TAG is already published and will not be replaced."
@@ -419,7 +428,7 @@ jobs:
               gh release delete-asset "$RELEASE_TAG" "$stale" --yes
             done < stale-assets.txt
             gh release upload "$RELEASE_TAG" release-assets/* --clobber
-            gh release edit "$RELEASE_TAG" --verify-tag --draft=false --latest
+            gh release edit "$RELEASE_TAG" --verify-tag --draft=false "${release_channel_args[@]}"
           else
             gh release create "$RELEASE_TAG" release-assets/* \
               --verify-tag \
@@ -427,7 +436,7 @@ jobs:
               --generate-notes \
               --notes "Every installer and archive is covered by SHA256SUMS.txt and GitHub build-provenance attestations." \
               --title "OMP Desktop ${RELEASE_TAG#v}" \
-              --latest
+              "${release_channel_args[@]}"
           fi
         env:
           GH_TOKEN: ${{ github.token }}

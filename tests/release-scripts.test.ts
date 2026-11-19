@@ -814,7 +814,7 @@ else if (JSON.stringify(args) === ${JSON.stringify(JSON.stringify(expectedInstal
     expect(workflow).toContain('actions/attest-build-provenance@')
     expect(workflow).toContain('gh release create "$RELEASE_TAG" release-assets/*')
     expect(workflow).toContain('gh release upload "$RELEASE_TAG" release-assets/* --clobber')
-    expect(workflow).toContain('gh release edit "$RELEASE_TAG" --verify-tag --draft=false --latest')
+    expect(workflow).toContain('gh release edit "$RELEASE_TAG" --verify-tag --draft=false "${release_channel_args[@]}"')
     expect(workflow).toContain('is already published and will not be replaced')
     expect(workflow).toContain('--verify-tag')
     expect(workflow).toContain('--fail-on-no-commits')
@@ -825,6 +825,38 @@ else if (JSON.stringify(args) === ${JSON.stringify(JSON.stringify(expectedInstal
     expect(workflow).toContain('Fail if a release prerequisite did not succeed')
     expect(workflow).toContain("needs.validate.result != 'success'")
     expect(workflow).toContain('exit 1')
+  })
+
+  test('rechecks the version tag immediately before querying or publishing the release', () => {
+    const parsed = load(readFileSync('.github/workflows/release.yml', 'utf8')) as {
+      jobs: Record<string, { steps?: Array<{ name?: string; run?: string; env?: Record<string, string> }> }>
+    }
+    const publish = parsed.jobs['release-packages'].steps?.find((step) => step.name === 'Publish GitHub Release')
+    const script = publish?.run ?? ''
+    const resolveTag = 'tag_sha=$(gh api repos/${{ github.repository }}/commits/$RELEASE_TAG --jq .sha)'
+    const compareTag = 'if [ "$tag_sha" != "${{ needs.validate.outputs.sha }}" ]; then'
+    const existingReleaseQuery = script.indexOf('gh release view "$RELEASE_TAG" --json isDraft')
+    const tagResolution = script.indexOf(resolveTag)
+    const tagComparison = script.indexOf(compareTag)
+
+    expect(script.trimStart().startsWith(resolveTag)).toBe(true)
+    expect(tagComparison).toBeGreaterThan(tagResolution)
+    expect(script.slice(tagComparison, existingReleaseQuery)).toContain('exit 1')
+    expect(existingReleaseQuery).toBeGreaterThan(tagComparison)
+    expect(publish?.env?.GH_TOKEN).toBe('${{ github.token }}')
+  })
+
+  test('keeps signed releases latest and moves every unsigned beta mode to prerelease', () => {
+    const parsed = load(readFileSync('.github/workflows/release.yml', 'utf8')) as {
+      jobs: Record<string, { steps?: Array<{ name?: string; run?: string }> }>
+    }
+    const script = parsed.jobs['release-packages'].steps?.find((step) => step.name === 'Publish GitHub Release')?.run ?? ''
+
+    expect(script).toContain('release_channel_args=(--latest)')
+    expect(script).toContain('if [ "$RELEASE_MAC_UNSIGNED_ENABLED" = \'true\' ] || [ "$RELEASE_WINDOWS_UNSIGNED_ENABLED" = \'true\' ]; then\n  release_channel_args=(--prerelease)\nfi')
+    expect(script).toContain('gh release edit "$RELEASE_TAG" --verify-tag --draft=false "${release_channel_args[@]}"')
+    expect(script).toMatch(/gh release create "\$RELEASE_TAG" release-assets\/\*[\s\S]*?"\$\{release_channel_args\[@\]\}"/)
+    expect(script).not.toMatch(/gh release (?:create|edit)[^\n]*--latest/)
   })
 
   test('pins every release job to one commit SHA resolved by validate', () => {
