@@ -245,12 +245,13 @@ async function openStoreAndServices(): Promise<WorkspaceRuntime> {
     skillPath: join(sandbox.rootDir, 'omp-work-schedules.ts'),
     resolveScope: async ({ cwd, sessionPath }) => {
       const catalogList = await projects.list()
-      const canonicalCwd = resolve(cwd)
+      const compare = (value: string) => (process.platform === 'win32' ? value.toLowerCase() : value)
+      const canonicalCwd = compare(resolve(cwd))
       const project = catalogList.find(
         (candidate) =>
           !candidate.inferred &&
           candidate.folders.some((folder) => {
-            const root = resolve(folder)
+            const root = compare(resolve(folder))
             return canonicalCwd === root || canonicalCwd.startsWith(`${root}${process.platform === 'win32' ? '\\' : '/'}`)
           }),
       )

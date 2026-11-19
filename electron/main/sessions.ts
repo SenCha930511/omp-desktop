@@ -74,6 +74,12 @@ export interface SessionServiceOptions {
   maxPendingTranscriptReads?: number
 }
 
+/** Windows paths are case-insensitive; compare persisted pins and archives on that basis. */
+function sessionKey(path: string): string {
+  const resolved = resolve(path)
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved
+}
+
 export class SessionService {
   readonly harness: HarnessId
   readonly sessionRoot: string
@@ -187,14 +193,14 @@ export class SessionService {
     // (pin/archive) without a demonstrated same identity.
     // One runtime snapshot per list call; each session then resolves in O(1).
     const runtimeBySession = this.snapshotRuntimeSessions()
-    const archived = new Set(this.store.getArchivedSessions().map((path) => resolve(path)))
-    const pinned = new Set(this.store.getPinnedSessions().map((path) => resolve(path)))
+    const archived = new Set(this.store.getArchivedSessions().map((path) => sessionKey(path)))
+    const pinned = new Set(this.store.getPinnedSessions().map((path) => sessionKey(path)))
     const records: SessionRecord[] = []
     for (const original of sessions) {
       const filePath = resolve(original.filePath)
       const metadata = { ...original }
-      const isArchived = archived.has(filePath)
-      const isPinned = pinned.has(filePath)
+      const isArchived = archived.has(sessionKey(filePath))
+      const isPinned = pinned.has(sessionKey(filePath))
       if ((isArchived && !includeArchived) || (project && resolve(metadata.projectPath) !== project)) continue
       const runtime = runtimeBySession
         ? runtimeBySession.get(filePath)
