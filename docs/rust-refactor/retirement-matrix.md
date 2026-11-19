@@ -29,7 +29,8 @@ variants of the same Electron scenario, so the distinct-scenario count is about
 | Context usage | `get_session_stats` parsing and compact dial |
 | Composer queue | Running sends become `follow_up` with a queued row |
 | Transcript tail | Auto-follow only when pinned; jump-to-latest control |
-| Parity harness | `tests/e2e_parity.rs`, 77 tests mapping to about 74 distinct scenarios; 3 browser UI tests are gated off Linux |
+| Model picker | Lazy catalog, persisted default, and live set_model |
+| Parity harness | `tests/e2e_parity.rs`, 80 tests mapping to about 75 distinct scenarios; 3 browser UI tests are gated off Linux |
 | Updater | `updates.rs` state tests, Settings row render test |
 | Packaging | macOS `.app`, Linux `.deb`, Windows NSIS packaged-smoke CI jobs |
 | Conformance | 10 files, 20 tests against the Rust adapter on macOS, Linux, and Windows |
@@ -37,7 +38,7 @@ variants of the same Electron scenario, so the distinct-scenario count is about
 ## Groups that remain unclosed
 
 - Wiring the updater feed and signatures into `release.yml`.
-- The remaining 14 Playwright scenarios, including settings provider/model,
+- The remaining 13 Playwright scenarios, including settings provider/MCP/plugin,
   notification capture, terminal selection context, and the responsive workspace.
 - The final Electron cutover gate.
 
