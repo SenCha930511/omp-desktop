@@ -371,6 +371,18 @@ struct ScheduledRun {
 /// lives only until the session list hands out a real id.
 const DRAFT_TERMINAL_KEY: &str = "new-session";
 
+/// The session menu's actionable rows, in draw order. `debug_snapshot` reads
+/// this list, so a scenario can prove a new row is wired and drawn without
+/// measuring the popover.
+const SESSION_MENU_ACTIONS: [&str; 6] = [
+    "Rename",
+    "Pin",
+    "Archive",
+    "Delete",
+    "Fork session",
+    "Remote Control",
+];
+
 pub struct Workspace {
     geometry: UiGeometry,
     geometry_path: PathBuf,
@@ -407,6 +419,10 @@ pub struct Workspace {
     queued_follow_ups: Vec<String>,
     transcript_error: Option<String>,
     runtime_error: Option<String>,
+    // The composer banner's last fork outcome. A successful fork leaves the
+    // short notice `Forked session` here; a failed one is an error and lands in
+    // `runtime_error`, so the two never share the banner.
+    fork_status: Option<String>,
     // The harness's last `get_session_stats` reading. It is cleared on a
     // session switch, so the dial never shows another session's fill.
     context_usage: Option<ContextUsage>,
@@ -619,6 +635,7 @@ impl Workspace {
             queued_follow_ups: Vec::new(),
             transcript_error: None,
             runtime_error: None,
+            fork_status: None,
             context_usage: None,
             selected_session: None,
             composer,
@@ -1002,6 +1019,16 @@ impl Workspace {
             "running": self.running,
             // What the harness reports as queued behind the running turn.
             "queuedFollowUps": self.queued_follow_ups,
+            // The composer banner's last fork notice: `Forked session` until
+            // the next fork. A fork failure is a `runtimeError` instead.
+            "forkStatus": self.fork_status,
+            // The session menu's actionable rows, in draw order, and whether
+            // it is open: a scenario proves a new action is both wired and
+            // drawn without measuring a popover's pixels.
+            "sessionMenu": {
+                "open": self.menu_open,
+                "actions": SESSION_MENU_ACTIONS,
+            },
             // The harness's last context-window reading, if one arrived.
             "contextUsage": self.context_usage.map(|usage| json!({
                 "tokens": usage.tokens,
@@ -3436,6 +3463,17 @@ impl Workspace {
             .clone()
             .unwrap_or_else(|| format!("Dictation: {}", self.dictation_phase));
         let dictation_preview = self.dictation_preview.clone();
+        // One status banner above the input: a runtime error outranks the last
+        // fork notice, and a notice keeps the plain color of a confirmation.
+        let banner = self
+            .runtime_error
+            .clone()
+            .map(|error| (error, colors.danger))
+            .or_else(|| {
+                self.fork_status
+                    .clone()
+                    .map(|status| (status, colors.muted_foreground))
+            });
         div()
             .flex()
             .flex_col()
@@ -3443,12 +3481,14 @@ impl Workspace {
             .p_4()
             .border_t_1()
             .border_color(colors.border)
-            .when(self.runtime_error.is_some(), |element| {
+            .when_some(banner, |element, (text, color)| {
                 element.child(
                     div()
+                        .id("status-banner")
+                        .aria_label("Status")
                         .text_xs()
-                        .text_color(colors.danger)
-                        .child(self.runtime_error.clone().unwrap_or_default()),
+                        .text_color(color)
+                        .child(text),
                 )
             })
             .when(
@@ -5949,7 +5989,88 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Forks the selected session through the live harness and moves to the
+    /// fork.
+    ///
+    /// The harness owns the fork: it copies the history into a new session
+    /// file before it answers `{ cancelled }`. A cancelled fork is the user's
+    /// own "no" and changes nothing. A successful one re-reads the catalog and
+    /// selects its newest row, which is the file the harness just wrote; a
+    /// fork that wrote nothing leaves the catalog unchanged, so the current
+    /// selection, its transcript and the composer draft all stay put.
+    fn fork_session(&mut self, cx: &mut Context<Self>) {
+        let Some(runtime_id) = self.runtime_id.clone() else {
+            self.fork_status = None;
+            self.runtime_error =
+                Some("OMP could not fork the session: no live session is selected.".to_string());
+            cx.notify();
+            return;
+        };
+        let response = match self.agents.command(&runtime_id, &json!({ "type": "fork" })) {
+            Ok(response) => response,
+            Err(error) => {
+                self.fork_status = None;
+                self.runtime_error =
+                    Some(format!("OMP could not fork the session: {}", error.message));
+                cx.notify();
+                return;
+            }
+        };
+        if response.get("success").and_then(Value::as_bool) != Some(true) {
+            let message = response
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .unwrap_or("OMP rejected the fork");
+            self.fork_status = None;
+            self.runtime_error = Some(format!("OMP could not fork the session: {message}"));
+            cx.notify();
+            return;
+        }
+        // Cancelled is the user's own "no": no file was written, so nothing
+        // moves and no status is claimed.
+        if response.pointer("/data/cancelled").and_then(Value::as_bool) == Some(true) {
+            cx.notify();
+            return;
+        }
+        self.runtime_error = None;
+        self.fork_status = Some("Forked session".to_string());
+        // The refresh is what finds the fork. The transcript is only cleared by
+        // the selection below, so a fork that wrote no file keeps the view.
+        let previous = self
+            .selected_session
+            .and_then(|index| self.sessions.get(index))
+            .map(|session| session.file_path.clone());
+        let before: Vec<String> = self
+            .sessions
+            .iter()
+            .map(|session| session.file_path.clone())
+            .collect();
+        self.refresh_sessions();
+        let after: Vec<String> = self
+            .sessions
+            .iter()
+            .map(|session| session.file_path.clone())
+            .collect();
+        let newest = self
+            .sessions
+            .first()
+            .map(|session| session.file_path.clone());
+        if after != before && newest != previous {
+            self.select_session(0, cx);
+        } else {
+            cx.notify();
+        }
+    }
+
     pub fn session_menu_action(&mut self, action: &str, cx: &mut Context<Self>) {
+        // A fork needs neither a catalog write nor a selection index: the
+        // harness owns the new session file and the runtime is the only thing
+        // it talks to, so it is dispatched before the store-backed actions.
+        if action == "Fork session" {
+            self.menu_open = false;
+            self.fork_session(cx);
+            return;
+        }
         let Some(index) = self.selected_session else {
             return;
         };
@@ -6054,40 +6175,33 @@ impl Workspace {
             .flex()
             .flex_col()
             .text_sm()
+            // The rows are the same list `debug_snapshot` reports, so the
+            // harness can never assert an action the menu does not draw.
+            .children(SESSION_MENU_ACTIONS.into_iter().map(|label| {
+                div()
+                    .id(format!("session-action-{label}"))
+                    .aria_label(label)
+                    .px_2()
+                    .py_1()
+                    .rounded(px(6.0))
+                    .hover(|style| style.bg(colors.accent))
+                    .child(label)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.session_menu_action(label, cx);
+                    }))
+            }))
+            .child(div().h(px(1.0)).my_1().bg(colors.border))
             .children(
-                ["Rename", "Pin", "Archive", "Delete", "Remote Control"]
+                ["Session Tree", "Copy ›", "Project Scripts ›"]
                     .into_iter()
                     .map(|label| {
                         div()
-                            .id(format!("session-action-{label}"))
-                            .aria_label(label)
                             .px_2()
                             .py_1()
                             .rounded(px(6.0))
                             .hover(|style| style.bg(colors.accent))
                             .child(label)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.session_menu_action(label, cx);
-                            }))
                     }),
-            )
-            .child(div().h(px(1.0)).my_1().bg(colors.border))
-            .children(
-                [
-                    "Session Tree",
-                    "Fork / Split ›",
-                    "Copy ›",
-                    "Project Scripts ›",
-                ]
-                .into_iter()
-                .map(|label| {
-                    div()
-                        .px_2()
-                        .py_1()
-                        .rounded(px(6.0))
-                        .hover(|style| style.bg(colors.accent))
-                        .child(label)
-                }),
             )
     }
 
@@ -8827,6 +8941,59 @@ mod tests {
                     "error: {error}"
                 );
                 assert!(error.contains("Unknown agent runtime"), "error: {error}");
+            })
+            .expect("workspace window");
+    }
+
+    /// A fork with no live runtime reports the banner error and claims no
+    /// status: the harness owns the fork, so there is no local fallback that
+    /// could copy the session itself.
+    #[test]
+    fn fork_without_a_runtime_reports_the_banner_error() {
+        let mut cx = gpui_kit::TestAppContext::single();
+        cx.update(gpui_kit::init);
+        let root = tempfile::TempDir::new().expect("test root");
+        let handle = cx.add_window(|window, cx| {
+            Workspace::new(
+                window,
+                cx,
+                WorkspaceData {
+                    geometry: UiGeometry::default(),
+                    geometry_path: root.path().join("ui-geometry.json"),
+                    home_dir: root.path().join("home"),
+                    user_data_dir: root.path().join("user-data"),
+                    omp_executable: PathBuf::from("omp"),
+                    settings: AppSettings::default(),
+                    projects: Vec::new(),
+                    sessions: Vec::new(),
+                },
+            )
+        });
+        handle
+            .update(&mut cx, |workspace, _, cx| {
+                // Nothing is selected, so there is no runtime to fork on.
+                workspace.session_menu_action("Fork session", cx);
+                let error = workspace.runtime_error.as_deref().expect("status error");
+                assert!(
+                    error.starts_with("OMP could not fork the session:"),
+                    "error: {error}"
+                );
+                assert!(error.contains("no live session"), "error: {error}");
+                assert_eq!(workspace.fork_status, None);
+                assert!(!workspace.menu_open);
+                assert!(workspace.transcript.is_empty());
+
+                // A runtime id with no process behind it fails the way the
+                // unavailable API does, and the banner says the same thing.
+                workspace.runtime_id = Some("omp-missing".to_string());
+                workspace.session_menu_action("Fork session", cx);
+                let error = workspace.runtime_error.as_deref().expect("status error");
+                assert!(
+                    error.starts_with("OMP could not fork the session:"),
+                    "error: {error}"
+                );
+                assert!(error.contains("Unknown agent runtime"), "error: {error}");
+                assert_eq!(workspace.fork_status, None);
             })
             .expect("workspace window");
     }
