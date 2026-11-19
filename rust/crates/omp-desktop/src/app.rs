@@ -386,6 +386,21 @@ fn read_pending_image(path: &Path) -> Result<PendingImage, String> {
 /// switches between, not a catalog browser.
 const MODEL_PICKER_LIMIT: usize = 12;
 
+/// How many catalog providers the Settings picker offers as filter chips.
+///
+/// The catalog can carry a provider per login; the filter row is a shortcut to
+/// the few the user switches between, not a second catalog browser.
+const MODEL_PROVIDER_LIMIT: usize = 8;
+
+/// One provider chip above the model list: the catalog's own name, and whether
+/// the harness has credentials for it when the catalog says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProviderChip {
+    id: String,
+    name: String,
+    configured: Option<bool>,
+}
+
 /// The `lastSelectedModels` key for one catalog model: `provider/id`.
 ///
 /// The provider is everything before the first `/`, so a model id may itself
@@ -416,13 +431,70 @@ fn composer_model_label(model: &str) -> String {
     }
 }
 
-/// The catalog rows the Settings picker lists: at most [`MODEL_PICKER_LIMIT`],
-/// with the current selection kept even when it falls past the cap.
+/// The models one provider chip lists. `None` is the `All` chip.
 ///
-/// A selection the catalog does not carry stays out of the list; the picker's
-/// current-model row is what shows it.
-fn visible_models<'a>(models: &'a [ModelDescriptor], selected: &str) -> Vec<&'a ModelDescriptor> {
-    let mut visible: Vec<&ModelDescriptor> = models.iter().take(MODEL_PICKER_LIMIT).collect();
+/// The filter is pure: the current selection is not consulted here, so a
+/// provider that does not carry it lists only its own models and the picker's
+/// current-model row keeps showing the selection.
+fn filter_models<'a>(
+    models: &'a [ModelDescriptor],
+    provider: Option<&str>,
+) -> Vec<&'a ModelDescriptor> {
+    models
+        .iter()
+        .filter(|model| provider.is_none_or(|provider| model.provider == provider))
+        .collect()
+}
+
+/// The chips above the model list, bounded to [`MODEL_PROVIDER_LIMIT`].
+///
+/// The catalog's provider list carries the display name and whether it is
+/// configured; a catalog that only lists models still gets one chip per
+/// provider, without the configured hint.
+fn provider_chips(catalog: &ModelCatalog) -> Vec<ProviderChip> {
+    if !catalog.providers.is_empty() {
+        return catalog
+            .providers
+            .iter()
+            .take(MODEL_PROVIDER_LIMIT)
+            .map(|provider| ProviderChip {
+                id: provider.id.clone(),
+                name: provider.name.clone(),
+                configured: Some(provider.configured),
+            })
+            .collect();
+    }
+    let mut chips: Vec<ProviderChip> = Vec::new();
+    for model in &catalog.models {
+        if chips.len() == MODEL_PROVIDER_LIMIT {
+            break;
+        }
+        if chips.iter().any(|chip| chip.id == model.provider) {
+            continue;
+        }
+        chips.push(ProviderChip {
+            id: model.provider.clone(),
+            name: model.provider.clone(),
+            configured: None,
+        });
+    }
+    chips
+}
+
+/// The catalog rows the Settings picker lists: the provider filter's models,
+/// capped at [`MODEL_PICKER_LIMIT`], with the current selection kept even when
+/// it falls past the cap.
+///
+/// A selection the filter (or the catalog) does not carry stays out of the
+/// list; the picker's current-model row is what shows it.
+fn visible_models<'a>(
+    models: &'a [ModelDescriptor],
+    selected: &str,
+    provider: Option<&str>,
+) -> Vec<&'a ModelDescriptor> {
+    let filtered = filter_models(models, provider);
+    let mut visible: Vec<&ModelDescriptor> =
+        filtered.iter().copied().take(MODEL_PICKER_LIMIT).collect();
     if selected.is_empty()
         || visible
             .iter()
@@ -430,8 +502,9 @@ fn visible_models<'a>(models: &'a [ModelDescriptor], selected: &str) -> Vec<&'a 
     {
         return visible;
     }
-    if let Some(current) = models
+    if let Some(current) = filtered
         .iter()
+        .copied()
         .find(|model| model_key(&model.provider, &model.id) == selected)
     {
         if visible.len() == MODEL_PICKER_LIMIT {
@@ -590,6 +663,11 @@ pub struct Workspace {
     // `omp models` again.
     model_catalog: Option<ModelCatalog>,
     model_load_task: Option<Task<()>>,
+    // The Settings picker's provider chip: `None` is the `All` chip. It starts
+    // on the current model's provider when a catalog arrives, and only filters
+    // the list the page draws: the persisted selection is never rewritten by a
+    // filter change.
+    provider_filter: Option<String>,
     // Why the last `set_model` was refused. The persisted default still
     // applies to the next runtime, so this is a notice, not a failure state.
     model_status: Option<String>,
@@ -806,6 +884,7 @@ impl Workspace {
             plugin_error: None,
             model_catalog: None,
             model_load_task: None,
+            provider_filter: None,
             model_status: None,
             schedules: Vec::new(),
             notifications: Vec::new(),
@@ -1257,16 +1336,33 @@ impl Workspace {
             })
             .collect();
         // The Settings picker's view of the catalog: the bounded list the page
-        // draws, the persisted selection the composer footer reads, and why
-        // the list is empty when it is.
+        // draws, the provider chips above it, the persisted selection the
+        // composer footer reads, and why the list is empty when it is.
         let selected_model = self.settings.last_selected_model();
+        let provider_filter = self.provider_filter.as_deref();
         let available_models: Vec<String> = self
             .model_catalog
             .as_ref()
             .map(|catalog| {
-                visible_models(&catalog.models, &selected_model)
+                visible_models(&catalog.models, &selected_model, provider_filter)
                     .into_iter()
                     .map(|model| model_key(&model.provider, &model.id))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let providers: Vec<Value> = self
+            .model_catalog
+            .as_ref()
+            .map(|catalog| {
+                provider_chips(catalog)
+                    .into_iter()
+                    .map(|chip| {
+                        json!({
+                            "id": chip.id,
+                            "name": chip.name,
+                            "configured": chip.configured,
+                        })
+                    })
                     .collect()
             })
             .unwrap_or_default();
@@ -1332,11 +1428,14 @@ impl Workspace {
                 // The persisted model selection the composer footer reads.
                 "selectedModel": selected_model,
             },
-            // The Settings picker: the bounded catalog list, the selection it
-            // highlights, and a load failure (the current model still works).
+            // The Settings picker: the bounded catalog list, the provider
+            // chips that filter it, the selection it highlights, and a load
+            // failure (the current model still works).
             "models": {
                 "selected": selected_model,
                 "available": available_models,
+                "providers": providers,
+                "providerFilter": self.provider_filter,
                 "error": self.model_catalog_error(),
                 "loading": self.model_load_task.is_some(),
                 "status": self.model_status,
@@ -4470,7 +4569,20 @@ impl Workspace {
     /// `load_catalog` reports a harness that could not answer as an empty
     /// catalog with a warning, so a load failure is visible through
     /// [`Self::model_catalog_error`] instead of leaving the picker blank.
+    ///
+    /// The provider row starts on the current model's provider, so the list
+    /// opens narrowed to the choice the footer already names. A selection the
+    /// catalog does not carry, or the harness default, starts on `All`.
     pub fn apply_model_catalog(&mut self, catalog: ModelCatalog) {
+        self.provider_filter = parse_model_key(&self.settings.last_selected_model())
+            .map(|(provider, _)| provider)
+            .filter(|provider| {
+                catalog
+                    .models
+                    .iter()
+                    .any(|model| model.provider == *provider)
+            })
+            .map(str::to_string);
         self.model_catalog = Some(catalog);
     }
 
@@ -4490,6 +4602,17 @@ impl Workspace {
         )
     }
 
+    /// Filters the Settings model list to one catalog provider.
+    ///
+    /// `None` is the `All` chip. The filter is a view of the catalog only: the
+    /// persisted selection is untouched, so a chip that does not carry the
+    /// current model still leaves it drawn in the current-model row and
+    /// applied to the next runtime.
+    pub fn select_provider_filter(&mut self, provider: Option<&str>, cx: &mut Context<Self>) {
+        self.provider_filter = provider.map(str::to_string);
+        cx.notify();
+    }
+
     /// Selects a catalog model by its `provider/id` key: the choice becomes the
     /// persisted harness default, the composer footer follows it, and a live
     /// runtime is switched with `set_model`.
@@ -4500,6 +4623,15 @@ impl Workspace {
         let Some((provider, id)) = parse_model_key(key) else {
             return;
         };
+        // A choice from another provider would vanish under the active chip,
+        // so the row falls back to `All` and keeps the choice in the list.
+        if self
+            .provider_filter
+            .as_deref()
+            .is_some_and(|filter| filter != provider)
+        {
+            self.provider_filter = None;
+        }
         self.update_setting(json!({ "lastSelectedModels": { "omp": key } }), cx);
         self.model_status = None;
         if let Some(runtime_id) = self.runtime_id.clone() {
@@ -4585,6 +4717,92 @@ impl Workspace {
                     .child(value),
             )
             .on_click(cx.listener(move |this, _, window, cx| on_click(this, window, cx)))
+    }
+
+    /// The provider chips above the model list: `All` plus one chip per
+    /// catalog provider. A chip only changes what the list draws, so the
+    /// persisted selection survives every filter change.
+    fn provider_filter_row(
+        chips: &[ProviderChip],
+        active: Option<&str>,
+        colors: ThemeColor,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut row = div()
+            .id("model-provider-filter")
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_2()
+            .child(Self::provider_chip(
+                "All",
+                None,
+                None,
+                active.is_none(),
+                colors,
+                cx,
+            ));
+        for chip in chips {
+            row = row.child(Self::provider_chip(
+                &chip.name,
+                Some(&chip.id),
+                chip.configured,
+                active == Some(chip.id.as_str()),
+                colors,
+                cx,
+            ));
+        }
+        row.into_any_element()
+    }
+
+    /// One provider filter chip. The hint names whether the harness has
+    /// credentials for the provider; an unconfigured provider stays selectable
+    /// because the harness reports the auth error when its model is chosen.
+    fn provider_chip(
+        label: &str,
+        id: Option<&str>,
+        configured: Option<bool>,
+        selected: bool,
+        colors: ThemeColor,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let element_id = format!("model-provider-{}", id.unwrap_or("all"));
+        let aria = match id {
+            Some(id) => format!("{label} provider ({id})"),
+            None => "All providers".to_string(),
+        };
+        let hint = match configured {
+            Some(true) => Some(("configured", colors.muted_foreground)),
+            Some(false) => Some(("not configured", colors.warning)),
+            None => None,
+        };
+        let target = id.map(str::to_string);
+        let mut chip = div()
+            .id(SharedString::from(element_id))
+            .aria_label(aria)
+            .flex()
+            .items_center()
+            .gap_1()
+            .px_2()
+            .py_0p5()
+            .rounded(px(999.0))
+            .border_1()
+            .border_color(if selected {
+                colors.primary
+            } else {
+                colors.border
+            })
+            .text_xs()
+            .text_color(colors.foreground)
+            .hover(|style| style.bg(colors.accent))
+            .child(label.to_string());
+        if let Some((hint, color)) = hint {
+            chip = chip.child(div().text_color(color).child(hint));
+        }
+        chip.on_click(cx.listener(move |this, _, _, cx| {
+            this.select_provider_filter(target.as_deref(), cx);
+        }))
+        .into_any_element()
     }
 
     /// One selectable catalog model in the Settings picker. The row's id and
@@ -5305,10 +5523,17 @@ impl Workspace {
             omp_core::settings::MessageEnterAction::Steer => "steer",
             omp_core::settings::MessageEnterAction::Queue => "queue",
         };
-        // The picker's list is the cached catalog, bounded and kept in sync
-        // with the persisted selection; its failure is inline text, not a
-        // reason to hide the current model.
+        // The picker's list is the cached catalog, filtered to the active
+        // provider chip and bounded; its failure is inline text, not a reason
+        // to hide the current model. The chips come from the catalog's
+        // providers, or from its models when it lists none.
         let selected_model = self.settings.last_selected_model();
+        let provider_filter = self.provider_filter.clone();
+        let provider_list: Vec<ProviderChip> = self
+            .model_catalog
+            .as_ref()
+            .map(provider_chips)
+            .unwrap_or_default();
         let model_error = self.model_catalog_error();
         let model_loading = self.model_load_task.is_some();
         let model_status = self.model_status.clone();
@@ -5316,7 +5541,7 @@ impl Workspace {
             .model_catalog
             .as_ref()
             .map(|catalog| {
-                visible_models(&catalog.models, &selected_model)
+                visible_models(&catalog.models, &selected_model, provider_filter.as_deref())
                     .into_iter()
                     .map(|model| {
                         let key = model_key(&model.provider, &model.id);
@@ -5330,6 +5555,9 @@ impl Workspace {
             .into_iter()
             .map(|(key, name, selected)| Self::model_row(key, name, selected, colors, cx))
             .collect();
+        let provider_row = (!provider_list.is_empty()).then(|| {
+            Self::provider_filter_row(&provider_list, provider_filter.as_deref(), colors, cx)
+        });
         div()
             .id("settings-page")
             .flex()
@@ -5416,6 +5644,7 @@ impl Workspace {
             }))
             .child(div().text_xs().text_color(colors.muted_foreground).child("MODELS"))
             .child(Self::current_model_row(&selected_model, colors))
+            .when_some(provider_row, |element, row| element.child(row))
             .when_some(model_error, |element, error| {
                 element.child(
                     div()
@@ -7979,13 +8208,14 @@ mod tests {
     use super::{
         ATTACHMENT_MAX_BYTES, AppView, AskDialog, AskOption, AskQuestion, CLOSE_CONFIRM_ACCEPT,
         CLOSE_CONFIRM_CANCEL, CloseGuard, CloseIntent, ContextUsage, DictationState,
-        LIVE_TRANSCRIPT_LIMIT, LiveVoiceState, RightPane, TERMINAL_MENU_ITEMS,
-        TRANSCRIPT_BOTTOM_THRESHOLD, TerminalMenuAction, TerminalTabSpec, TerminalTabSpecs,
-        UpdateCheckState, Workspace, WorkspaceData, append_clipboard_text, append_dictation_text,
-        append_side_answer, apply_dictation_frame, apply_live_voice_event, ask_answers_ready,
-        ask_cancel_payload, ask_submit_payload, base64_encode, capture_path, close_confirmation,
-        composer_model_label, context_percent, context_usage_label, group_digits, image_mime,
-        model_key, parse_ask_questions, parse_context_usage, parse_model_key, read_pending_image,
+        LIVE_TRANSCRIPT_LIMIT, LiveVoiceState, MODEL_PROVIDER_LIMIT, RightPane,
+        TERMINAL_MENU_ITEMS, TRANSCRIPT_BOTTOM_THRESHOLD, TerminalMenuAction, TerminalTabSpec,
+        TerminalTabSpecs, UpdateCheckState, Workspace, WorkspaceData, append_clipboard_text,
+        append_dictation_text, append_side_answer, apply_dictation_frame, apply_live_voice_event,
+        ask_answers_ready, ask_cancel_payload, ask_submit_payload, base64_encode, capture_path,
+        close_confirmation, composer_model_label, context_percent, context_usage_label,
+        filter_models, group_digits, image_mime, model_key, parse_ask_questions,
+        parse_context_usage, parse_model_key, provider_chips, read_pending_image,
         should_confirm_close, side_answer_delta, terminal_menu, terminal_menu_action,
         terminal_tab_bar, transcript_is_at_bottom, updates, write_capture,
     };
@@ -8023,6 +8253,119 @@ mod tests {
             composer_model_label("anthropic/claude-fixture"),
             "Model: anthropic/claude-fixture"
         );
+    }
+
+    /// A catalog model the provider-filter tests can match by key.
+    fn filter_model(provider: &str, id: &str) -> omp_core::models::ModelDescriptor {
+        omp_core::models::ModelDescriptor {
+            key: model_key(provider, id),
+            provider: provider.to_string(),
+            id: id.to_string(),
+            name: format!("{provider} {id}"),
+            reasoning: false,
+            input: vec!["text".to_string()],
+            context_window: 100_000,
+            max_tokens: 8_192,
+            available_thinking_levels: Vec::new(),
+            fast_mode_supported: false,
+            available: true,
+        }
+    }
+
+    /// The provider chip filters the list purely: `All` keeps the catalog
+    /// order, one provider keeps its own models, and a provider the catalog
+    /// does not carry lists nothing rather than falling back to `All`.
+    #[test]
+    fn provider_filter_lists_only_the_selected_provider() {
+        let models = [
+            filter_model("anthropic", "claude-fixture"),
+            filter_model("openai-codex", "gpt-5.4"),
+            filter_model("anthropic", "claude-opus"),
+        ];
+        let keys = |provider: Option<&str>| {
+            filter_models(&models, provider)
+                .into_iter()
+                .map(|model| model_key(&model.provider, &model.id))
+                .collect::<Vec<String>>()
+        };
+        assert_eq!(
+            keys(None),
+            [
+                "anthropic/claude-fixture",
+                "openai-codex/gpt-5.4",
+                "anthropic/claude-opus",
+            ]
+        );
+        assert_eq!(
+            keys(Some("anthropic")),
+            ["anthropic/claude-fixture", "anthropic/claude-opus"]
+        );
+        assert_eq!(keys(Some("openai-codex")), ["openai-codex/gpt-5.4"]);
+        assert!(keys(Some("local")).is_empty());
+    }
+
+    /// The chips are the catalog's providers, bounded to eight; a catalog that
+    /// only lists models still gets one chip per provider, without the
+    /// configured hint.
+    #[test]
+    fn provider_chips_bound_the_catalog_and_fall_back_to_models() {
+        fn catalog(
+            providers: Vec<omp_core::models::ProviderDescriptor>,
+            models: Vec<omp_core::models::ModelDescriptor>,
+        ) -> omp_core::models::ModelCatalog {
+            omp_core::models::ModelCatalog {
+                prime_version: "17.2.15".to_string(),
+                refreshed_at: "2026-04-02T00:00:00.000Z".to_string(),
+                models,
+                providers,
+                warning: None,
+                vision_delegation: None,
+                presets: Vec::new(),
+            }
+        }
+        fn provider(id: &str, configured: bool) -> omp_core::models::ProviderDescriptor {
+            omp_core::models::ProviderDescriptor {
+                id: id.to_string(),
+                name: id.to_uppercase(),
+                auth_method: "oauth".to_string(),
+                configured,
+            }
+        }
+
+        let chips = provider_chips(&catalog(
+            vec![provider("anthropic", true), provider("local", false)],
+            vec![filter_model("anthropic", "claude-fixture")],
+        ));
+        assert_eq!(chips.len(), 2);
+        assert_eq!(chips[0].id, "anthropic");
+        assert_eq!(chips[0].name, "ANTHROPIC");
+        assert_eq!(chips[0].configured, Some(true));
+        assert_eq!(chips[1].id, "local");
+        assert_eq!(chips[1].configured, Some(false));
+
+        let many = (0..10)
+            .map(|index| provider(&format!("provider-{index}"), true))
+            .collect();
+        let chips = provider_chips(&catalog(many, Vec::new()));
+        assert_eq!(chips.len(), MODEL_PROVIDER_LIMIT);
+        assert_eq!(chips[MODEL_PROVIDER_LIMIT - 1].id, "provider-7");
+
+        let chips = provider_chips(&catalog(
+            Vec::new(),
+            vec![
+                filter_model("anthropic", "claude-fixture"),
+                filter_model("local", "plain-model"),
+                filter_model("anthropic", "claude-opus"),
+            ],
+        ));
+        assert_eq!(
+            chips
+                .iter()
+                .map(|chip| chip.id.as_str())
+                .collect::<Vec<_>>(),
+            ["anthropic", "local"]
+        );
+        assert!(chips.iter().all(|chip| chip.configured.is_none()));
     }
 
     /// A capture is stamped in UTC under `<user_data_dir>/captures`, and the PNG
