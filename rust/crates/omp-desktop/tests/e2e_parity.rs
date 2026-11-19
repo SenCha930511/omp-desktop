@@ -4898,6 +4898,27 @@ fn model_catalog(
     }
 }
 
+/// The same catalog with its provider list filled in, so the Settings picker
+/// has chips that carry a display name and the configured hint.
+fn model_catalog_with_providers(
+    models: &[(&str, &str, &str)],
+    providers: &[(&str, &str, bool)],
+) -> omp_core::models::ModelCatalog {
+    let mut catalog = model_catalog(models, None);
+    catalog.providers = providers
+        .iter()
+        .map(
+            |(id, name, configured)| omp_core::models::ProviderDescriptor {
+                id: id.to_string(),
+                name: name.to_string(),
+                auth_method: "oauth".to_string(),
+                configured: *configured,
+            },
+        )
+        .collect();
+    catalog
+}
+
 /// The fixture's own record of the RPC commands it received.
 #[cfg(unix)]
 fn fixture_commands(root: &Path) -> Vec<Value> {
@@ -5088,6 +5109,108 @@ fn model_selection_without_a_runtime_only_persists(cx: &mut TestAppContext) {
 
     let store = open_store(root);
     assert_eq!(store.settings().last_selected_model(), "local/plain-model");
+}
+
+/// The provider chips narrow the Settings model list without touching the
+/// persisted selection: a chip lists only its own models while the current
+/// model stays selected, choosing one of them persists it, `All` brings every
+/// provider back, and a catalog load opens on the current model's provider.
+#[gpui_kit::test]
+fn model_provider_filter_narrows_the_picker_and_keeps_the_selection(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let catalog = || {
+        model_catalog_with_providers(
+            &[
+                ("alpha", "a1", "Alpha One"),
+                ("alpha", "a2", "Alpha Two"),
+                ("beta", "b1", "Beta One"),
+                ("beta", "b2", "Beta Two"),
+            ],
+            &[("alpha", "Alpha", true), ("beta", "Beta", false)],
+        )
+    };
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, test_data(root)));
+    handle
+        .update(cx, |workspace, _, cx| {
+            // Caching the catalog first keeps `set_view` from spawning the
+            // harness: the parity suite never runs a real `omp`.
+            workspace.apply_model_catalog(catalog());
+            workspace.set_view(AppView::Settings, cx);
+
+            let opened = snapshot(workspace, cx);
+            assert_eq!(opened["models"]["providerFilter"], json!(null));
+            assert_eq!(
+                opened["models"]["providers"],
+                json!([
+                    { "id": "alpha", "name": "Alpha", "configured": true },
+                    { "id": "beta", "name": "Beta", "configured": false },
+                ]),
+                "the chips name the providers and their configured state"
+            );
+            assert_eq!(
+                opened["models"]["available"],
+                json!(["alpha/a1", "alpha/a2", "beta/b1", "beta/b2"]),
+                "All is the default when no model is selected"
+            );
+
+            workspace.select_model("alpha/a1", cx);
+            assert_eq!(workspace.model_footer(), "Model: alpha/a1");
+
+            // A chip lists only its own models. The current model is another
+            // provider's, so it stays selected but leaves the list; the
+            // current-model row is what still shows it.
+            workspace.select_provider_filter(Some("beta"), cx);
+            let filtered = snapshot(workspace, cx);
+            assert_eq!(filtered["models"]["providerFilter"], "beta");
+            assert_eq!(
+                filtered["models"]["available"],
+                json!(["beta/b1", "beta/b2"])
+            );
+            assert_eq!(filtered["models"]["selected"], "alpha/a1");
+            assert_eq!(filtered["settings"]["selectedModel"], "alpha/a1");
+
+            // Selecting within the chip persists the new choice and keeps the
+            // chip active.
+            workspace.select_model("beta/b1", cx);
+            let switched = snapshot(workspace, cx);
+            assert_eq!(switched["models"]["providerFilter"], "beta");
+            assert_eq!(
+                switched["models"]["available"],
+                json!(["beta/b1", "beta/b2"])
+            );
+            assert_eq!(switched["models"]["selected"], "beta/b1");
+            assert_eq!(switched["settings"]["selectedModel"], "beta/b1");
+            assert_eq!(workspace.model_footer(), "Model: beta/b1");
+
+            workspace.select_provider_filter(None, cx);
+            let all = snapshot(workspace, cx);
+            assert_eq!(all["models"]["providerFilter"], json!(null));
+            assert_eq!(
+                all["models"]["available"],
+                json!(["alpha/a1", "alpha/a2", "beta/b1", "beta/b2"]),
+                "All lists every provider again"
+            );
+            assert_eq!(all["models"]["selected"], "beta/b1");
+
+            // A reload opens on the current model's provider.
+            workspace.apply_model_catalog(catalog());
+            let reloaded = snapshot(workspace, cx);
+            assert_eq!(reloaded["models"]["providerFilter"], "beta");
+            assert_eq!(
+                reloaded["models"]["available"],
+                json!(["beta/b1", "beta/b2"])
+            );
+            assert_eq!(reloaded["models"]["selected"], "beta/b1");
+        })
+        .expect("workspace window");
+
+    // Drawing proves the chip row builds with the catalog's providers.
+    draw_frame(cx, handle.into());
+
+    let store = open_store(root);
+    assert_eq!(store.settings().last_selected_model(), "beta/b1");
 }
 
 /// Opening Settings is what loads the catalog, and the load is cached: the
