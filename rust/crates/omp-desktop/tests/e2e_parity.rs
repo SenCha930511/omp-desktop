@@ -3776,3 +3776,82 @@ fn removing_a_project_drops_the_grant_and_its_sessions(cx: &mut TestAppContext) 
         })
         .expect("reopened workspace");
 }
+
+/// The toolbar's Capture workspace action renders the window into
+/// `<user_data_dir>/captures` and reports the result. The test platform only
+/// renders frames with a headless renderer configured, so a run without one
+/// takes the error branch: the status row reports it and nothing is written.
+#[gpui_kit::test]
+fn capture_workspace_reports_the_saved_path_or_the_render_error(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let handle = cx.open_window(size(px(1280.0), px(800.0)), |window, cx| {
+        Workspace::new(window, cx, test_data(root))
+    });
+    // Rendering drives the root view, so a frame is drawn through the window
+    // handle; `Workspace::update` cannot nest inside its own render.
+    let window: gpui_kit::AnyWindowHandle = handle.into();
+
+    // The toolbar is drawn before it is pressed. Pressing the button through a
+    // measured position is the click test's job; the action is reached
+    // directly here, exactly like `copy_transcript`.
+    cx.update(|cx| {
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+        })
+        .expect("toolbar frame");
+    });
+
+    let handle = window.downcast::<Workspace>().expect("workspace handle");
+
+    let capture = handle
+        .update(cx, |workspace, window, cx| {
+            let before = snapshot(workspace, cx);
+            assert_eq!(before["capture"]["path"], json!(null));
+            assert_eq!(before["capture"]["error"], json!(null));
+            workspace.capture_workspace(window, cx);
+            snapshot(workspace, cx)["capture"].clone()
+        })
+        .expect("workspace window");
+
+    let captures = root.join("user-data").join("captures");
+    match &capture["error"] {
+        Value::String(message) => {
+            assert_eq!(capture["path"], json!(null), "a failure reports no path");
+            assert!(
+                message.starts_with("Capture failed:"),
+                "unexpected capture error: {message}"
+            );
+            assert!(
+                !captures.exists(),
+                "a failed render leaves nothing behind: {}",
+                captures.display()
+            );
+        }
+        Value::Null => {
+            let path = capture["path"].as_str().expect("saved path");
+            let saved = PathBuf::from(path);
+            assert!(saved.starts_with(&captures), "{path}");
+            let png = std::fs::read(&saved).expect("capture file");
+            assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n", "capture is a PNG");
+            let frame = image::open(&saved).expect("decode capture");
+            assert!(frame.width() > 0 && frame.height() > 0);
+        }
+        other => panic!("unexpected capture state: {other}"),
+    }
+
+    // The status row draws from the result, so the next frame must not panic
+    // and must leave the transcript alone.
+    cx.update(|cx| {
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+        })
+        .expect("capture frame");
+    });
+    handle
+        .update(cx, |workspace, _, _| {
+            assert!(workspace.transcript_messages().is_empty());
+        })
+        .expect("workspace window");
+}

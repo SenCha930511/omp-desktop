@@ -1,10 +1,10 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 
 use gpui_kit::InteractiveElement as _;
 use gpui_kit::StatefulInteractiveElement as _;
@@ -241,6 +241,10 @@ pub struct Workspace {
     save_task: Option<Task<()>>,
     update_check: UpdateCheckState,
     update_task: Option<Task<()>>,
+    // The toolbar's Capture workspace result: the PNG it wrote under
+    // `captures/`, or why the frame could not be written. Only one is set.
+    capture_path: Option<PathBuf>,
+    capture_error: Option<String>,
 }
 
 impl Workspace {
@@ -397,6 +401,8 @@ impl Workspace {
             save_task: None,
             update_check: updates::initial_state(),
             update_task: None,
+            capture_path: None,
+            capture_error: None,
         };
         workspace.refresh_notifications();
         workspace.start_scheduler(cx);
@@ -421,6 +427,39 @@ impl Workspace {
             return;
         }
         cx.write_to_clipboard(ClipboardItem::new_string(text));
+    }
+
+    /// Renders the whole window into `<user_data_dir>/captures` and reports the
+    /// outcome in the toolbar's status row.
+    ///
+    /// The frame comes from the platform renderer, so a backend that cannot
+    /// produce one (the test platform without a headless renderer) reports the
+    /// error instead of panicking, exactly like a failed write does.
+    pub fn capture_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let frame = window
+            .render_to_image()
+            .map_err(|error| format!("Capture failed: {error}"));
+        self.finish_capture(frame, cx);
+    }
+
+    /// Saves a rendered frame and parks the result in the status row: the path
+    /// it wrote, or the error that stood in for it.
+    ///
+    /// Taking the frame as a value is what lets a test drive both outcomes
+    /// without a platform renderer behind the window.
+    fn finish_capture(&mut self, frame: Result<image::RgbaImage, String>, cx: &mut Context<Self>) {
+        let saved = frame.and_then(|frame| write_capture(&self.user_data_dir, Utc::now(), &frame));
+        match saved {
+            Ok(path) => {
+                self.capture_path = Some(path);
+                self.capture_error = None;
+            }
+            Err(error) => {
+                self.capture_path = None;
+                self.capture_error = Some(error);
+            }
+        }
+        cx.notify();
     }
 
     pub fn composer_entity(&self) -> &Entity<InputState> {
@@ -618,6 +657,14 @@ impl Workspace {
             "review": {
                 "status": self.review_status,
                 "error": self.review_error,
+            },
+            // The toolbar's last Capture workspace result, if one was taken.
+            "capture": {
+                "path": self
+                    .capture_path
+                    .as_ref()
+                    .map(|path| path.display().to_string()),
+                "error": self.capture_error,
             },
             "schedules": self.schedules,
             "notifications": self.notifications,
@@ -917,6 +964,25 @@ impl Workspace {
                     .child("Copy transcript")
                     .on_click(cx.listener(|this, _, _, cx| this.copy_transcript(cx))),
             )
+            // The left-hand actions grow left to right, so adding this before
+            // the flexible spacer leaves the right-hand icons' positions alone.
+            .child(
+                div()
+                    .id("capture-workspace")
+                    .aria_label("Capture workspace")
+                    .px_2()
+                    .py_0p5()
+                    .rounded(px(6.0))
+                    .border_1()
+                    .border_color(colors.border)
+                    .text_xs()
+                    .text_color(colors.foreground)
+                    .hover(|style| style.bg(colors.accent))
+                    .child("Capture workspace")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.capture_workspace(window, cx);
+                    })),
+            )
             .child(div().flex_1())
             .child(self.toolbar_icon(
                 "notifications",
@@ -1028,6 +1094,27 @@ impl Workspace {
             .hover(|style| style.bg(color.opacity(0.12)))
             .child(icon)
             .on_click(on_click)
+    }
+
+    /// The one-line result of the last capture: the saved path, or the error
+    /// that replaced it. Nothing is drawn until a capture has been taken.
+    fn capture_status_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = cx.theme().colors;
+        let (text, color) = match (&self.capture_error, &self.capture_path) {
+            (Some(error), _) => (error.clone(), colors.danger),
+            (None, Some(path)) => (format!("Saved {}", path.display()), colors.muted_foreground),
+            (None, None) => (String::new(), colors.muted_foreground),
+        };
+        div()
+            .id("capture-status")
+            .aria_label("Capture status")
+            .px_3()
+            .py_1()
+            .text_xs()
+            .text_color(color)
+            .border_b_1()
+            .border_color(colors.border)
+            .child(text)
     }
 
     /// The bucket a session's terminal tabs are filed under: the session's
@@ -5252,6 +5339,38 @@ fn transcript_part_text(part: &TranscriptPart) -> String {
     }
 }
 
+/// The folder under the user data directory that captures land in.
+const CAPTURE_DIR: &str = "captures";
+
+/// Where a capture taken at `at` is written: `<user_data_dir>/captures/omp-<stamp>.png`.
+///
+/// The stamp is UTC to the millisecond and carries no separators, so the name is
+/// valid on every desktop platform and sorts chronologically.
+fn capture_path(user_data_dir: &Path, at: DateTime<Utc>) -> PathBuf {
+    user_data_dir
+        .join(CAPTURE_DIR)
+        .join(format!("omp-{}.png", at.format("%Y%m%dT%H%M%S%3f")))
+}
+
+/// Writes a rendered frame to `capture_path`, creating the captures folder.
+///
+/// The error is the message the status row shows: the caller never panics over
+/// a full disk or a read-only user data directory.
+fn write_capture(
+    user_data_dir: &Path,
+    at: DateTime<Utc>,
+    frame: &image::RgbaImage,
+) -> Result<PathBuf, String> {
+    let path = capture_path(user_data_dir, at);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|error| format!("Capture failed: {error}"))?;
+    }
+    frame
+        .save(&path)
+        .map_err(|error| format!("Capture failed: {error}"))?;
+    Ok(path)
+}
+
 /// The plain text `Copy transcript` puts on the clipboard: one block per
 /// message, its author line followed by the parts the transcript shows, with a
 /// blank line between blocks. A message with no visible part text contributes
@@ -5503,6 +5622,12 @@ impl Render for Workspace {
                     .h_full()
                     .min_w(px(360.0))
                     .child(self.toolbar(cx))
+                    // Only drawn once a capture ran, so the transcript keeps
+                    // the height it had before the first press.
+                    .when(
+                        self.capture_path.is_some() || self.capture_error.is_some(),
+                        |element| element.child(self.capture_status_row(cx)),
+                    )
                     .child(self.transcript(cx))
                     .when(self.terminal_open, |element| {
                         element.child(self.terminal_panel(cx))
@@ -5931,9 +6056,95 @@ mod tests {
         LiveVoiceState, RightPane, TERMINAL_MENU_ITEMS, TerminalMenuAction, TerminalTabSpec,
         TerminalTabSpecs, UpdateCheckState, Workspace, WorkspaceData, append_clipboard_text,
         append_dictation_text, append_side_answer, apply_dictation_frame, apply_live_voice_event,
-        ask_answers_ready, ask_cancel_payload, ask_submit_payload, parse_ask_questions,
-        side_answer_delta, terminal_menu, terminal_menu_action, terminal_tab_bar, updates,
+        ask_answers_ready, ask_cancel_payload, ask_submit_payload, capture_path,
+        parse_ask_questions, side_answer_delta, terminal_menu, terminal_menu_action,
+        terminal_tab_bar, updates, write_capture,
     };
+
+    /// A capture is stamped in UTC under `<user_data_dir>/captures`, and the PNG
+    /// that name points at decodes back to the frame that was written.
+    #[test]
+    fn capture_path_is_stamped_and_saved_as_a_png() {
+        let root = tempfile::TempDir::new().expect("test root");
+        let at = chrono::DateTime::parse_from_rfc3339("2026-11-20T05:06:07.089Z")
+            .expect("timestamp")
+            .with_timezone(&chrono::Utc);
+        let expected = root
+            .path()
+            .join("captures")
+            .join("omp-20261120T050607089.png");
+        assert_eq!(capture_path(root.path(), at), expected);
+
+        let frame = image::RgbaImage::from_pixel(2, 2, image::Rgba([12, 34, 56, 255]));
+        let saved = write_capture(root.path(), at, &frame).expect("saved capture");
+        assert_eq!(saved, expected);
+        assert_eq!(
+            image::open(&saved).expect("decode capture").to_rgba8(),
+            frame
+        );
+
+        // The millisecond stamp keeps back-to-back captures apart.
+        let later = chrono::DateTime::parse_from_rfc3339("2026-11-20T05:06:07.090Z")
+            .expect("timestamp")
+            .with_timezone(&chrono::Utc);
+        assert_ne!(capture_path(root.path(), later), saved);
+    }
+
+    /// A capture that wrote its frame reports the path and no error; one that
+    /// could not reports the error and keeps no path, so the status row shows
+    /// exactly one of them.
+    #[test]
+    fn capture_reports_the_saved_path_or_the_error() {
+        let mut cx = gpui_kit::TestAppContext::single();
+        cx.update(gpui_kit::init);
+        let root = tempfile::TempDir::new().expect("test root").keep();
+        let handle = cx.add_window(|window, cx| {
+            Workspace::new(
+                window,
+                cx,
+                WorkspaceData {
+                    geometry: UiGeometry::default(),
+                    geometry_path: root.join("ui-geometry.json"),
+                    home_dir: root.clone(),
+                    user_data_dir: root.clone(),
+                    omp_executable: PathBuf::from("omp"),
+                    settings: AppSettings::default(),
+                    projects: Vec::new(),
+                    sessions: Vec::new(),
+                },
+            )
+        });
+
+        let frame = image::RgbaImage::from_pixel(2, 2, image::Rgba([12, 34, 56, 255]));
+        let (path, error) = handle
+            .update(&mut cx, |workspace, _, cx| {
+                workspace.finish_capture(Ok(frame), cx);
+                (
+                    workspace.capture_path.clone(),
+                    workspace.capture_error.clone(),
+                )
+            })
+            .expect("workspace window");
+        let path = path.expect("saved path");
+        assert!(
+            path.starts_with(root.join("captures")),
+            "{}",
+            path.display()
+        );
+        assert!(path.exists(), "{}", path.display());
+        assert_eq!(error, None);
+
+        handle
+            .update(&mut cx, |workspace, _, cx| {
+                workspace.finish_capture(Err("Capture failed: no renderer".to_string()), cx);
+                assert_eq!(workspace.capture_path, None);
+                assert_eq!(
+                    workspace.capture_error.as_deref(),
+                    Some("Capture failed: no renderer")
+                );
+            })
+            .expect("workspace window");
+    }
 
     /// The Settings page must render the update row, and an unconfigured build
     /// must land on the "not configured" label instead of touching the network.
