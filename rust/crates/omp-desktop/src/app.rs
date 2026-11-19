@@ -1950,6 +1950,7 @@ impl Workspace {
             RightPane::Review => Some(self.review_content(cx).into_any_element()),
             RightPane::Browser => Some(self.browser.content(cx).into_any_element()),
             RightPane::Files => Some(self.files_content(cx).into_any_element()),
+            RightPane::Subagents => Some(self.subagents_content(cx).into_any_element()),
             other => Some(self.placeholder_content(other, cx).into_any_element()),
         };
         let title = match self.right_pane {
@@ -2172,6 +2173,102 @@ impl Workspace {
                         .child(format!("{} entries skipped.", self.files_skipped)),
                 )
             })
+    }
+
+    fn subagents_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = cx.theme().colors;
+        let agents = self.agents.list();
+        let mut list = div().flex().flex_col().gap_1();
+        for (index, agent) in agents.iter().enumerate() {
+            let runtime_id = agent
+                .get("runtimeId")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+                .to_string();
+            let cwd = agent
+                .get("cwd")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let session = agent
+                .get("sessionFile")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let stop_id = runtime_id.clone();
+            list = list.child(
+                div()
+                    .id(format!("subagent-{index}"))
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_2()
+                    .py_1()
+                    .rounded(px(6.0))
+                    .hover(|style| style.bg(colors.accent))
+                    .child(IconName::Bot)
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_0p5()
+                            .text_sm()
+                            .text_color(colors.foreground)
+                            .child(runtime_id)
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(colors.muted_foreground)
+                                    .child(cwd),
+                            )
+                            .when(!session.is_empty(), |element| {
+                                element.child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(colors.muted_foreground)
+                                        .child(session),
+                                )
+                            }),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .id(format!("subagent-stop-{index}"))
+                            .aria_label("Stop subagent")
+                            .px_2()
+                            .py_1()
+                            .rounded(px(6.0))
+                            .border_1()
+                            .border_color(colors.border)
+                            .text_xs()
+                            .child("Stop")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.agents.stop(&stop_id);
+                                cx.notify();
+                            })),
+                    ),
+            );
+        }
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .p_2()
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child("Subagents"),
+            )
+            .when(agents.is_empty(), |element| {
+                element.child(
+                    div()
+                        .text_sm()
+                        .text_color(colors.muted_foreground)
+                        .child("No background runtimes."),
+                )
+            })
+            .child(list)
     }
 
     fn summary_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
