@@ -292,7 +292,7 @@ export function createConformanceSandbox(prefix = 'omp-conformance-'): Conforman
     fixtureBinDir,
     ompExecutable,
     cleanup: () => {
-      rmSync(rootDir, { recursive: true, force: true })
+      rmSync(rootDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     },
   }
 }
