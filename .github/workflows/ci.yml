@@ -362,7 +362,7 @@ jobs:
       - run: npm ci
       - run: npm run release:preflight:toolchain
       - name: Run the conformance suite against the Rust adapter
-        run: npm run test:conformance -- --reporter=json --outputFile="${{ env.OMP_CONFORMANCE_VITEST_JSON }}"
+        run: node node_modules/vitest/vitest.mjs run --config vitest.conformance.config.ts --reporter=json --outputFile="${{ env.OMP_CONFORMANCE_VITEST_JSON }}"
       - name: Summarize adapter capabilities and test counts
         if: always()
         run: node scripts/rust/summarize-conformance.mjs
