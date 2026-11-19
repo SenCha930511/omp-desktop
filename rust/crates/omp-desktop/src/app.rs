@@ -200,6 +200,9 @@ pub struct Workspace {
     _terminal_input_subscription: Subscription,
     terminal_submit_requested: bool,
     terminal_error: Option<String>,
+    // The header's menu is a popup of the panel itself: it is only drawn while
+    // the panel is open, and any row closes it again.
+    terminal_menu_open: bool,
     // One watcher per tab, woken by its session's output. A tab's watcher ends
     // when its channel closes, so this only grows while the panel stays open.
     terminal_tasks: Vec<Task<()>>,
@@ -338,6 +341,7 @@ impl Workspace {
             _terminal_input_subscription: terminal_input_subscription,
             terminal_submit_requested: false,
             terminal_error: None,
+            terminal_menu_open: false,
             terminal_tasks: Vec::new(),
             files: Vec::new(),
             files_skipped: 0,
@@ -964,6 +968,7 @@ impl Workspace {
         self.terminal_tasks.clear();
         self.active_terminal = 0;
         self.terminal_error = None;
+        self.terminal_menu_open = false;
         if !self.terminal_open {
             return;
         }
@@ -1041,6 +1046,7 @@ impl Workspace {
         self.active_terminal = 0;
         self.terminal_open = false;
         self.terminal_error = None;
+        self.terminal_menu_open = false;
         let key = self.terminal_key();
         if self
             .terminal_specs
@@ -1071,6 +1077,59 @@ impl Workspace {
             && let Err(error) = session.send_line(&line)
         {
             self.terminal_error = Some(error);
+        }
+        cx.notify();
+    }
+
+    /// Runs one row of the terminal header menu and closes it.
+    ///
+    /// Copy puts the active screen's text on the clipboard, Paste appends the
+    /// clipboard to the input line (never to the PTY), and Clear resets the
+    /// screen mirror while the shell keeps running. An unknown id closes the
+    /// menu and does nothing else.
+    fn terminal_menu_click(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.terminal_menu_open = false;
+        match terminal_menu_action(id) {
+            Some(TerminalMenuAction::Copy) => self.copy_terminal_screen(cx),
+            Some(TerminalMenuAction::Paste) => self.paste_terminal_clipboard(window, cx),
+            Some(TerminalMenuAction::Clear) => self.clear_terminal_screen(cx),
+            None => {}
+        }
+        cx.notify();
+    }
+
+    /// Copies the active tab's screen text, with no session or an empty screen
+    /// leaving the clipboard untouched.
+    fn copy_terminal_screen(&self, cx: &mut Context<Self>) {
+        let Some(session) = self.terminals.get(self.active_terminal) else {
+            return;
+        };
+        let text = session.screen_text();
+        if text.is_empty() {
+            return;
+        }
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+    }
+
+    /// Appends the clipboard to the terminal input line, so the user reviews
+    /// and submits it instead of pasting straight into the running shell.
+    fn paste_terminal_clipboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
+            return;
+        };
+        let current = self.terminal_input.read(cx).value().to_string();
+        let next = append_clipboard_text(&current, &text);
+        if next == current {
+            return;
+        }
+        self.terminal_input
+            .update(cx, |input, cx| input.set_value(next, window, cx));
+    }
+
+    /// Clears the active tab's screen; the shell keeps running.
+    fn clear_terminal_screen(&mut self, cx: &mut Context<Self>) {
+        if let Some(session) = self.terminals.get_mut(self.active_terminal) {
+            session.clear();
         }
         cx.notify();
     }
@@ -1117,6 +1176,12 @@ impl Workspace {
                 entity.update(cx, |this, cx| this.close_terminal_tab(index, cx));
             }
         };
+        let pick = {
+            let entity = entity.clone();
+            move |id: &'static str, window: &mut Window, cx: &mut App| {
+                entity.update(cx, |this, cx| this.terminal_menu_click(id, window, cx));
+            }
+        };
         let new_tab = move |_: &mut Window, cx: &mut App| {
             entity.update(cx, |this, cx| this.new_terminal_tab(cx));
         };
@@ -1124,6 +1189,7 @@ impl Workspace {
             .flex()
             .flex_col()
             .flex_shrink_0()
+            .relative()
             .border_t_1()
             .border_color(colors.border)
             .bg(colors.sidebar)
@@ -1141,6 +1207,19 @@ impl Workspace {
                     .child(location)
                     .child(div().flex_1())
                     .child(if running { "running" } else { "stopped" })
+                    .child(
+                        div()
+                            .id("terminal-menu")
+                            .aria_label("Terminal menu")
+                            .px_2()
+                            .rounded(px(6.0))
+                            .hover(|style| style.bg(colors.accent))
+                            .child("⋯")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.terminal_menu_open = !this.terminal_menu_open;
+                                cx.notify();
+                            })),
+                    )
                     .child(
                         div()
                             .id("terminal-close")
@@ -1205,6 +1284,9 @@ impl Workspace {
                         .text_color(colors.danger)
                         .child(error.unwrap_or_default()),
                 )
+            })
+            .when(self.terminal_menu_open, |element| {
+                element.child(terminal_menu(colors, pick))
             })
     }
 
@@ -4362,6 +4444,94 @@ type TabClick = dyn Fn(usize, &mut Window, &mut App);
 /// The tab bar's `+` click, which names no tab.
 type NewTabClick = dyn Fn(&mut Window, &mut App);
 
+/// One terminal header menu row's action.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminalMenuAction {
+    Copy,
+    Paste,
+    Clear,
+}
+
+/// The terminal header menu's rows, in order: element id, label and action.
+const TERMINAL_MENU_ITEMS: [(&str, &str, TerminalMenuAction); 3] = [
+    (
+        "terminal-menu-copy",
+        "Copy screen",
+        TerminalMenuAction::Copy,
+    ),
+    ("terminal-menu-paste", "Paste", TerminalMenuAction::Paste),
+    ("terminal-menu-clear", "Clear", TerminalMenuAction::Clear),
+];
+
+/// The action a menu row's element id names; an unknown id runs nothing.
+fn terminal_menu_action(id: &str) -> Option<TerminalMenuAction> {
+    TERMINAL_MENU_ITEMS
+        .iter()
+        .find(|(row_id, _, _)| *row_id == id)
+        .map(|(_, _, action)| *action)
+}
+
+/// A menu row click that names the row it came from.
+type TerminalMenuPick = dyn Fn(&'static str, &mut Window, &mut App);
+
+/// Draws the terminal header's menu: copy the screen, paste into the input
+/// line, or clear the screen. It is anchored to the panel, which is relative,
+/// and the caller owns both the open flag and the actions.
+fn terminal_menu(
+    colors: ThemeColor,
+    on_pick: impl Fn(&'static str, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let on_pick: Rc<TerminalMenuPick> = Rc::new(on_pick);
+    div()
+        .id("terminal-menu-popup")
+        .absolute()
+        .top(px(28.0))
+        .right(px(12.0))
+        .w(px(170.0))
+        .flex()
+        .flex_col()
+        .gap_1()
+        .p_2()
+        .rounded(px(8.0))
+        .border_1()
+        .border_color(colors.border)
+        .bg(colors.sidebar)
+        .text_sm()
+        .children(TERMINAL_MENU_ITEMS.into_iter().map(|(id, label, _)| {
+            let on_pick = Rc::clone(&on_pick);
+            div()
+                .id(id)
+                .aria_label(label)
+                .px_2()
+                .py_1()
+                .rounded(px(6.0))
+                .hover(|style| style.bg(colors.accent))
+                .child(label)
+                .on_click(move |_, window, cx| on_pick(id, window, cx))
+        }))
+}
+
+/// Appends pasted text to the terminal input line.
+///
+/// The input holds one line and submits on Enter, so the trailing newline most
+/// clipboards carry is dropped and inner line breaks become spaces: one paste
+/// stays one command instead of submitting the first of several lines.
+fn append_clipboard_text(current: &str, clipboard: &str) -> String {
+    let text = clipboard.trim_end_matches(['\r', '\n']);
+    if text.is_empty() {
+        return current.to_string();
+    }
+    let mut next = String::with_capacity(current.len() + text.len());
+    next.push_str(current);
+    for (index, line) in text.split('\n').enumerate() {
+        if index > 0 {
+            next.push(' ');
+        }
+        next.push_str(line.trim_end_matches('\r'));
+    }
+    next
+}
+
 /// Draws the terminal panel's tab bar: one tab per shell, then a `+` button.
 ///
 /// Labels and callbacks are all it reads, so a test can render it without a
@@ -4801,10 +4971,11 @@ mod tests {
     use omp_core::settings::AppSettings;
 
     use super::{
-        AppView, DictationState, LIVE_TRANSCRIPT_LIMIT, LiveVoiceState, RightPane, TerminalTabSpec,
-        TerminalTabSpecs, UpdateCheckState, Workspace, WorkspaceData, append_dictation_text,
+        AppView, DictationState, LIVE_TRANSCRIPT_LIMIT, LiveVoiceState, RightPane,
+        TERMINAL_MENU_ITEMS, TerminalMenuAction, TerminalTabSpec, TerminalTabSpecs,
+        UpdateCheckState, Workspace, WorkspaceData, append_clipboard_text, append_dictation_text,
         append_side_answer, apply_dictation_frame, apply_live_voice_event, side_answer_delta,
-        terminal_tab_bar, updates,
+        terminal_menu, terminal_menu_action, terminal_tab_bar, updates,
     };
 
     /// The Settings page must render the update row, and an unconfigured build
@@ -5173,6 +5344,166 @@ mod tests {
                 .expect("draw tab bar frame");
             });
         }
+        cx.quit();
+    }
+
+    /// The menu's rows name their ids, labels and actions in one order: the
+    /// renderer and the click handler read the same table.
+    #[test]
+    fn terminal_menu_rows_copy_paste_and_clear() {
+        assert_eq!(
+            TERMINAL_MENU_ITEMS.map(|(id, label, _)| (id, label)),
+            [
+                ("terminal-menu-copy", "Copy screen"),
+                ("terminal-menu-paste", "Paste"),
+                ("terminal-menu-clear", "Clear"),
+            ]
+        );
+        assert_eq!(
+            terminal_menu_action("terminal-menu-copy"),
+            Some(TerminalMenuAction::Copy)
+        );
+        assert_eq!(
+            terminal_menu_action("terminal-menu-paste"),
+            Some(TerminalMenuAction::Paste)
+        );
+        assert_eq!(
+            terminal_menu_action("terminal-menu-clear"),
+            Some(TerminalMenuAction::Clear)
+        );
+        // Anything else closes the menu without running an action.
+        assert_eq!(terminal_menu_action("terminal-close"), None);
+        assert_eq!(terminal_menu_action(""), None);
+    }
+
+    /// Pasting keeps the terminal input on one line: the clipboard's trailing
+    /// newline is dropped and inner breaks become spaces.
+    #[test]
+    fn pasted_clipboard_text_stays_on_one_input_line() {
+        assert_eq!(append_clipboard_text("", "ls\r\n"), "ls");
+        assert_eq!(append_clipboard_text("git ", "status\n"), "git status");
+        assert_eq!(append_clipboard_text("echo ", "a\nb\r\n"), "echo a b");
+        assert_eq!(append_clipboard_text("kept", "\n\n"), "kept");
+        assert_eq!(append_clipboard_text("kept", ""), "kept");
+    }
+
+    /// The header menu draws with no session: opening it does not start a
+    /// shell, and the panel keeps its empty tab bar.
+    #[test]
+    fn terminal_menu_renders_without_a_session() {
+        let mut cx = gpui_kit::TestAppContext::single();
+        cx.update(gpui_kit::init);
+        let root = tempfile::TempDir::new().expect("test root").keep();
+        let handle = cx.add_window(|window, cx| {
+            Workspace::new(
+                window,
+                cx,
+                WorkspaceData {
+                    geometry: UiGeometry::default(),
+                    geometry_path: root.join("ui-geometry.json"),
+                    home_dir: root.clone(),
+                    user_data_dir: root.clone(),
+                    omp_executable: PathBuf::from("omp"),
+                    settings: AppSettings::default(),
+                    projects: Vec::new(),
+                    sessions: Vec::new(),
+                },
+            )
+        });
+        handle
+            .update(&mut cx, |workspace, _, _| {
+                workspace.terminal_open = true;
+                workspace.terminal_menu_open = true;
+                workspace.layout = workspace.geometry.resolve(1600.0);
+            })
+            .expect("workspace window");
+        cx.update(|cx| {
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.draw(cx).clear(cx);
+            })
+            .expect("draw terminal menu frame");
+        });
+        let (open, terminals) = handle
+            .update(&mut cx, |workspace, _, _| {
+                (workspace.terminal_menu_open, workspace.terminals.len())
+            })
+            .expect("workspace window");
+        cx.quit();
+        assert!(open);
+        assert_eq!(terminals, 0);
+    }
+
+    /// Copy, Paste and Clear with no session leave the panel usable: Paste
+    /// fills the input line from the clipboard instead of writing to a PTY,
+    /// and every row closes the menu.
+    #[test]
+    fn terminal_menu_actions_without_a_session_do_not_panic() {
+        let mut cx = gpui_kit::TestAppContext::single();
+        cx.update(gpui_kit::init);
+        cx.update(|cx| {
+            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("ls -la\n".to_string()));
+        });
+        let root = tempfile::TempDir::new().expect("test root").keep();
+        let handle = cx.add_window(|window, cx| {
+            Workspace::new(
+                window,
+                cx,
+                WorkspaceData {
+                    geometry: UiGeometry::default(),
+                    geometry_path: root.join("ui-geometry.json"),
+                    home_dir: root.clone(),
+                    user_data_dir: root.clone(),
+                    omp_executable: PathBuf::from("omp"),
+                    settings: AppSettings::default(),
+                    projects: Vec::new(),
+                    sessions: Vec::new(),
+                },
+            )
+        });
+        handle
+            .update(&mut cx, |workspace, window, cx| {
+                workspace.terminal_open = true;
+                workspace.terminal_menu_open = true;
+                // Copy and Clear have no session to read or reset.
+                workspace.terminal_menu_click("terminal-menu-copy", window, cx);
+                assert!(!workspace.terminal_menu_open);
+                workspace.terminal_menu_click("terminal-menu-clear", window, cx);
+                // Paste lands in the input line, never in a shell.
+                workspace.terminal_menu_click("terminal-menu-paste", window, cx);
+                assert_eq!(workspace.terminal_input.read(cx).value().as_ref(), "ls -la");
+                workspace.terminal_menu_click("terminal-menu-unknown", window, cx);
+                assert!(workspace.terminals.is_empty());
+            })
+            .expect("workspace window");
+        cx.quit();
+    }
+
+    /// The menu element itself draws all three rows without a workspace.
+    #[test]
+    fn terminal_menu_draws_its_rows() {
+        use gpui_kit::component::ActiveTheme as _;
+
+        struct TestMenu;
+
+        impl gpui_kit::Render for TestMenu {
+            fn render(
+                &mut self,
+                _window: &mut gpui_kit::Window,
+                cx: &mut gpui_kit::Context<Self>,
+            ) -> impl gpui_kit::IntoElement {
+                terminal_menu(cx.theme().colors, |_, _, _| {})
+            }
+        }
+
+        let mut cx = gpui_kit::TestAppContext::single();
+        cx.update(gpui_kit::init);
+        let handle = cx.add_window(|_, _| TestMenu);
+        cx.update(|cx| {
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.draw(cx).clear(cx);
+            })
+            .expect("draw terminal menu rows");
+        });
         cx.quit();
     }
 

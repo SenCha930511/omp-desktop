@@ -356,6 +356,16 @@ impl TerminalSession {
         normalize_screen_text(&state.parser.screen().contents())
     }
 
+    /// Resets the screen mirror without touching the shell.
+    ///
+    /// The running program keeps its PTY and its own state; the panel simply
+    /// draws a blank screen until the next output arrives, which is what a
+    /// terminal's "clear screen" action does.
+    pub fn clear(&mut self) {
+        let mut state = TerminalState::lock(&self.shared);
+        state.parser = Parser::new(self.rows, self.cols, 0);
+    }
+
     /// False once the shell exited or its output could no longer be read.
     pub fn is_running(&self) -> bool {
         TerminalState::lock(&self.shared).running
