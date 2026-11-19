@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Utc};
 
@@ -539,6 +539,20 @@ pub struct Workspace {
     // list is what the harness reports, and the two are never merged.
     queued_follow_ups: Vec<String>,
     transcript_error: Option<String>,
+    // The session file the transcript was read from, and the file state that
+    // read saw. The watcher compares this against a fresh `stat`, so a write
+    // from another process is the only thing that triggers a re-read: the
+    // view never polls the file's contents.
+    transcript_file: Option<String>,
+    transcript_stamp: Option<TranscriptStamp>,
+    // The file state that last failed to read. A failure is only surfaced
+    // once it repeats for the same state, so a file caught mid-write is not
+    // reported; the retry keeps the previous stamp, so it recovers on its own.
+    transcript_failure: Option<TranscriptStamp>,
+    // How many times an external change re-read the transcript. The parity
+    // harness reads this back to prove a check really reloaded the file.
+    transcript_reloads: u64,
+    transcript_task: Option<Task<()>>,
     runtime_error: Option<String>,
     // The composer banner's last fork outcome. A successful fork leaves the
     // short notice `Forked session` here; a failed one is an error and lands in
@@ -767,6 +781,11 @@ impl Workspace {
             transcript_at_bottom: true,
             queued_follow_ups: Vec::new(),
             transcript_error: None,
+            transcript_file: None,
+            transcript_stamp: None,
+            transcript_failure: None,
+            transcript_reloads: 0,
+            transcript_task: None,
             runtime_error: None,
             fork_status: None,
             context_usage: None,
@@ -844,6 +863,7 @@ impl Workspace {
         workspace.close_guard.attach(cx.weak_entity());
         workspace.sync_close_guard();
         workspace.start_scheduler(cx);
+        workspace.start_transcript_watch(cx);
         workspace
     }
 
@@ -912,6 +932,138 @@ impl Workspace {
         } else {
             self.transcript_scroll.scroll_to_item(last);
         }
+    }
+
+    /// Why the transcript could not be read, while the pane shows it.
+    ///
+    /// The parity harness reads it back after an external write that left the
+    /// session file unreadable; a later readable state clears it.
+    pub fn transcript_error(&self) -> Option<&str> {
+        self.transcript_error.as_deref()
+    }
+
+    /// Drops the transcript and the file baseline the watcher compares against.
+    ///
+    /// Every path that stops showing a session calls this, so a stale file is
+    /// never watched under the next selection.
+    fn clear_transcript(&mut self) {
+        self.transcript.clear();
+        self.transcript_file = None;
+        self.transcript_stamp = None;
+        self.transcript_failure = None;
+    }
+
+    /// Re-reads the selected session's file when another process changed it.
+    ///
+    /// The harness writes to the session JSONL from its own process, so a
+    /// resumed session would otherwise show a stale transcript until it was
+    /// opened again. The check is a `stat`: only a moved length or modified
+    /// time triggers the read, and the reader keeps their place — the tail is
+    /// followed only when the view was already pinned to it.
+    ///
+    /// A read that fails keeps the rows already on screen and is reported once
+    /// it repeats for the same file state, so a file caught mid-write is not
+    /// reported and recovers on its own. The timer and the parity harness both
+    /// call this.
+    pub fn check_transcript_external_change(&mut self, cx: &mut Context<Self>) {
+        let Some(index) = self.selected_session else {
+            return;
+        };
+        let Some(session) = self.sessions.get(index) else {
+            return;
+        };
+        // The watcher follows the file the transcript was read from: a
+        // refreshed catalog can move the index, and re-reading a different
+        // session's file would show its rows under this selection.
+        if self.transcript_file.as_deref() != Some(session.file_path.as_str()) {
+            return;
+        }
+        let file_path = session.file_path.clone();
+        let stamp = transcript_stamp(Path::new(&file_path));
+        if stamp == self.transcript_stamp {
+            return;
+        }
+        let root = sessions::session_root(&self.home_dir);
+        let messages = match sessions::read_transcript(&root, &file_path) {
+            Ok(messages) => messages,
+            Err(error) => {
+                // One failed read is a file that is still being written; the
+                // same state failing twice is a file the view cannot show.
+                let persistent = self.transcript_failure == stamp;
+                self.transcript_failure = stamp;
+                if persistent && self.transcript_error.is_none() {
+                    self.transcript_error = Some(error.message);
+                    cx.notify();
+                }
+                return;
+            }
+        };
+        // A queued follow-up is the harness's own queue trace and never doubles
+        // as the turn's user message, so it always survives the read. A turn in
+        // flight owns rows the file has not caught up with, so those are
+        // carried over too instead of erasing the stream.
+        let in_flight = self.running || self.streaming_index.is_some();
+        let streaming_id = self
+            .streaming_index
+            .and_then(|index| self.transcript.get(index))
+            .map(|message| message.id.clone());
+        let carried: Vec<TranscriptMessage> = self
+            .transcript
+            .iter()
+            .filter(|message| {
+                message.id.starts_with("queued-")
+                    || (in_flight && is_local_transcript_row(&message.id))
+            })
+            .filter(|message| {
+                // A row the file already holds under the harness's own id is
+                // not carried twice: the read copy is the persisted one.
+                let queued = message.id.starts_with("queued-");
+                !messages.iter().any(|fresh| {
+                    fresh.id == message.id
+                        || (!queued
+                            && fresh.role == message.role
+                            && transcript_row_text(fresh) == transcript_row_text(message))
+                })
+            })
+            .cloned()
+            .collect();
+        self.transcript = messages;
+        self.transcript.extend(carried);
+        // A carried streaming row keeps its slot, so the next delta grows it
+        // instead of minting a second reply.
+        self.streaming_index =
+            streaming_id.and_then(|id| self.transcript.iter().position(|message| message.id == id));
+        self.transcript_stamp = stamp;
+        self.transcript_failure = None;
+        self.transcript_error = None;
+        self.transcript_reloads += 1;
+        // The reader keeps their place: only a pinned view follows the append.
+        self.follow_transcript_tail();
+        cx.notify();
+    }
+
+    /// Polls the selected session's file so a write from another process shows
+    /// up without a manual reload.
+    ///
+    /// Each tick is one `stat` of the file the transcript came from; the file
+    /// itself is only read when that `stat` moved.
+    fn start_transcript_watch(&mut self, cx: &mut Context<Self>) {
+        if self.transcript_task.is_some() {
+            return;
+        }
+        self.transcript_task = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(TRANSCRIPT_WATCH_INTERVAL)
+                    .await;
+                if this
+                    .update(cx, |this, cx| this.check_transcript_external_change(cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }));
     }
 
     /// Renders the whole window into `<user_data_dir>/captures` and reports the
@@ -1151,6 +1303,11 @@ impl Workspace {
             // Whether the transcript is pinned to its newest message: false
             // means a reader scrolled up and the jump control is drawn.
             "transcriptAtBottom": self.transcript_at_bottom,
+            // The selected session file's own clock and how many external
+            // changes re-read it: the parity harness proves the watcher noticed
+            // a write from another process without measuring the rows alone.
+            "transcriptMtime": self.transcript_stamp.and_then(TranscriptStamp::modified_millis),
+            "transcriptReloads": self.transcript_reloads,
             // Whether a turn is in flight, so a send would queue a follow-up.
             "running": self.running,
             // What the harness reports as queued behind the running turn.
@@ -2198,20 +2355,26 @@ impl Workspace {
         // The previous session's shells stop here; the new session's own tabs
         // are reopened from its spec, never handed over from the old one.
         self.restore_terminal_tabs(cx);
-        self.transcript.clear();
+        self.clear_transcript();
         // A switch lands on the newest message of the session it opens, the
         // same way a fresh read of this one would.
         self.transcript_at_bottom = true;
         self.transcript_error = None;
         if let Some(session) = self.sessions.get(index) {
             let root = sessions::session_root(&self.home_dir);
-            match sessions::read_transcript(&root, &session.file_path) {
+            let file_path = session.file_path.clone();
+            match sessions::read_transcript(&root, &file_path) {
                 Ok(messages) => {
                     self.transcript = messages;
                     self.follow_transcript_tail();
                 }
                 Err(error) => self.transcript_error = Some(error.message),
             }
+            // The stamp is recorded whether the read succeeded or not: a file
+            // that is still broken is not retried until it changes, and a file
+            // that becomes readable again is what recovers the view.
+            self.transcript_stamp = transcript_stamp(Path::new(&file_path));
+            self.transcript_file = Some(file_path);
         }
         if self.right_pane == RightPane::Review {
             self.refresh_review();
@@ -2358,7 +2521,7 @@ impl Workspace {
                 self.queued_follow_ups.clear();
                 self.runtime_error = None;
                 self.selected_session = None;
-                self.transcript.clear();
+                self.clear_transcript();
                 // The session that reported the window is gone with its project.
                 self.context_usage = None;
                 self.turn_baseline = None;
@@ -2377,7 +2540,7 @@ impl Workspace {
                     Some(index) => self.selected_session = Some(index),
                     None => {
                         self.selected_session = None;
-                        self.transcript.clear();
+                        self.clear_transcript();
                         self.context_usage = None;
                     }
                 }
@@ -2450,7 +2613,7 @@ impl Workspace {
         // carried into this one.
         self.terminal_specs.remove(DRAFT_TERMINAL_KEY);
         self.restore_terminal_tabs(cx);
-        self.transcript.clear();
+        self.clear_transcript();
         // The draft starts empty and follows the first message it gets.
         self.transcript_at_bottom = true;
         self.transcript_error = None;
@@ -6573,7 +6736,7 @@ impl Workspace {
                 self.terminal_tasks.clear();
                 self.active_terminal = 0;
                 self.selected_session = None;
-                self.transcript.clear();
+                self.clear_transcript();
                 // Nothing is selected any more, so nothing has a window to report.
                 self.context_usage = None;
             }
@@ -6909,6 +7072,57 @@ fn append_clipboard_text(current: &str, clipboard: &str) -> String {
 /// lines of slack, so a rounding gap or a partially scrolled row does not
 /// unpin the auto-follow.
 const TRANSCRIPT_BOTTOM_THRESHOLD: f32 = 24.0;
+
+/// How often the watcher looks at the selected session file. It is one `stat`,
+/// so a two-second tick costs nothing while the file is quiet.
+const TRANSCRIPT_WATCH_INTERVAL: Duration = Duration::from_secs(2);
+
+/// The state of the session file the transcript was read from: its length and
+/// modified time. Both are compared, because a filesystem whose modified time
+/// only moves once a second still reports an append as a longer file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TranscriptStamp {
+    len: u64,
+    modified: Option<SystemTime>,
+}
+
+impl TranscriptStamp {
+    /// The modified time in milliseconds since the epoch, for the snapshot.
+    fn modified_millis(self) -> Option<u64> {
+        self.modified
+            .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+            .map(|elapsed| elapsed.as_millis() as u64)
+    }
+}
+
+/// Reads the file state a change check compares against, or `None` when the
+/// file cannot be inspected at all.
+fn transcript_stamp(path: &Path) -> Option<TranscriptStamp> {
+    let metadata = std::fs::metadata(path).ok()?;
+    Some(TranscriptStamp {
+        len: metadata.len(),
+        modified: metadata.modified().ok(),
+    })
+}
+
+/// Whether a row was minted by the view instead of read from the session file:
+/// a queued follow-up trace, a prompt or reply still streaming, or a compaction
+/// notice that arrived as an event before the file had it.
+fn is_local_transcript_row(id: &str) -> bool {
+    ["queued-", "user-", "assistant-", "compaction-"]
+        .iter()
+        .any(|prefix| id.starts_with(prefix))
+}
+
+/// The visible text of a row, used to recognise a row the file already holds
+/// under the harness's own id.
+fn transcript_row_text(message: &TranscriptMessage) -> String {
+    message
+        .parts
+        .iter()
+        .filter_map(|part| part.text.as_deref())
+        .collect()
+}
 
 /// Whether a scroll area sits at its bottom edge.
 ///
@@ -9758,5 +9972,152 @@ mod tests {
             (0.0..=TRANSCRIPT_BOTTOM_THRESHOLD).contains(&gap),
             "follow left a gap of {gap}"
         );
+    }
+
+    /// A re-read of a changed session file carries the rows the view minted
+    /// itself: a queued follow-up and a reply still streaming survive an
+    /// external append instead of being erased by the file's own copy.
+    #[test]
+    fn external_reload_keeps_queued_and_streaming_rows() {
+        use std::io::Write as _;
+
+        let mut cx = gpui_kit::TestAppContext::single();
+        cx.update(gpui_kit::init);
+        let root = tempfile::TempDir::new().expect("test root").keep();
+        let home = root.join("home");
+        let bucket = home.join(".omp/agent/sessions/-omp-project");
+        std::fs::create_dir_all(&bucket).expect("session bucket");
+        let project = root.join("project");
+        let at = "2026-04-01T01:00:00.000Z";
+        let path =
+            bucket.join("2026-04-01T00-00-00-000Z_019fdf24-aaaa-7000-8000-000000000091.jsonl");
+        let title = json!({
+            "type": "title",
+            "v": 1,
+            "title": "Live",
+            "updatedAt": at,
+            "pad": "",
+        });
+        let header = json!({
+            "type": "session",
+            "version": 3,
+            "id": "Live",
+            "timestamp": at,
+            "cwd": project.display().to_string(),
+        });
+        let user = json!({
+            "type": "message",
+            "id": "u1",
+            "parentId": null,
+            "timestamp": at,
+            "message": { "role": "user", "content": "hello" },
+        });
+        std::fs::write(&path, format!("{title}\n{header}\n{user}\n")).expect("session file");
+
+        let record = omp_core::sessions::SessionRecord {
+            id: "live".to_string(),
+            harness: "omp".to_string(),
+            file_path: path.display().to_string(),
+            project_path: project.display().to_string(),
+            title: "Live".to_string(),
+            created_at: at.to_string(),
+            updated_at: at.to_string(),
+            last_user_message_at: None,
+            status: "complete".to_string(),
+            model: None,
+            provider: None,
+            thinking_level: None,
+            depth: 0,
+            parent_session: None,
+            last_user_texts: Vec::new(),
+            pinned: false,
+            unread: false,
+            preview: None,
+            archived: false,
+        };
+        let handle = cx.add_window({
+            let root = root.clone();
+            move |window, cx| {
+                Workspace::new(
+                    window,
+                    cx,
+                    WorkspaceData {
+                        geometry: UiGeometry::default(),
+                        geometry_path: root.join("ui-geometry.json"),
+                        home_dir: root.join("home"),
+                        user_data_dir: root.join("user-data"),
+                        omp_executable: root.join("missing-omp"),
+                        settings: AppSettings::default(),
+                        projects: Vec::new(),
+                        sessions: vec![record],
+                    },
+                )
+            }
+        });
+
+        handle
+            .update(&mut cx, |workspace, window, cx| {
+                workspace.select_session(0, cx);
+                assert_eq!(workspace.transcript.len(), 1);
+                // A draft, a queued follow-up and a streamed reply: the three
+                // things an external write must not take away.
+                workspace
+                    .composer
+                    .update(cx, |state, cx| state.set_value("keep me", window, cx));
+                workspace.transcript.push(TranscriptMessage {
+                    id: "queued-1".to_string(),
+                    role: "user".to_string(),
+                    timestamp: None,
+                    agent_name: None,
+                    parts: vec![TranscriptPart {
+                        kind: "queued".to_string(),
+                        text: Some("follow up".to_string()),
+                        ..TranscriptPart::text("")
+                    }],
+                });
+                workspace.transcript.push(TranscriptMessage {
+                    id: "assistant-2".to_string(),
+                    role: "assistant".to_string(),
+                    timestamp: None,
+                    agent_name: None,
+                    parts: vec![TranscriptPart::text("partial reply")],
+                });
+                workspace.streaming_index = Some(2);
+                workspace.running = true;
+            })
+            .expect("seed rows");
+
+        let external = json!({
+            "type": "message",
+            "id": "u2",
+            "parentId": "u1",
+            "timestamp": at,
+            "message": { "role": "user", "content": "written by another process" },
+        });
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("open session file");
+        file.write_all(format!("{external}\n").as_bytes())
+            .expect("append entry");
+        drop(file);
+
+        handle
+            .update(&mut cx, |workspace, _, cx| {
+                workspace.check_transcript_external_change(cx);
+                let ids: Vec<&str> = workspace
+                    .transcript
+                    .iter()
+                    .map(|message| message.id.as_str())
+                    .collect();
+                assert_eq!(ids, ["u1", "u2", "queued-1", "assistant-2"]);
+                // The streamed reply keeps its slot, so the next delta grows it.
+                assert_eq!(workspace.streaming_index, Some(3));
+                assert_eq!(workspace.transcript_reloads, 1);
+                assert!(workspace.transcript_at_bottom);
+                assert_eq!(workspace.transcript_error(), None);
+                assert_eq!(workspace.composer.read(cx).value().to_string(), "keep me");
+            })
+            .expect("reload");
     }
 }
