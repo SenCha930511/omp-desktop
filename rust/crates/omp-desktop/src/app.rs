@@ -3672,16 +3672,41 @@ impl Workspace {
             .gap_4()
             .p_6()
             .children(self.transcript.iter().map(|message| {
+                // A row the harness wrote carries its own id, which is what
+                // `fork` wants to continue from; a row the view minted itself
+                // (a streaming reply, a queued follow-up, a compaction) has
+                // none, so it gets no action.
+                let forkable = forkable_transcript_row(message);
+                let fork = forkable.then(|| {
+                    let entry_id = message.id.clone();
+                    div()
+                        .id(format!("transcript-fork-{}", message.id))
+                        .aria_label("Fork from here")
+                        .text_xs()
+                        .text_color(colors.muted_foreground)
+                        .hover(|style| style.text_color(colors.foreground))
+                        .child("Fork from here")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.fork_from_message(&entry_id, cx);
+                        }))
+                });
                 div()
                     .flex()
                     .flex_col()
                     .gap_1()
                     .child(
                         div()
-                            .text_xs()
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(colors.muted_foreground)
-                            .child(transcript_role_label(message)),
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .text_color(colors.muted_foreground)
+                                    .child(transcript_role_label(message)),
+                            )
+                            .when_some(fork, |element, fork| element.child(fork)),
                     )
                     .children(message.parts.iter().map(|part| {
                         div()
@@ -6635,6 +6660,26 @@ impl Workspace {
     /// fork that wrote nothing leaves the catalog unchanged, so the current
     /// selection, its transcript and the composer draft all stay put.
     fn fork_session(&mut self, cx: &mut Context<Self>) {
+        self.request_fork(None, cx);
+    }
+
+    /// Forks the selected session at one transcript message.
+    ///
+    /// The harness copies the history up to `entry_id` into a new session file
+    /// and answers `{ cancelled, entryId }`, so the fork continues from that
+    /// message instead of the end of the session. Everything after the command
+    /// is the whole-session fork's: the same banner, catalog refresh and
+    /// selection, which makes a cancelled entry fork just as silent. A row the
+    /// view minted itself has no harness entry to fork from, so its id is
+    /// refused before anything reaches the runtime.
+    pub fn fork_from_message(&mut self, entry_id: &str, cx: &mut Context<Self>) {
+        if entry_id.is_empty() || is_local_transcript_row(entry_id) {
+            return;
+        }
+        self.request_fork(Some(entry_id), cx);
+    }
+
+    fn request_fork(&mut self, entry_id: Option<&str>, cx: &mut Context<Self>) {
         let Some(runtime_id) = self.runtime_id.clone() else {
             self.fork_status = None;
             self.runtime_error =
@@ -6642,7 +6687,13 @@ impl Workspace {
             cx.notify();
             return;
         };
-        let response = match self.agents.command(&runtime_id, &json!({ "type": "fork" })) {
+        // A whole-session fork sends no `entryId`; an entry fork names the
+        // message the new session continues from.
+        let command = match entry_id {
+            Some(entry_id) => json!({ "type": "fork", "entryId": entry_id }),
+            None => json!({ "type": "fork" }),
+        };
+        let response = match self.agents.command(&runtime_id, &command) {
             Ok(response) => response,
             Err(error) => {
                 self.fork_status = None;
@@ -7110,6 +7161,16 @@ fn is_local_transcript_row(id: &str) -> bool {
     ["queued-", "user-", "assistant-", "compaction-"]
         .iter()
         .any(|prefix| id.starts_with(prefix))
+}
+
+/// Whether a row can be forked from: it carries an id the harness wrote, so
+/// `fork` has an entry to continue at. A view-minted row has none, and a row
+/// whose parts are all compaction is the harness's own summarisation rather
+/// than a message the reader can branch on.
+fn forkable_transcript_row(message: &TranscriptMessage) -> bool {
+    !message.id.is_empty()
+        && !is_local_transcript_row(&message.id)
+        && !message.parts.iter().all(|part| part.kind == "compaction")
 }
 
 /// The visible text of a row, used to recognise a row the file already holds
