@@ -2468,3 +2468,453 @@ fn review_pane_reports_a_clean_tree_after_a_commit(cx: &mut TestAppContext) {
         })
         .expect("workspace window");
 }
+
+/// The Enter action is part of the persisted settings: a window built from a
+/// reopened state file starts with the action the previous window saved, and a
+/// second reload sees the change back.
+#[gpui_kit::test]
+fn enter_action_setting_survives_a_state_reload(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, test_data(root)));
+    handle
+        .update(cx, |workspace, _, cx| {
+            assert_eq!(
+                workspace.settings().message_enter_action,
+                MessageEnterAction::Steer
+            );
+            workspace.update_setting(json!({ "messageEnterAction": "queue" }), cx);
+            assert_eq!(
+                workspace.settings().message_enter_action,
+                MessageEnterAction::Queue
+            );
+        })
+        .expect("workspace window");
+
+    let store = open_store(root);
+    assert_eq!(
+        store.settings().message_enter_action,
+        MessageEnterAction::Queue
+    );
+    let mut data = test_data(root);
+    data.settings = store.settings();
+    drop(store);
+
+    let reopened = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    reopened
+        .update(cx, |workspace, _, cx| {
+            assert_eq!(
+                workspace.settings().message_enter_action,
+                MessageEnterAction::Queue
+            );
+            workspace.update_setting(json!({ "messageEnterAction": "steer" }), cx);
+            assert_eq!(
+                workspace.settings().message_enter_action,
+                MessageEnterAction::Steer
+            );
+        })
+        .expect("reopened window");
+
+    let store = open_store(root);
+    assert_eq!(
+        store.settings().message_enter_action,
+        MessageEnterAction::Steer
+    );
+}
+
+/// Theme and density travel together: both show in the snapshot, both land in
+/// the state file, and a window bootstrapped from that file starts with them.
+#[gpui_kit::test]
+fn theme_and_density_land_in_the_snapshot_and_state_file(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, test_data(root)));
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.update_setting(
+                json!({ "theme": "dark", "conversationDensity": "compact" }),
+                cx,
+            );
+
+            let state = snapshot(workspace, cx);
+            assert_eq!(state["settings"]["theme"], "dark");
+            assert_eq!(state["settings"]["density"], "compact");
+            assert_eq!(workspace.settings().theme, Theme::Dark);
+            assert_eq!(
+                workspace.settings().conversation_density,
+                ConversationDensity::Compact
+            );
+        })
+        .expect("workspace window");
+
+    let store = open_store(root);
+    assert_eq!(store.settings().theme, Theme::Dark);
+    assert_eq!(
+        store.settings().conversation_density,
+        ConversationDensity::Compact
+    );
+    let mut data = test_data(root);
+    data.settings = store.settings();
+    drop(store);
+
+    let reopened = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    reopened
+        .update(cx, |workspace, _, cx| {
+            let state = snapshot(workspace, cx);
+            assert_eq!(state["settings"]["theme"], "dark");
+            assert_eq!(state["settings"]["density"], "compact");
+            assert_eq!(workspace.settings().theme, Theme::Dark);
+            assert_eq!(
+                workspace.settings().conversation_density,
+                ConversationDensity::Compact
+            );
+        })
+        .expect("reopened window");
+}
+
+/// At 1100px a 720px right-pane preference is clamped to the space left after
+/// the sidebar and the center's floor: 492px, leaving exactly 360px.
+#[gpui_kit::test]
+fn narrow_layout_clamps_the_right_pane_at_the_center_floor(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let geometry = UiGeometry {
+        right_pane_width: 720.0,
+        ..UiGeometry::default()
+    };
+    let mut data = test_data(root);
+    data.geometry = geometry;
+    let handle = cx.open_window(size(px(1100.0), px(800.0)), |window, cx| {
+        Workspace::new(window, cx, data)
+    });
+    handle
+        .update(cx, |workspace, _, cx| {
+            let state = snapshot(workspace, cx);
+            let layout = &state["layout"];
+            assert_eq!(layout["sidebarDocked"], json!(true));
+            assert_eq!(layout["sidebarWidth"].as_f64(), Some(248.0));
+            assert_eq!(layout["rightPaneDocked"], json!(true));
+            // 1100 - 248 - 360 leaves 492px for the right pane; the 720px
+            // preference is clamped rather than squeezing the center.
+            assert_eq!(layout["rightPaneWidth"].as_f64(), Some(492.0));
+            assert_eq!(layout["centerWidth"].as_f64(), Some(CENTER_MIN_WIDTH));
+            assert_eq!(layout["overlay"], json!(null));
+
+            let resolved = workspace.layout();
+            assert_eq!(resolved.right_pane_width, 492.0);
+            assert_eq!(resolved.center_width, CENTER_MIN_WIDTH);
+            assert!(resolved.center_width >= CENTER_MIN_WIDTH);
+        })
+        .expect("narrow window");
+}
+
+/// At 1440px both panes dock at their configured widths and the transcript
+/// takes the remainder.
+#[gpui_kit::test]
+fn wide_layout_reports_the_docked_widths(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let handle = cx.open_window(size(px(1440.0), px(900.0)), |window, cx| {
+        Workspace::new(window, cx, test_data(root))
+    });
+    handle
+        .update(cx, |workspace, _, cx| {
+            let state = snapshot(workspace, cx);
+            let layout = &state["layout"];
+            assert_eq!(layout["sidebarDocked"], json!(true));
+            assert_eq!(layout["sidebarWidth"].as_f64(), Some(248.0));
+            assert_eq!(layout["rightPaneDocked"], json!(true));
+            assert_eq!(layout["rightPaneWidth"].as_f64(), Some(360.0));
+            // 1440 - 248 - 360 leaves the center the rest of the window.
+            assert_eq!(layout["centerWidth"].as_f64(), Some(832.0));
+            assert_eq!(layout["overlay"], json!(null));
+
+            let resolved = workspace.layout();
+            assert!(resolved.sidebar_docked);
+            assert!(resolved.right_pane_docked);
+            assert_eq!(resolved.sidebar_width, 248.0);
+            assert_eq!(resolved.right_pane_width, 360.0);
+            assert_eq!(resolved.center_width, 832.0);
+        })
+        .expect("wide window");
+}
+
+/// The Browser pane starts with no tabs, prepares one blank tab when opened,
+/// and keeps that tab active across a pane round trip.
+#[gpui_kit::test]
+fn browser_pane_starts_empty_then_adds_one_blank_tab(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, test_data(root)));
+    handle
+        .update(cx, |workspace, _, cx| {
+            let empty = snapshot(workspace, cx);
+            assert_eq!(empty["rightPane"], "launcher");
+            assert_eq!(empty["browser"]["tabs"], json!(0));
+            assert_eq!(empty["browser"]["activeTab"], json!(0));
+            assert_eq!(empty["browser"]["webviewPending"], json!(false));
+
+            workspace.set_right_pane("browser", cx);
+            let opened = snapshot(workspace, cx);
+            assert_eq!(opened["rightPane"], "browser");
+            assert_eq!(opened["browser"]["tabs"], json!(1));
+            assert_eq!(opened["browser"]["activeTab"], json!(0));
+            // No frame has been drawn, so the blank tab's webview is pending.
+            assert_eq!(opened["browser"]["webviewPending"], json!(true));
+
+            workspace.set_right_pane("files", cx);
+            workspace.set_right_pane("browser", cx);
+            let again = snapshot(workspace, cx);
+            assert_eq!(again["rightPane"], "browser");
+            // `prepare` only adds a tab to an empty pane, so the blank tab
+            // survives the round trip instead of accumulating.
+            assert_eq!(again["browser"]["tabs"], json!(1));
+            assert_eq!(again["browser"]["activeTab"], json!(0));
+        })
+        .expect("workspace window");
+}
+
+/// The terminal panel opens with no tab and no shell: the snapshot's tab keys
+/// stay at zero, nothing is running, and the transcript is untouched.
+#[gpui_kit::test]
+fn terminal_panel_reports_no_tabs_without_a_shell(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, test_data(root)));
+    handle
+        .update(cx, |workspace, _, cx| {
+            let closed = snapshot(workspace, cx);
+            assert_eq!(closed["terminal"]["open"], json!(false));
+            assert_eq!(closed["terminal"]["tabs"], json!(0));
+            assert_eq!(closed["terminal"]["activeTab"], json!(0));
+            assert_eq!(closed["terminal"]["session"], json!(false));
+
+            workspace.set_right_pane("terminal", cx);
+            let opened = snapshot(workspace, cx);
+            assert_eq!(opened["terminal"]["open"], json!(true));
+            assert_eq!(opened["terminal"]["tabs"], json!(0));
+            assert_eq!(opened["terminal"]["activeTab"], json!(0));
+            assert_eq!(opened["terminal"]["session"], json!(false));
+            assert_eq!(opened["terminal"]["running"], json!(false));
+            assert_eq!(opened["terminal"]["error"], json!(null));
+            assert!(
+                opened["transcript"]
+                    .as_array()
+                    .expect("transcript")
+                    .is_empty()
+            );
+
+            // Opening another pane leaves the panel's tab keys alone: no shell
+            // was ever spawned, so there is still nothing to report.
+            workspace.set_right_pane("files", cx);
+            let after = snapshot(workspace, cx);
+            assert_eq!(after["terminal"]["tabs"], json!(0));
+            assert_eq!(after["terminal"]["activeTab"], json!(0));
+        })
+        .expect("workspace window");
+}
+
+/// Live Voice opens idle and stays idle while no runtime carries the audio:
+/// the pane never fabricates a phase, level or transcript line on its own.
+///
+/// The pure event helper that would drive idle -> recording -> transcript ->
+/// end is private to `app.rs`, so the integration harness can only assert the
+/// reachable pane state.
+#[gpui_kit::test]
+fn live_voice_pane_stays_idle_without_a_runtime(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, test_data(root)));
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.set_right_pane("live-voice", cx);
+            let idle = snapshot(workspace, cx);
+            assert_eq!(idle["rightPane"], "live-voice");
+            assert_eq!(
+                idle["liveVoice"],
+                json!({
+                    "runtime": false,
+                    "phase": "idle",
+                    "active": false,
+                    "muted": false,
+                    "error": null,
+                })
+            );
+
+            workspace.set_right_pane("launcher", cx);
+            workspace.set_right_pane("live-voice", cx);
+            let again = snapshot(workspace, cx);
+            assert_eq!(again["liveVoice"], idle["liveVoice"]);
+            assert!(
+                again["transcript"]
+                    .as_array()
+                    .expect("transcript")
+                    .is_empty()
+            );
+        })
+        .expect("workspace window");
+}
+
+/// Opening Live Voice resets the dictation capture state but never the
+/// composer: a draft is still there, and no transcribed text is appended
+/// without a terminal `dictation_end` frame.
+///
+/// The append helper (`append_dictation_text`) is private to `app.rs`, so the
+/// integration harness asserts the composer half of the contract.
+#[gpui_kit::test]
+fn dictation_reset_preserves_the_composer_draft(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, test_data(root)));
+    handle
+        .update(cx, |workspace, window, cx| {
+            let composer = workspace.composer_entity().clone();
+            composer.update(cx, |state, cx| {
+                state.set_value("keep this draft", window, cx);
+            });
+
+            workspace.set_right_pane("live-voice", cx);
+            let state = snapshot(workspace, cx);
+            assert_eq!(state["composer"]["text"], "keep this draft");
+            assert!(
+                state["transcript"]
+                    .as_array()
+                    .expect("transcript")
+                    .is_empty()
+            );
+
+            workspace.set_right_pane("launcher", cx);
+            workspace.set_right_pane("live-voice", cx);
+            assert_eq!(
+                snapshot(workspace, cx)["composer"]["text"],
+                "keep this draft"
+            );
+        })
+        .expect("workspace window");
+}
+
+/// A build with no updater feed key stays on the unconfigured path: entering
+/// Settings twice never changes the page, and the parity build has no key.
+///
+/// `UpdateCheckState::label` and `state_for_result` are public inside the
+/// private `updates` module, so the integration harness asserts the public
+/// half: the build is unconfigured and the Settings snapshot is stable.
+#[gpui_kit::test]
+fn update_row_keeps_an_unconfigured_build_stable(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    assert!(
+        !option_env!("OMP_UPDATER_PUBKEY").is_some_and(|key| !key.trim().is_empty()),
+        "the parity build has no updater feed key"
+    );
+
+    let handle = cx.open_window(size(px(1280.0), px(1200.0)), |window, cx| {
+        Workspace::new(window, cx, test_data(root))
+    });
+    let first = handle
+        .update(cx, |workspace, _, cx| {
+            workspace.set_view(AppView::Settings, cx);
+            snapshot(workspace, cx)
+        })
+        .expect("settings snapshot");
+    assert_eq!(first["view"], "settings");
+    assert_eq!(first["settings"]["theme"], "system");
+
+    let second = handle
+        .update(cx, |workspace, _, cx| {
+            workspace.set_view(AppView::Workspace, cx);
+            workspace.set_view(AppView::Settings, cx);
+            snapshot(workspace, cx)
+        })
+        .expect("settings snapshot");
+    assert_eq!(second["view"], "settings");
+    assert_eq!(second["settings"], first["settings"]);
+}
+
+/// A newly added file is reported unstaged, becomes staged, returns to
+/// unstaged after unstage, and the tree is clean once the file is removed.
+#[gpui_kit::test]
+fn review_pane_reports_a_staged_new_file_and_a_clean_tree(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let repo = seed_repo(root);
+
+    let mut data = test_data(root);
+    data.home_dir = root.join("home");
+    std::fs::create_dir_all(&data.home_dir).expect("home");
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.grant_project(&repo, cx);
+            workspace.set_right_pane("review", cx);
+            let clean = snapshot(workspace, cx);
+            assert_eq!(clean["review"]["error"], json!(null));
+            assert_eq!(clean["review"]["status"]["files"], json!([]));
+
+            std::fs::write(repo.join("b.txt"), "brand new\n").expect("new file");
+            workspace.refresh_review();
+            let untracked = snapshot(workspace, cx);
+            assert!(
+                untracked["review"]["status"]["files"]
+                    .as_array()
+                    .expect("files")
+                    .iter()
+                    .any(|file| file["path"] == "b.txt" && file["staged"] == json!(false))
+            );
+
+            workspace.stage_path("b.txt", true, cx);
+            let staged = snapshot(workspace, cx);
+            assert!(
+                staged["review"]["status"]["files"]
+                    .as_array()
+                    .expect("files")
+                    .iter()
+                    .any(|file| file["path"] == "b.txt" && file["staged"] == json!(true))
+            );
+            assert!(
+                workspace
+                    .review_status()
+                    .expect("staged status")
+                    .files
+                    .iter()
+                    .any(|file| file.path == "b.txt" && file.staged)
+            );
+
+            workspace.stage_path("b.txt", false, cx);
+            let unstaged = snapshot(workspace, cx);
+            assert!(
+                unstaged["review"]["status"]["files"]
+                    .as_array()
+                    .expect("files")
+                    .iter()
+                    .any(|file| file["path"] == "b.txt" && file["staged"] == json!(false))
+            );
+
+            std::fs::remove_file(repo.join("b.txt")).expect("remove new file");
+            workspace.refresh_review();
+            let clean_again = snapshot(workspace, cx);
+            assert_eq!(clean_again["rightPane"], "review");
+            assert_eq!(clean_again["review"]["error"], json!(null));
+            assert_eq!(clean_again["review"]["status"]["files"], json!([]));
+            assert!(
+                workspace
+                    .review_status()
+                    .expect("clean status")
+                    .files
+                    .is_empty()
+            );
+        })
+        .expect("workspace window");
+}
