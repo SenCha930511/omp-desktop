@@ -10,7 +10,7 @@ base64.workspace = true
 chrono.workspace = true
 chrono-tz.workspace = true
 hmac.workspace = true
-omp-rpc = { path = "../omp-rpc" }
+omp-rpc = { version = "2.0.0", path = "../omp-rpc" }
 rrule.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -16,7 +16,7 @@ path = "src/main.rs"
 [dependencies]
 chrono.workspace = true
 gpui-kit = { version = "0.10", default-features = false, features = ["component", "assets", "gpui-fast"] }
-omp-core = { path = "../omp-core" }
+omp-core = { version = "2.0.0", path = "../omp-core" }
 serde_json.workspace = true
 
 [dev-dependencies]

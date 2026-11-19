@@ -178,6 +178,7 @@ The v2 workspace lives in `rust/`. It is pinned by `rust-toolchain.toml` and `ru
 cd rust
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo deny check
 cargo test --workspace --locked
 cargo build -p omp-conformance --locked
 ```

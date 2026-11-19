@@ -10,6 +10,6 @@ name = "omp-conformance"
 path = "src/main.rs"
 
 [dependencies]
-omp-core = { path = "../omp-core" }
-omp-rpc = { path = "../omp-rpc" }
+omp-core = { version = "2.0.0", path = "../omp-core" }
+omp-rpc = { version = "2.0.0", path = "../omp-rpc" }
 serde_json.workspace = true

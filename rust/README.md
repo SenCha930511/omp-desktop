@@ -34,6 +34,8 @@ npm run test:conformance
 
 `terminal` is deliberately absent: v2 removes the built-in PTY. Partial mode may skip capabilities outside the required set, but a required capability is never skipped.
 
+`cargo deny check` passes with two recorded unmaintained advisories: `chrono` and `chrono-tz` are pulled by `rrule` for schedule recurrence. Migrating to `jiff`/`time` is a v2.1 follow-up; the exceptions and reasons live in `rust/deny.toml`.
+
 ## State compatibility
 
 Every persisted struct keeps unknown JSON fields through `#[serde(flatten)]`. The state store preserves the Electron migration rules: v1-v3 migration, POSIX legacy retirement, Windows tombstones, downgrade quarantine, and byte-exact backups. `agent-message-signing.key` stays at the same path and the HMAC envelope keeps the Node field order; the Rust tests verify Node-generated v1/v2/v3 fixtures.
