@@ -293,12 +293,27 @@ jobs:
             ~/.cargo/git
             rust/target
           key: rust-${{ runner.os }}-${{ hashFiles('rust/Cargo.lock') }}
+      - name: Install Linux GUI build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev libfontconfig1-dev libfreetype-dev libgl1-mesa-dev \
+            libwayland-dev libx11-xcb-dev libxcb1-dev libxcb-render0-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev pkg-config xvfb
       - name: Install the pinned Rust toolchain
         run: rustup toolchain install 1.100.0 --profile minimal --component rustfmt,clippy
       - run: rustup default 1.100.0
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - run: cargo test --workspace --locked
+      - name: Run workspace tests
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            xvfb-run -a cargo test --workspace --locked
+          else
+            cargo test --workspace --locked
+          fi
+        shell: bash
       - run: cargo build -p omp-conformance --locked
 
   rust-conformance:
