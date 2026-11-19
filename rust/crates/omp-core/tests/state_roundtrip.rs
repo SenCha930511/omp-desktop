@@ -25,8 +25,8 @@ fn state_fixture() -> Value {
         }],
         "settings": {
             "theme": "dark",
-            "runtimePaths": { "omp": "", "_futureRuntime": "/future/omp" },
-            "lastSelectedModels": { "omp": "", "_futureModel": "future/model" },
+            "runtimePaths": { "omp": "", "_futureRuntime": "/future/omp", "_futureRuntimeObject": { "keep": true } },
+            "lastSelectedModels": { "omp": "", "_futureModel": "future/model", "_futureModelObject": [1, 2] },
             "_futureSetting": { "keep": true }
         },
         "archivedSessions": [],
@@ -94,8 +94,16 @@ fn deep_unknown_fields_survive_a_load_modify_save_round_trip() {
         "/future/omp"
     );
     assert_eq!(
+        saved["settings"]["runtimePaths"]["_futureRuntimeObject"],
+        json!({ "keep": true })
+    );
+    assert_eq!(
         saved["settings"]["lastSelectedModels"]["_futureModel"],
         "future/model"
+    );
+    assert_eq!(
+        saved["settings"]["lastSelectedModels"]["_futureModelObject"],
+        json!([1, 2])
     );
     assert_eq!(
         saved["projects"][0]["_futureProject"],

@@ -61,11 +61,15 @@ pub fn compute_turn_changes(
     baseline: &TurnBaseline,
     after: impl IntoIterator<Item = FileSnapshot>,
 ) -> TurnChanges {
+    let after: Vec<FileSnapshot> = after.into_iter().collect();
+    let after_paths: std::collections::BTreeSet<String> =
+        after.iter().map(|file| file.path.clone()).collect();
     let mut files = Vec::new();
     let mut additions = 0u64;
     let mut deletions = 0u64;
     for file in after {
         let previous = baseline.files.get(&file.path);
+        let is_new = previous.is_none();
         let (delta_additions, delta_deletions) = match previous {
             Some(previous) => (
                 file.additions.saturating_sub(previous.additions),
@@ -73,7 +77,7 @@ pub fn compute_turn_changes(
             ),
             None => (file.additions, file.deletions),
         };
-        if delta_additions == 0 && delta_deletions == 0 {
+        if !is_new && delta_additions == 0 && delta_deletions == 0 {
             continue;
         }
         additions += delta_additions;
@@ -82,6 +86,18 @@ pub fn compute_turn_changes(
             path: file.path,
             additions: delta_additions,
             deletions: delta_deletions,
+        });
+    }
+    for (path, previous) in &baseline.files {
+        if after_paths.contains(path.as_str()) {
+            continue;
+        }
+        let removed = previous.additions + previous.deletions;
+        deletions += removed;
+        files.push(TurnFileDelta {
+            path: path.clone(),
+            additions: 0,
+            deletions: removed,
         });
     }
     files.sort_by(|left, right| left.path.cmp(&right.path));

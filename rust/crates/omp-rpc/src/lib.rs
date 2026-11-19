@@ -12,6 +12,9 @@ use serde_json::Value;
 
 const MAX_CHUNK_BYTES: usize = 64 * 1024 * 1024;
 const MAX_CHUNKS: usize = 4_096;
+const MAX_TOTAL_CHUNK_BYTES: usize = 128 * 1024 * 1024;
+const MAX_LINE_BYTES: usize = 16 * 1024 * 1024;
+const CHUNK_TTL: Duration = Duration::from_secs(30);
 
 #[derive(Debug)]
 pub enum RpcError {
@@ -41,6 +44,7 @@ struct ChunkAssembly {
     parts: Vec<Option<Vec<u8>>>,
     received: usize,
     bytes: usize,
+    created_at: Instant,
 }
 
 struct Shared {
@@ -73,6 +77,16 @@ pub struct RpcClient {
     writer: mpsc::SyncSender<String>,
     shared: Arc<Shared>,
     next_id: AtomicU64,
+}
+
+impl Drop for RpcClient {
+    fn drop(&mut self) {
+        self.shared.closed.store(true, Ordering::SeqCst);
+        if let Ok(mut child) = self.child.lock() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
 }
 
 pub struct RpcOptions {
@@ -272,9 +286,22 @@ impl RpcClient {
 }
 
 fn read_loop(stdout: impl Read, shared: Arc<Shared>) {
-    let reader = BufReader::new(stdout);
-    for line in reader.lines() {
-        let Ok(line) = line else { break };
+    let mut reader = BufReader::new(stdout);
+    let mut buffer = Vec::new();
+    loop {
+        buffer.clear();
+        let read = match reader.read_until(b'\n', &mut buffer) {
+            Ok(read) => read,
+            Err(_) => break,
+        };
+        if read == 0 {
+            break;
+        }
+        if buffer.len() > MAX_LINE_BYTES {
+            shared.fail_all("The OMP runtime emitted an oversized frame");
+            return;
+        }
+        let line = String::from_utf8_lossy(&buffer);
         if line.trim().is_empty() {
             continue;
         }
@@ -310,7 +337,14 @@ fn reassemble(shared: &Shared, frame: &Value) -> Option<Value> {
     let decoded = base64::engine::general_purpose::STANDARD
         .decode(data)
         .ok()?;
+    let now = Instant::now();
     let mut chunks = shared.chunks.lock().expect("chunks lock");
+    chunks.retain(|_, assembly| now.duration_since(assembly.created_at) < CHUNK_TTL);
+    let total: usize = chunks.values().map(|assembly| assembly.bytes).sum();
+    if total + decoded.len() > MAX_TOTAL_CHUNK_BYTES {
+        chunks.remove(&chunk_id);
+        return None;
+    }
     let assembly = chunks
         .entry(chunk_id.clone())
         .or_insert_with(|| ChunkAssembly {
@@ -318,6 +352,7 @@ fn reassemble(shared: &Shared, frame: &Value) -> Option<Value> {
             parts: vec![None; count],
             received: 0,
             bytes: 0,
+            created_at: now,
         });
     if assembly.count != count || assembly.parts[index].is_some() {
         return None;

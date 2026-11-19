@@ -105,6 +105,12 @@ pub struct PersistedProject {
     pub unknown: BTreeMap<String, Value>,
 }
 
+impl ScheduleTarget {
+    pub fn project_id(&self) -> &str {
+        &self.project_id
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScheduleTarget {
@@ -167,6 +173,12 @@ pub struct ScheduleRunRecord {
     pub skipped_count: Option<u64>,
     #[serde(flatten)]
     pub unknown: BTreeMap<String, Value>,
+}
+
+impl AutomationScheduleRecord {
+    pub fn target_project_id(&self) -> Option<&str> {
+        Some(self.target.project_id())
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]

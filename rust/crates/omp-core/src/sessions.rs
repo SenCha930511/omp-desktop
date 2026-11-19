@@ -548,11 +548,26 @@ pub fn authorize_session_path_under(root: &Path, path: &Path) -> Result<PathBuf>
 }
 
 pub fn read_transcript(root: &Path, file_path: &str) -> Result<Vec<TranscriptMessage>> {
+    const MAX_RECORD_BYTES: usize = 64 * 1024 * 1024;
+    const MAX_MESSAGES: usize = 400;
     let safe = authorize_session_path_under(root, Path::new(file_path))?;
+    let metadata = fs::metadata(&safe)
+        .map_err(|error| CoreError::io("Could not inspect the session file", error))?;
+    if metadata.len() > MAX_SESSION_FILE_BYTES {
+        return Err(CoreError::invalid(
+            "Session transcript is too large to display",
+        ));
+    }
     let raw = fs::read_to_string(&safe)
         .map_err(|error| CoreError::io("Could not read the session file", error))?;
     let mut messages = Vec::new();
     for line in raw.lines().skip(1) {
+        if messages.len() >= MAX_MESSAGES {
+            break;
+        }
+        if line.len() > MAX_RECORD_BYTES {
+            return Err(CoreError::invalid("Session record is too large to display"));
+        }
         if line.trim().is_empty() {
             continue;
         }

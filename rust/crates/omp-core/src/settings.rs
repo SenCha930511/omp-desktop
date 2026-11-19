@@ -377,8 +377,7 @@ impl AppSettings {
                 _ => defaults.message_enter_action,
             },
             input_shortcuts_version: 1,
-            runtime_paths: parse_runtime_paths(record.get("runtimePaths"))
-                .unwrap_or(defaults.runtime_paths),
+            runtime_paths: parse_runtime_paths(record.get("runtimePaths"), &defaults.runtime_paths),
             telemetry: bool_or(record, "telemetry", defaults.telemetry),
             ask_user_enabled: bool_or(record, "askUserEnabled", defaults.ask_user_enabled),
             browser_enabled: bool_or(record, "browserEnabled", defaults.browser_enabled),
@@ -387,8 +386,10 @@ impl AppSettings {
                 "computerUseEnabled",
                 defaults.computer_use_enabled,
             ),
-            last_selected_models: parse_last_selected_models(record.get("lastSelectedModels"))
-                .unwrap_or(defaults.last_selected_models),
+            last_selected_models: parse_last_selected_models(
+                record.get("lastSelectedModels"),
+                &defaults.last_selected_models,
+            ),
             active_harness: "omp".to_string(),
             omp_approval_mode: match record.get("ompApprovalMode").and_then(Value::as_str) {
                 Some("always-ask") => OmpApprovalMode::AlwaysAsk,
@@ -731,30 +732,62 @@ fn allowed_u16(record: &Map<String, Value>, key: &str, allowed: &[u16]) -> Optio
         .filter(|value| allowed.contains(value))
 }
 
-fn parse_runtime_paths(value: Option<&Value>) -> Option<Map<String, Value>> {
-    let record = value?.as_object()?;
+fn parse_runtime_paths(value: Option<&Value>, defaults: &Map<String, Value>) -> Map<String, Value> {
+    let Some(record) = value.and_then(Value::as_object) else {
+        return defaults.clone();
+    };
     let mut paths = Map::new();
     for (key, item) in record {
-        let path = item.as_str()?;
-        if path.chars().count() > 4_096 || (!path.is_empty() && !Path::new(path).is_absolute()) {
-            return None;
+        if key == "omp" {
+            let valid = item
+                .as_str()
+                .filter(|path| {
+                    path.chars().count() <= 4_096
+                        && (path.is_empty() || Path::new(path).is_absolute())
+                })
+                .map(|path| Value::String(path.to_string()));
+            paths.insert(
+                key.clone(),
+                valid.unwrap_or_else(|| Value::String(String::new())),
+            );
+        } else {
+            paths.insert(key.clone(), item.clone());
         }
-        paths.insert(key.clone(), Value::String(path.to_string()));
     }
-    Some(paths)
+    if !paths.contains_key("omp") {
+        paths.insert("omp".to_string(), Value::String(String::new()));
+    }
+    paths
 }
 
-fn parse_last_selected_models(value: Option<&Value>) -> Option<Map<String, Value>> {
-    let record = value?.as_object()?;
+fn parse_last_selected_models(
+    value: Option<&Value>,
+    defaults: &Map<String, Value>,
+) -> Map<String, Value> {
+    let Some(record) = value.and_then(Value::as_object) else {
+        return defaults.clone();
+    };
     let mut models = Map::new();
     for (key, item) in record {
-        let model = item.as_str()?;
-        if model.chars().count() > 385 || (!model.is_empty() && !valid_model_key(model)) {
-            return None;
+        if key == "omp" {
+            let valid = item
+                .as_str()
+                .filter(|model| {
+                    model.chars().count() <= 385 && (model.is_empty() || valid_model_key(model))
+                })
+                .map(|model| Value::String(model.to_string()));
+            models.insert(
+                key.clone(),
+                valid.unwrap_or_else(|| Value::String(String::new())),
+            );
+        } else {
+            models.insert(key.clone(), item.clone());
         }
-        models.insert(key.clone(), Value::String(model.to_string()));
     }
-    Some(models)
+    if !models.contains_key("omp") {
+        models.insert("omp".to_string(), Value::String(String::new()));
+    }
+    models
 }
 
 fn valid_model_key(value: &str) -> bool {
@@ -812,9 +845,7 @@ fn require_string(value: &Value, key: &str, max: usize, allow_empty: bool) -> Re
 
 fn require_web_url(value: &Value) -> Result<String> {
     let text = require_string(value, "browserHome", 2_048, false)?;
-    if !text.starts_with("https://") && !text.starts_with("http://") {
-        return Err(CoreError::invalid("browserHome must be an http(s) URL"));
-    }
+    crate::url_policy::parse_http_url(&text, "browserHome")?;
     Ok(text)
 }
 

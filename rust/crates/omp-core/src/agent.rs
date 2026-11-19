@@ -46,6 +46,7 @@ pub struct AgentRuntime {
 pub struct AgentManager {
     runtimes: Vec<AgentRuntime>,
     next_id: u64,
+    session_root: std::path::PathBuf,
 }
 
 impl Default for AgentManager {
@@ -53,6 +54,7 @@ impl Default for AgentManager {
         Self {
             runtimes: Vec::new(),
             next_id: 1,
+            session_root: std::path::PathBuf::new(),
         }
     }
 }
@@ -165,12 +167,16 @@ impl AgentManager {
                 "The OMP runtime did not become ready",
             ));
         }
-        let negotiated = client
-            .request(
-                json!({ "type": "negotiate_protocol", "protocolVersion": 2 }),
-                HANDSHAKE_TIMEOUT,
-            )
-            .map_err(|error| CoreError::new("Error", error.to_string()))?;
+        let negotiated = match client.request(
+            json!({ "type": "negotiate_protocol", "protocolVersion": 2 }),
+            HANDSHAKE_TIMEOUT,
+        ) {
+            Ok(response) => response,
+            Err(error) => {
+                let _ = client.close();
+                return Err(CoreError::new("Error", error.to_string()));
+            }
+        };
         if negotiated.get("success").and_then(Value::as_bool) != Some(true) {
             let _ = client.close();
             return Err(CoreError::new(
@@ -247,7 +253,7 @@ impl AgentManager {
             .iter_mut()
             .find(|runtime| runtime.runtime_id == runtime_id)
             .ok_or_else(|| CoreError::invalid("Unknown agent runtime"))?;
-        let translated = translate_command(command)?;
+        let translated = translate_command(command, &self.session_root)?;
         let is_compact = translated.get("type").and_then(Value::as_str) == Some("compact");
         let timeout = if translated.get("type").and_then(Value::as_str) == Some("bash") {
             BASH_TIMEOUT
@@ -307,7 +313,65 @@ pub fn assert_no_mcp_authentication_command(prompt: &str) -> Result<()> {
     Ok(())
 }
 
-fn translate_command(command: &Value) -> Result<Value> {
+const ALLOWED_COMMANDS: &[&str] = &[
+    "abort",
+    "abort_and_restore_queue",
+    "abort_bash",
+    "abort_retry",
+    "bash",
+    "branch",
+    "btw",
+    "btw_cancel",
+    "compact",
+    "cycle_model",
+    "cycle_thinking_level",
+    "dictation_start",
+    "dictation_stop",
+    "export_html",
+    "extension_ui_response",
+    "follow_up",
+    "fork",
+    "get_available_commands",
+    "get_available_models",
+    "get_branch_messages",
+    "get_btw_history",
+    "get_commands",
+    "get_last_assistant_text",
+    "get_login_providers",
+    "get_messages",
+    "get_messages_page",
+    "get_session_stats",
+    "get_state",
+    "get_subagents",
+    "get_tree",
+    "handoff",
+    "live_mute",
+    "live_start",
+    "live_stop",
+    "manual_compaction_end",
+    "manual_compaction_start",
+    "navigate_tree",
+    "new_session",
+    "predict_word",
+    "prompt",
+    "queue_update",
+    "set_ask_dialog",
+    "set_fast_mode",
+    "set_label",
+    "set_model",
+    "set_service_tier",
+    "set_session_name",
+    "set_slow_mode",
+    "set_subagent_subscription",
+    "set_thinking_level",
+    "side_question",
+    "side_question_cancel",
+    "side_question_history",
+    "steer",
+    "switch_session",
+];
+
+fn translate_command(command: &Value, session_root: &Path) -> Result<Value> {
     let object = command
         .as_object()
         .ok_or_else(|| CoreError::invalid("RPC command must be an object"))?;
@@ -320,10 +384,28 @@ fn translate_command(command: &Value) -> Result<Value> {
             "RPC command {kind} is not supported by the OMP harness"
         )));
     }
-    if (kind == "prompt" || kind == "steer")
+    if !ALLOWED_COMMANDS.contains(&kind) {
+        return Err(CoreError::invalid(format!(
+            "RPC command {kind} is not recognized by the OMP harness"
+        )));
+    }
+    if (kind == "prompt" || kind == "steer" || kind == "follow_up")
         && let Some(message) = object.get("message").and_then(Value::as_str)
     {
         assert_no_mcp_authentication_command(message)?;
+    }
+    if kind == "switch_session" {
+        let path = object
+            .get("sessionPath")
+            .and_then(Value::as_str)
+            .filter(|path| !path.is_empty() && path.len() <= 4_096)
+            .ok_or_else(|| CoreError::invalid("switch_session requires a session path"))?;
+        sessions::authorize_session_path_under(session_root, Path::new(path))?;
+    }
+    if kind == "new_session"
+        && let Some(parent) = object.get("parentSession").and_then(Value::as_str)
+    {
+        sessions::authorize_session_path_under(session_root, Path::new(parent))?;
     }
     let mut translated = object.clone();
     match kind {
@@ -460,5 +542,69 @@ fn normalize_event(event: &Value) -> Option<Value> {
             Some(json!({ "type": "live_end" }))
         }
         _ => Some(event.clone()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn session_root() -> (tempfile::TempDir, std::path::PathBuf) {
+        let temp = tempfile::TempDir::new().expect("temp");
+        let root = temp.path().join("sessions");
+        let bucket = root.join("-project");
+        fs::create_dir_all(&bucket).expect("bucket");
+        let file = bucket.join("2026-01-01T00-00-00-000Z_session.jsonl");
+        fs::write(&file, "{}\n").expect("session");
+        (temp, root)
+    }
+
+    #[test]
+    fn rejects_commands_outside_the_allowlist() {
+        let (_temp, root) = session_root();
+        assert!(translate_command(&json!({ "type": "clone" }), &root).is_err());
+        assert!(translate_command(&json!({ "type": "totally_new" }), &root).is_err());
+    }
+
+    #[test]
+    fn authorizes_session_paths_before_translation() {
+        let (temp, root) = session_root();
+        let inside = root.join("-project/2026-01-01T00-00-00-000Z_session.jsonl");
+        assert!(
+            translate_command(
+                &json!({ "type": "switch_session", "sessionPath": inside }),
+                &root
+            )
+            .is_ok()
+        );
+        let outside = temp.path().join("outside.jsonl");
+        fs::write(&outside, "{}\n").expect("outside");
+        assert!(
+            translate_command(
+                &json!({ "type": "switch_session", "sessionPath": outside }),
+                &root
+            )
+            .is_err()
+        );
+        assert!(
+            translate_command(
+                &json!({ "type": "new_session", "parentSession": outside }),
+                &root
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn blocks_mcp_authentication_commands_on_follow_up() {
+        let (_temp, root) = session_root();
+        assert!(
+            translate_command(
+                &json!({ "type": "follow_up", "message": "/mcp reauth" }),
+                &root
+            )
+            .is_err()
+        );
     }
 }

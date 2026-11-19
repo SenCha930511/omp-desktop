@@ -5,7 +5,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::error::{CoreError, Result};
-use crate::projects;
+use crate::projects::{self, authorize_path};
 use crate::settings::CheckoutStrategy;
 use crate::state::{Platform, StateStore};
 use crate::turn_changes::FileSnapshot;
@@ -72,9 +72,26 @@ pub struct CheckoutOutcome {
 }
 
 fn run_git(cwd: &Path, args: &[&str]) -> Result<ProcessOutcome> {
+    let hooks_path = if cfg!(windows) { "NUL" } else { "/dev/null" };
     let output = Command::new("git")
+        .args([
+            "--no-pager",
+            "-c",
+            &format!("core.hooksPath={hooks_path}"),
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "diff.external=",
+            "-c",
+            "core.pager=cat",
+            "-c",
+            "protocol.ext.allow=never",
+        ])
         .args(args)
         .current_dir(cwd)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .output()
         .map_err(|error| CoreError::io("Could not run git", error))?;
     Ok(ProcessOutcome {
@@ -178,8 +195,11 @@ pub fn snapshot_files(store: &StateStore, platform: Platform, cwd: &str) -> Vec<
     let mut files: std::collections::BTreeMap<String, FileSnapshot> =
         std::collections::BTreeMap::new();
     for (args, staged) in [
-        (&["diff", "--numstat"][..], false),
-        (&["diff", "--cached", "--numstat"][..], true),
+        (&["diff", "--no-ext-diff", "--numstat"][..], false),
+        (
+            &["diff", "--cached", "--no-ext-diff", "--numstat"][..],
+            true,
+        ),
     ] {
         let Ok(outcome) = run_git(&cwd, args) else {
             continue;
@@ -237,7 +257,7 @@ pub fn diff(
     staged: bool,
 ) -> Result<GitDiff> {
     let cwd = authorize(store, platform, cwd)?;
-    let mut args = vec!["diff", "--no-color"];
+    let mut args = vec!["diff", "--no-color", "--no-ext-diff", "--no-textconv"];
     if staged {
         args.push("--cached");
     }
@@ -303,7 +323,11 @@ fn project_root(store: &StateStore, project_id: &str) -> Result<PathBuf> {
         .iter()
         .find(|project| project.id == project_id)
         .ok_or_else(|| CoreError::invalid("Unknown project id"))?;
-    Ok(PathBuf::from(&project.primary_folder))
+    authorize_path(
+        store,
+        Path::new(&project.primary_folder),
+        Platform::current(),
+    )
 }
 
 pub fn checkout_catalog(store: &StateStore, project_id: &str) -> Result<CheckoutCatalog> {

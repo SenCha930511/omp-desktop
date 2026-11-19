@@ -38,3 +38,15 @@ fn encodes_v3_envelopes_that_round_trip() {
     assert_eq!(parsed["text"], "Hello peer");
     assert!(verify(&[8u8; 32], &envelope).is_none());
 }
+
+#[cfg(unix)]
+#[test]
+fn rejects_a_symlinked_signing_key() {
+    use std::os::unix::fs::symlink;
+    let temp = tempfile::TempDir::new().expect("temp");
+    let target = temp.path().join("target.key");
+    std::fs::write(&target, [9u8; 32]).expect("key");
+    let link = temp.path().join("agent-message-signing.key");
+    symlink(&target, &link).expect("symlink");
+    assert!(omp_core::collaboration::load_or_create_key(&link).is_err());
+}

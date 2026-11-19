@@ -140,6 +140,7 @@ fn main() {
                     let _ = omp_desktop::packaged_smoke::write_marker(&path, SMOKE_URL, &version);
                     cx.quit();
                 });
+                arm_smoke_marker(window, path, version, 3);
             }
             if let Some(path) = dump_layout_path.clone() {
                 let geometry = geometry_for_dump.clone();

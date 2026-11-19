@@ -177,11 +177,21 @@ fn discover_packages(plugins_root: &Path, location: &str, skills: &mut Vec<Skill
     }
 }
 
-fn read_json_file(path: &Path) -> Value {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-        .unwrap_or_else(|| json!({}))
+fn read_json_file(path: &Path) -> Result<Value> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(json!({})),
+        Err(error) => return Err(CoreError::io("Could not inspect MCP settings", error)),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(CoreError::invalid(
+            "MCP settings must be a regular file, not a symlink",
+        ));
+    }
+    let text = std::fs::read_to_string(path)
+        .map_err(|error| CoreError::io("Could not read MCP settings", error))?;
+    serde_json::from_str::<Value>(&text)
+        .map_err(|error| CoreError::invalid(format!("MCP settings are not valid JSON: {error}")))
 }
 
 fn mcp_servers(file: &Value) -> Map<String, Value> {
@@ -267,7 +277,14 @@ pub fn discover(agent_dir: &Path, project_path: Option<&Path>) -> PluginCatalog 
         );
         let project_mcp = project.join(".omp").join("mcp.json");
         if project_mcp.exists() {
-            discover_mcp(&read_json_file(&project_mcp), "project", &mut skills);
+            match read_json_file(&project_mcp) {
+                Ok(value) => discover_mcp(&value, "project", &mut skills),
+                Err(error) => warnings.push(PluginWarning {
+                    scope: "project".to_string(),
+                    path: project_mcp.display().to_string(),
+                    message: error.message,
+                }),
+            }
         }
     }
     discover_skills(agent_dir, "user", &mut skills);
@@ -278,7 +295,14 @@ pub fn discover(agent_dir: &Path, project_path: Option<&Path>) -> PluginCatalog 
     discover_packages(&user_plugins, "user", &mut skills);
     let user_mcp = agent_dir.join("mcp.json");
     if user_mcp.exists() {
-        discover_mcp(&read_json_file(&user_mcp), "user", &mut skills);
+        match read_json_file(&user_mcp) {
+            Ok(value) => discover_mcp(&value, "user", &mut skills),
+            Err(error) => warnings.push(PluginWarning {
+                scope: "user".to_string(),
+                path: user_mcp.display().to_string(),
+                message: error.message,
+            }),
+        }
     }
     if let Ok(entries) = std::fs::read_dir(agent_dir) {
         for entry in entries.flatten() {
@@ -317,12 +341,33 @@ fn mcp_file(agent_dir: &Path, project: Option<&Path>, scope: &str) -> Result<Pat
 
 fn write_json(path: &Path, value: &Value) -> Result<()> {
     if let Some(parent) = path.parent() {
+        if let Ok(metadata) = std::fs::symlink_metadata(parent)
+            && metadata.file_type().is_symlink()
+        {
+            return Err(CoreError::invalid(
+                "MCP settings directory must not be a symlink",
+            ));
+        }
         std::fs::create_dir_all(parent)
             .map_err(|error| CoreError::io("Could not create the MCP settings directory", error))?;
     }
+    if let Ok(metadata) = std::fs::symlink_metadata(path)
+        && metadata.file_type().is_symlink()
+    {
+        return Err(CoreError::invalid("MCP settings must not be a symlink"));
+    }
     let serialized = format!("{}\n", serde_json::to_string_pretty(value)?);
-    std::fs::write(path, serialized)
-        .map_err(|error| CoreError::io("Could not write MCP settings", error))
+    let temp = path.with_file_name(format!(
+        "{}.{}.tmp",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("mcp.json"),
+        std::process::id()
+    ));
+    std::fs::write(&temp, serialized)
+        .map_err(|error| CoreError::io("Could not write MCP settings", error))?;
+    std::fs::rename(&temp, path)
+        .map_err(|error| CoreError::io("Could not publish MCP settings", error))
 }
 
 fn valid_name(name: &str) -> bool {
@@ -367,7 +412,7 @@ pub fn connect_mcp(
         _ => return Err(CoreError::invalid("MCP scope must be user or project")),
     };
     let path = mcp_file(agent_dir, project.as_deref(), scope)?;
-    let mut file = read_json_file(&path);
+    let mut file = read_json_file(&path)?;
     if !file.is_object() {
         file = json!({});
     }
@@ -382,6 +427,11 @@ pub fn connect_mcp(
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
+    if mode != "replace" && !existing.is_empty() {
+        return Err(CoreError::invalid(
+            "MCP server already exists; use replace mode to edit it",
+        ));
+    }
     let mut definition = Map::new();
     match object.get("type").and_then(Value::as_str) {
         Some("stdio") => {
@@ -411,25 +461,20 @@ pub fn connect_mcp(
                 .and_then(Value::as_str)
                 .filter(|url| !url.is_empty())
                 .ok_or_else(|| CoreError::invalid("MCP endpoint URL is invalid"))?;
-            if !url.starts_with("http://") && !url.starts_with("https://") {
-                return Err(CoreError::invalid("MCP endpoint URL is invalid"));
-            }
-            let authority = url.split('/').nth(2).unwrap_or_default();
-            if authority.contains('@') {
-                return Err(CoreError::invalid(
-                    "MCP endpoint URL must not contain credentials",
-                ));
-            }
-            let loopback = authority.starts_with("127.0.0.1")
-                || authority.starts_with("localhost")
-                || authority.starts_with("[::1]");
-            if url.starts_with("http://")
-                && !loopback
-                && object.get("allowInsecureHttp").and_then(Value::as_bool) != Some(true)
-            {
-                return Err(CoreError::invalid(
-                    "MCP endpoint URL must use https unless it is loopback",
-                ));
+            let parsed = crate::url_policy::parse_http_url(url, "MCP endpoint URL")?;
+            let loopback =
+                crate::url_policy::is_loopback_or_private(parsed.host_str().unwrap_or_default());
+            if parsed.scheme() == "http" {
+                if !loopback {
+                    return Err(CoreError::invalid(
+                        "Public MCP endpoints must use https; plain http is only allowed for loopback or private-network addresses",
+                    ));
+                }
+                if object.get("allowInsecureHttp").and_then(Value::as_bool) != Some(true) {
+                    return Err(CoreError::invalid(
+                        "Plain http requires the explicit insecure-http acknowledgement",
+                    ));
+                }
             }
             definition.insert(
                 "type".to_string(),
@@ -510,7 +555,7 @@ pub fn set_mcp_enabled(
         _ => return Err(CoreError::invalid("MCP scope must be user or project")),
     };
     let path = mcp_file(agent_dir, project.as_deref(), scope)?;
-    let mut file = read_json_file(&path);
+    let mut file = read_json_file(&path)?;
     let root = file
         .as_object_mut()
         .ok_or_else(|| CoreError::invalid("MCP settings are not an object"))?;
@@ -602,7 +647,7 @@ pub fn mutate_capability(
     };
     if kind == "mcp" && action == "remove" {
         let path = mcp_file(agent_dir, project.as_deref(), scope)?;
-        let mut file = read_json_file(&path);
+        let mut file = read_json_file(&path)?;
         if let Some(servers) = file.get_mut("mcpServers").and_then(Value::as_object_mut) {
             servers.remove(name);
         }

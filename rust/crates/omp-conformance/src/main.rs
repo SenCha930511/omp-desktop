@@ -268,7 +268,14 @@ impl Workspace {
                     .get("id")
                     .and_then(Value::as_str)
                     .ok_or_else(|| CoreError::invalid("projects.remove requires id"))?;
-                let runtime = self.require_runtime()?;
+                let runtime = self.require_runtime_mut()?;
+                runtime.agents.stop_all();
+                if let Some(mut broker) = runtime.schedule_broker.take() {
+                    broker.shutdown();
+                }
+                if let Some(mut broker) = runtime.collaboration_broker.take() {
+                    broker.shutdown();
+                }
                 let mut store = runtime.lock();
                 Ok(json!(projects::remove_project(&mut store, id)?))
             }
@@ -708,7 +715,7 @@ impl Workspace {
         let broker = start_broker(move |method, params| {
             let mut state = handler_store.lock().expect("state lock");
             match method {
-                "list" => Ok(schedules::broker_list(&state)),
+                "list" => Ok(schedules::broker_list(&state, &handler_project)),
                 "create" => {
                     let input = params
                         .get("input")
@@ -720,7 +727,7 @@ impl Workspace {
                         .get("id")
                         .and_then(Value::as_str)
                         .ok_or_else(|| CoreError::invalid("Broker delete requires id"))?;
-                    schedules::broker_delete(&mut state, id)
+                    schedules::broker_delete(&mut state, &handler_project, id)
                 }
                 other => Err(CoreError::invalid(format!(
                     "Unknown schedule broker method: {other}"

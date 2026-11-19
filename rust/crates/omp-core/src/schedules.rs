@@ -348,11 +348,29 @@ pub fn broker_create(store: &mut StateStore, project_id: &str, input: &Value) ->
     create(store, &input, "agent")
 }
 
-pub fn broker_list(store: &StateStore) -> Value {
-    Value::Array(list(store))
+pub fn broker_list(store: &StateStore, project_id: &str) -> Value {
+    Value::Array(
+        store
+            .state()
+            .schedules
+            .iter()
+            .filter(|schedule| schedule.target_project_id() == Some(project_id))
+            .filter_map(|schedule| serde_json::to_value(schedule).ok())
+            .collect(),
+    )
 }
 
-pub fn broker_delete(store: &mut StateStore, id: &str) -> Result<Value> {
+pub fn broker_delete(store: &mut StateStore, project_id: &str, id: &str) -> Result<Value> {
+    let in_scope = store
+        .state()
+        .schedules
+        .iter()
+        .any(|schedule| schedule.id == id && schedule.target_project_id() == Some(project_id));
+    if !in_scope {
+        return Err(CoreError::invalid(
+            "Scheduled task is outside this agent capability",
+        ));
+    }
     Ok(json!({ "ok": delete(store, id)? }))
 }
 

@@ -17,23 +17,34 @@ const BEGIN: &str = "===== BEGIN GOOEYPI AGENT MESSAGE =====";
 const END: &str = "===== END GOOEYPI AGENT MESSAGE =====";
 const KEY_BYTES: usize = 32;
 
+fn read_existing_key(path: &Path) -> Result<Vec<u8>> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| CoreError::io("Could not inspect the agent-message signing key", error))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(CoreError::new(
+            "Error",
+            "The OMP Desktop agent-message signing key must be a regular file",
+        ));
+    }
+    let bytes = fs::read(path)
+        .map_err(|error| CoreError::io("Could not read the agent-message signing key", error))?;
+    if bytes.len() != KEY_BYTES {
+        return Err(CoreError::new(
+            "Error",
+            "The OMP Desktop agent-message signing key is invalid",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+    }
+    Ok(bytes)
+}
+
 pub fn load_or_create_key(path: &Path) -> Result<Vec<u8>> {
     if path.exists() {
-        let bytes = fs::read(path).map_err(|error| {
-            CoreError::io("Could not read the agent-message signing key", error)
-        })?;
-        if bytes.len() != KEY_BYTES {
-            return Err(CoreError::new(
-                "Error",
-                "The OMP Desktop agent-message signing key is invalid",
-            ));
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
-        }
-        return Ok(bytes);
+        return read_existing_key(path);
     }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -57,18 +68,7 @@ pub fn load_or_create_key(path: &Path) -> Result<Vec<u8>> {
             })?;
             Ok(key)
         }
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            let bytes = fs::read(path).map_err(|error| {
-                CoreError::io("Could not read the agent-message signing key", error)
-            })?;
-            if bytes.len() != KEY_BYTES {
-                return Err(CoreError::new(
-                    "Error",
-                    "The OMP Desktop agent-message signing key is invalid",
-                ));
-            }
-            Ok(bytes)
-        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => read_existing_key(path),
         Err(error) => Err(CoreError::io(
             "Could not create the agent-message signing key",
             error,
