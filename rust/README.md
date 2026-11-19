@@ -110,4 +110,4 @@ The packaged binary writes the same first-frame marker as the development build.
 - The workspace, Schedules, Browser, Files, Subagents, Side Question, Settings, Extensions, Review, and Summary are present.
 - The tray is present on macOS, Windows, and Linux; a Linux session without an AppIndicator host logs and continues.
 - The updater feed generator is present; wiring it into `release.yml` and signing remains. The client reads `not configured` without `OMP_UPDATER_PUBKEY`.
-- 86 parity tests map to about 79 distinct UI retirement scenarios; the remaining 9 and the final Electron cutover gate remain.
+- 87 parity tests map to about 80 distinct UI retirement scenarios; the remaining 8 and the final Electron cutover gate remain.
