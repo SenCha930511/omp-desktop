@@ -1811,3 +1811,660 @@ fn schedules_pause_and_resume_persist_both_states(cx: &mut TestAppContext) {
         "the resumed state is on disk"
     );
 }
+
+/// Writes a session whose transcript is exactly `entries`, one JSON object per
+/// line, after the title and header lines `read_transcript` skips over.
+fn write_session_entries(
+    bucket: &Path,
+    file_name: &str,
+    title: &str,
+    at: &str,
+    entries: &[Value],
+    cwd: &Path,
+) -> PathBuf {
+    std::fs::create_dir_all(bucket).expect("session bucket");
+    let path = bucket.join(file_name);
+    let title_line = json!({
+        "type": "title",
+        "v": 1,
+        "title": title,
+        "updatedAt": at,
+        "pad": "",
+    });
+    let header = json!({
+        "type": "session",
+        "version": 3,
+        "id": title,
+        "timestamp": at,
+        "cwd": cwd.display().to_string(),
+    });
+    let mut body = format!("{title_line}\n{header}\n");
+    for entry in entries {
+        body.push_str(&entry.to_string());
+        body.push('\n');
+    }
+    std::fs::write(&path, body).expect("session fixture");
+    path
+}
+
+/// A transcript with user, assistant text/thinking/tool parts and a tool
+/// result keeps every role and every part in the order the file wrote them.
+#[gpui_kit::test]
+fn transcript_preserves_roles_and_part_order(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let home = root.join("home");
+    let bucket = home.join(".omp/agent/sessions/-omp-project");
+    let project = root.join("project");
+    let at = "2026-04-01T01:00:00.000Z";
+    let session = write_session_entries(
+        &bucket,
+        "2026-04-01T00-00-00-000Z_019fdf24-f111-7000-8000-000000000011.jsonl",
+        "Rich",
+        at,
+        &[
+            json!({
+                "type": "message",
+                "id": "u1",
+                "parentId": null,
+                "timestamp": at,
+                "message": { "role": "user", "content": "summarize the file" },
+            }),
+            json!({
+                "type": "message",
+                "id": "a1",
+                "parentId": "u1",
+                "timestamp": at,
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        { "type": "thinking", "thinking": "look first" },
+                        { "type": "text", "text": "reading it" },
+                        {
+                            "type": "toolCall",
+                            "id": "call-1",
+                            "name": "read",
+                            "arguments": { "path": "a.txt" },
+                        },
+                    ],
+                },
+            }),
+            json!({
+                "type": "message",
+                "id": "t1",
+                "parentId": "a1",
+                "timestamp": at,
+                "message": {
+                    "role": "toolResult",
+                    "toolName": "read",
+                    "isError": false,
+                    "content": [ { "type": "text", "text": "line1" } ],
+                },
+            }),
+        ],
+        &project,
+    );
+    assert!(session.exists());
+
+    let store = open_store(root);
+    let catalog = omp_core::sessions::list_sessions(&store, &home, false, None);
+    drop(store);
+    assert_eq!(catalog.len(), 1);
+
+    let mut data = test_data(root);
+    data.home_dir = home;
+    data.sessions = catalog;
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.select_session(0, cx);
+            let state = snapshot(workspace, cx);
+            let transcript = state["transcript"].as_array().expect("transcript");
+            assert_eq!(transcript.len(), 3);
+
+            let roles: Vec<&str> = transcript
+                .iter()
+                .filter_map(|message| message["role"].as_str())
+                .collect();
+            assert_eq!(roles, ["user", "assistant", "tool"]);
+
+            let kinds: Vec<Vec<&str>> = transcript
+                .iter()
+                .map(|message| {
+                    message["parts"]
+                        .as_array()
+                        .expect("parts")
+                        .iter()
+                        .filter_map(|part| part["kind"].as_str())
+                        .collect()
+                })
+                .collect();
+            assert_eq!(
+                kinds,
+                [
+                    vec!["text"],
+                    vec!["thinking", "text", "toolCall"],
+                    vec!["toolResult"]
+                ]
+            );
+
+            let texts: Vec<&str> = transcript
+                .iter()
+                .flat_map(|message| {
+                    message["parts"]
+                        .as_array()
+                        .expect("parts")
+                        .iter()
+                        .filter_map(|part| part["text"].as_str())
+                })
+                .collect();
+            assert_eq!(
+                texts,
+                ["summarize the file", "look first", "reading it", "line1"]
+            );
+
+            // The getter keeps the fields the snapshot does not project.
+            let messages = workspace.transcript_messages();
+            let call = &messages[1].parts[2];
+            assert_eq!(call.name.as_deref(), Some("read"));
+            assert_eq!(call.args, Some(json!({ "path": "a.txt" })));
+            let result = &messages[2].parts[0];
+            assert_eq!(result.name.as_deref(), Some("read"));
+            assert_eq!(result.is_error, Some(false));
+        })
+        .expect("workspace window");
+}
+
+/// A compaction record renders as a system message, and its token counts and
+/// summary survive on the part the snapshot only projects by kind.
+#[gpui_kit::test]
+fn compaction_record_renders_as_a_system_message_with_token_counts(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let home = root.join("home");
+    let bucket = home.join(".omp/agent/sessions/-omp-project");
+    let project = root.join("project");
+    let at = "2026-04-01T01:00:00.000Z";
+    write_session_entries(
+        &bucket,
+        "2026-04-01T00-00-00-000Z_019fdf24-f222-7000-8000-000000000012.jsonl",
+        "Compacted",
+        at,
+        &[
+            json!({
+                "type": "message",
+                "id": "u1",
+                "parentId": null,
+                "timestamp": at,
+                "message": { "role": "user", "content": "long prompt" },
+            }),
+            json!({
+                "type": "compaction",
+                "id": "c1",
+                "timestamp": "2026-04-01T01:05:00.000Z",
+                "tokensBefore": 120_000,
+                "tokensAfter": 40_000,
+                "summary": "earlier turns",
+            }),
+            json!({
+                "type": "message",
+                "id": "a1",
+                "parentId": "u1",
+                "timestamp": "2026-04-01T01:06:00.000Z",
+                "message": { "role": "assistant", "content": "carrying on" },
+            }),
+        ],
+        &project,
+    );
+
+    let store = open_store(root);
+    let catalog = omp_core::sessions::list_sessions(&store, &home, false, None);
+    drop(store);
+    assert_eq!(catalog.len(), 1);
+
+    let mut data = test_data(root);
+    data.home_dir = home;
+    data.sessions = catalog;
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.select_session(0, cx);
+            let state = snapshot(workspace, cx);
+            let transcript = state["transcript"].as_array().expect("transcript");
+            let roles: Vec<&str> = transcript
+                .iter()
+                .filter_map(|message| message["role"].as_str())
+                .collect();
+            assert_eq!(roles, ["user", "system", "assistant"]);
+            assert_eq!(transcript[1]["parts"][0]["kind"], "compaction");
+            // A compaction marker has no text body, only counts and a summary.
+            assert_eq!(transcript[1]["parts"][0]["text"], json!(null));
+
+            let messages = workspace.transcript_messages();
+            let marker = &messages[1].parts[0];
+            assert_eq!(marker.tokens_before, Some(120_000));
+            assert_eq!(marker.tokens_after, Some(40_000));
+            assert_eq!(marker.status.as_deref(), Some("done"));
+            assert_eq!(marker.summary.as_deref(), Some("earlier turns"));
+            // The compaction marker carries no text part of its own.
+            assert_eq!(transcript_text(workspace), ["long prompt", "carrying on"]);
+        })
+        .expect("workspace window");
+}
+
+/// A long text part is carried whole: the snapshot and the getter both keep
+/// every character, including the trailing marker.
+#[gpui_kit::test]
+fn long_text_part_is_not_truncated(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let home = root.join("home");
+    let bucket = home.join(".omp/agent/sessions/-omp-project");
+    let project = root.join("project");
+    let at = "2026-04-01T01:00:00.000Z";
+    let long = format!("start\n{}\nend-of-long-text", "x".repeat(100_000));
+    write_session_entries(
+        &bucket,
+        "2026-04-01T00-00-00-000Z_019fdf24-f333-7000-8000-000000000013.jsonl",
+        "Long",
+        at,
+        &[
+            json!({
+                "type": "message",
+                "id": "u1",
+                "parentId": null,
+                "timestamp": at,
+                "message": { "role": "user", "content": long },
+            }),
+            json!({
+                "type": "message",
+                "id": "a1",
+                "parentId": "u1",
+                "timestamp": at,
+                "message": { "role": "assistant", "content": "short reply" },
+            }),
+        ],
+        &project,
+    );
+
+    let store = open_store(root);
+    let catalog = omp_core::sessions::list_sessions(&store, &home, false, None);
+    drop(store);
+    assert_eq!(catalog.len(), 1);
+
+    let mut data = test_data(root);
+    data.home_dir = home;
+    data.sessions = catalog;
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.select_session(0, cx);
+            let state = snapshot(workspace, cx);
+            let text = state["transcript"][0]["parts"][0]["text"]
+                .as_str()
+                .expect("long text");
+            assert_eq!(text.len(), long.len());
+            assert!(text.starts_with("start\n"));
+            assert!(text.ends_with("end-of-long-text"));
+            assert!(text == long, "the long part was altered in the snapshot");
+
+            let message = &workspace.transcript_messages()[0];
+            assert_eq!(message.parts[0].text.as_deref(), Some(long.as_str()));
+            assert_eq!(transcript_text(workspace)[1], "short reply");
+        })
+        .expect("workspace window");
+}
+
+/// Session records carry an `unread` flag, and it survives the catalog reload
+/// the state file drives. `debug_snapshot` projects each session's title, pin
+/// and archive state but has no `unread` key yet, so the flag is asserted
+/// through the catalog and the record serialization that feeds the snapshot.
+#[gpui_kit::test]
+fn session_unread_flags_persist_across_a_catalog_reload(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let (home, _older, _newer) = seed_two_sessions(root);
+
+    let store = open_store(root);
+    let catalog = omp_core::sessions::list_sessions(&store, &home, false, None);
+    drop(store);
+    assert_eq!(catalog.len(), 2);
+    assert!(catalog.iter().all(|record| !record.unread));
+    for record in &catalog {
+        assert_eq!(
+            serde_json::to_value(record).expect("record json")["unread"],
+            json!(false),
+            "the record serializes its unread flag"
+        );
+    }
+
+    // A reopened store scans the same files and keeps the flag off.
+    let reopened = open_store(root);
+    let reloaded = omp_core::sessions::list_sessions(&reopened, &home, false, None);
+    drop(reopened);
+    let titles: Vec<&str> = reloaded
+        .iter()
+        .map(|record| record.title.as_str())
+        .collect();
+    assert_eq!(titles, ["Newer", "Older"]);
+    assert!(reloaded.iter().all(|record| !record.unread));
+
+    let mut data = test_data(root);
+    data.home_dir = home;
+    data.sessions = reloaded;
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    handle
+        .update(cx, |workspace, _, cx| {
+            // The snapshot's session list is the same catalog: same titles and
+            // no session reported as archived by the unread-free scan.
+            let state = snapshot(workspace, cx);
+            let sessions = state["sessions"].as_array().expect("sessions");
+            let snapshot_titles: Vec<&str> = sessions
+                .iter()
+                .filter_map(|session| session["title"].as_str())
+                .collect();
+            assert_eq!(snapshot_titles, ["Newer", "Older"]);
+            assert!(
+                sessions
+                    .iter()
+                    .all(|session| session["archived"] == json!(false))
+            );
+
+            workspace.select_session(1, cx);
+            assert_eq!(transcript_text(workspace), ["older prompt", "older reply"]);
+            assert_eq!(snapshot(workspace, cx)["selectedSession"], json!(1));
+        })
+        .expect("workspace window");
+}
+
+/// Archiving the selected session hides it from the default catalog the
+/// snapshot reports, while `include_archived` still returns the record.
+#[gpui_kit::test]
+fn archiving_hides_a_session_from_the_snapshot_catalog(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let (home, older, _newer) = seed_two_sessions(root);
+
+    let store = open_store(root);
+    let catalog = omp_core::sessions::list_sessions(&store, &home, false, None);
+    drop(store);
+    assert_eq!(catalog.len(), 2);
+
+    let mut data = test_data(root);
+    data.home_dir = home.clone();
+    data.sessions = catalog;
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.select_session(1, cx);
+            assert_eq!(transcript_text(workspace), ["older prompt", "older reply"]);
+
+            workspace.session_menu_action("Archive", cx);
+            let state = snapshot(workspace, cx);
+            let sessions = state["sessions"].as_array().expect("sessions");
+            assert_eq!(sessions.len(), 1);
+            assert_eq!(sessions[0]["title"], "Newer");
+            assert_eq!(sessions[0]["archived"], json!(false));
+
+            workspace.select_session(0, cx);
+            assert_eq!(transcript_text(workspace), ["newer prompt", "newer reply"]);
+        })
+        .expect("workspace window");
+
+    let store = open_store(root);
+    let visible = omp_core::sessions::list_sessions(&store, &home, false, None);
+    assert_eq!(visible.len(), 1);
+    assert_eq!(visible[0].title, "Newer");
+    let all = omp_core::sessions::list_sessions(&store, &home, true, None);
+    assert_eq!(all.len(), 2);
+    let archived = all
+        .iter()
+        .find(|record| same_path(&record.file_path, &older))
+        .expect("archived session record");
+    assert!(archived.archived);
+    assert!(!archived.unread);
+    assert!(older.exists(), "archiving keeps the JSONL file");
+}
+
+/// Appending a reply to the non-selected session leaves the catalog order, the
+/// selection and the open transcript alone: ordering keys off the last user
+/// message, which that reply does not touch.
+#[gpui_kit::test]
+fn catalog_order_is_stable_when_a_non_selected_session_updates(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let (home, older, _newer) = seed_two_sessions(root);
+
+    let store = open_store(root);
+    let catalog = omp_core::sessions::list_sessions(&store, &home, false, None);
+    drop(store);
+    assert_eq!(catalog.len(), 2);
+
+    let mut data = test_data(root);
+    data.home_dir = home.clone();
+    data.sessions = catalog;
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.select_session(0, cx);
+            assert_eq!(transcript_text(workspace), ["newer prompt", "newer reply"]);
+
+            // The background session gets a reply while it is not selected.
+            let reply = json!({
+                "type": "message",
+                "id": "a2",
+                "parentId": "u1",
+                "timestamp": "2026-04-01T05:00:00.000Z",
+                "message": { "role": "assistant", "content": "late reply" },
+            });
+            let mut body = std::fs::read_to_string(&older).expect("older fixture");
+            body.push_str(&format!("{reply}\n"));
+            std::fs::write(&older, body).expect("append reply");
+
+            // Pin re-lists the catalog from disk, so the refresh is observable.
+            workspace.session_menu_action("Pin", cx);
+            let refreshed = snapshot(workspace, cx);
+            assert_eq!(refreshed["selectedSession"], json!(0));
+            let sessions = refreshed["sessions"].as_array().expect("sessions");
+            let titles: Vec<&str> = sessions
+                .iter()
+                .filter_map(|session| session["title"].as_str())
+                .collect();
+            assert_eq!(titles, ["Newer", "Older"]);
+            assert_eq!(sessions[0]["pinned"], json!(true));
+            assert_eq!(transcript_text(workspace), ["newer prompt", "newer reply"]);
+
+            workspace.session_menu_action("Pin", cx);
+            let unpinned = snapshot(workspace, cx);
+            let titles: Vec<&str> = unpinned["sessions"]
+                .as_array()
+                .expect("sessions")
+                .iter()
+                .filter_map(|session| session["title"].as_str())
+                .collect();
+            assert_eq!(titles, ["Newer", "Older"]);
+
+            // The appended reply is really there; only the ordering key held.
+            workspace.select_session(1, cx);
+            let texts = transcript_text(workspace);
+            assert_eq!(texts.last().map(String::as_str), Some("late reply"));
+        })
+        .expect("workspace window");
+
+    let store = open_store(root);
+    let records = omp_core::sessions::list_sessions(&store, &home, false, None);
+    let titles: Vec<&str> = records.iter().map(|record| record.title.as_str()).collect();
+    assert_eq!(titles, ["Newer", "Older"]);
+    assert_eq!(
+        records[1].last_user_message_at.as_deref(),
+        Some("2026-04-01T01:00:00.000Z")
+    );
+}
+
+/// Whitespace in a draft is part of the draft: leading indentation, internal
+/// tabs and trailing spaces all survive pane and view switches until it is
+/// sent. The composer is single-line, so newlines are not part of the draft.
+#[gpui_kit::test]
+fn composer_draft_keeps_its_whitespace_until_send(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let draft = "  indented  two spaces\tand a tab  ";
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, test_data(root)));
+    handle
+        .update(cx, |workspace, window, cx| {
+            let composer = workspace.composer_entity().clone();
+            composer.update(cx, |state, cx| state.set_value(draft, window, cx));
+            assert_eq!(snapshot(workspace, cx)["composer"]["text"], draft);
+
+            workspace.set_right_pane("files", cx);
+            workspace.set_view(AppView::Settings, cx);
+            workspace.set_view(AppView::Workspace, cx);
+            workspace.set_right_pane("launcher", cx);
+
+            assert_eq!(snapshot(workspace, cx)["composer"]["text"], draft);
+            assert_eq!(composer.read(cx).value().to_string(), draft);
+        })
+        .expect("workspace window");
+}
+
+/// Sending with a session open but no runtime keeps the draft and appends
+/// nothing: the existing transcript is byte-for-byte what it was.
+#[gpui_kit::test]
+fn composer_send_without_a_runtime_appends_nothing_to_an_open_transcript(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let (home, _older, _newer) = seed_two_sessions(root);
+
+    let store = open_store(root);
+    let catalog = omp_core::sessions::list_sessions(&store, &home, false, None);
+    drop(store);
+    let mut data = test_data(root);
+    data.home_dir = home;
+    data.sessions = catalog;
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    handle
+        .update(cx, |workspace, window, cx| {
+            workspace.select_session(0, cx);
+            assert_eq!(workspace.transcript_messages().len(), 2);
+            let composer = workspace.composer_entity().clone();
+            composer.update(cx, |state, cx| state.set_value("queued prompt", window, cx));
+            let before = snapshot(workspace, cx)["transcript"].clone();
+
+            workspace.send_prompt(window, cx);
+            let after = snapshot(workspace, cx);
+            assert_eq!(after["composer"]["text"], "queued prompt");
+            assert_eq!(after["transcript"], before);
+            assert_eq!(after["liveVoice"]["runtime"], json!(false));
+            assert_eq!(workspace.transcript_messages().len(), 2);
+            assert!(
+                !transcript_text(workspace)
+                    .iter()
+                    .any(|text| text == "queued prompt")
+            );
+        })
+        .expect("workspace window");
+}
+
+/// Settings round-trip: the draft and the selected session come back exactly
+/// as they were, with the same transcript behind them.
+#[gpui_kit::test]
+fn settings_round_trip_keeps_the_draft_and_the_selected_session(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let (home, _older, _newer) = seed_two_sessions(root);
+
+    let store = open_store(root);
+    let catalog = omp_core::sessions::list_sessions(&store, &home, false, None);
+    drop(store);
+    let mut data = test_data(root);
+    data.home_dir = home;
+    data.sessions = catalog;
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    handle
+        .update(cx, |workspace, window, cx| {
+            workspace.select_session(1, cx);
+            assert_eq!(transcript_text(workspace), ["older prompt", "older reply"]);
+            let composer = workspace.composer_entity().clone();
+            composer.update(cx, |state, cx| state.set_value("  keep me  ", window, cx));
+
+            workspace.set_view(AppView::Settings, cx);
+            let settings = snapshot(workspace, cx);
+            assert_eq!(settings["view"], "settings");
+            assert_eq!(settings["selectedSession"], json!(1));
+            assert_eq!(settings["composer"]["text"], "  keep me  ");
+
+            workspace.set_view(AppView::Workspace, cx);
+            let restored = snapshot(workspace, cx);
+            assert_eq!(restored["view"], "workspace");
+            assert_eq!(restored["selectedSession"], json!(1));
+            assert_eq!(restored["composer"]["text"], "  keep me  ");
+            assert_eq!(transcript_text(workspace), ["older prompt", "older reply"]);
+        })
+        .expect("workspace window");
+}
+
+/// After a real commit the Review pane reports a clean tree on the same branch.
+#[gpui_kit::test]
+fn review_pane_reports_a_clean_tree_after_a_commit(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let repo = seed_repo(root);
+
+    let mut data = test_data(root);
+    data.home_dir = root.join("home");
+    std::fs::create_dir_all(&data.home_dir).expect("home");
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.grant_project(&repo, cx);
+            workspace.set_right_pane("review", cx);
+
+            std::fs::write(repo.join("a.txt"), "line1\nline2\n").expect("edit");
+            workspace.refresh_review();
+            let dirty = snapshot(workspace, cx);
+            assert!(
+                dirty["review"]["status"]["files"]
+                    .as_array()
+                    .expect("files")
+                    .iter()
+                    .any(|file| file["path"] == "a.txt")
+            );
+
+            workspace.stage_path("a.txt", true, cx);
+            let staged = snapshot(workspace, cx);
+            assert!(
+                staged["review"]["status"]["files"]
+                    .as_array()
+                    .expect("files")
+                    .iter()
+                    .any(|file| file["path"] == "a.txt" && file["staged"] == json!(true))
+            );
+
+            git(&repo, &["commit", "-qm", "parity change"]);
+            workspace.refresh_review();
+            let clean = snapshot(workspace, cx);
+            assert_eq!(clean["rightPane"], "review");
+            assert_eq!(clean["review"]["error"], json!(null));
+            assert_eq!(clean["review"]["status"]["isRepo"], json!(true));
+            assert_eq!(clean["review"]["status"]["branch"], "main");
+            assert_eq!(clean["review"]["status"]["files"], json!([]));
+            assert!(
+                workspace
+                    .review_status()
+                    .expect("clean status")
+                    .files
+                    .is_empty()
+            );
+        })
+        .expect("workspace window");
+}
