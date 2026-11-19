@@ -2084,6 +2084,122 @@ fn copy_transcript_writes_the_visible_text_and_no_ops_when_empty(cx: &mut TestAp
     );
 }
 
+/// The transcript opens on its newest message, a scroll up unpins the follow
+/// and draws the `Jump to latest` control, and the harness's re-pin lands back
+/// on the tail. Frames are really drawn, so the scroll handle has the bounds
+/// and range the workspace reads, and no agent is started.
+#[gpui_kit::test]
+fn transcript_follows_the_tail_and_the_jump_control_repins(cx: &mut TestAppContext) {
+    use gpui_kit::{InputEvent as _, ScrollDelta, ScrollEvent, ScrollSource, TouchPhase};
+
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let home = root.join("home");
+    let bucket = home.join(".omp/agent/sessions/-omp-project");
+    let project = root.join("project");
+    let at = "2026-04-01T01:00:00.000Z";
+    // Enough rows to overflow the 800px window's transcript.
+    let entries: Vec<Value> = (0..40)
+        .map(|index| {
+            json!({
+                "type": "message",
+                "id": format!("u{index}"),
+                "parentId": null,
+                "timestamp": at,
+                "message": {
+                    "role": "user",
+                    "content": format!("message {index} {}", "padding ".repeat(24)),
+                },
+            })
+        })
+        .collect();
+    write_session_entries(
+        &bucket,
+        "2026-04-01T00-00-00-000Z_019fdf24-f333-7000-8000-000000000013.jsonl",
+        "Long",
+        at,
+        &entries,
+        &project,
+    );
+
+    let store = open_store(root);
+    let catalog = omp_core::sessions::list_sessions(&store, &home, false, None);
+    drop(store);
+    assert_eq!(catalog.len(), 1);
+
+    let mut data = test_data(root);
+    data.home_dir = home;
+    data.sessions = catalog;
+    let handle = cx.open_window(size(px(1280.0), px(800.0)), |window, cx| {
+        Workspace::new(window, cx, data)
+    });
+
+    // Selecting the session loads it pinned to its newest message.
+    handle
+        .update(cx, |workspace, _, cx| workspace.select_session(0, cx))
+        .expect("select session");
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+        })
+        .expect("transcript frame");
+    });
+    let state = handle
+        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
+        .expect("transcript snapshot");
+    assert_eq!(state["transcript"].as_array().map(Vec::len), Some(40));
+    assert_eq!(state["transcriptAtBottom"], json!(true));
+
+    // A wheel event over the rows scrolls up: the follow unpins and the jump
+    // control is what the next frame draws.
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.dispatch_event(
+                ScrollEvent {
+                    position: point(px(600.0), px(400.0)),
+                    delta: ScrollDelta::Pixels(point(px(0.0), px(120.0))),
+                    modifiers: Default::default(),
+                    touch_phase: TouchPhase::Moved,
+                    source: ScrollSource::Pointer,
+                }
+                .to_platform_input(),
+                cx,
+            );
+        })
+        .expect("scroll frame");
+    });
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+        })
+        .expect("scrolled frame");
+    });
+    let state = handle
+        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
+        .expect("scrolled snapshot");
+    assert_eq!(state["transcriptAtBottom"], json!(false));
+
+    // The jump control's handler re-pins the view to the last row.
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.jump_to_transcript_latest(cx)
+        })
+        .expect("jump to latest");
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+        })
+        .expect("jumped frame");
+    });
+    let state = handle
+        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
+        .expect("jumped snapshot");
+    assert_eq!(state["transcriptAtBottom"], json!(true));
+    // The jump keeps the rows it scrolled past.
+    assert_eq!(state["transcript"].as_array().map(Vec::len), Some(40));
+}
+
 /// A compaction record renders as a system message, and its token counts and
 /// summary survive on the part the snapshot only projects by kind.
 #[gpui_kit::test]
