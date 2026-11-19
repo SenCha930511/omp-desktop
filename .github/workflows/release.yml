@@ -25,6 +25,11 @@ on:
         required: false
         default: false
         type: boolean
+      include_rust:
+        description: Build and publish the Rust application packages and updater feed (requires the RUST_UPDATER_SIGNING_KEY secret)
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -356,6 +361,97 @@ jobs:
             release/win/**/latest*.yml
           if-no-files-found: error
 
+  package-rust:
+    # The Rust app is not the shipping application yet, so its packages and
+    # updater feed stay opt-in; the Electron release path never depends on them.
+    name: Package the Rust application
+    if: (github.event_name == 'workflow_dispatch' && inputs.include_rust) || (github.event_name == 'push' && vars.RELEASE_RUST_ENABLED == 'true')
+    needs: [validate, production-audit, quality, conformance, hermetic-e2e]
+    strategy:
+      # cargo-packager archives the host binary, so every leg runs on a native
+      # runner; a cross-compiled leg would publish the wrong architecture.
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-aarch64
+            runner: macos-15
+            format: app
+          - platform: macos-x86_64
+            runner: macos-15-intel
+            format: app
+          - platform: linux-x86_64
+            runner: ubuntu-22.04
+            format: appimage
+          - platform: windows-x86_64
+            runner: windows-2022
+            format: nsis
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.validate.outputs.sha }}
+      - name: Install the AppImage tooling dependencies
+        if: matrix.format == 'appimage'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libfuse2
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install 1.100.0 --profile minimal
+      - run: rustup default 1.100.0
+      - name: Install cargo-packager
+        run: cargo install cargo-packager --locked --version 0.11.8
+      - name: Build the release application
+        run: cargo build -p omp-desktop --release --locked
+        working-directory: rust
+        env:
+          # Baked in with option_env!. An empty value ships an app whose updater
+          # row reports "not configured" instead of trusting a feed.
+          OMP_UPDATER_PUBKEY: ${{ vars.RUST_UPDATER_PUBKEY }}
+      # The updater rejects unsigned artifacts, so a missing key skips packaging
+      # with a notice instead of publishing files no client can verify.
+      - name: Package and sign the application
+        id: package
+        shell: bash
+        working-directory: rust/crates/omp-desktop
+        env:
+          RUST_UPDATER_SIGNING_KEY: ${{ secrets.RUST_UPDATER_SIGNING_KEY }}
+          CARGO_PACKAGER_SIGN_PRIVATE_KEY: ${{ secrets.RUST_UPDATER_SIGNING_KEY }}
+        run: |
+          if [ -z "$RUST_UPDATER_SIGNING_KEY" ]; then
+            echo "::notice::RUST_UPDATER_SIGNING_KEY is not configured; skipping the signed Rust package and updater feed."
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          cargo packager --formats ${{ matrix.format }} --release --binaries-dir ../../target/release
+          echo "signed=true" >> "$GITHUB_OUTPUT"
+      - name: Upload the signed macOS application archive
+        if: steps.package.outputs.signed == 'true' && matrix.format == 'app'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rust-package-${{ matrix.platform }}
+          path: |
+            rust/dist/*.app.tar.gz
+            rust/dist/*.sig
+          if-no-files-found: error
+      - name: Upload the signed Linux AppImage
+        if: steps.package.outputs.signed == 'true' && matrix.format == 'appimage'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rust-package-${{ matrix.platform }}
+          path: |
+            rust/dist/*.AppImage
+            rust/dist/*.sig
+          if-no-files-found: error
+      - name: Upload the signed Windows installer
+        if: steps.package.outputs.signed == 'true' && matrix.format == 'nsis'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rust-package-${{ matrix.platform }}
+          path: |
+            rust/dist/*-setup.exe
+            rust/dist/*.sig
+          if-no-files-found: error
+
   release-packages:
     needs: [validate, production-audit, package, package-linux, package-windows]
     # Always run the aggregate gate. A skipped job can satisfy a required check,
@@ -442,5 +538,61 @@ jobs:
           GH_TOKEN: ${{ github.token }}
       - name: Add release link to the job summary
         run: echo "Published [$RELEASE_TAG]($(gh release view "$RELEASE_TAG" --json url --jq .url))" >> "$GITHUB_STEP_SUMMARY"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  rust-update-feed:
+    name: Publish the Rust updater feed
+    # The feed is attached to an existing release, so it runs after publication
+    # and only when every signed Rust package was produced. A skipped
+    # package-rust (Rust release not enabled) skips this job too.
+    needs: [validate, release-packages, package-rust]
+    if: >-
+      always() && needs.release-packages.result == 'success' && needs.package-rust.result == 'success'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.validate.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+      - run: npm run toolchain:bootstrap
+      - run: npm run release:preflight:toolchain
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          pattern: rust-package-*
+          path: rust-artifacts
+      # download-artifact extracts each artifact into a `rust-package-<os>-<arch>`
+      # directory; the feed script reads `<os>-<arch>` directory names.
+      - name: Lay the artifacts out as <os>-<arch> platform directories
+        run: |
+          shopt -s nullglob
+          for directory in rust-artifacts/rust-package-*; do
+            mv "$directory" "rust-artifacts/${directory##*rust-package-}"
+          done
+      - name: Detect cargo-packager signatures
+        id: signatures
+        run: |
+          if [ -d rust-artifacts ] && find rust-artifacts -name '*.sig' -type f | grep -q .; then
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No cargo-packager signatures were published; skipping the Rust updater feed because the updater rejects unsigned artifacts."
+          fi
+      # The feed version is the Rust app's compiled version, which the updater
+      # compares against; the tag only names the release the URLs resolve to.
+      - name: Generate and upload the Rust updater feed
+        if: steps.signatures.outputs.signed == 'true'
+        run: |
+          node scripts/release/prepare-rust-update-feed.mjs \
+            --version-file rust/Cargo.toml \
+            --base-url "https://github.com/${{ github.repository }}/releases/download/$RELEASE_TAG/" \
+            --artifacts rust-artifacts \
+            --output rust-update-feed/updates.json
+          gh release upload "$RELEASE_TAG" rust-update-feed/updates.json --clobber
         env:
           GH_TOKEN: ${{ github.token }}

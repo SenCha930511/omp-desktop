@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
-import { basename, dirname, resolve } from 'node:path'
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { basename, dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 /**
@@ -12,6 +12,17 @@ export const UPDATE_PLATFORM_PATTERN = /^(?:macos|linux|windows)-(?:x86_64|aarch
 
 /** Formats cargo-packager 0.11 produces for this app and the updater accepts. */
 export const UPDATE_FORMATS = Object.freeze(['app', 'nsis', 'appimage'])
+
+/**
+ * File-name suffixes cargo-packager 0.11 writes for each updater format. A
+ * macOS `app` output is the `.app` directory archived and signed as
+ * `.app.tar.gz`; Windows signs the NSIS installer and Linux the AppImage.
+ */
+export const UPDATE_ARTIFACT_SUFFIXES = Object.freeze([
+  { suffix: '.app.tar.gz', format: 'app' },
+  { suffix: '-setup.exe', format: 'nsis' },
+  { suffix: '.AppImage', format: 'appimage' },
+])
 
 const UPDATE_FORMAT_SET = new Set(UPDATE_FORMATS)
 const SEMVER_PATTERN = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/
@@ -45,7 +56,11 @@ const SIGNATURE_BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/
  * @typedef {object} PrepareUpdateFeedOptions
  * @property {string} version
  * @property {string} baseUrl
- * @property {string} manifestPath
+ * @property {string} [manifestPath] Explicit manifest; mutually exclusive with
+ *   `artifactsPath`.
+ * @property {string} [artifactsPath] Directory of downloaded release artifacts
+ *   laid out as `<os>-<arch>/<artifact>[.sig]`; mutually exclusive with
+ *   `manifestPath`.
  * @property {string} [outputPath]
  * @property {boolean} [check]
  */
@@ -62,6 +77,27 @@ export function validateUpdateVersion(version) {
   const normalized = value.startsWith('v') ? value.slice(1) : value
   if (!SEMVER_PATTERN.test(normalized)) throw new Error(`Update version must be semver: ${version}`)
   return normalized
+}
+
+/**
+ * Reads the version the packaged Rust application was built as from its
+ * workspace manifest (`[workspace.package] version`). That is the value
+ * compiled into `CARGO_PKG_VERSION` and compared against the feed, so the feed
+ * must carry it instead of the Electron release tag.
+ * @param {string} path
+ * @returns {string}
+ */
+export function readRustPackageVersion(path) {
+  let source
+  try {
+    source = readFileSync(path, 'utf8')
+  } catch {
+    throw new Error(`Rust workspace manifest is missing or unreadable: ${path}`)
+  }
+  const section = source.split(/^\[/m).find((block) => block.startsWith('workspace.package]'))
+  const match = section?.match(/^version\s*=\s*"([^"]+)"/m)
+  if (!match) throw new Error(`Rust workspace manifest has no [workspace.package] version: ${path}`)
+  return validateUpdateVersion(match[1])
 }
 
 /**
@@ -194,18 +230,70 @@ export function serializeUpdateFeed(feed) {
 }
 
 /**
+ * Builds a manifest from downloaded release artifacts laid out as
+ * `<artifacts>/<os>-<arch>/<artifact>[.sig]`, the shape per-platform
+ * `actions/upload-artifact` directories produce. Each platform directory must
+ * hold exactly one supported artifact and the cargo-packager signature for it.
+ * Paths are relative to the artifacts directory, which is where the feed
+ * resolves them from.
+ * @param {string} directory
+ * @returns {{ platforms: UpdateManifestEntry[] }}
+ */
+export function discoverUpdateManifest(directory) {
+  const root = resolve(directory)
+  let children
+  try {
+    children = readdirSync(root, { withFileTypes: true })
+  } catch {
+    throw new Error(`Update artifacts directory is missing or unreadable: ${root}`)
+  }
+  const platformDirectories = children
+    .filter((child) => child.isDirectory())
+    .map((child) => child.name)
+    .sort()
+  if (platformDirectories.length === 0) throw new Error(`Update artifacts directory has no <os>-<arch> platform directories: ${root}`)
+  /** @type {UpdateManifestEntry[]} */
+  const platforms = []
+  for (const platform of platformDirectories) {
+    if (!UPDATE_PLATFORM_PATTERN.test(platform)) throw new Error(`Update artifacts directory has an unsupported platform name: ${platform}`)
+    const files = readdirSync(join(root, platform), { withFileTypes: true })
+      .filter((child) => child.isFile())
+      .map((child) => child.name)
+    const artifacts = files.filter((name) => UPDATE_ARTIFACT_SUFFIXES.some(({ suffix }) => name.endsWith(suffix)))
+    if (artifacts.length !== 1) throw new Error(`Update artifacts for ${platform} must contain exactly one supported artifact (found ${artifacts.length})`)
+    const artifact = artifacts[0]
+    const format = UPDATE_ARTIFACT_SUFFIXES.find(({ suffix }) => artifact.endsWith(suffix))?.format
+    const signature = `${artifact}.sig`
+    if (!files.includes(signature)) throw new Error(`Update artifact ${platform}/${artifact} is missing its ${signature} signature file`)
+    platforms.push({ platform, artifact: `${platform}/${artifact}`, signature: `${platform}/${signature}`, format })
+  }
+  return { platforms }
+}
+
+/**
  * Validates the manifest and either writes the feed or, in check mode, only
  * reports what would be written.
  * @param {PrepareUpdateFeedOptions} options
  * @returns {{ feed: UpdateFeed, contents: string, outputPath: string, written: boolean }}
  */
-export function prepareRustUpdateFeed({ version, baseUrl, manifestPath, outputPath = 'updates.json', check = false }) {
-  const resolvedManifestPath = resolve(manifestPath)
+export function prepareRustUpdateFeed({ version, baseUrl, manifestPath, artifactsPath, outputPath = 'updates.json', check = false }) {
+  if (Boolean(manifestPath) === Boolean(artifactsPath)) throw new Error('Provide either an update manifest or an artifacts directory')
+  let resolvedManifestPath
   let manifestSource
-  try {
-    manifestSource = readFileSync(resolvedManifestPath, 'utf8')
-  } catch {
-    throw new Error(`Update manifest is missing or unreadable: ${resolvedManifestPath}`)
+  if (manifestPath) {
+    resolvedManifestPath = resolve(manifestPath)
+    try {
+      manifestSource = readFileSync(resolvedManifestPath, 'utf8')
+    } catch {
+      throw new Error(`Update manifest is missing or unreadable: ${resolvedManifestPath}`)
+    }
+  } else {
+    // buildUpdateFeed resolves entry paths against the manifest's directory, so
+    // the discovered manifest is anchored inside the artifacts directory
+    // without being written to disk.
+    const directory = resolve(artifactsPath)
+    resolvedManifestPath = join(directory, 'artifacts-manifest.json')
+    manifestSource = JSON.stringify(discoverUpdateManifest(directory))
   }
   const feed = buildUpdateFeed({ version, baseUrl, manifestSource, manifestPath: resolvedManifestPath })
   const contents = serializeUpdateFeed(feed)
@@ -235,10 +323,22 @@ if (invokedAsScript()) {
   try {
     const args = process.argv.slice(2)
     const version = option(args, '--version')
+    const versionFile = option(args, '--version-file')
     const baseUrl = option(args, '--base-url')
     const manifestPath = option(args, '--manifest')
-    if (!version || !baseUrl || !manifestPath) throw new Error('Provide --version, --base-url, and --manifest')
-    const result = prepareRustUpdateFeed({ version, baseUrl, manifestPath, outputPath: option(args, '--output') ?? 'updates.json', check: args.includes('--check') })
+    const artifactsPath = option(args, '--artifacts')
+    if (version && versionFile) throw new Error('Provide only one of --version and --version-file')
+    if (!version && !versionFile) throw new Error('Provide --version or --version-file')
+    if (!baseUrl || (!manifestPath && !artifactsPath)) throw new Error('Provide --base-url and either --manifest or --artifacts')
+    if (manifestPath && artifactsPath) throw new Error('Provide only one of --manifest and --artifacts')
+    const result = prepareRustUpdateFeed({
+      version: version ?? readRustPackageVersion(versionFile),
+      baseUrl,
+      manifestPath,
+      artifactsPath,
+      outputPath: option(args, '--output') ?? 'updates.json',
+      check: args.includes('--check'),
+    })
     const platformCount = Object.keys(result.feed.platforms).length
     if (result.written) console.log(`Wrote ${platformCount} platform(s) for ${result.feed.version} to ${result.outputPath}.`)
     else console.log(`Validated ${platformCount} platform(s) for ${result.feed.version}; no file written.`)

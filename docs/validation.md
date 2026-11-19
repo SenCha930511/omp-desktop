@@ -152,7 +152,9 @@ The [release workflow](../.github/workflows/release.yml) runs for a semantic-ver
 | `package` | Build both native macOS architectures. Credential preflight is fail-closed; public verification checks the signing identity, required microphone entitlements on the app and every Electron helper, the notarization staple on each packaged app, Gatekeeper, artifact integrity, fuses, native layout/architecture, and package budgets. Both native macOS architectures must pass the packaged application launch smoke before their artifacts are uploaded. |
 | `package-linux` | Build the configured Linux architectures on native runners and apply the Linux package/runtime verification path. |
 | `package-windows` | When explicitly enabled, build either Authenticode-signed public packages or unsigned beta packages. Signed mode requires signing secrets and the configured signer subject and/or thumbprint. |
+| `package-rust` | When the Rust release is enabled, build and cargo-packager-sign the Rust application on native macOS (both architectures), Linux x86_64, and Windows runners. Unsigned artifacts are never uploaded: without `RUST_UPDATER_SIGNING_KEY` the packaging step skips with a notice. |
 | `release-packages` | Reject failed prerequisites, collect the enabled platform artifacts, generate checksums, attest provenance, and publish or resume the GitHub Release with write permission scoped to this final job. |
+| `rust-update-feed` | When every signed Rust package was produced, build `updates.json` from the downloaded artifacts and upload it to the already-published release. |
 
 Native release jobs pass `--skip-verify` only after the same immutable SHA has passed the upstream quality and E2E jobs. That flag skips a duplicate pre-package test aggregate; it does not skip bundle creation or the platform-specific post-package verification.
 
@@ -239,4 +241,4 @@ cargo packager signer sign --private-key ~/.config/omp/updater.key path/to/artif
 
 The `.sig` file cargo-packager writes is already the base64 signature box the updater expects, so pass that file to the manifest. The generated `.pub` file is the exact `OMP_UPDATER_PUBKEY` value; build with `OMP_UPDATER_PUBKEY="$(cat ~/.config/omp/updater.key.pub)"`.
 
-The release workflow does not build or publish this feed yet. Run the command against downloaded release artifacts and attach the resulting `updates.json` to the release by hand; the client reads `https://github.com/SenCha930511/omp-desktop/releases/latest/download/updates.json`.
+The `rust-update-feed` release job builds this feed from the signed Rust packages with `--version-file rust/Cargo.toml` (the version compiled into the app, not the Electron release tag) and `--artifacts` (the downloaded `<os>-<arch>` package directories), then uploads `updates.json` to the published release; the client reads `https://github.com/SenCha930511/omp-desktop/releases/latest/download/updates.json`. The job is opt-in with the rest of the Rust packages (`include_rust` on manual dispatch or the `RELEASE_RUST_ENABLED` repository variable) and skips with a notice when `RUST_UPDATER_SIGNING_KEY` is not configured.

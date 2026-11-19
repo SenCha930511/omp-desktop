@@ -53,7 +53,7 @@ import {
   prepareGitHubRelease,
   releaseAssetNames,
 } from '../scripts/release/prepare-github-release.mjs'
-import { buildUpdateFeed, prepareRustUpdateFeed, serializeUpdateFeed, validateUpdateBaseUrl, validateUpdateVersion } from '../scripts/release/prepare-rust-update-feed.mjs'
+import { buildUpdateFeed, prepareRustUpdateFeed, readRustPackageVersion, serializeUpdateFeed, validateUpdateBaseUrl, validateUpdateVersion } from '../scripts/release/prepare-rust-update-feed.mjs'
 import { parseDraftAssetNames, staleDraftReleaseAssets } from '../scripts/release/prune-draft-release-assets.mjs'
 import { assertBundleSizeBudgets, assertPackageSizeBudgets, BUNDLE_SIZE_BUDGETS, collectBundleSizeMetrics, collectPackageSizeMetrics, PACKAGE_SIZE_BUDGETS } from '../scripts/release/size-budgets.mjs'
 import { assertReleaseTag } from '../scripts/release/validate-release-tag.mjs'
@@ -646,6 +646,7 @@ else if (JSON.stringify(args) === ${JSON.stringify(JSON.stringify(expectedInstal
     const releaseSteps = parseWorkflowSteps(readFileSync('.github/workflows/release.yml', 'utf8'))
     const secretSteps = releaseSteps.filter((step) => step.secretLines.length > 0)
     expect(secretSteps.map((step) => `${step.job}: ${step.name}`).sort()).toEqual([
+      'package-rust: Package and sign the application',
       'package-windows: Build, Authenticode-sign, and verify Windows packages',
       'package: Build, sign, notarize, and verify release packages',
       'package: Fail closed unless every release credential is configured',
@@ -2137,5 +2138,206 @@ describe('Rust update feed', () => {
     } finally {
       rmSync(directory, { recursive: true, force: true })
     }
+  })
+
+  test('builds the feed from downloaded per-platform artifact directories', () => {
+    const directory = createFeedDirectory()
+    try {
+      const artifacts = join(directory, 'artifacts')
+      const published = [
+        { platform: 'macos-aarch64', artifact: 'OMP Desktop_2.0.0_aarch64.app.tar.gz', format: 'app' },
+        { platform: 'linux-x86_64', artifact: 'omp-desktop_2.0.0_amd64.AppImage', format: 'appimage' },
+        { platform: 'windows-x86_64', artifact: 'omp-desktop_2.0.0_x64-setup.exe', format: 'nsis' },
+      ]
+      for (const entry of published) {
+        const platformDirectory = join(artifacts, entry.platform)
+        mkdirSync(platformDirectory, { recursive: true })
+        // cargo-packager leaves the raw `.app` directory beside the signed
+        // archive; discovery must read only the signed file.
+        mkdirSync(join(platformDirectory, 'OMP Desktop.app'))
+        writeFileSync(join(platformDirectory, entry.artifact), `artifact ${entry.platform}`)
+        writeFileSync(join(platformDirectory, `${entry.artifact}.sig`), signature)
+      }
+      const outputPath = join(directory, 'out', 'updates.json')
+      const result = prepareRustUpdateFeed({
+        version: 'v2.0.0',
+        baseUrl: 'https://github.com/SenCha930511/omp-desktop/releases/download/v2.0.0',
+        artifactsPath: artifacts,
+        outputPath,
+      })
+      expect(result.feed).toEqual({
+        version: '2.0.0',
+        platforms: {
+          'linux-x86_64': {
+            url: 'https://github.com/SenCha930511/omp-desktop/releases/download/v2.0.0/omp-desktop_2.0.0_amd64.AppImage',
+            signature,
+            format: 'appimage',
+          },
+          'macos-aarch64': {
+            url: 'https://github.com/SenCha930511/omp-desktop/releases/download/v2.0.0/OMP%20Desktop_2.0.0_aarch64.app.tar.gz',
+            signature,
+            format: 'app',
+          },
+          'windows-x86_64': {
+            url: 'https://github.com/SenCha930511/omp-desktop/releases/download/v2.0.0/omp-desktop_2.0.0_x64-setup.exe',
+            signature,
+            format: 'nsis',
+          },
+        },
+      })
+      expect(readFileSync(outputPath, 'utf8')).toBe(serializeUpdateFeed(result.feed))
+      // The discovered manifest stays in memory; it is never written beside the
+      // artifacts that get published.
+      expect(existsSync(join(artifacts, 'artifacts-manifest.json'))).toBe(false)
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  test('fails closed on incomplete artifact directories and runs --artifacts from the command line', () => {
+    const directory = createFeedDirectory()
+    try {
+      const build = (artifactsPath: string) => prepareRustUpdateFeed({ version: '2.0.0', baseUrl: 'https://example.com/releases/', artifactsPath, outputPath: join(directory, 'out', 'updates.json') })
+      expect(() => build(join(directory, 'missing'))).toThrow(/artifacts directory is missing or unreadable/)
+      expect(() => prepareRustUpdateFeed({ version: '2.0.0', baseUrl: 'https://example.com/releases/', outputPath: join(directory, 'out', 'updates.json') })).toThrow(
+        /either an update manifest or an artifacts directory/,
+      )
+      expect(() =>
+        prepareRustUpdateFeed({
+          version: '2.0.0',
+          baseUrl: 'https://example.com/releases/',
+          manifestPath: join(directory, 'manifest.json'),
+          artifactsPath: join(directory, 'artifacts'),
+        }),
+      ).toThrow(/either an update manifest or an artifacts directory/)
+
+      mkdirSync(join(directory, 'empty'))
+      expect(() => build(join(directory, 'empty'))).toThrow(/no <os>-<arch> platform directories/)
+      mkdirSync(join(directory, 'unsupported', 'darwin-x86_64'), { recursive: true })
+      expect(() => build(join(directory, 'unsupported'))).toThrow(/unsupported platform name: darwin-x86_64/)
+      for (const [name, artifact] of [
+        ['ambiguous', 'one.AppImage'],
+        ['ambiguous', 'two.AppImage'],
+      ] as const) {
+        mkdirSync(join(directory, name, 'linux-x86_64'), { recursive: true })
+        writeFileSync(join(directory, name, 'linux-x86_64', artifact), 'artifact')
+        writeFileSync(join(directory, name, 'linux-x86_64', `${artifact}.sig`), signature)
+      }
+      expect(() => build(join(directory, 'ambiguous'))).toThrow(/exactly one supported artifact \(found 2\)/)
+      mkdirSync(join(directory, 'unsigned', 'linux-x86_64'), { recursive: true })
+      writeFileSync(join(directory, 'unsigned', 'linux-x86_64', 'omp-desktop.AppImage'), 'artifact')
+      expect(() => build(join(directory, 'unsigned'))).toThrow(/missing its omp-desktop\.AppImage\.sig signature file/)
+
+      const artifacts = join(directory, 'valid')
+      mkdirSync(join(artifacts, 'linux-x86_64'), { recursive: true })
+      writeFileSync(join(artifacts, 'linux-x86_64', 'omp-desktop.AppImage'), 'artifact')
+      writeFileSync(join(artifacts, 'linux-x86_64', 'omp-desktop.AppImage.sig'), signature)
+      const scriptPath = fileURLToPath(new URL('../scripts/release/prepare-rust-update-feed.mjs', import.meta.url))
+      const outputPath = join(directory, 'cli', 'updates.json')
+      const written = spawnSync(process.execPath, [scriptPath, '--version', '2.0.0', '--base-url', 'https://example.com/releases/', '--artifacts', artifacts, '--output', outputPath], {
+        encoding: 'utf8',
+      })
+      expect(written.status).toBe(0)
+      expect(written.stdout).toContain('Wrote 1 platform(s) for 2.0.0')
+      expect(JSON.parse(readFileSync(outputPath, 'utf8')).platforms['linux-x86_64'].format).toBe('appimage')
+
+      const both = spawnSync(
+        process.execPath,
+        [scriptPath, '--version', '2.0.0', '--base-url', 'https://example.com/releases/', '--manifest', join(directory, 'manifest.json'), '--artifacts', artifacts],
+        { encoding: 'utf8' },
+      )
+      expect(both.status).toBe(1)
+      expect(both.stderr).toContain('Provide only one of --manifest and --artifacts')
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  test('reads the feed version from the Rust workspace manifest instead of the release tag', () => {
+    const directory = createFeedDirectory()
+    try {
+      expect(readRustPackageVersion('rust/Cargo.toml')).toBe('2.0.0')
+      const manifestPath = join(directory, 'workspace.toml')
+      writeFileSync(manifestPath, '[workspace]\nmembers = []\n\n[workspace.package]\nversion = "3.1.4"\nedition = "2024"\n')
+      expect(readRustPackageVersion(manifestPath)).toBe('3.1.4')
+      writeFileSync(manifestPath, '[workspace]\nmembers = []\n')
+      expect(() => readRustPackageVersion(manifestPath)).toThrow(/no \[workspace.package\] version/)
+      expect(() => readRustPackageVersion(join(directory, 'missing.toml'))).toThrow(/missing or unreadable/)
+
+      const artifacts = join(directory, 'artifacts')
+      mkdirSync(join(artifacts, 'windows-x86_64'), { recursive: true })
+      writeFileSync(join(artifacts, 'windows-x86_64', 'omp-desktop_3.1.4_x64-setup.exe'), 'artifact')
+      writeFileSync(join(artifacts, 'windows-x86_64', 'omp-desktop_3.1.4_x64-setup.exe.sig'), signature)
+      writeFileSync(manifestPath, '[workspace.package]\nversion = "3.1.4"\n')
+      const scriptPath = fileURLToPath(new URL('../scripts/release/prepare-rust-update-feed.mjs', import.meta.url))
+      const outputPath = join(directory, 'cli', 'updates.json')
+      const written = spawnSync(process.execPath, [scriptPath, '--version-file', manifestPath, '--base-url', 'https://example.com/releases/', '--artifacts', artifacts, '--output', outputPath], {
+        encoding: 'utf8',
+      })
+      expect(written.status).toBe(0)
+      const feed = JSON.parse(readFileSync(outputPath, 'utf8'))
+      expect(feed.version).toBe('3.1.4')
+      expect(feed.platforms['windows-x86_64'].url).toBe('https://example.com/releases/omp-desktop_3.1.4_x64-setup.exe')
+
+      const both = spawnSync(process.execPath, [scriptPath, '--version', '3.1.4', '--version-file', manifestPath, '--base-url', 'https://example.com/releases/', '--artifacts', artifacts], {
+        encoding: 'utf8',
+      })
+      expect(both.status).toBe(1)
+      expect(both.stderr).toContain('Provide only one of --version and --version-file')
+      const neither = spawnSync(process.execPath, [scriptPath, '--base-url', 'https://example.com/releases/', '--artifacts', artifacts], { encoding: 'utf8' })
+      expect(neither.status).toBe(1)
+      expect(neither.stderr).toContain('Provide --version or --version-file')
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  test('wires the feed job to the signed Rust packages and the published release', () => {
+    type Step = { name?: string; id?: string; if?: string; uses?: string; run?: string; env?: Record<string, string>; with?: Record<string, unknown> }
+    const workflow = load(readFileSync('.github/workflows/release.yml', 'utf8')) as {
+      jobs: Record<
+        string,
+        {
+          needs?: string[]
+          if?: string
+          permissions?: Record<string, string>
+          strategy?: { matrix?: { include?: Array<Record<string, string>> } }
+          steps?: Step[]
+        }
+      >
+    }
+    const packageRust = workflow.jobs['package-rust']
+    expect(packageRust.needs).toEqual(['validate', 'production-audit', 'quality', 'conformance', 'hermetic-e2e'])
+    expect(packageRust.if).toContain('inputs.include_rust')
+    expect(packageRust.strategy?.matrix?.include?.map((leg) => `${leg.platform}:${leg.format}`)).toEqual(['macos-aarch64:app', 'macos-x86_64:app', 'linux-x86_64:appimage', 'windows-x86_64:nsis'])
+    const sign = packageRust.steps?.find((step) => step.id === 'package')
+    expect(sign?.env).toEqual({
+      RUST_UPDATER_SIGNING_KEY: '${{ secrets.RUST_UPDATER_SIGNING_KEY }}',
+      CARGO_PACKAGER_SIGN_PRIVATE_KEY: '${{ secrets.RUST_UPDATER_SIGNING_KEY }}',
+    })
+    expect(sign?.run).toContain('cargo packager --formats ${{ matrix.format }} --release')
+    expect(sign?.run).toContain('skipping the signed Rust package')
+    // A missing key must not publish artifacts the updater would reject.
+    const rustUploads = packageRust.steps?.filter((step) => step.uses?.startsWith('actions/upload-artifact@')) ?? []
+    expect(rustUploads.map((step) => step.with?.name)).toEqual(['rust-package-${{ matrix.platform }}', 'rust-package-${{ matrix.platform }}', 'rust-package-${{ matrix.platform }}'])
+    for (const upload of rustUploads) {
+      expect(upload.if).toContain("steps.package.outputs.signed == 'true'")
+      expect(upload.with?.['if-no-files-found']).toBe('error')
+    }
+
+    const feed = workflow.jobs['rust-update-feed']
+    expect(feed.needs).toEqual(['validate', 'release-packages', 'package-rust'])
+    expect(feed.permissions).toEqual({ contents: 'write' })
+    expect(feed.if).toContain("needs.release-packages.result == 'success'")
+    expect(feed.if).toContain("needs.package-rust.result == 'success'")
+    expect(feed.steps?.find((step) => step.uses?.startsWith('actions/download-artifact@'))?.with?.pattern).toBe('rust-package-*')
+    const generate = feed.steps?.find((step) => step.name === 'Generate and upload the Rust updater feed')
+    expect(generate?.if).toBe("steps.signatures.outputs.signed == 'true'")
+    expect(generate?.run).toContain('--version-file rust/Cargo.toml')
+    expect(generate?.run).toContain('--artifacts rust-artifacts')
+    expect(generate?.run).toContain('gh release upload "$RELEASE_TAG" rust-update-feed/updates.json --clobber')
+    expect(generate?.env?.GH_TOKEN).toBe('${{ github.token }}')
+    // The Electron publication path still depends on exactly the Electron jobs.
+    expect(workflow.jobs['release-packages'].needs).toEqual(['validate', 'production-audit', 'package', 'package-linux', 'package-windows'])
   })
 })
