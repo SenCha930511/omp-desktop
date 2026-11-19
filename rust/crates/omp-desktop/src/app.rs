@@ -384,6 +384,9 @@ impl Workspace {
                 Err(error) => self.transcript_error = Some(error.message),
             }
         }
+        if self.right_pane == RightPane::Review {
+            self.refresh_review();
+        }
         self.ensure_runtime(cx);
         cx.notify();
     }
@@ -574,6 +577,7 @@ impl Workspace {
             return;
         };
         if self.turn_baseline.is_none() {
+            self.turn_changes = TurnChanges::default();
             self.turn_baseline = self.capture_turn_baseline();
         }
         if let Err(error) = self
@@ -682,7 +686,7 @@ impl Workspace {
         let cwd = self.project_cwd()?;
         let store = store.lock().expect("state lock");
         let files = git::snapshot_files(&store, Platform::current(), &cwd);
-        (!files.is_empty()).then(|| TurnBaseline::capture(files))
+        Some(TurnBaseline::capture(files))
     }
 
     fn finish_turn(&mut self) {

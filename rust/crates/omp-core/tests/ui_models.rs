@@ -94,6 +94,23 @@ fn turn_changes_only_report_what_this_turn_added() {
 }
 
 #[test]
+fn a_clean_baseline_reports_a_new_file() {
+    let baseline = TurnBaseline::capture(Vec::new());
+    let changes = compute_turn_changes(
+        &baseline,
+        [FileSnapshot {
+            path: "new.ts".into(),
+            additions: 3,
+            deletions: 0,
+            staged: false,
+        }],
+    );
+    assert_eq!(changes.files.len(), 1);
+    assert_eq!(changes.files[0].path, "new.ts");
+    assert_eq!(changes.additions, 3);
+}
+
+#[test]
 fn an_unchanged_turn_produces_no_card() {
     let baseline = TurnBaseline::capture([FileSnapshot {
         path: "a.ts".into(),
