@@ -55,6 +55,7 @@ enum RightPane {
     Files,
     Browser,
     SideQuestion,
+    LiveVoice,
     Subagents,
 }
 
@@ -111,6 +112,14 @@ pub struct Workspace {
     plugin_error: Option<String>,
     schedules: Vec<Value>,
     right_pane: RightPane,
+    // Live voice is RPC-driven: the harness owns the microphone and the pane only
+    // mirrors the normalized `live_*` events plus the commands it sent.
+    live_phase: String,
+    live_levels: f32,
+    live_transcript: Vec<String>,
+    live_muted: bool,
+    live_active: bool,
+    live_error: Option<String>,
     browser: BrowserPane,
     terminal: Option<TerminalSession>,
     terminal_open: bool,
@@ -223,6 +232,12 @@ impl Workspace {
             plugin_error: None,
             schedules: Vec::new(),
             right_pane: RightPane::Launcher,
+            live_phase: "idle".to_string(),
+            live_levels: 0.0,
+            live_transcript: Vec::new(),
+            live_muted: false,
+            live_active: false,
+            live_error: None,
             browser,
             terminal: None,
             terminal_open: false,
@@ -498,6 +513,29 @@ impl Workspace {
             )
             .child(div().flex_1())
             .child(self.toolbar_icon(
+                "live-voice",
+                IconName::Mic,
+                if self.right_pane == RightPane::LiveVoice {
+                    colors.primary
+                } else {
+                    colors.foreground
+                },
+                cx.listener(|this, _, _, cx| {
+                    if this.right_pane == RightPane::LiveVoice {
+                        this.right_pane = RightPane::Launcher;
+                    } else {
+                        this.right_pane = RightPane::LiveVoice;
+                        this.geometry.right_pane_open = true;
+                        if let Some(bounds) = this.last_bounds {
+                            this.layout = this.geometry.resolve(bounds.2 as f64);
+                        }
+                        this.resize_terminal();
+                        this.schedule_geometry_save(cx);
+                    }
+                    cx.notify();
+                }),
+            ))
+            .child(self.toolbar_icon(
                 "terminal-panel",
                 IconName::Terminal,
                 if self.terminal_open {
@@ -752,6 +790,7 @@ impl Workspace {
         if let Some(runtime_id) = self.runtime_id.take() {
             self.agents.stop(&runtime_id);
         }
+        self.reset_live_voice();
         self.streaming_index = None;
         self.runtime_error = None;
         self.turn_baseline = None;
@@ -859,6 +898,7 @@ impl Workspace {
         if let Some(runtime_id) = self.runtime_id.take() {
             self.agents.stop(&runtime_id);
         }
+        self.reset_live_voice();
         self.streaming_index = None;
         self.selected_session = None;
         self.transcript.clear();
@@ -980,6 +1020,10 @@ impl Workspace {
                         }],
                     });
                 }
+                Some("live_phase" | "live_levels" | "live_transcript" | "live_end") => {
+                    // Live voice never touches the transcript: the pane owns these frames.
+                    self.apply_live_event(event);
+                }
                 _ => {}
             }
         }
@@ -1017,6 +1061,128 @@ impl Workspace {
             self.agents.stop(&runtime_id);
         }
         self.side_streaming = false;
+    }
+
+    /// Mirrors one normalized `live_*` event into the pane state.
+    ///
+    /// Returns whether the event belonged to live voice. The harness owns the
+    /// audio; the pane only reflects what it reports.
+    fn apply_live_event(&mut self, event: &Value) -> bool {
+        let mut state = LiveVoiceState {
+            phase: &mut self.live_phase,
+            levels: &mut self.live_levels,
+            transcript: &mut self.live_transcript,
+            muted: &mut self.live_muted,
+            active: &mut self.live_active,
+            error: &mut self.live_error,
+        };
+        apply_live_voice_event(&mut state, event)
+    }
+
+    /// Asks the main runtime to open live voice; the harness captures the audio.
+    fn start_live_voice(&mut self, cx: &mut Context<Self>) {
+        let Some(runtime_id) = self.runtime_id.clone() else {
+            self.live_error = Some("Select a session before starting live voice.".to_string());
+            cx.notify();
+            return;
+        };
+        self.live_error = None;
+        match self.agents.command(
+            &runtime_id,
+            &json!({ "type": "live_start", "voice": "sol" }),
+        ) {
+            Ok(response) if response.get("success").and_then(Value::as_bool) == Some(true) => {
+                self.live_active = true;
+                self.live_phase = "connecting".to_string();
+                self.live_levels = 0.0;
+                self.start_drain(cx);
+            }
+            Ok(response) => {
+                self.live_active = false;
+                self.live_error = Some(
+                    response
+                        .pointer("/error/message")
+                        .and_then(Value::as_str)
+                        .unwrap_or("OMP rejected live voice")
+                        .to_string(),
+                );
+            }
+            Err(error) => {
+                self.live_active = false;
+                self.live_error = Some(error.message);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Asks the runtime to close live voice and resets the local pane state.
+    fn stop_live_voice(&mut self, cx: &mut Context<Self>) {
+        let Some(runtime_id) = self.runtime_id.clone() else {
+            self.live_error = Some("Select a session before stopping live voice.".to_string());
+            cx.notify();
+            return;
+        };
+        match self
+            .agents
+            .command(&runtime_id, &json!({ "type": "live_stop" }))
+        {
+            Ok(response) if response.get("success").and_then(Value::as_bool) == Some(true) => {
+                self.live_error = None;
+            }
+            Ok(response) => {
+                self.live_error = Some(
+                    response
+                        .pointer("/error/message")
+                        .and_then(Value::as_str)
+                        .unwrap_or("OMP rejected the live stop")
+                        .to_string(),
+                );
+            }
+            Err(error) => self.live_error = Some(error.message),
+        }
+        self.reset_live_voice();
+        cx.notify();
+    }
+
+    /// Toggles the harness mute flag for the running live session.
+    fn toggle_live_voice_mute(&mut self, cx: &mut Context<Self>) {
+        let Some(runtime_id) = self.runtime_id.clone() else {
+            self.live_error = Some("Select a session before muting live voice.".to_string());
+            cx.notify();
+            return;
+        };
+        let muted = !self.live_muted;
+        match self
+            .agents
+            .command(&runtime_id, &json!({ "type": "live_mute", "muted": muted }))
+        {
+            Ok(response) if response.get("success").and_then(Value::as_bool) == Some(true) => {
+                self.live_error = None;
+                self.live_muted = muted;
+                if self.live_active {
+                    self.live_phase = if muted { "muted" } else { "listening" }.to_string();
+                }
+            }
+            Ok(response) => {
+                self.live_error = Some(
+                    response
+                        .pointer("/error/message")
+                        .and_then(Value::as_str)
+                        .unwrap_or("OMP rejected the mute request")
+                        .to_string(),
+                );
+            }
+            Err(error) => self.live_error = Some(error.message),
+        }
+        cx.notify();
+    }
+
+    /// Clears the running flags after the runtime goes away; transcript history stays.
+    fn reset_live_voice(&mut self) {
+        self.live_active = false;
+        self.live_muted = false;
+        self.live_levels = 0.0;
+        self.live_phase = "idle".to_string();
     }
 
     fn ask_side_question(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2361,7 +2527,7 @@ impl Workspace {
                     .border_color(colors.border)
                     .text_sm()
                     .text_color(colors.muted_foreground)
-                    .child("Voice is configured by the OMP CLI. Set stt.* or live.* with omp config; the composer reads that state when dictation is enabled."),
+                    .child("Live voice is RPC-driven: the Live Voice pane sends live_start, live_stop, and live_mute to the OMP harness, which owns the microphone, audio, and transcription. Dictation in this app is not implemented yet."),
             )
             .child(div().text_xs().text_color(colors.muted_foreground).child("ABOUT"))
             .child(
@@ -2401,6 +2567,7 @@ impl Workspace {
             RightPane::Files => Some(self.files_content(cx).into_any_element()),
             RightPane::Subagents => Some(self.subagents_content(cx).into_any_element()),
             RightPane::SideQuestion => Some(self.side_question_content(cx).into_any_element()),
+            RightPane::LiveVoice => Some(self.live_voice_content(cx).into_any_element()),
         };
         let title = match self.right_pane {
             RightPane::Launcher => "Overview",
@@ -2410,6 +2577,7 @@ impl Workspace {
             RightPane::Browser => "Browser",
             RightPane::SideQuestion => "Side Question",
             RightPane::Subagents => "Subagents",
+            RightPane::LiveVoice => "Live Voice",
         };
         div()
             .flex()
@@ -2989,6 +3157,171 @@ impl Workspace {
             )
     }
 
+    /// Live Voice pane: it only sends `live_*` commands and mirrors the events
+    /// the harness reports. Audio capture lives in the harness, never here.
+    fn live_voice_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = cx.theme().colors;
+        let phase = if self.live_phase.is_empty() {
+            "idle".to_string()
+        } else {
+            self.live_phase.clone()
+        };
+        let level = self.live_levels.clamp(0.0, 1.0);
+        let level_width = (level * 160.0).round();
+        let running = self.live_active;
+        let can_start = self.runtime_id.is_some();
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .gap_2()
+            .p_2()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_sm()
+                    .text_color(colors.foreground)
+                    .child(IconName::Mic)
+                    .child("Live Voice")
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .px_2()
+                            .rounded(px(999.0))
+                            .bg(colors.accent)
+                            .text_xs()
+                            .text_color(colors.accent_foreground)
+                            .child(phase),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .id("live-start")
+                            .aria_label("Start live voice")
+                            .px_3()
+                            .py_1()
+                            .rounded(px(6.0))
+                            .bg(colors.primary)
+                            .text_color(if can_start {
+                                colors.primary_foreground
+                            } else {
+                                colors.muted_foreground
+                            })
+                            .text_sm()
+                            .child("Start")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.start_live_voice(cx);
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id("live-stop")
+                            .aria_label("Stop live voice")
+                            .px_3()
+                            .py_1()
+                            .rounded(px(6.0))
+                            .border_1()
+                            .border_color(colors.border)
+                            .text_sm()
+                            .text_color(colors.foreground)
+                            .child("Stop")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.stop_live_voice(cx);
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id("live-mute")
+                            .aria_label(if self.live_muted {
+                                "Unmute live voice"
+                            } else {
+                                "Mute live voice"
+                            })
+                            .px_3()
+                            .py_1()
+                            .rounded(px(6.0))
+                            .border_1()
+                            .border_color(colors.border)
+                            .text_sm()
+                            .text_color(colors.foreground)
+                            .child(if self.live_muted { "Unmute" } else { "Mute" })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.toggle_live_voice_mute(cx);
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .id("live-level")
+                    .h(px(6.0))
+                    .w(px(160.0))
+                    .rounded(px(999.0))
+                    .bg(colors.accent)
+                    .child(
+                        div()
+                            .h_full()
+                            .w(px(level_width))
+                            .rounded(px(999.0))
+                            .bg(if self.live_muted {
+                                colors.muted_foreground
+                            } else {
+                                colors.primary
+                            }),
+                    ),
+            )
+            .when(self.live_error.is_some(), |element| {
+                element.child(
+                    div()
+                        .text_sm()
+                        .text_color(colors.danger)
+                        .child(self.live_error.clone().unwrap_or_default()),
+                )
+            })
+            .when(!running && self.live_transcript.is_empty(), |element| {
+                element.child(
+                    div()
+                        .text_sm()
+                        .text_color(colors.muted_foreground)
+                        .child("Start live voice to talk with OMP. The harness captures audio; this pane only sends commands and shows what it reports."),
+                )
+            })
+            .child(
+                div()
+                    .id("live-transcript")
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .gap_1()
+                    .overflow_y_scroll()
+                    .p_2()
+                    .rounded(px(8.0))
+                    .border_1()
+                    .border_color(colors.border)
+                    .bg(colors.background)
+                    .when(self.live_transcript.is_empty(), |element| {
+                        element.child(
+                            div()
+                                .text_xs()
+                                .text_color(colors.muted_foreground)
+                                .child("No live transcript yet."),
+                        )
+                    })
+                    .children(self.live_transcript.iter().map(|line| {
+                        div()
+                            .text_sm()
+                            .text_color(colors.foreground)
+                            .child(line.clone())
+                    })),
+            )
+    }
+
     pub fn stage_path(&mut self, path: &str, staged: bool, cx: &mut Context<Self>) {
         let Some(store) = self.store.clone() else {
             return;
@@ -3275,6 +3608,98 @@ fn side_answer_delta(event: &Value) -> Option<&str> {
         .and_then(Value::as_str)
 }
 
+/// Newest transcript lines the live pane keeps; older lines fall off.
+const LIVE_TRANSCRIPT_LIMIT: usize = 200;
+
+/// Mutable view of the live-voice fields.
+///
+/// The pane and the event drain share one state, and this view lets event
+/// application stay a pure function tests can drive without a window or an
+/// agent runtime.
+struct LiveVoiceState<'a> {
+    phase: &'a mut String,
+    levels: &'a mut f32,
+    transcript: &'a mut Vec<String>,
+    muted: &'a mut bool,
+    active: &'a mut bool,
+    error: &'a mut Option<String>,
+}
+
+/// Mirrors one normalized `live_*` event into the pane state.
+///
+/// Returns whether the event belonged to live voice. The harness owns the audio
+/// and its phase machine; this only records what it reports. Levels are clamped
+/// again here so a malformed frame cannot overflow the bar, and transcript
+/// frames keep only the newest [`LIVE_TRANSCRIPT_LIMIT`] lines.
+fn apply_live_voice_event(state: &mut LiveVoiceState<'_>, event: &Value) -> bool {
+    match event.get("type").and_then(Value::as_str) {
+        Some("live_phase") => {
+            let Some(phase) = event.get("phase").and_then(Value::as_str) else {
+                return false;
+            };
+            *state.phase = phase.to_string();
+            // The harness reports a dedicated muted phase, so it is authoritative.
+            *state.muted = phase == "muted";
+            if phase == "error" {
+                *state.active = false;
+                *state.levels = 0.0;
+            } else {
+                *state.active = true;
+            }
+            true
+        }
+        Some("live_levels") => {
+            // One bar shows the loudest channel: the microphone or the reply.
+            let input = event.get("input").and_then(Value::as_f64).unwrap_or(0.0);
+            let output = event.get("output").and_then(Value::as_f64).unwrap_or(0.0);
+            *state.levels = clamp_live_level(input.max(output));
+            true
+        }
+        Some("live_transcript") => {
+            let Some(text) = event.get("text").and_then(Value::as_str) else {
+                return false;
+            };
+            push_live_transcript(state.transcript, text);
+            true
+        }
+        Some("live_end") => {
+            *state.active = false;
+            *state.levels = 0.0;
+            if let Some(error) = event.get("error").and_then(Value::as_str)
+                && !error.is_empty()
+            {
+                *state.error = Some(error.to_string());
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Appends one transcript frame as lines, skipping blanks and dropping the
+/// oldest lines past [`LIVE_TRANSCRIPT_LIMIT`].
+fn push_live_transcript(lines: &mut Vec<String>, text: &str) {
+    for line in text.split('\n') {
+        let line = line.trim();
+        if !line.is_empty() {
+            lines.push(line.to_string());
+        }
+    }
+    let excess = lines.len().saturating_sub(LIVE_TRANSCRIPT_LIMIT);
+    if excess > 0 {
+        lines.drain(..excess);
+    }
+}
+
+/// Clamps a reported level into `0.0..=1.0`; NaN and negatives become zero.
+fn clamp_live_level(level: f64) -> f32 {
+    if level > 0.0 {
+        level.min(1.0) as f32
+    } else {
+        0.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     // Imported explicitly: `use super::*` would also pull in `gpui_kit`'s
@@ -3288,8 +3713,8 @@ mod tests {
     use omp_core::settings::AppSettings;
 
     use super::{
-        AppView, RightPane, UpdateCheckState, Workspace, WorkspaceData, append_side_answer,
-        side_answer_delta, updates,
+        AppView, LIVE_TRANSCRIPT_LIMIT, LiveVoiceState, RightPane, UpdateCheckState, Workspace,
+        WorkspaceData, append_side_answer, apply_live_voice_event, side_answer_delta, updates,
     };
 
     /// The Settings page must render the update row, and an unconfigured build
@@ -3478,5 +3903,168 @@ mod tests {
         }
         assert_eq!(answer, "The answer is 42.");
         assert!(side_answer_delta(&events[3]).is_none());
+    }
+
+    /// The live-voice event helper mirrors phases, clamps levels, appends
+    /// transcript lines, bounds their count, and reports end errors — all
+    /// without a window or an agent runtime.
+    #[test]
+    fn live_voice_events_mirror_state_without_a_runtime() {
+        let mut phase = String::from("idle");
+        let mut levels = 0.0_f32;
+        let mut transcript: Vec<String> = Vec::new();
+        let mut muted = false;
+        let mut active = false;
+        let mut error: Option<String> = None;
+        let mut state = LiveVoiceState {
+            phase: &mut phase,
+            levels: &mut levels,
+            transcript: &mut transcript,
+            muted: &mut muted,
+            active: &mut active,
+            error: &mut error,
+        };
+
+        assert!(apply_live_voice_event(
+            &mut state,
+            &json!({ "type": "live_phase", "phase": "listening" })
+        ));
+        assert_eq!(*state.phase, "listening");
+        assert!(*state.active);
+        assert!(!*state.muted);
+
+        // The loudest channel drives the single bar, clamped to 0..=1.
+        assert!(apply_live_voice_event(
+            &mut state,
+            &json!({ "type": "live_levels", "input": 0.25, "output": 2.5 })
+        ));
+        assert_eq!(*state.levels, 1.0);
+        assert!(apply_live_voice_event(
+            &mut state,
+            &json!({ "type": "live_levels", "input": -1.0, "output": 0.0 })
+        ));
+        assert_eq!(*state.levels, 0.0);
+
+        assert!(apply_live_voice_event(
+            &mut state,
+            &json!({
+                "type": "live_transcript",
+                "role": "user",
+                "turn": 0,
+                "text": "hello\nthere",
+                "final": true,
+            })
+        ));
+        assert_eq!(
+            *state.transcript,
+            vec!["hello".to_string(), "there".to_string()]
+        );
+
+        // The pane keeps only the newest lines.
+        for index in 0..(LIVE_TRANSCRIPT_LIMIT + 5) {
+            assert!(apply_live_voice_event(
+                &mut state,
+                &json!({
+                    "type": "live_transcript",
+                    "role": "assistant",
+                    "turn": 1,
+                    "text": format!("line {index}"),
+                    "final": false,
+                })
+            ));
+        }
+        assert_eq!(state.transcript.len(), LIVE_TRANSCRIPT_LIMIT);
+        let newest = format!("line {}", LIVE_TRANSCRIPT_LIMIT + 4);
+        assert_eq!(
+            state.transcript.last().map(String::as_str),
+            Some(newest.as_str())
+        );
+
+        // The harness reports mute through its phase machine.
+        assert!(apply_live_voice_event(
+            &mut state,
+            &json!({ "type": "live_phase", "phase": "muted" })
+        ));
+        assert!(*state.muted);
+
+        assert!(apply_live_voice_event(
+            &mut state,
+            &json!({ "type": "live_end", "error": "microphone denied" })
+        ));
+        assert!(!*state.active);
+        assert_eq!(*state.levels, 0.0);
+        assert_eq!(state.error.as_deref(), Some("microphone denied"));
+
+        // Frames from other subsystems and malformed live frames are ignored.
+        assert!(!apply_live_voice_event(
+            &mut state,
+            &json!({ "type": "agent_end" })
+        ));
+        assert!(!apply_live_voice_event(
+            &mut state,
+            &json!({ "type": "live_transcript" })
+        ));
+    }
+
+    /// The Live Voice pane draws with no runtime attached: rendering must not
+    /// send an RPC command, and the main transcript stays untouched.
+    #[test]
+    fn live_voice_pane_renders_without_a_runtime() {
+        let mut cx = gpui_kit::TestAppContext::single();
+        cx.update(gpui_kit::init);
+        let root = tempfile::TempDir::new().expect("test root").keep();
+        let handle = cx.add_window(|window, cx| {
+            Workspace::new(
+                window,
+                cx,
+                WorkspaceData {
+                    geometry: UiGeometry::default(),
+                    geometry_path: root.join("ui-geometry.json"),
+                    home_dir: root.clone(),
+                    user_data_dir: root.clone(),
+                    omp_executable: PathBuf::from("omp"),
+                    settings: AppSettings::default(),
+                    projects: Vec::new(),
+                    sessions: Vec::new(),
+                },
+            )
+        });
+        handle
+            .update(&mut cx, |workspace, _, _| {
+                workspace.right_pane = RightPane::LiveVoice;
+                workspace.layout = workspace.geometry.resolve(1600.0);
+                workspace.live_phase = "listening".to_string();
+                workspace.live_levels = 0.4;
+                workspace.live_transcript = vec!["hello from the harness".to_string()];
+                workspace.live_active = true;
+            })
+            .expect("workspace window");
+        cx.update(|cx| {
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.draw(cx).clear(cx);
+            })
+            .expect("draw live voice frame");
+        });
+        let (transcript, runtime, phase, levels, muted, active, error) = handle
+            .update(&mut cx, |workspace, _, _| {
+                (
+                    workspace.transcript.len(),
+                    workspace.runtime_id.clone(),
+                    workspace.live_phase.clone(),
+                    workspace.live_levels,
+                    workspace.live_muted,
+                    workspace.live_active,
+                    workspace.live_error.clone(),
+                )
+            })
+            .expect("workspace window");
+        cx.quit();
+        assert_eq!(transcript, 0);
+        assert!(runtime.is_none());
+        assert_eq!(phase, "listening");
+        assert_eq!(levels, 0.4);
+        assert!(!muted);
+        assert!(active);
+        assert!(error.is_none());
     }
 }
