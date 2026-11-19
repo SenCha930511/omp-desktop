@@ -191,6 +191,102 @@ impl CloseGuard {
 
 impl gpui_kit::Global for CloseGuard {}
 
+/// How full the session's context window is, as `get_session_stats` reports it.
+///
+/// `percent` is the harness's own estimate and is clamped for display, so a
+/// malformed frame cannot draw outside the dial.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ContextUsage {
+    pub tokens: u64,
+    pub window: u64,
+    pub percent: f64,
+}
+
+/// Reads `data.contextUsage` out of a `get_session_stats` response.
+///
+/// The harness may omit the field, or report a window of zero, a negative
+/// token count or a non-finite percent (older builds do omit it); none of
+/// those is a reading the dial can draw, so the caller keeps its last one.
+fn parse_context_usage(response: &Value) -> Option<ContextUsage> {
+    let usage = response.pointer("/data/contextUsage")?;
+    let window = usage
+        .get("contextWindow")
+        .and_then(Value::as_u64)
+        .filter(|window| *window > 0)?;
+    let tokens = usage.get("tokens").and_then(Value::as_u64)?;
+    let percent = usage
+        .get("percent")
+        .and_then(Value::as_f64)
+        .filter(|percent| percent.is_finite() && *percent >= 0.0)?;
+    Some(ContextUsage {
+        tokens,
+        window,
+        percent,
+    })
+}
+
+/// The dial's percentage: the harness's estimate clamped into `0..=100`.
+///
+/// NaN has no fill to draw, so it reads as zero rather than poisoning the
+/// comparison.
+fn context_percent(percent: f64) -> u32 {
+    if !percent.is_finite() {
+        return 0;
+    }
+    percent.clamp(0.0, 100.0).round() as u32
+}
+
+/// `1234567` as `1,234,567`, the way the Electron dial writes token counts.
+fn group_digits(value: u64) -> String {
+    let digits = value.to_string();
+    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(digit);
+    }
+    grouped
+}
+
+/// The dial's accessible label: the visible percent plus the token detail the
+/// pill has no room for, which is what a tooltip and a screen reader read.
+fn context_usage_label(usage: &ContextUsage) -> String {
+    format!(
+        "Context usage: {} of {} tokens ({}%)",
+        group_digits(usage.tokens),
+        group_digits(usage.window),
+        context_percent(usage.percent),
+    )
+}
+
+/// Draws the toolbar's context dial: the window's fill as a percent, ringed in
+/// the warning colour as it nears the window's limit.
+///
+/// It is a reading, not a control, so it carries no click listener: the token
+/// detail lives in the label instead of a popover.
+fn context_usage_dial(usage: ContextUsage, colors: ThemeColor) -> impl IntoElement {
+    let percent = context_percent(usage.percent);
+    let ring = if percent >= 95 {
+        colors.danger
+    } else if percent >= 80 {
+        colors.warning
+    } else {
+        colors.border
+    };
+    div()
+        .id("context-usage")
+        .aria_label(context_usage_label(&usage))
+        .px_2()
+        .py_0p5()
+        .rounded(px(999.0))
+        .border_1()
+        .border_color(ring)
+        .text_xs()
+        .text_color(colors.foreground)
+        .child(format!("Context {percent}%"))
+}
+
 pub struct WorkspaceData {
     pub geometry: UiGeometry,
     pub geometry_path: PathBuf,
@@ -232,6 +328,9 @@ pub struct Workspace {
     transcript: Vec<TranscriptMessage>,
     transcript_error: Option<String>,
     runtime_error: Option<String>,
+    // The harness's last `get_session_stats` reading. It is cleared on a
+    // session switch, so the dial never shows another session's fill.
+    context_usage: Option<ContextUsage>,
     selected_session: Option<usize>,
     composer: Entity<InputState>,
     _composer_subscription: Subscription,
@@ -429,6 +528,7 @@ impl Workspace {
             transcript: Vec::new(),
             transcript_error: None,
             runtime_error: None,
+            context_usage: None,
             selected_session: None,
             composer,
             _composer_subscription: composer_subscription,
@@ -740,6 +840,12 @@ impl Workspace {
             "sessions": sessions,
             "selectedSession": self.selected_session,
             "transcript": transcript,
+            // The harness's last context-window reading, if one arrived.
+            "contextUsage": self.context_usage.map(|usage| json!({
+                "tokens": usage.tokens,
+                "window": usage.window,
+                "percent": usage.percent,
+            })),
             "settings": {
                 "theme": self.settings.theme,
                 "density": self.settings.conversation_density,
@@ -1138,6 +1244,12 @@ impl Workspace {
                         this.capture_workspace(window, cx);
                     })),
             )
+            // The dial joins the left-hand group: it is drawn only once a
+            // reading arrived, so the right-hand icons keep their measured
+            // positions and an unread session shows nothing.
+            .when_some(self.context_usage, |element, usage| {
+                element.child(context_usage_dial(usage, colors))
+            })
             .child(div().flex_1())
             .child(self.toolbar_icon(
                 "notifications",
@@ -1704,6 +1816,8 @@ impl Workspace {
         self.runtime_error = None;
         self.turn_baseline = None;
         self.turn_changes = TurnChanges::default();
+        // The dial reports the session it was read from, never the previous one.
+        self.context_usage = None;
         self.selected_session = Some(index);
         // The previous session's shells stop here; the new session's own tabs
         // are reopened from its spec, never handed over from the old one.
@@ -1861,6 +1975,8 @@ impl Workspace {
                 self.runtime_error = None;
                 self.selected_session = None;
                 self.transcript.clear();
+                // The session that reported the window is gone with its project.
+                self.context_usage = None;
                 self.turn_baseline = None;
                 self.turn_changes = TurnChanges::default();
                 self.terminal_specs.remove(&session_id);
@@ -1878,6 +1994,7 @@ impl Workspace {
                     None => {
                         self.selected_session = None;
                         self.transcript.clear();
+                        self.context_usage = None;
                     }
                 }
             }
@@ -1923,6 +2040,9 @@ impl Workspace {
                     .map(str::to_string);
                 self.start_drain(cx);
                 self.sync_close_guard();
+                // A resumed session already has tokens in its window, so the
+                // dial starts from the harness's reading instead of blank.
+                self.refresh_context_usage();
             }
             Err(error) => self.runtime_error = Some(error.message),
         }
@@ -1948,6 +2068,9 @@ impl Workspace {
         self.runtime_error = None;
         self.turn_baseline = None;
         self.turn_changes = TurnChanges::default();
+        // A new session's window starts empty; nothing carries over from the
+        // session it replaced.
+        self.context_usage = None;
         let Some(store) = self.store.clone() else {
             self.runtime_error = Some("The desktop state store is unavailable.".to_string());
             cx.notify();
@@ -1973,6 +2096,7 @@ impl Workspace {
                     .map(str::to_string);
                 self.start_drain(cx);
                 self.sync_close_guard();
+                self.refresh_context_usage();
             }
             Err(error) => self.runtime_error = Some(error.message),
         }
@@ -2015,6 +2139,35 @@ impl Workspace {
         self.drain_side_events();
     }
 
+    /// Applies one `get_session_stats` response: `data.contextUsage` becomes
+    /// the reading the dial draws.
+    ///
+    /// A response without a usable reading (an older harness omits the field)
+    /// leaves the last one alone, so a failed refresh never blanks the dial.
+    pub fn apply_session_stats(&mut self, response: &Value) {
+        if let Some(usage) = parse_context_usage(response) {
+            self.context_usage = Some(usage);
+        }
+    }
+
+    /// Asks the running harness how full the context window is.
+    ///
+    /// The command is local and answered from the harness's own counters, so
+    /// it is sent inline like the other runtime commands. A runtime that is
+    /// gone, or one whose harness does not answer, keeps the last reading.
+    fn refresh_context_usage(&mut self) {
+        let Some(runtime_id) = self.runtime_id.clone() else {
+            return;
+        };
+        let Ok(response) = self
+            .agents
+            .command(&runtime_id, &json!({ "type": "get_session_stats" }))
+        else {
+            return;
+        };
+        self.apply_session_stats(&response);
+    }
+
     fn drain_main_events(&mut self) {
         let Some(runtime_id) = self.runtime_id.clone() else {
             return;
@@ -2038,6 +2191,9 @@ impl Workspace {
                     self.streaming_index = None;
                     self.finish_turn();
                     self.refresh_sessions();
+                    // The turn just spent tokens, so the dial catches up now
+                    // instead of waiting for the next prompt.
+                    self.refresh_context_usage();
                 }
                 Some("compaction_end") => {
                     let before = event
@@ -5265,6 +5421,8 @@ impl Workspace {
                 self.active_terminal = 0;
                 self.selected_session = None;
                 self.transcript.clear();
+                // Nothing is selected any more, so nothing has a window to report.
+                self.context_usage = None;
             }
             _ => {}
         }
@@ -6372,13 +6530,14 @@ mod tests {
 
     use super::{
         AppView, AskDialog, AskOption, AskQuestion, CLOSE_CONFIRM_ACCEPT, CLOSE_CONFIRM_CANCEL,
-        CloseGuard, CloseIntent, DictationState, LIVE_TRANSCRIPT_LIMIT, LiveVoiceState, RightPane,
-        TERMINAL_MENU_ITEMS, TerminalMenuAction, TerminalTabSpec, TerminalTabSpecs,
-        UpdateCheckState, Workspace, WorkspaceData, append_clipboard_text, append_dictation_text,
-        append_side_answer, apply_dictation_frame, apply_live_voice_event, ask_answers_ready,
-        ask_cancel_payload, ask_submit_payload, capture_path, close_confirmation,
-        parse_ask_questions, should_confirm_close, side_answer_delta, terminal_menu,
-        terminal_menu_action, terminal_tab_bar, updates, write_capture,
+        CloseGuard, CloseIntent, ContextUsage, DictationState, LIVE_TRANSCRIPT_LIMIT,
+        LiveVoiceState, RightPane, TERMINAL_MENU_ITEMS, TerminalMenuAction, TerminalTabSpec,
+        TerminalTabSpecs, UpdateCheckState, Workspace, WorkspaceData, append_clipboard_text,
+        append_dictation_text, append_side_answer, apply_dictation_frame, apply_live_voice_event,
+        ask_answers_ready, ask_cancel_payload, ask_submit_payload, capture_path,
+        close_confirmation, context_percent, context_usage_label, group_digits,
+        parse_ask_questions, parse_context_usage, should_confirm_close, side_answer_delta,
+        terminal_menu, terminal_menu_action, terminal_tab_bar, updates, write_capture,
     };
 
     /// A capture is stamped in UTC under `<user_data_dir>/captures`, and the PNG
@@ -6408,6 +6567,83 @@ mod tests {
             .expect("timestamp")
             .with_timezone(&chrono::Utc);
         assert_ne!(capture_path(root.path(), later), saved);
+    }
+
+    /// A reading needs every field: a missing `contextUsage`, a zero window, a
+    /// negative count or a negative percent is not something the dial can
+    /// draw, so it parses to nothing and the caller keeps its last reading.
+    #[test]
+    fn context_usage_parses_only_a_complete_reading() {
+        assert_eq!(
+            parse_context_usage(&json!({
+                "success": true,
+                "data": {
+                    "contextUsage": {
+                        "tokens": 123456,
+                        "contextWindow": 200000,
+                        "percent": 61.7,
+                    }
+                }
+            })),
+            Some(ContextUsage {
+                tokens: 123456,
+                window: 200000,
+                percent: 61.7,
+            })
+        );
+
+        // An older harness omits the field, and a failed command carries no data.
+        assert_eq!(
+            parse_context_usage(&json!({ "success": true, "data": {} })),
+            None
+        );
+        assert_eq!(
+            parse_context_usage(&json!({ "success": false, "error": { "message": "no" } })),
+            None
+        );
+        // A zero window has no denominator; a negative token count and a
+        // negative percent are not counters the harness can report.
+        for usage in [
+            json!({ "tokens": 10, "contextWindow": 0, "percent": 5.0 }),
+            json!({ "tokens": -1, "contextWindow": 100, "percent": 5.0 }),
+            json!({ "tokens": 10, "contextWindow": 100, "percent": -0.5 }),
+            json!({ "tokens": 10, "contextWindow": 100 }),
+        ] {
+            assert_eq!(
+                parse_context_usage(&json!({ "data": { "contextUsage": usage } })),
+                None
+            );
+        }
+    }
+
+    /// The dial's percent is clamped into its ring and rounded like the
+    /// Electron dial; the label carries the token detail the pill cannot show.
+    #[test]
+    fn context_percent_clamps_and_the_label_carries_the_tokens() {
+        assert_eq!(context_percent(-4.0), 0);
+        assert_eq!(context_percent(0.0), 0);
+        assert_eq!(context_percent(42.4), 42);
+        assert_eq!(context_percent(42.6), 43);
+        assert_eq!(context_percent(100.0), 100);
+        assert_eq!(context_percent(140.0), 100);
+        // A malformed frame has no fill to draw.
+        assert_eq!(context_percent(f64::NAN), 0);
+        assert_eq!(context_percent(f64::INFINITY), 0);
+
+        assert_eq!(group_digits(0), "0");
+        assert_eq!(group_digits(999), "999");
+        assert_eq!(group_digits(1000), "1,000");
+        assert_eq!(group_digits(1_234_567), "1,234,567");
+
+        let usage = ContextUsage {
+            tokens: 1_234_567,
+            window: 2_000_000,
+            percent: 61.7,
+        };
+        assert_eq!(
+            context_usage_label(&usage),
+            "Context usage: 1,234,567 of 2,000,000 tokens (62%)"
+        );
     }
 
     /// A capture that wrote its frame reports the path and no error; one that

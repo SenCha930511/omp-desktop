@@ -3910,3 +3910,93 @@ fn tray_quit_without_an_agent_run_quits(cx: &mut TestAppContext) {
         .expect("workspace window");
     assert_eq!(prompt, json!(null));
 }
+
+/// Draws one frame of the workspace through its window handle.
+///
+/// Rendering drives the root view, so a frame is drawn here rather than inside
+/// `Workspace::update`. A toolbar that cannot build with the state under test
+/// fails the scenario instead of passing silently.
+fn draw_frame(cx: &mut TestAppContext, window: gpui_kit::AnyWindowHandle) {
+    cx.update(|cx| {
+        cx.update_window(window, |_, window, cx| {
+            window.draw(cx).clear(cx);
+        })
+        .expect("workspace frame");
+    });
+}
+
+/// The toolbar's context dial follows the harness's `get_session_stats`
+/// reading: it appears once a usable response arrives, keeps the last reading
+/// when a response is malformed, and a session switch clears it so the dial
+/// never reports the previous session's window.
+///
+/// No agent runs here: the reading is seeded through `apply_session_stats`,
+/// which is the same path the `agent_end` refresh uses. The app does not opt
+/// into gpui-kit's element queries, so the dial is proven by drawing the
+/// toolbar with a reading in place and by reading the state it draws from out
+/// of `debug_snapshot`.
+#[gpui_kit::test]
+fn context_usage_appears_with_a_reading_and_clears_on_a_session_switch(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let (home, _older, _newer) = seed_two_sessions(root);
+    let store = open_store(root);
+    let catalog = omp_core::sessions::list_sessions(&store, &home, false, None);
+    drop(store);
+    let mut data = test_data(root);
+    data.home_dir = home;
+    data.sessions = catalog;
+    let handle = cx.open_window(size(px(1280.0), px(800.0)), |window, cx| {
+        Workspace::new(window, cx, data)
+    });
+    let window: gpui_kit::AnyWindowHandle = handle.into();
+
+    let handle = window.downcast::<Workspace>().expect("workspace handle");
+    handle
+        .update(cx, |workspace, _, cx| {
+            // No response yet: the toolbar has no reading to draw.
+            assert_eq!(snapshot(workspace, cx)["contextUsage"], json!(null));
+
+            workspace.apply_session_stats(&json!({
+                "success": true,
+                "data": {
+                    "contextUsage": {
+                        "tokens": 123456,
+                        "contextWindow": 200000,
+                        "percent": 61.7,
+                    }
+                }
+            }));
+            assert_eq!(
+                snapshot(workspace, cx)["contextUsage"],
+                json!({ "tokens": 123456, "window": 200000, "percent": 61.7 })
+            );
+
+            // A zero window cannot be a reading; it leaves the last one alone.
+            workspace.apply_session_stats(&json!({
+                "success": true,
+                "data": {
+                    "contextUsage": { "tokens": 1, "contextWindow": 0, "percent": 1.0 }
+                }
+            }));
+            assert_eq!(
+                snapshot(workspace, cx)["contextUsage"],
+                json!({ "tokens": 123456, "window": 200000, "percent": 61.7 })
+            );
+        })
+        .expect("workspace window");
+
+    // The toolbar builds with the dial in place.
+    draw_frame(cx, window);
+
+    // Switching sessions drops the reading: the new session has no window yet,
+    // and the runtime here cannot start (the suite never runs a real `omp`).
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.select_session(0, cx);
+            assert_eq!(snapshot(workspace, cx)["contextUsage"], json!(null));
+        })
+        .expect("workspace window");
+    draw_frame(cx, window);
+}
