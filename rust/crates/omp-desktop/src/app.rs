@@ -95,6 +95,13 @@ pub struct Workspace {
     composer: Entity<InputState>,
     _composer_subscription: Subscription,
     submit_requested: Option<bool>,
+    side_input: Entity<InputState>,
+    _side_input_subscription: Subscription,
+    side_submit_requested: bool,
+    side_runtime_id: Option<String>,
+    side_answer: String,
+    side_error: Option<String>,
+    side_streaming: bool,
     view: AppView,
     plugin_catalog: Option<PluginCatalog>,
     plugin_error: Option<String>,
@@ -131,6 +138,18 @@ impl Workspace {
                 cx.notify();
             }
         });
+        let side_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Ask a side question…")
+                .submit_on_enter(true)
+        });
+        let side_input_subscription =
+            cx.subscribe(&side_input, |this, _, event: &InputEvent, cx| {
+                if let InputEvent::PressEnter { .. } = event {
+                    this.side_submit_requested = true;
+                    cx.notify();
+                }
+            });
         let store = StateStore::open(
             data.user_data_dir.join(CURRENT_DESKTOP_STATE_FILENAME),
             Some(data.user_data_dir.join(LEGACY_DESKTOP_STATE_FILENAME)),
@@ -169,6 +188,13 @@ impl Workspace {
             composer,
             _composer_subscription: composer_subscription,
             submit_requested: None,
+            side_input,
+            _side_input_subscription: side_input_subscription,
+            side_submit_requested: false,
+            side_runtime_id: None,
+            side_answer: String::new(),
+            side_error: None,
+            side_streaming: false,
             view: AppView::Workspace,
             plugin_catalog: None,
             plugin_error: None,
@@ -608,6 +634,11 @@ impl Workspace {
     }
 
     pub fn drain_agent_events(&mut self) {
+        self.drain_main_events();
+        self.drain_side_events();
+    }
+
+    fn drain_main_events(&mut self) {
         let Some(runtime_id) = self.runtime_id.clone() else {
             return;
         };
@@ -658,6 +689,129 @@ impl Workspace {
                 _ => {}
             }
         }
+    }
+
+    fn drain_side_events(&mut self) {
+        let Some(runtime_id) = self.side_runtime_id.clone() else {
+            return;
+        };
+        for envelope in self.agents.drain_events(Some(&runtime_id)) {
+            let event = &envelope["event"];
+            if let Some(delta) = side_answer_delta(event) {
+                append_side_answer(&mut self.side_answer, delta);
+                continue;
+            }
+            match event.get("type").and_then(Value::as_str) {
+                Some("agent_end") => self.stop_side_runtime(),
+                Some("error") => {
+                    let message = event
+                        .pointer("/error/message")
+                        .and_then(Value::as_str)
+                        .or_else(|| event.get("message").and_then(Value::as_str))
+                        .unwrap_or("The side question runtime failed")
+                        .to_string();
+                    self.stop_side_runtime();
+                    self.side_error = Some(message);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn stop_side_runtime(&mut self) {
+        if let Some(runtime_id) = self.side_runtime_id.take() {
+            self.agents.stop(&runtime_id);
+        }
+        self.side_streaming = false;
+    }
+
+    fn ask_side_question(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.side_input.read(cx).value().trim().to_string();
+        if text.is_empty() {
+            return;
+        }
+        self.stop_side_runtime();
+        self.side_answer.clear();
+        self.side_error = None;
+        let Some(store) = self.store.clone() else {
+            self.side_error = Some("The desktop state store is unavailable.".to_string());
+            cx.notify();
+            return;
+        };
+        let Some(cwd) = self.project_cwd() else {
+            self.side_error =
+                Some("Grant a project folder before asking a side question.".to_string());
+            cx.notify();
+            return;
+        };
+        let context = CliContext {
+            executable: self.omp_executable.clone(),
+            home_dir: self.home_dir.clone(),
+            root_dir: self.user_data_dir.clone(),
+            extra_env: Vec::new(),
+        };
+        let store = store.lock().expect("state lock");
+        if let Err(error) =
+            projects::authorize_path(&store, std::path::Path::new(&cwd), Platform::current())
+        {
+            drop(store);
+            self.side_error = Some(error.message);
+            cx.notify();
+            return;
+        }
+        let started = self.agents.start(
+            &store,
+            Platform::current(),
+            &context,
+            &json!({ "cwd": cwd }),
+        );
+        drop(store);
+        let runtime_id = match started {
+            Ok(info) => info
+                .get("runtimeId")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            Err(error) => {
+                self.side_error = Some(error.message);
+                cx.notify();
+                return;
+            }
+        };
+        let Some(runtime_id) = runtime_id else {
+            self.side_error = Some("The side question runtime did not return an id.".to_string());
+            cx.notify();
+            return;
+        };
+        self.side_runtime_id = Some(runtime_id.clone());
+        self.side_streaming = true;
+        let sent = self
+            .agents
+            .command(&runtime_id, &json!({ "type": "prompt", "message": text }));
+        match sent {
+            Ok(response) if response.get("success").and_then(Value::as_bool) == Some(true) => {}
+            Ok(response) => {
+                self.stop_side_runtime();
+                self.side_error = Some(
+                    response
+                        .pointer("/error/message")
+                        .and_then(Value::as_str)
+                        .unwrap_or("OMP rejected the side question")
+                        .to_string(),
+                );
+                cx.notify();
+                return;
+            }
+            Err(error) => {
+                self.stop_side_runtime();
+                self.side_error = Some(error.message);
+                cx.notify();
+                return;
+            }
+        }
+        self.side_input
+            .update(cx, |state, cx| state.set_value("", window, cx));
+        self.start_drain(cx);
+        cx.notify();
     }
 
     fn append_assistant_delta(&mut self, kind: &str, delta: &str) {
@@ -1951,7 +2105,7 @@ impl Workspace {
             RightPane::Browser => Some(self.browser.content(cx).into_any_element()),
             RightPane::Files => Some(self.files_content(cx).into_any_element()),
             RightPane::Subagents => Some(self.subagents_content(cx).into_any_element()),
-            other => Some(self.placeholder_content(other, cx).into_any_element()),
+            RightPane::SideQuestion => Some(self.side_question_content(cx).into_any_element()),
         };
         let title = match self.right_pane {
             RightPane::Launcher => "Overview",
@@ -2462,20 +2616,82 @@ impl Workspace {
             }))
     }
 
-    fn placeholder_content(&self, pane: RightPane, cx: &mut Context<Self>) -> impl IntoElement {
+    fn side_question_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.theme().colors;
-        let label = match pane {
-            RightPane::Files => "Files",
-            RightPane::Browser => "Browser",
-            RightPane::SideQuestion => "Side Question",
-            RightPane::Subagents => "Subagents",
-            _ => "Panel",
-        };
+        let has_answer = !self.side_answer.is_empty();
         div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .gap_2()
             .p_2()
-            .text_sm()
-            .text_color(colors.muted_foreground)
-            .child(format!("{label} is not wired to a native view yet."))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(div().flex_1().child(Input::new(&self.side_input)))
+                    .child(
+                        div()
+                            .id("side-question-ask")
+                            .aria_label("Ask side question")
+                            .px_3()
+                            .py_1()
+                            .rounded(px(6.0))
+                            .bg(colors.primary)
+                            .text_color(colors.primary_foreground)
+                            .text_sm()
+                            .child("Ask")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.ask_side_question(window, cx);
+                            })),
+                    ),
+            )
+            .when(self.side_streaming, |element| {
+                element.child(
+                    div()
+                        .text_xs()
+                        .text_color(colors.muted_foreground)
+                        .child("Answering…"),
+                )
+            })
+            .when(self.side_error.is_some(), |element| {
+                element.child(
+                    div()
+                        .text_sm()
+                        .text_color(colors.danger)
+                        .child(self.side_error.clone().unwrap_or_default()),
+                )
+            })
+            .when(has_answer, |element| {
+                element.child(
+                    div()
+                        .id("side-question-answer")
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .overflow_y_scroll()
+                        .p_2()
+                        .rounded(px(8.0))
+                        .border_1()
+                        .border_color(colors.border)
+                        .bg(colors.background)
+                        .text_sm()
+                        .text_color(colors.foreground)
+                        .child(self.side_answer.clone()),
+                )
+            })
+            .when(
+                !has_answer && !self.side_streaming && self.side_error.is_none(),
+                |element| {
+                    element.child(
+                        div()
+                            .text_sm()
+                            .text_color(colors.muted_foreground)
+                            .child("Ask a question without touching the main transcript."),
+                    )
+                },
+            )
     }
 
     pub fn stage_path(&mut self, path: &str, staged: bool, cx: &mut Context<Self>) {
@@ -2640,6 +2856,12 @@ impl Render for Workspace {
                 this.send_prompt_with_action(window, cx, follow_up);
             });
         }
+        if self.side_submit_requested {
+            self.side_submit_requested = false;
+            cx.defer_in(window, |this, window, cx| {
+                this.ask_side_question(window, cx);
+            });
+        }
         self.track_bounds(window, cx);
         let colors = cx.theme().colors;
         let show_sidebar = self.layout.sidebar_docked;
@@ -2725,18 +2947,46 @@ impl Render for Workspace {
     }
 }
 
+/// Appends one streamed text delta to the side-question answer.
+fn append_side_answer(answer: &mut String, delta: &str) {
+    answer.push_str(delta);
+}
+
+/// Returns the text delta carried by a side runtime `message_update` event.
+///
+/// Thinking and tool deltas are ignored so the pane shows only the answer.
+fn side_answer_delta(event: &Value) -> Option<&str> {
+    if event.get("type").and_then(Value::as_str) != Some("message_update") {
+        return None;
+    }
+    let kind = event
+        .pointer("/assistantMessageEvent/type")
+        .and_then(Value::as_str)
+        .unwrap_or("text_delta");
+    if kind != "text_delta" {
+        return None;
+    }
+    event
+        .pointer("/assistantMessageEvent/delta")
+        .and_then(Value::as_str)
+}
+
 #[cfg(test)]
 mod tests {
     // Imported explicitly: `use super::*` would also pull in `gpui_kit`'s
     // `test` attribute macro, which shadows the built-in one and does not
     // expand under this crate root's default `recursion_limit`.
     use gpui_kit::AppContext as _;
+    use serde_json::json;
     use std::path::PathBuf;
 
     use omp_core::geometry::UiGeometry;
     use omp_core::settings::AppSettings;
 
-    use super::{AppView, UpdateCheckState, Workspace, WorkspaceData, updates};
+    use super::{
+        AppView, RightPane, UpdateCheckState, Workspace, WorkspaceData, append_side_answer,
+        side_answer_delta, updates,
+    };
 
     /// The Settings page must render the update row, and an unconfigured build
     /// must land on the "not configured" label instead of touching the network.
@@ -2793,5 +3043,85 @@ mod tests {
         assert_eq!(state.label(), "not configured");
         // Nothing was queued: an unconfigured build does no network work at all.
         assert!(!spawned);
+    }
+
+    /// The Side Question pane draws its own input and leaves the main
+    /// transcript untouched.
+    #[test]
+    fn side_question_pane_renders_without_touching_the_transcript() {
+        let mut cx = gpui_kit::TestAppContext::single();
+        cx.update(gpui_kit::init);
+        let root = tempfile::TempDir::new().expect("test root").keep();
+        let handle = cx.add_window(|window, cx| {
+            Workspace::new(
+                window,
+                cx,
+                WorkspaceData {
+                    geometry: UiGeometry::default(),
+                    geometry_path: root.join("ui-geometry.json"),
+                    home_dir: root.clone(),
+                    user_data_dir: root.clone(),
+                    omp_executable: PathBuf::from("omp"),
+                    settings: AppSettings::default(),
+                    projects: Vec::new(),
+                    sessions: Vec::new(),
+                },
+            )
+        });
+        handle
+            .update(&mut cx, |workspace, _, _| {
+                workspace.right_pane = RightPane::SideQuestion;
+                workspace.layout = workspace.geometry.resolve(1600.0);
+            })
+            .expect("workspace window");
+        cx.update(|cx| {
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.draw(cx).clear(cx);
+            })
+            .expect("draw side question frame");
+        });
+        let (transcript, answer, error, streaming) = handle
+            .update(&mut cx, |workspace, _, _| {
+                (
+                    workspace.transcript.len(),
+                    workspace.side_answer.clone(),
+                    workspace.side_error.clone(),
+                    workspace.side_streaming,
+                )
+            })
+            .expect("workspace window");
+        cx.quit();
+        assert_eq!(transcript, 0);
+        assert!(answer.is_empty());
+        assert!(error.is_none());
+        assert!(!streaming);
+    }
+
+    /// Side-question deltas accumulate in order; thinking deltas are skipped.
+    #[test]
+    fn side_answer_deltas_accumulate_text_only() {
+        let events = [
+            json!({
+                "type": "message_update",
+                "assistantMessageEvent": { "type": "text_delta", "delta": "The answer " },
+            }),
+            json!({
+                "type": "message_update",
+                "assistantMessageEvent": { "type": "thinking_delta", "delta": "hidden" },
+            }),
+            json!({
+                "type": "message_update",
+                "assistantMessageEvent": { "delta": "is 42." },
+            }),
+            json!({ "type": "agent_end" }),
+        ];
+        let mut answer = String::new();
+        for event in &events {
+            if let Some(delta) = side_answer_delta(event) {
+                append_side_answer(&mut answer, delta);
+            }
+        }
+        assert_eq!(answer, "The answer is 42.");
+        assert!(side_answer_delta(&events[3]).is_none());
     }
 }
