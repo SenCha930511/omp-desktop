@@ -3496,6 +3496,18 @@ impl Render for Workspace {
                 this.send_terminal_line(window, cx);
             });
         }
+        // The Browser pane's picker hands its annotation over here, where a window is
+        // available to edit the composer; an existing draft is kept and appended to.
+        if let Some(annotation) = self.browser.take_annotation() {
+            cx.defer_in(window, move |this, window, cx| {
+                let composer = this.composer.clone();
+                composer.update(cx, |state, cx| {
+                    let next = browser::append_annotation(&state.value(), &annotation);
+                    state.set_value(next, window, cx);
+                });
+                cx.notify();
+            });
+        }
         self.track_bounds(window, cx);
         let colors = cx.theme().colors;
         let show_sidebar = self.layout.sidebar_docked;
