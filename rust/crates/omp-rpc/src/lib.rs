@@ -70,7 +70,7 @@ impl Shared {
 
 pub struct RpcClient {
     child: Mutex<Child>,
-    stdin: Mutex<ChildStdin>,
+    writer: mpsc::SyncSender<String>,
     shared: Arc<Shared>,
     next_id: AtomicU64,
 }
@@ -104,7 +104,7 @@ impl RpcClient {
         let mut child = command.spawn().map_err(|error| {
             RpcError::Spawn(format!("Could not spawn the OMP runtime: {error}"))
         })?;
-        let stdin = child
+        let mut stdin = child
             .stdin
             .take()
             .ok_or_else(|| RpcError::Spawn("OMP runtime stdin is unavailable".to_string()))?;
@@ -137,9 +137,21 @@ impl RpcClient {
         }
         let reader_shared = Arc::clone(&shared);
         thread::spawn(move || read_loop(stdout, reader_shared));
+        let (writer, receiver) = mpsc::sync_channel::<String>(64);
+        thread::spawn(move || {
+            for line in receiver {
+                if stdin
+                    .write_all(line.as_bytes())
+                    .and_then(|_| stdin.flush())
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
         Ok(Self {
             child: Mutex::new(child),
-            stdin: Mutex::new(stdin),
+            writer,
             shared,
             next_id: AtomicU64::new(1),
         })
@@ -187,14 +199,15 @@ impl RpcClient {
             serde_json::to_string(&command)
                 .map_err(|error| RpcError::Protocol(error.to_string()))?
         );
-        {
-            let mut stdin = self.stdin.lock().expect("stdin lock");
-            stdin
-                .write_all(line.as_bytes())
-                .and_then(|_| stdin.flush())
-                .map_err(|error| {
-                    RpcError::Closed(format!("Could not write to the OMP runtime: {error}"))
-                })?;
+        if self.writer.try_send(line).is_err() {
+            self.shared
+                .pending
+                .lock()
+                .expect("pending lock")
+                .remove(&id);
+            return Err(RpcError::Timeout(
+                "The OMP runtime is not accepting commands".to_string(),
+            ));
         }
         match receiver.recv_timeout(timeout) {
             Ok(value) => {

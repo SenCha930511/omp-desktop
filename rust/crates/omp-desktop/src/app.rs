@@ -65,6 +65,7 @@ pub struct Workspace {
     sessions: Vec<SessionRecord>,
     transcript: Vec<TranscriptMessage>,
     transcript_error: Option<String>,
+    runtime_error: Option<String>,
     selected_session: Option<usize>,
     composer: Entity<InputState>,
     view: AppView,
@@ -108,6 +109,7 @@ impl Workspace {
             sessions: data.sessions,
             transcript: Vec::new(),
             transcript_error: None,
+            runtime_error: None,
             selected_session: None,
             composer,
             view: AppView::Workspace,
@@ -374,6 +376,7 @@ impl Workspace {
             self.agents.stop(&runtime_id);
         }
         self.streaming_index = None;
+        self.runtime_error = None;
         self.selected_session = Some(index);
         self.transcript.clear();
         self.transcript_error = None;
@@ -466,7 +469,7 @@ impl Workspace {
                     .map(str::to_string);
                 self.start_drain(cx);
             }
-            Err(error) => self.transcript_error = Some(error.message),
+            Err(error) => self.runtime_error = Some(error.message),
         }
     }
 
@@ -571,7 +574,7 @@ impl Workspace {
             return;
         }
         let Some(runtime_id) = self.runtime_id.clone() else {
-            self.transcript_error =
+            self.runtime_error =
                 Some("Select a granted project session before sending a prompt.".to_string());
             cx.notify();
             return;
@@ -584,10 +587,11 @@ impl Workspace {
             .agents
             .command(&runtime_id, &json!({ "type": "prompt", "message": text }))
         {
-            self.transcript_error = Some(error.message);
+            self.runtime_error = Some(error.message);
             cx.notify();
             return;
         }
+        self.runtime_error = None;
         self.transcript.push(TranscriptMessage {
             id: format!("user-{}", self.transcript.len()),
             role: "user".to_string(),
@@ -790,6 +794,14 @@ impl Workspace {
             .p_4()
             .border_t_1()
             .border_color(colors.border)
+            .when(self.runtime_error.is_some(), |element| {
+                element.child(
+                    div()
+                        .text_xs()
+                        .text_color(colors.danger)
+                        .child(self.runtime_error.clone().unwrap_or_default()),
+                )
+            })
             .child(
                 div()
                     .flex()
