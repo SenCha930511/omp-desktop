@@ -82,6 +82,8 @@ pub fn capture_folder_identity(path: &Path) -> FolderIdentity {
             };
         }
     }
+    #[cfg(not(unix))]
+    let _ = path;
     FolderIdentity {
         dev: String::new(),
         ino: String::new(),
