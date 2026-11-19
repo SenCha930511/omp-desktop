@@ -25,7 +25,8 @@ variants of the same Electron scenario, so the distinct-scenario count is about
 | Updater feed | `prepare-rust-update-feed.mjs` validation tests; release.yml is not wired |
 | Ask user | `extension_ui_request` normalization, Ask pane, answer/cancel tests |
 | Capture | `render_to_image`, PNG save, status row, unit/parity tests |
-| Parity harness | `tests/e2e_parity.rs`, 72 tests mapping to about 69 distinct scenarios; 3 browser UI tests are gated off Linux |
+| Close confirmation | CloseGuard, window/tray routes, overlay tests |
+| Parity harness | `tests/e2e_parity.rs`, 74 tests mapping to about 71 distinct scenarios; 3 browser UI tests are gated off Linux |
 | Updater | `updates.rs` state tests, Settings row render test |
 | Packaging | macOS `.app`, Linux `.deb`, Windows NSIS packaged-smoke CI jobs |
 | Conformance | 10 files, 20 tests against the Rust adapter on macOS, Linux, and Windows |
@@ -33,7 +34,7 @@ variants of the same Electron scenario, so the distinct-scenario count is about
 ## Groups that remain unclosed
 
 - Wiring the updater feed and signatures into `release.yml`.
-- The remaining 19 Playwright scenarios, including window close,
+- The remaining 17 Playwright scenarios, including settings provider/model,
   notification capture, terminal selection context, and the responsive workspace.
 - The final Electron cutover gate.
 
