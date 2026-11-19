@@ -313,6 +313,7 @@ jobs:
       - name: Run workspace tests
         env:
           RUST_MIN_STACK: '16777216'
+          RUST_TEST_THREADS: '1'
         run: |
           if [ "$RUNNER_OS" = "Linux" ]; then
             xvfb-run -a cargo test --workspace --locked

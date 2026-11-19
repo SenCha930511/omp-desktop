@@ -72,6 +72,8 @@ fn seed_repo(root: &Path) -> PathBuf {
     git(&repo, &["init", "-q", "-b", "main"]);
     git(&repo, &["config", "user.name", "OMP Test"]);
     git(&repo, &["config", "user.email", "test@example.com"]);
+    git(&repo, &["config", "core.autocrlf", "false"]);
+    git(&repo, &["config", "core.safecrlf", "false"]);
     std::fs::write(repo.join("a.txt"), "line1\n").expect("seed");
     git(&repo, &["add", "a.txt"]);
     git(&repo, &["commit", "-qm", "initial"]);
