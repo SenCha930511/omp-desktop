@@ -227,19 +227,19 @@ pub fn peer_sessions(
     cwd: &Path,
     source_session: Option<&Path>,
 ) -> Vec<SessionRecord> {
-    let canonical_cwd = fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
-    let source =
-        source_session.map(|path| fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()));
+    let canonical_cwd = crate::paths::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    let source = source_session
+        .map(|path| crate::paths::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()));
     scan_sessions(store, home)
         .into_iter()
         .filter(|record| {
-            let project = fs::canonicalize(&record.project_path)
+            let project = crate::paths::canonicalize(&record.project_path)
                 .unwrap_or_else(|_| PathBuf::from(&record.project_path));
             if project != canonical_cwd {
                 return false;
             }
             match &source {
-                Some(source) => fs::canonicalize(&record.file_path)
+                Some(source) => crate::paths::canonicalize(&record.file_path)
                     .map(|path| path != *source)
                     .unwrap_or(true),
                 None => true,

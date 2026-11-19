@@ -48,7 +48,7 @@ pub struct ProjectFileListing {
 }
 
 pub fn canonicalize(path: &Path) -> Result<PathBuf> {
-    fs::canonicalize(path).map_err(|error| {
+    crate::paths::canonicalize(path).map_err(|error| {
         CoreError::invalid(format!(
             "{} is not an accessible directory: {error}",
             path.display()
@@ -57,8 +57,9 @@ pub fn canonicalize(path: &Path) -> Result<PathBuf> {
 }
 
 pub fn is_broad_project_root(path: &Path, home: &Path) -> bool {
-    let canonical =
-        |candidate: &Path| fs::canonicalize(candidate).unwrap_or_else(|_| candidate.to_path_buf());
+    let canonical = |candidate: &Path| {
+        crate::paths::canonicalize(candidate).unwrap_or_else(|_| candidate.to_path_buf())
+    };
     let path = canonical(path);
     let home = canonical(home);
     path.parent().is_none() || path == home
@@ -104,11 +105,11 @@ pub fn authorize_path(store: &StateStore, path: &Path, platform: Platform) -> Re
     let dismissed: BTreeSet<PathBuf> = state
         .dismissed_project_paths
         .iter()
-        .map(|item| fs::canonicalize(item).unwrap_or_else(|_| PathBuf::from(item)))
+        .map(|item| crate::paths::canonicalize(item).unwrap_or_else(|_| PathBuf::from(item)))
         .collect();
     for project in &state.projects {
         for folder in &project.folders {
-            let Ok(root) = fs::canonicalize(folder) else {
+            let Ok(root) = crate::paths::canonicalize(folder) else {
                 continue;
             };
             if !path_within(&root, &canonical) {
@@ -171,7 +172,8 @@ pub fn grant_project(
     let path_text = canonical.display().to_string();
     let project = store.update(|state| {
         state.dismissed_project_paths.retain(|item| {
-            let item_path = fs::canonicalize(item).unwrap_or_else(|_| PathBuf::from(item));
+            let item_path =
+                crate::paths::canonicalize(item).unwrap_or_else(|_| PathBuf::from(item));
             item_path != canonical
         });
         if let Some(existing) = state.projects.iter_mut().find(|project| {

@@ -391,13 +391,13 @@ pub fn scan_sessions(store: &StateStore, home: &Path) -> Vec<SessionRecord> {
         .state()
         .archived_sessions
         .iter()
-        .map(|path| fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path)))
+        .map(|path| crate::paths::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path)))
         .collect();
     let pinned: BTreeSet<PathBuf> = store
         .state()
         .pinned_sessions
         .iter()
-        .map(|path| fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path)))
+        .map(|path| crate::paths::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path)))
         .collect();
     let mut records = Vec::new();
     let Ok(buckets) = fs::read_dir(&root) else {
@@ -429,7 +429,7 @@ pub fn scan_sessions(store: &StateStore, home: &Path) -> Vec<SessionRecord> {
             let Some(mut record) = parse_metadata(&path) else {
                 continue;
             };
-            let canonical = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+            let canonical = crate::paths::canonicalize(&path).unwrap_or_else(|_| path.clone());
             record.archived = archived.contains(&canonical);
             record.pinned = pinned.contains(&canonical);
             records.push(record);
@@ -457,13 +457,13 @@ pub fn list_sessions(
     include_archived: bool,
     project_path: Option<&str>,
 ) -> Vec<SessionRecord> {
-    let project =
-        project_path.map(|path| fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path)));
+    let project = project_path
+        .map(|path| crate::paths::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path)));
     scan_sessions(store, home)
         .into_iter()
         .filter(|record| include_archived || !record.archived)
         .filter(|record| match &project {
-            Some(project) => fs::canonicalize(&record.project_path)
+            Some(project) => crate::paths::canonicalize(&record.project_path)
                 .map(|path| &path == project)
                 .unwrap_or(false),
             None => true,
@@ -481,7 +481,7 @@ pub fn set_pinned(
     let canonical = safe.display().to_string();
     store.update(|state| {
         state.pinned_sessions.retain(|path| {
-            fs::canonicalize(path)
+            crate::paths::canonicalize(path)
                 .map(|path| path != safe)
                 .unwrap_or(true)
         });
@@ -502,7 +502,7 @@ pub fn set_archived(
     let canonical = safe.display().to_string();
     store.update(|state| {
         state.archived_sessions.retain(|path| {
-            fs::canonicalize(path)
+            crate::paths::canonicalize(path)
                 .map(|path| path != safe)
                 .unwrap_or(true)
         });
@@ -520,7 +520,7 @@ pub fn delete_session(store: &mut StateStore, root: &Path, file_path: &str) -> R
         .map_err(|error| CoreError::io("Could not delete the session file", error))?;
     store.update(|state| {
         state.archived_sessions.retain(|path| {
-            fs::canonicalize(path)
+            crate::paths::canonicalize(path)
                 .map(|path| path != safe)
                 .unwrap_or(true)
         });
@@ -530,10 +530,10 @@ pub fn delete_session(store: &mut StateStore, root: &Path, file_path: &str) -> R
 }
 
 pub fn authorize_session_path_under(root: &Path, path: &Path) -> Result<PathBuf> {
-    let root = fs::canonicalize(root).map_err(|error| {
+    let root = crate::paths::canonicalize(root).map_err(|error| {
         CoreError::invalid(format!("Session directory is unavailable: {error}"))
     })?;
-    let canonical = fs::canonicalize(path)
+    let canonical = crate::paths::canonicalize(path)
         .map_err(|error| CoreError::invalid(format!("Session file is unavailable: {error}")))?;
     let relative = canonical
         .strip_prefix(&root)
