@@ -30,14 +30,10 @@ serde_json.workspace = true
 # the same `lb-wry` fork and version it depends on.
 wry = { version = "0.53.3", package = "lb-wry", default-features = false }
 
-# The system tray (src/tray.rs) is macOS/Windows only, so its crates are gated to
-# those targets. `tray-icon`'s Linux backend links GTK3 *and* libappindicator
-# (`libappindicator3-dev`/`libayatana-appindicator3-dev`) plus libxdo, none of which
-# the Linux CI image installs — it only has `libgtk-3-dev` for `gpui-webview`. Gating
-# here (rather than only in code) keeps the Linux build free of those system headers.
-# `default-features = false` drops the `libxdo` feature; nothing in the tray uses the
-# predefined Cut/Copy/Paste items it enables.
-[target.'cfg(any(target_os = "macos", windows))'.dependencies]
+# The system tray (src/tray.rs) uses `tray-icon` on every desktop platform. Its
+# Linux backend loads libappindicator at runtime, so a missing tray host degrades
+# to a logged error instead of blocking startup. `default-features = false` drops
+# the `libxdo` feature; nothing in the tray uses its predefined clipboard items.
 tray-icon = { version = "0.21", default-features = false }
 # Tray/menu callbacks fire outside GPUI's update cycle; commands cross into the app
 # through this channel instead of touching GPUI state from the callback thread.

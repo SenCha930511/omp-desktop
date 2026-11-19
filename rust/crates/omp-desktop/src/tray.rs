@@ -7,11 +7,9 @@
 //!
 //! # Linux
 //!
-//! This module is compiled out on Linux, and the crates it needs are gated to
-//! macOS/Windows in `Cargo.toml`: `tray-icon`'s Linux backend links GTK3 *and*
-//! libappindicator (`libappindicator3-dev`/`libayatana-appindicator3-dev`) plus
-//! libxdo, while the Linux build image only provides `libgtk-3-dev` for the Browser
-//! pane's webview. Enabling it there needs those two packages added to CI first.
+//! `tray-icon`'s Linux backend uses the StatusNotifierItem/AppIndicator host and
+//! loads libappindicator at runtime. A session without a tray host logs an error
+//! and keeps running; the app does not depend on the tray to start.
 //!
 //! # Threading
 //!
@@ -34,8 +32,8 @@ const ICON_PNG: &[u8] = include_bytes!("../../../../assets/icon.png");
 /// Retina displays (`tray-icon` scales it back down to an 18pt height).
 #[cfg(target_os = "macos")]
 const ICON_PIXELS: u32 = 36;
-/// Windows draws 16px notification-area icons; 32px covers 200% scaling.
-#[cfg(windows)]
+/// Windows and Linux draw 16px notification-area icons; 32px covers 200% scaling.
+#[cfg(any(windows, target_os = "linux"))]
 const ICON_PIXELS: u32 = 32;
 
 const OPEN_MENU_ID: &str = "omp-desktop.tray.open";

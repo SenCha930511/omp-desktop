@@ -25,6 +25,7 @@ depends = [
   "libegl1",
   "libfontconfig1",
   "libfreetype6",
+  "libayatana-appindicator3-1",
   "libgl1",
   "libgtk-3-0",
   "libjavascriptcoregtk-4.1-0",

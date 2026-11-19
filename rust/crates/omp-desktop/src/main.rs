@@ -1,12 +1,8 @@
 #![recursion_limit = "512"]
 
-// The system tray is a native NSStatusItem (macOS) / notification-area icon (Windows),
-// so it — and the `tray-icon` dependency — only exist there. Linux is deliberately
-// excluded: `tray-icon`'s Linux backend links GTK3 *and* libappindicator plus libxdo
-// (`libappindicator3-dev`/`libayatana-appindicator3-dev`, `libxdo-dev`), which the
-// Linux build image does not install (it has `libgtk-3-dev` for the Browser pane's
-// webview). Adding a Linux tray needs those packages in CI first; see `src/tray.rs`.
-#[cfg(any(target_os = "macos", windows))]
+// The system tray is a native NSStatusItem (macOS), notification-area icon
+// (Windows), or AppIndicator (Linux). A session without a tray host keeps running;
+// see `src/tray.rs`.
 mod tray;
 
 use std::path::{Path, PathBuf};
@@ -167,7 +163,7 @@ fn main() {
         .unwrap_or_else(default_user_data_dir);
     let smoke_path = parse_arg(&args, "--packaged-smoke=").map(PathBuf::from);
     // `--tray-smoke=<path>`: writes a marker after the tray is up and the menu command
-    // path has run, then quits. macOS/Windows only, matching the tray itself.
+    // path has run, then quits.
     #[cfg(any(target_os = "macos", windows))]
     let tray_smoke_path = parse_arg(&args, "--tray-smoke=").map(PathBuf::from);
     let dump_layout_path = parse_arg(&args, "--dump-layout=").map(PathBuf::from);
@@ -217,7 +213,6 @@ fn main() {
                 None
             }
         };
-        #[cfg(any(target_os = "macos", windows))]
         if let Some(window) = window_handle {
             match tray::init(cx, window) {
                 Ok(tray) => {
@@ -236,7 +231,5 @@ fn main() {
                 Err(err) => eprintln!("omp-desktop: system tray unavailable: {err}"),
             }
         }
-        #[cfg(not(any(target_os = "macos", windows)))]
-        let _ = window_handle;
     });
 }

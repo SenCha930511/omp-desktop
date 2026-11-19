@@ -301,7 +301,7 @@ jobs:
             libasound2-dev libfontconfig1-dev libfreetype-dev libgl1-mesa-dev \
             libwayland-dev libx11-xcb-dev libxcb1-dev libxcb-render0-dev \
             libxkbcommon-dev libxkbcommon-x11-dev pkg-config xvfb \
-            libgtk-3-dev libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev
+            libgtk-3-dev libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev libayatana-appindicator3-1
       - name: Install the pinned Rust toolchain
         run: rustup toolchain install 1.100.0 --profile minimal --component rustfmt,clippy
       - run: rustup default 1.100.0
@@ -427,7 +427,7 @@ jobs:
             libxkbcommon-dev libxkbcommon-x11-dev pkg-config xauth xvfb \
             libegl1 libgl1-mesa-dri libvulkan1 mesa-vulkan-drivers \
             fonts-dejavu-core xkb-data \
-            libgtk-3-dev libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev
+            libgtk-3-dev libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev libayatana-appindicator3-1
       - name: Install the pinned Rust toolchain
         run: rustup toolchain install 1.100.0 --profile minimal
       - run: rustup default 1.100.0
