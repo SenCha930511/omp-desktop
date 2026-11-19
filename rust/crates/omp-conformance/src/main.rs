@@ -702,7 +702,7 @@ impl Workspace {
                 .iter()
                 .find(|project| {
                     project.folders.iter().any(|folder| {
-                        std::fs::canonicalize(folder)
+                        omp_core::paths::canonicalize(folder)
                             .map(|root| projects::path_within(&root, &canonical))
                             .unwrap_or(false)
                     })
