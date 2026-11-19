@@ -12,15 +12,17 @@ const MAX_CANONICAL_CACHE = 1_024
  * canonicalizing the parent directory when the file does not exist yet, and
  * to the resolved lexical path when nothing exists.
  */
+const nativeRealpath = process.platform === 'win32' ? realpathSync.native : realpathSync
+
 export function canonicalSessionPath(pathValue: string): string {
   const resolved = resolve(pathValue)
   const cached = canonicalCache.get(resolved)
   if (cached !== undefined) return cached
   let canonical: string
   try {
-    canonical = realpathSync(resolved)
+    canonical = nativeRealpath(resolved)
   } catch {
-    try { return join(realpathSync(dirname(resolved)), basename(resolved)) } catch { return resolved }
+    try { return join(nativeRealpath(dirname(resolved)), basename(resolved)) } catch { return resolved }
   }
   if (canonicalCache.size >= MAX_CANONICAL_CACHE) canonicalCache.clear()
   canonicalCache.set(resolved, canonical)

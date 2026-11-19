@@ -1,4 +1,5 @@
 use std::fs;
+#[cfg(unix)]
 use std::os::unix::fs::symlink;
 
 use omp_core::plugins;
@@ -27,6 +28,7 @@ fn store_for(temp: &TempDir, project: &std::path::Path) -> (StateStore, std::pat
     (store, home.join(".omp").join("agent"))
 }
 
+#[cfg(unix)]
 #[test]
 fn refuses_to_write_through_a_symlinked_project_config_directory() {
     let temp = TempDir::new().expect("temp");
