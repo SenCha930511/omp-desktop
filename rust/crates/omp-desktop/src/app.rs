@@ -439,6 +439,10 @@ pub struct Workspace {
     side_streaming: bool,
     view: AppView,
     plugin_catalog: Option<PluginCatalog>,
+    // The Extensions page's last toggle outcome: `plugin_status` is the
+    // `Extensions updated` notice, `plugin_error` the reason a change failed.
+    // Only one is set, and both are cleared by a refresh.
+    plugin_status: Option<String>,
     plugin_error: Option<String>,
     // The Settings picker's model list. It is loaded once from the harness
     // when Settings opens and cached here, so switching views never spawns
@@ -650,6 +654,7 @@ impl Workspace {
             side_streaming: false,
             view: AppView::Workspace,
             plugin_catalog: None,
+            plugin_status: None,
             plugin_error: None,
             model_catalog: None,
             model_load_task: None,
@@ -1126,6 +1131,29 @@ impl Workspace {
                     .as_ref()
                     .map(|path| path.display().to_string()),
                 "error": self.capture_error,
+            },
+            // The Extensions page: the last toggle's notice or failure and the
+            // rows a toggle can reach, read back from the refreshed catalog.
+            "extensionStatus": {
+                "status": self.plugin_status,
+                "error": self.plugin_error,
+                "rows": self
+                    .plugin_catalog
+                    .as_ref()
+                    .map(|catalog| {
+                        catalog
+                            .skills
+                            .iter()
+                            .filter(|skill| matches!(skill.kind.as_str(), "mcp" | "package"))
+                            .map(|skill| json!({
+                                "name": skill.name,
+                                "kind": skill.kind,
+                                "enabled": skill.enabled,
+                                "scope": skill.location,
+                            }))
+                            .collect::<Vec<Value>>()
+                    })
+                    .unwrap_or_default(),
             },
             "schedules": self.schedules,
             "notifications": self.notifications,
@@ -4419,11 +4447,167 @@ impl Workspace {
         let agent_dir = self.home_dir.join(".omp").join("agent");
         let project = self.project_cwd().map(std::path::PathBuf::from);
         self.plugin_catalog = Some(plugins::discover(&agent_dir, project.as_deref()));
+        self.plugin_status = None;
         self.plugin_error = None;
     }
 
     pub fn plugin_catalog(&self) -> Option<&PluginCatalog> {
         self.plugin_catalog.as_ref()
+    }
+
+    /// Enables or disables one MCP server or package row.
+    ///
+    /// The page's toggle and the parity harness both come through here. The
+    /// change is written by the core (`set_mcp_enabled` for a server,
+    /// `mutate_capability` for a package), then the catalog is re-read so the
+    /// row shows what is actually on disk. A change the core accepts but the
+    /// refreshed catalog does not reflect is reported as a failure: the page
+    /// never claims a row changed while it still draws the old state.
+    pub fn set_extension_enabled(&mut self, name: &str, enabled: bool, cx: &mut Context<Self>) {
+        let outcome = self.apply_extension_change(name, enabled);
+        self.refresh_plugins();
+        match outcome {
+            Err(error) => {
+                self.plugin_status = None;
+                self.plugin_error = Some(error);
+            }
+            Ok(()) => {
+                if self.extension_enabled(name) == Some(enabled) {
+                    self.plugin_status = Some("Extensions updated".to_string());
+                    self.plugin_error = None;
+                } else {
+                    self.plugin_status = None;
+                    self.plugin_error = Some(format!(
+                        "OMP could not update extensions: {name} is still {} after the change",
+                        if enabled { "disabled" } else { "enabled" }
+                    ));
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    /// The refreshed catalog's own answer for a row, so the page reads the
+    /// same record it draws instead of trusting the request it just sent.
+    fn extension_enabled(&self, name: &str) -> Option<bool> {
+        self.plugin_catalog
+            .as_ref()?
+            .skills
+            .iter()
+            .find(|skill| skill.name == name && matches!(skill.kind.as_str(), "mcp" | "package"))
+            .map(|skill| skill.enabled)
+    }
+
+    fn apply_extension_change(&mut self, name: &str, enabled: bool) -> Result<(), String> {
+        let record = self
+            .plugin_catalog
+            .as_ref()
+            .and_then(|catalog| {
+                catalog.skills.iter().find(|skill| {
+                    skill.name == name && matches!(skill.kind.as_str(), "mcp" | "package")
+                })
+            })
+            .cloned()
+            .ok_or_else(|| {
+                format!("OMP could not update extensions: {name} is not in the catalog")
+            })?;
+        let scope = self.extension_scope(&record)?;
+        let project = match scope {
+            "project" => Some(self.project_cwd().ok_or_else(|| {
+                format!(
+                    "OMP could not update extensions: open a project before changing the project {} {name}",
+                    record.kind
+                )
+            })?),
+            _ => None,
+        };
+        let store = self.store.clone().ok_or_else(|| {
+            "OMP could not update extensions: the desktop state store is unavailable".to_string()
+        })?;
+        let agent_dir = self.home_dir.join(".omp").join("agent");
+        let mut input = if record.kind == "mcp" {
+            json!({ "name": record.name, "scope": scope, "enabled": enabled })
+        } else {
+            let mut input = json!({
+                "kind": "package",
+                "action": if enabled { "enable" } else { "disable" },
+                "name": record.name,
+                "scope": scope,
+            });
+            if let Some(source) = record.source.as_ref() {
+                input["source"] = json!(source);
+            }
+            input
+        };
+        if let Some(project) = project.as_ref() {
+            input["projectPath"] = json!(project);
+        }
+        let store = store.lock().expect("state lock");
+        let result = if record.kind == "mcp" {
+            plugins::set_mcp_enabled(&agent_dir, &store, Platform::current(), &input)
+        } else {
+            plugins::mutate_capability(&agent_dir, &store, Platform::current(), &input)
+        };
+        result
+            .map(|_| ())
+            .map_err(|error| format!("OMP could not update extensions: {}", error.message))
+    }
+
+    /// The scope a row writes to. Discovery labels every row `user` or
+    /// `project`; when a catalog came from another caller the row's own path
+    /// decides. An undeducible scope is an error rather than a guess: writing
+    /// the user file for a project row would edit a file the row is not from.
+    fn extension_scope(&self, record: &plugins::SkillRecord) -> Result<&'static str, String> {
+        match record.location.as_str() {
+            "user" => return Ok("user"),
+            "project" => return Ok("project"),
+            _ => {}
+        }
+        if let Some(path) = record.path.as_deref().map(PathBuf::from) {
+            if path.starts_with(self.home_dir.join(".omp").join("agent")) {
+                return Ok("user");
+            }
+            if let Some(project) = self.project_cwd().map(PathBuf::from)
+                && path.starts_with(project)
+            {
+                return Ok("project");
+            }
+        }
+        Err(format!(
+            "OMP could not update extensions: the scope of {} could not be derived",
+            record.name
+        ))
+    }
+
+    /// One Extensions row's enable/disable control.
+    ///
+    /// The label names the action the click performs, so an enabled row offers
+    /// `Disable` and a disabled one offers `Enable`; the row itself keeps
+    /// drawing the config's state next to it.
+    fn extension_toggle(
+        record: &plugins::SkillRecord,
+        colors: ThemeColor,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let name = record.name.clone();
+        let enabled = record.enabled;
+        let label = if enabled { "Disable" } else { "Enable" };
+        div()
+            .id(format!("extension-toggle:{}", record.id))
+            .aria_label(label)
+            .px_2()
+            .py_1()
+            .rounded(px(6.0))
+            .border_1()
+            .border_color(colors.border)
+            .text_xs()
+            .text_color(colors.foreground)
+            .hover(|style| style.bg(colors.accent))
+            .child(label)
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.set_extension_enabled(&name, !enabled, cx);
+            }))
+            .into_any_element()
     }
 
     fn plugins_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -4528,6 +4712,32 @@ impl Workspace {
                         .child(warning.message)
                 }))
             })
+            // The last toggle's outcome. An error outranks the success notice
+            // so a failed change is never hidden behind an older success.
+            .when(
+                self.plugin_status.is_some() || self.plugin_error.is_some(),
+                |element| {
+                    let (message, color) = match self.plugin_error.as_ref() {
+                        Some(error) => (error.clone(), colors.danger),
+                        None => (
+                            self.plugin_status.clone().unwrap_or_default(),
+                            colors.success,
+                        ),
+                    };
+                    element.child(
+                        div()
+                            .id("plugins-status")
+                            .px_3()
+                            .py_2()
+                            .rounded(px(8.0))
+                            .border_1()
+                            .border_color(color)
+                            .text_xs()
+                            .text_color(color)
+                            .child(message),
+                    )
+                },
+            )
             .child(
                 div()
                     .text_xs()
@@ -4561,6 +4771,7 @@ impl Workspace {
                     .child("PACKAGES"),
             )
             .children(packages.into_iter().map(|package| {
+                let toggle = Self::extension_toggle(&package, colors, cx);
                 div()
                     .flex()
                     .items_center()
@@ -4579,6 +4790,7 @@ impl Workspace {
                             .text_color(colors.muted_foreground)
                             .child(package.location),
                     )
+                    .child(toggle)
             }))
             .child(
                 div()
@@ -4587,6 +4799,9 @@ impl Workspace {
                     .child("MCP SERVERS"),
             )
             .children(mcp.into_iter().map(|server| {
+                // The row states what the config says before the button acts on
+                // it, so disabling the server in use is never a silent switch.
+                let toggle = Self::extension_toggle(&server, colors, cx);
                 div()
                     .flex()
                     .items_center()
@@ -4613,6 +4828,7 @@ impl Workspace {
                                 "disabled"
                             }),
                     )
+                    .child(toggle)
             }))
             .when(
                 catalog
