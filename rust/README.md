@@ -58,6 +58,19 @@ cat /tmp/layout.json
 
 `sidebarWidth` and `rightPaneWidth` must match the persisted values in the first frame; bootstrap data never changes them.
 
+## Packaging
+
+```bash
+cd rust
+cargo build -p omp-desktop --locked
+cd crates/omp-desktop
+cargo packager --formats app
+"../../dist/OMP Desktop.app/Contents/MacOS/omp-desktop" \
+  --packaged-smoke=/tmp/smoke.json --user-data-dir=/tmp/omp-rust-packaged
+```
+
+The packaged binary writes the same first-frame marker as the development build. The CI `Rust packaged smoke` job repeats this on macOS.
+
 ## Remaining work
 
 - Full page set: Settings, Plugins, Review/Summary, Browser, Schedules.

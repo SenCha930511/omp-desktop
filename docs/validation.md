@@ -6,7 +6,7 @@ This page explains how to reproduce and interpret OMP Desktop's validation gates
 
 The repository's `main` branch protection must require pull requests and require status checks to pass with **Require branches to be up to date before merging** enabled (`required_status_checks.strict: true`). This strict latest-main requirement prevents a PR from merging on a newer base than the integration state validated by CI.
 
-The required checks are exactly the sixteen normal pull-request gates:
+The required checks are exactly the seventeen normal pull-request gates:
 
 - `Production dependency audit`
 - `quality`
@@ -15,12 +15,13 @@ The required checks are exactly the sixteen normal pull-request gates:
 - `conformance (macos-14)`
 - `conformance (ubuntu-22.04)`
 - `conformance (windows-2022)`
-- `Rust workspace (macos-14)`
+- `Rust workspace (macos-15)`
 - `Rust workspace (ubuntu-22.04)`
 - `Rust workspace (windows-2022)`
-- `Rust conformance (macos-14)`
+- `Rust conformance (macos-15)`
 - `Rust conformance (ubuntu-22.04)`
 - `Rust conformance (windows-2022)`
+- `Rust packaged smoke`
 - `packaging-smoke (macos-14, mac, arm64, --config.mac.identity=null)`
 - `packaging-smoke (ubuntu-22.04, linux, x64)`
 - `packaging-smoke (windows-2022, win, x64)`
@@ -87,6 +88,7 @@ The [CI workflow](../.github/workflows/ci.yml) runs on pull requests, pushes to 
 | `conformance` | Pull request, `main`, manual dispatch | The language-agnostic conformance suite passes on `macos-14`, `ubuntu-22.04`, and `windows-2022` against the reference Node adapter or a configured `OMP_CONFORMANCE_ADAPTER_CMD`. |
 | `rust` | Pull request, `main`, manual dispatch | `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test --workspace --locked`, and the conformance adapter build pass on all three desktop platforms. |
 | `rust-conformance` | Pull request, `main`, manual dispatch | The cross-language conformance suite passes against the Rust adapter with the required-capability gate active, and the adapter capability and test-count summary is uploaded as an artifact. |
+| `rust-package-smoke` | Pull request, `main`, manual dispatch | `cargo-packager` builds the macOS `.app`, the packaged binary draws a real GPUI first frame, and its smoke marker is uploaded. |
 | `packaging-smoke` | Pull requests only | Native macOS arm64, Linux x64, and Windows x64 runners build unpacked applications and launch them with `--packaged-smoke`. Linux and Windows additionally verify the ASAR layout and exact native-unpack allowlist. These are unsigned smoke builds, not public installers. |
 | `local-qa-package` | Manual dispatch only | Native runners create and verify installable local-QA artifacts for macOS, Linux, and Windows, then upload the configured artifact set. These artifacts are not represented as signed or notarized public releases. |
 

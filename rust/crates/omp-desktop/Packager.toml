@@ -1,0 +1,11 @@
+name = "omp-desktop"
+productName = "OMP Desktop"
+version = "2.0.0"
+identifier = "com.omp.desktop.rust.dev"
+description = "A native workspace for OMP"
+authors = ["OMP Desktop contributors"]
+binaries = [{ path = "omp-desktop", main = true }]
+binariesDir = "../../target/debug"
+outDir = "../../dist"
+icons = ["../../../assets/icon.icns"]
+formats = ["app"]

@@ -277,7 +277,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-14
+          - runner: macos-15
           - runner: ubuntu-22.04
           - runner: windows-2022
     runs-on: ${{ matrix.runner }}
@@ -322,7 +322,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-14
+          - runner: macos-15
           - runner: ubuntu-22.04
           - runner: windows-2022
     runs-on: ${{ matrix.runner }}
@@ -374,4 +374,34 @@ jobs:
             conformance-summary.json
             conformance-adapter.json
             conformance-vitest.json
+          if-no-files-found: error
+
+  rust-package-smoke:
+    name: Rust packaged smoke
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install 1.100.0 --profile minimal
+      - run: rustup default 1.100.0
+      - name: Install cargo-packager
+        run: cargo install cargo-packager --locked --version 0.11.8
+      - name: Build the native application
+        run: cargo build -p omp-desktop --locked
+        working-directory: rust
+      - name: Package the macOS application bundle
+        run: cargo packager --formats app
+        working-directory: rust/crates/omp-desktop
+      - name: Launch the packaged application and wait for the first frame
+        run: |
+          rm -f "$RUNNER_TEMP/rust-smoke.json"
+          "rust/dist/OMP Desktop.app/Contents/MacOS/omp-desktop" \
+            --packaged-smoke="$RUNNER_TEMP/rust-smoke.json" \
+            --user-data-dir="$RUNNER_TEMP/rust-user-data"
+          test -s "$RUNNER_TEMP/rust-smoke.json"
+          node -e "const m=require(process.env.RUNNER_TEMP + '/rust-smoke.json'); if (m.event !== 'gooeypi-packaged-smoke-ready') process.exit(1)"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rust-packaged-smoke
+          path: ${{ runner.temp }}/rust-smoke.json
           if-no-files-found: error

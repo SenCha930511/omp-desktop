@@ -4,6 +4,7 @@ node_modules
 /release/
 /coverage/
 /rust/target/
+/rust/dist/
 playwright-report
 test-results
 .DS_Store
