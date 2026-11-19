@@ -1,0 +1,24 @@
+[package]
+name = "omp-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+base64.workspace = true
+chrono.workspace = true
+chrono-tz.workspace = true
+hmac.workspace = true
+omp-rpc = { path = "../omp-rpc" }
+rrule.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml_ng.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+tiny_http.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

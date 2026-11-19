@@ -6,7 +6,7 @@ This page explains how to reproduce and interpret OMP Desktop's validation gates
 
 The repository's `main` branch protection must require pull requests and require status checks to pass with **Require branches to be up to date before merging** enabled (`required_status_checks.strict: true`). This strict latest-main requirement prevents a PR from merging on a newer base than the integration state validated by CI.
 
-The required checks are exactly the ten normal pull-request gates:
+The required checks are exactly the twelve normal pull-request gates:
 
 - `Production dependency audit`
 - `quality`
@@ -15,9 +15,17 @@ The required checks are exactly the ten normal pull-request gates:
 - `conformance (macos-14)`
 - `conformance (ubuntu-22.04)`
 - `conformance (windows-2022)`
+- `rust (macos-14)`
+- `rust (ubuntu-22.04)`
+- `rust (windows-2022)`
+- `rust-conformance (macos-14)`
+- `rust-conformance (ubuntu-22.04)`
+- `rust-conformance (windows-2022)`
 - `packaging-smoke (macos-14, mac, arm64, --config.mac.identity=null)`
 - `packaging-smoke (ubuntu-22.04, linux, x64)`
 - `packaging-smoke (windows-2022, win, x64)`
+
+The Rust checks are being introduced with the v2 workspace. A repository administrator must add their exact context names to the required status checks before they can block merges. Until then, run them locally with the commands below.
 
 Do not require `local-qa-package`: it is manual local QA, runs only through `workflow_dispatch`, and is intentionally excluded from pull-request validation.
 
@@ -77,6 +85,8 @@ The [CI workflow](../.github/workflows/ci.yml) runs on pull requests, pushes to 
 | `hermetic-e2e` | Pull request, `main`, manual dispatch | The built application passes the Playwright Electron suite on the pinned macOS runner without relying on developer state. Failure artifacts are uploaded when available. |
 | `windows-state-migration` | Pull request, `main`, manual dispatch | The state migration suite passes on a real `windows-2022` runner, including the production-platform fresh-install, migration, restart, and update path. Simulating `platform: 'win32'` on another OS is useful unit coverage but is not a substitute for this job. |
 | `conformance` | Pull request, `main`, manual dispatch | The language-agnostic conformance suite passes on `macos-14`, `ubuntu-22.04`, and `windows-2022` against the reference Node adapter or a configured `OMP_CONFORMANCE_ADAPTER_CMD`. |
+| `rust` | Pull request, `main`, manual dispatch | `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test --workspace --locked`, and the conformance adapter build pass on all three desktop platforms. |
+| `rust-conformance` | Pull request, `main`, manual dispatch | The cross-language conformance suite passes against the Rust adapter with the required-capability gate active, and the adapter capability and test-count summary is uploaded as an artifact. |
 | `packaging-smoke` | Pull requests only | Native macOS arm64, Linux x64, and Windows x64 runners build unpacked applications and launch them with `--packaged-smoke`. Linux and Windows additionally verify the ASAR layout and exact native-unpack allowlist. These are unsigned smoke builds, not public installers. |
 | `local-qa-package` | Manual dispatch only | Native runners create and verify installable local-QA artifacts for macOS, Linux, and Windows, then upload the configured artifact set. These artifacts are not represented as signed or notarized public releases. |
 
@@ -157,3 +167,28 @@ Keep point-in-time results in the PR, release notes, or another commit-addressed
 - any failure, rerun, accepted limitation, or manual observation needed to interpret the result.
 
 Use test counts only inside that commit-addressed evidence. The durable claim is that the checked-in aggregate completed successfully, not that this guide remembers how many tests happened to exist at some earlier date.
+
+## Rust workspace
+
+The v2 workspace lives in `rust/`. It is pinned by `rust-toolchain.toml` and `rust/Cargo.lock`; CI installs Rust 1.100.0 with `rustfmt` and `clippy`.
+
+```bash
+cd rust
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+cargo build -p omp-conformance --locked
+```
+
+Run the cross-language conformance suite against the Rust adapter from the repository root:
+
+```bash
+OMP_CONFORMANCE_PARTIAL=1 \
+OMP_CONFORMANCE_REQUIRED_CAPABILITIES=state,projects,sessions,models,agent,git,checkouts,plugins,schedules,collaboration \
+OMP_CONFORMANCE_ADAPTER_CMD="$PWD/rust/target/debug/omp-conformance" \
+npm run test:conformance
+```
+
+`OMP_CONFORMANCE_PARTIAL=1` lets the adapter omit the deliberately removed `terminal` capability. `OMP_CONFORMANCE_REQUIRED_CAPABILITIES` is enforced even in partial mode, so a phase gate cannot pass by skipping a capability it claims to require. The Node reference adapter remains the oracle; the Rust adapter must satisfy the same tests.
+
+`node scripts/rust/generate-hmac-fixtures.mjs` regenerates the Node-signed v1/v2/v3 collaboration envelopes consumed by `cargo test`. Regenerate them only when the envelope format changes; the Rust test fails on any signature drift.

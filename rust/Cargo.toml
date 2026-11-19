@@ -1,0 +1,28 @@
+[workspace]
+resolver = "2"
+members = ["crates/omp-core", "crates/omp-rpc", "crates/omp-conformance"]
+
+[workspace.package]
+version = "2.0.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.100"
+
+[workspace.dependencies]
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
+hmac = "0.12"
+rrule = "0.14"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+serde_yaml_ng = "0.10"
+sha2 = "0.10"
+subtle = "2"
+tiny_http = "0.12"
+uuid = { version = "1", features = ["v4"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

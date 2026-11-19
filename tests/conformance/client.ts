@@ -1,11 +1,11 @@
 import { type ChildProcessWithoutNullStreams, spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { createInterface, type Interface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
 import { createOmpFixtureExecutable } from './fixtures/launcher'
-import { type AdapterInfo, CONFORMANCE_PROTOCOL_VERSION, type ConformanceCapability, type ConformanceErrorPayload, type ConformanceResponse } from './protocol'
+import { type AdapterInfo, CONFORMANCE_CAPABILITIES, CONFORMANCE_PROTOCOL_VERSION, type ConformanceCapability, type ConformanceErrorPayload, type ConformanceResponse } from './protocol'
 
 const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const DEFAULT_ADAPTER_PATH = join(PROJECT_ROOT, 'out', 'conformance', 'node-adapter.mjs')
@@ -126,6 +126,19 @@ export class ConformanceClient {
     if (info.protocolVersion !== CONFORMANCE_PROTOCOL_VERSION) {
       await client.close()
       throw new Error(`Expected protocolVersion ${CONFORMANCE_PROTOCOL_VERSION}, received ${info.protocolVersion}`)
+    }
+    for (const capability of requiredCapabilities()) {
+      if (!(CONFORMANCE_CAPABILITIES as readonly string[]).includes(capability)) {
+        await client.close()
+        throw new Error(`OMP_CONFORMANCE_REQUIRED_CAPABILITIES names an unknown capability: ${capability}`)
+      }
+      if (!info.capabilities.includes(capability)) {
+        await client.close()
+        throw new Error(`Adapter ${info.implementation} is missing required conformance capability: ${capability}`)
+      }
+    }
+    if (process.env.OMP_CONFORMANCE_INFO_FILE) {
+      writeFileSync(process.env.OMP_CONFORMANCE_INFO_FILE, `${JSON.stringify({ ...info, requiredCapabilities: requiredCapabilities() }, null, 2)}\n`, 'utf8')
     }
     return client
   }
@@ -284,8 +297,23 @@ export function createConformanceSandbox(prefix = 'omp-conformance-'): Conforman
   }
 }
 
+export function requiredCapabilities(): string[] {
+  return (process.env.OMP_CONFORMANCE_REQUIRED_CAPABILITIES ?? '')
+    .split(',')
+    .map((capability) => capability.trim())
+    .filter((capability) => capability.length > 0)
+}
+
+/**
+ * Partial mode may skip capabilities outside the required set, but never one
+ * named in OMP_CONFORMANCE_REQUIRED_CAPABILITIES: a phase gate must not be
+ * satisfiable by silently skipping its own required capability.
+ */
 export function requireCapability(info: AdapterInfo, capability: ConformanceCapability): boolean {
   if (info.capabilities.includes(capability)) return true
+  if (requiredCapabilities().includes(capability)) {
+    throw new Error(`Adapter ${info.implementation} is missing required conformance capability: ${capability}`)
+  }
   if (process.env.OMP_CONFORMANCE_PARTIAL === '1') return false
   throw new Error(`Adapter ${info.implementation} is missing required conformance capability: ${capability}`)
 }
