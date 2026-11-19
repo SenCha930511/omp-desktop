@@ -137,11 +137,20 @@ fn discover_skills(root: &Path, location: &str, skills: &mut Vec<SkillRecord>) {
     }
 }
 
+fn plugins_lock_file(plugins_root: &Path) -> PathBuf {
+    plugins_root.join("omp-plugins.lock.json")
+}
+
 fn discover_packages(plugins_root: &Path, location: &str, skills: &mut Vec<SkillRecord>) {
     let modules = plugins_root.join("node_modules");
     let Ok(entries) = std::fs::read_dir(&modules) else {
         return;
     };
+    // The CLI records install/enable state in `omp-plugins.lock.json`; a
+    // missing or unreadable file leaves every discovered package enabled.
+    let lock = read_json_file(&plugins_lock_file(plugins_root), "plugin settings")
+        .unwrap_or_else(|_| json!({}));
+    let runtime = lock.get("plugins").and_then(Value::as_object);
     for entry in entries.flatten() {
         let path = entry.path();
         let package_file = path.join("package.json");
@@ -162,6 +171,16 @@ fn discover_packages(plugins_root: &Path, location: &str, skills: &mut Vec<Skill
             .get("description")
             .and_then(Value::as_str)
             .unwrap_or_default();
+        let directory = path.file_name().and_then(|name| name.to_str());
+        let state = runtime.and_then(|plugins| {
+            plugins
+                .get(name)
+                .or_else(|| directory.and_then(|directory| plugins.get(directory)))
+        });
+        let enabled = state
+            .and_then(|state| state.get("enabled"))
+            .and_then(Value::as_bool)
+            != Some(false);
         skills.push(SkillRecord {
             id: format!("package:{location}:{name}"),
             name: name.to_string(),
@@ -169,7 +188,7 @@ fn discover_packages(plugins_root: &Path, location: &str, skills: &mut Vec<Skill
             kind: "package".to_string(),
             location: location.to_string(),
             path: Some(package_file.display().to_string()),
-            enabled: true,
+            enabled,
             source: Some("npm".to_string()),
             definition_key: Some(name.to_string()),
             mcp_definition: None,
@@ -177,21 +196,23 @@ fn discover_packages(plugins_root: &Path, location: &str, skills: &mut Vec<Skill
     }
 }
 
-fn read_json_file(path: &Path) -> Result<Value> {
+fn read_json_file(path: &Path, label: &str) -> Result<Value> {
     let metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(json!({})),
-        Err(error) => return Err(CoreError::io("Could not inspect MCP settings", error)),
+        Err(error) => {
+            return Err(CoreError::io(&format!("Could not inspect {label}"), error));
+        }
     };
     if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err(CoreError::invalid(
-            "MCP settings must be a regular file, not a symlink",
-        ));
+        return Err(CoreError::invalid(format!(
+            "{label} must be a regular file, not a symlink"
+        )));
     }
     let text = std::fs::read_to_string(path)
-        .map_err(|error| CoreError::io("Could not read MCP settings", error))?;
+        .map_err(|error| CoreError::io(&format!("Could not read {label}"), error))?;
     serde_json::from_str::<Value>(&text)
-        .map_err(|error| CoreError::invalid(format!("MCP settings are not valid JSON: {error}")))
+        .map_err(|error| CoreError::invalid(format!("{label} are not valid JSON: {error}")))
 }
 
 fn mcp_servers(file: &Value) -> Map<String, Value> {
@@ -271,13 +292,13 @@ pub fn discover(agent_dir: &Path, project_path: Option<&Path>) -> PluginCatalog 
     if let Some(project) = project_path {
         discover_skills(project, "project", &mut skills);
         discover_packages(
-            &project.join(".omp").join("plugins"),
+            &plugins_root(agent_dir, Some(project)),
             "project",
             &mut skills,
         );
         let project_mcp = project.join(".omp").join("mcp.json");
         if project_mcp.exists() {
-            match read_json_file(&project_mcp) {
+            match read_json_file(&project_mcp, "MCP settings") {
                 Ok(value) => discover_mcp(&value, "project", &mut skills),
                 Err(error) => warnings.push(PluginWarning {
                     scope: "project".to_string(),
@@ -288,14 +309,10 @@ pub fn discover(agent_dir: &Path, project_path: Option<&Path>) -> PluginCatalog 
         }
     }
     discover_skills(agent_dir, "user", &mut skills);
-    let user_plugins = agent_dir
-        .parent()
-        .map(|root| root.join("plugins"))
-        .unwrap_or_else(|| agent_dir.join("plugins"));
-    discover_packages(&user_plugins, "user", &mut skills);
+    discover_packages(&plugins_root(agent_dir, None), "user", &mut skills);
     let user_mcp = agent_dir.join("mcp.json");
     if user_mcp.exists() {
-        match read_json_file(&user_mcp) {
+        match read_json_file(&user_mcp, "MCP settings") {
             Ok(value) => discover_mcp(&value, "user", &mut skills),
             Err(error) => warnings.push(PluginWarning {
                 scope: "user".to_string(),
@@ -339,35 +356,46 @@ fn mcp_file(agent_dir: &Path, project: Option<&Path>, scope: &str) -> Result<Pat
     }
 }
 
-fn write_json(path: &Path, value: &Value) -> Result<()> {
+fn plugins_root(agent_dir: &Path, project: Option<&Path>) -> PathBuf {
+    match project {
+        Some(project) => project.join(".omp").join("plugins"),
+        None => agent_dir
+            .parent()
+            .map(|root| root.join("plugins"))
+            .unwrap_or_else(|| agent_dir.join("plugins")),
+    }
+}
+
+fn write_json(path: &Path, value: &Value, label: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         if let Ok(metadata) = std::fs::symlink_metadata(parent)
             && metadata.file_type().is_symlink()
         {
-            return Err(CoreError::invalid(
-                "MCP settings directory must not be a symlink",
-            ));
+            return Err(CoreError::invalid(format!(
+                "{label} directory must not be a symlink"
+            )));
         }
-        std::fs::create_dir_all(parent)
-            .map_err(|error| CoreError::io("Could not create the MCP settings directory", error))?;
+        std::fs::create_dir_all(parent).map_err(|error| {
+            CoreError::io(&format!("Could not create the {label} directory"), error)
+        })?;
     }
     if let Ok(metadata) = std::fs::symlink_metadata(path)
         && metadata.file_type().is_symlink()
     {
-        return Err(CoreError::invalid("MCP settings must not be a symlink"));
+        return Err(CoreError::invalid(format!("{label} must not be a symlink")));
     }
     let serialized = format!("{}\n", serde_json::to_string_pretty(value)?);
     let temp = path.with_file_name(format!(
         "{}.{}.tmp",
         path.file_name()
             .and_then(|name| name.to_str())
-            .unwrap_or("mcp.json"),
+            .unwrap_or("settings.json"),
         std::process::id()
     ));
     std::fs::write(&temp, serialized)
-        .map_err(|error| CoreError::io("Could not write MCP settings", error))?;
+        .map_err(|error| CoreError::io(&format!("Could not write {label}"), error))?;
     std::fs::rename(&temp, path)
-        .map_err(|error| CoreError::io("Could not publish MCP settings", error))
+        .map_err(|error| CoreError::io(&format!("Could not publish {label}"), error))
 }
 
 fn valid_name(name: &str) -> bool {
@@ -652,6 +680,58 @@ pub fn mutate_capability(
             servers.remove(name);
         }
         write_json(&path, &file)?;
+        return Ok(json!({ "ok": true }));
+    }
+    if kind == "package" {
+        // `omp plugin enable|disable` records the switch in the plugin
+        // runtime lock next to the installed packages; discovery reads the
+        // same file so the row reflects what the CLI would load.
+        let enabled = match action {
+            "enable" => true,
+            "disable" => false,
+            _ => return Err(CoreError::invalid("Capability action is invalid")),
+        };
+        if name.is_empty() || name.chars().any(char::is_control) {
+            return Err(CoreError::invalid("Capability name is invalid"));
+        }
+        let root = plugins_root(agent_dir, project.as_deref());
+        let path = plugins_lock_file(&root);
+        let mut file = read_json_file(&path, "plugin settings")?;
+        if !file.is_object() {
+            file = json!({});
+        }
+        let installed = root
+            .join("node_modules")
+            .join(name)
+            .join("package.json")
+            .is_file();
+        let known = file
+            .get("plugins")
+            .and_then(Value::as_object)
+            .is_some_and(|plugins| plugins.contains_key(name));
+        if !installed && !known {
+            return Err(CoreError::invalid(format!(
+                "Package {name} is not installed"
+            )));
+        }
+        let root_object = file.as_object_mut().expect("object");
+        let plugins = root_object.entry("plugins").or_insert_with(|| json!({}));
+        if !plugins.is_object() {
+            *plugins = json!({});
+        }
+        let entry = plugins
+            .as_object_mut()
+            .expect("plugins object")
+            .entry(name.to_string())
+            .or_insert_with(|| json!({}));
+        if !entry.is_object() {
+            *entry = json!({});
+        }
+        entry
+            .as_object_mut()
+            .expect("package state")
+            .insert("enabled".to_string(), Value::Bool(enabled));
+        write_json(&path, &file, "plugin settings")?;
         return Ok(json!({ "ok": true }));
     }
     Ok(json!({ "ok": true }))

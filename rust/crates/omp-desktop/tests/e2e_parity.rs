@@ -516,16 +516,15 @@ fn plugin_catalog_discovers_project_skills(cx: &mut TestAppContext) {
         .expect("workspace window");
 }
 
-/// The Extensions page writes an MCP server's state to the file its row came
-/// from and reports what the refreshed catalog says.
+/// The Extensions page writes an MCP server's or package's state to the file
+/// its row came from and reports what the refreshed catalog says.
 ///
 /// The user and project rows go through the same `set_extension_enabled` the
-/// row's button calls. A package row is different: the core's
-/// `mutate_capability` accepts the request, so the page must not claim success
-/// when the refreshed catalog still draws the old state — that is the third
-/// assertion below, and the banner carries the failure.
+/// row's button calls. A package row writes the plugin runtime lock the CLI
+/// uses, so the refreshed catalog draws the new state and the page reports
+/// success.
 #[gpui_kit::test]
-fn extension_rows_toggle_mcp_servers_and_report_unapplied_changes(cx: &mut TestAppContext) {
+fn extension_rows_toggle_mcp_servers_and_packages(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let dir = tempfile::TempDir::new().expect("temp dir");
     let root = dir.path();
@@ -642,21 +641,35 @@ fn extension_rows_toggle_mcp_servers_and_report_unapplied_changes(cx: &mut TestA
             assert_eq!(user_config["disabledServers"], json!([]));
             assert_eq!(user_config["enabledServers"], json!(["docs"]));
 
-            // The core accepts a package mutation without changing what
-            // discovery reports, so the page reports the unapplied change
-            // instead of a success the row contradicts.
+            // A package row writes the plugin runtime lock the CLI uses, so
+            // discovery reports the new state and the page reports success.
             workspace.set_extension_enabled("demo-package", false, cx);
-            assert_eq!(row(workspace, "demo-package"), (true, "user".to_string()));
+            let lock = read(&home.join(".omp/plugins/omp-plugins.lock.json"));
+            assert_eq!(lock["plugins"]["demo-package"]["enabled"], json!(false));
+            assert_eq!(row(workspace, "demo-package"), (false, "user".to_string()));
             let snapshot = workspace.debug_snapshot(cx);
-            let error = snapshot["extensionStatus"]["error"]
-                .as_str()
-                .expect("package failure banner");
-            assert!(
-                error.starts_with("OMP could not update extensions:"),
-                "{error}"
+            assert_eq!(
+                snapshot["extensionStatus"]["status"],
+                json!("Extensions updated")
             );
-            assert!(error.contains("demo-package is still enabled"), "{error}");
-            assert!(snapshot["extensionStatus"]["status"].is_null());
+            assert!(snapshot["extensionStatus"]["error"].is_null());
+            assert_eq!(
+                snapshot["extensionStatus"]["rows"],
+                json!([
+                    { "name": "project-docs", "kind": "mcp", "enabled": false, "scope": "project" },
+                    { "name": "demo-package", "kind": "package", "enabled": false, "scope": "user" },
+                    { "name": "docs", "kind": "mcp", "enabled": true, "scope": "user" },
+                ])
+            );
+
+            workspace.set_extension_enabled("demo-package", true, cx);
+            let lock = read(&home.join(".omp/plugins/omp-plugins.lock.json"));
+            assert_eq!(lock["plugins"]["demo-package"]["enabled"], json!(true));
+            assert_eq!(row(workspace, "demo-package"), (true, "user".to_string()));
+            assert_eq!(
+                workspace.debug_snapshot(cx)["extensionStatus"]["status"],
+                json!("Extensions updated")
+            );
 
             // A name the catalog does not carry is refused before any file is
             // touched.
