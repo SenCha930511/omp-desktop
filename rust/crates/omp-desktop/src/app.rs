@@ -5,7 +5,7 @@ use std::time::Duration;
 use gpui_kit::InteractiveElement as _;
 use gpui_kit::StatefulInteractiveElement as _;
 use gpui_kit::assets::IconName;
-use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{ActiveTheme, Theme, ThemeMode};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -72,6 +72,8 @@ pub struct Workspace {
     runtime_error: Option<String>,
     selected_session: Option<usize>,
     composer: Entity<InputState>,
+    _composer_subscription: Subscription,
+    submit_requested: Option<bool>,
     view: AppView,
     plugin_catalog: Option<PluginCatalog>,
     plugin_error: Option<String>,
@@ -90,7 +92,17 @@ impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>, data: WorkspaceData) -> Self {
         let width = f32::from(window.bounds().size.width);
         let layout = data.geometry.resolve(width as f64);
-        let composer = cx.new(|cx| InputState::new(window, cx).placeholder("Ask OMP…"));
+        let composer = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Ask OMP…")
+                .submit_on_enter(true)
+        });
+        let composer_subscription = cx.subscribe(&composer, |this, _, event: &InputEvent, cx| {
+            if let InputEvent::PressEnter { secondary, .. } = event {
+                this.submit_requested = Some(*secondary);
+                cx.notify();
+            }
+        });
         let store = StateStore::open(
             data.user_data_dir.join(CURRENT_DESKTOP_STATE_FILENAME),
             Some(data.user_data_dir.join(LEGACY_DESKTOP_STATE_FILENAME)),
@@ -124,6 +136,8 @@ impl Workspace {
             runtime_error: None,
             selected_session: None,
             composer,
+            _composer_subscription: composer_subscription,
+            submit_requested: None,
             view: AppView::Workspace,
             plugin_catalog: None,
             plugin_error: None,
@@ -615,6 +629,15 @@ impl Workspace {
     }
 
     pub fn send_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.send_prompt_with_action(window, cx, false);
+    }
+
+    fn send_prompt_with_action(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        follow_up: bool,
+    ) {
         let text = self.composer.read(cx).value().to_string();
         if text.trim().is_empty() {
             return;
@@ -629,10 +652,10 @@ impl Workspace {
             self.turn_changes = TurnChanges::default();
             self.turn_baseline = self.capture_turn_baseline();
         }
-        match self
-            .agents
-            .command(&runtime_id, &json!({ "type": "prompt", "message": text }))
-        {
+        match self.agents.command(
+            &runtime_id,
+            &json!({ "type": if follow_up { "follow_up" } else { "prompt" }, "message": text }),
+        ) {
             Ok(response) if response.get("success").and_then(Value::as_bool) == Some(true) => {}
             Ok(response) => {
                 self.turn_baseline = None;
@@ -899,7 +922,7 @@ impl Workspace {
                     .gap_2()
                     .text_xs()
                     .text_color(colors.muted_foreground)
-                    .child("Enter to steer · Ctrl+Enter to queue")
+                    .child("Enter to send · Ctrl+Enter to follow up")
                     .child(div().flex_1())
                     .child({
                         let model = self.settings.last_selected_model();
@@ -1790,6 +1813,11 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(follow_up) = self.submit_requested.take() {
+            cx.defer_in(window, move |this, window, cx| {
+                this.send_prompt_with_action(window, cx, follow_up);
+            });
+        }
         self.track_bounds(window, cx);
         let colors = cx.theme().colors;
         let show_sidebar = self.layout.sidebar_docked;
