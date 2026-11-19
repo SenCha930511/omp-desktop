@@ -310,6 +310,8 @@ jobs:
         run: cargo install cargo-deny --locked --version 0.21.0
       - run: cargo deny check
       - name: Run workspace tests
+        env:
+          RUST_MIN_STACK: '16777216'
         run: |
           if [ "$RUNNER_OS" = "Linux" ]; then
             xvfb-run -a cargo test --workspace --locked

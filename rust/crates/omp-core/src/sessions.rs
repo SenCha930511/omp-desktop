@@ -163,7 +163,7 @@ fn timestamp_from_name(path: &Path) -> Option<DateTime<Utc>> {
     let hour = normalized.get(9..11)?;
     let minute = normalized.get(11..13)?;
     let second = normalized.get(13..15)?;
-    let millis = normalized.get(16..19).unwrap_or("000");
+    let millis = normalized.get(15..18).unwrap_or("000");
     let text = format!("{year}-{month}-{day}T{hour}:{minute}:{second}.{millis}Z");
     DateTime::parse_from_rfc3339(&text)
         .ok()
@@ -877,5 +877,20 @@ pub fn sync_delta(
         revision: revision.saturating_add(1),
         upserts,
         removals,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_the_millisecond_timestamp_from_a_bucketed_name() {
+        let path = Path::new("2026-03-01T00-00-00-000Z_019fdf24-aaaa-7000-8000-000000000001.jsonl");
+        let timestamp = timestamp_from_name(path).expect("timestamp");
+        assert_eq!(
+            timestamp.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            "2026-03-01T00:00:00.000Z"
+        );
     }
 }

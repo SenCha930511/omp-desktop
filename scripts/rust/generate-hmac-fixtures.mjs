@@ -26,6 +26,7 @@ const text = 'Please review the diff'
 
 const v1 = { version: 1, from_session_id: fromSessionId, from_title: 'Legacy Peer', from_harness: 'prime', nonce, sent_at: sentAt }
 const v1Reply = { version: 1, from_session_id: fromSessionId, from_title: 'Legacy Peer', from_harness: 'omp', reply_with: 'session_send', nonce, sent_at: sentAt }
+const v1Pi = { version: 1, from_session_id: fromSessionId, from_title: 'Legacy Pi Peer', from_harness: 'pi', nonce, sent_at: sentAt }
 const v2 = { version: 2, from_session_id: fromSessionId, reply_with: 'session_send', nonce, sent_at: sentAt }
 const v3 = { version: 3, from_session_id: fromSessionId, reply_with: 'gooeypi_session_send', nonce, sent_at: sentAt }
 
@@ -36,6 +37,7 @@ const fixtures = {
   cases: [
     { name: 'v1', envelope: envelope(v1, text) },
     { name: 'v1-reply', envelope: envelope(v1Reply, text) },
+    { name: 'v1-pi', envelope: envelope(v1Pi, text) },
     { name: 'v2', envelope: envelope(v2, text) },
     { name: 'v3', envelope: envelope(v3, text) },
   ],
