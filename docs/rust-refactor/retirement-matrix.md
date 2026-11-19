@@ -3,9 +3,9 @@
 The 88 Playwright scenarios in `tests/e2e/app.spec.ts` remain the Electron
 retirement gate. They run against the Electron application today. The Rust app
 does not yet have an equivalent Playwright harness, so the gate is **not closed**
-by the Rust unit and smoke tests below. The 60 Rust parity tests include several
+by the Rust unit and smoke tests below. The 93 Rust parity tests include several
 variants of the same Electron scenario, so the distinct-scenario count is about
-55, not 60.
+85, not 93.
 
 ## Rust evidence that exists
 
@@ -21,7 +21,7 @@ variants of the same Electron scenario, so the distinct-scenario count is about
 | Files, Subagents, Side Question | `Workspace` pane tests, `omp-core` project-file tests |
 | Tray | `tray.rs` tests, `--tray-smoke` on macOS; Linux tray construction |
 | Terminal | `terminal.rs` PTY helpers, tabs, per-session restore, panel render test |
-| Live voice | `app.rs` live-event helper tests, pane render test; dictation is not implemented |
+| Live voice | `app.rs` live-event helper tests, pane render test; dictation over RPC |
 | Updater feed | `prepare-rust-update-feed.mjs` validation tests; release.yml is not wired |
 | Ask user | `extension_ui_request` normalization, Ask pane, answer/cancel tests |
 | Capture | `render_to_image`, PNG save, status row, unit/parity tests |
@@ -42,13 +42,13 @@ variants of the same Electron scenario, so the distinct-scenario count is about
 | Parity harness | `tests/e2e_parity.rs`, 93 tests mapping to about 85 distinct scenarios; 3 browser UI tests are gated off Linux |
 | Updater | `updates.rs` state tests, Settings row render test |
 | Packaging | macOS `.app`, Linux `.deb`, Windows NSIS packaged-smoke CI jobs |
-| Conformance | 10 files, 20 tests against the Rust adapter on macOS, Linux, and Windows |
+| Conformance | 10 files, 21 tests against the Rust adapter on macOS, Linux, and Windows |
 
 ## Groups that remain unclosed
 
 - Wiring the updater feed and signatures into `release.yml`.
-- The remaining 3 Playwright scenarios, plus the final cutover gate,
-  notification capture, terminal selection context, and the responsive workspace.
+- The remaining 3 Playwright scenarios, notification capture, terminal selection
+  context, and the responsive workspace.
 - The final Electron cutover gate.
 
 Until the remaining Playwright matrix runs against the Rust app, the Electron
