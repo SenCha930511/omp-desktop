@@ -20,7 +20,7 @@ path = "src/main.rs"
 # to rustls even if the crate's defaults change.
 cargo-packager-updater = { version = "0.2.3", default-features = false, features = ["rustls-tls"] }
 chrono.workspace = true
-gpui-kit = { version = "0.10", default-features = false, features = ["component", "assets", "gpui-fast"] }
+gpui-kit = { version = "0.10", default-features = false, features = ["component", "assets", "gpui-fast", "test-support"] }
 # The Browser pane hosts a native webview. `gpui-webview`'s `gpui-fast` feature must
 # follow `gpui-kit`'s, which selects the GPUI backend (a mismatch fails to compile).
 gpui-webview = { version = "0.10", default-features = false, features = ["gpui-fast"] }
