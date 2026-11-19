@@ -31,6 +31,9 @@ use serde_json::{Value, json};
 mod browser;
 
 use browser::BrowserPane;
+use updates::UpdateCheckState;
+#[path = "updates.rs"]
+mod updates;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppView {
@@ -106,6 +109,8 @@ pub struct Workspace {
     review_error: Option<String>,
     last_bounds: Option<(f32, f32, f32, f32)>,
     save_task: Option<Task<()>>,
+    update_check: UpdateCheckState,
+    update_task: Option<Task<()>>,
 }
 
 impl Workspace {
@@ -175,6 +180,8 @@ impl Workspace {
             review_error: None,
             last_bounds: None,
             save_task: None,
+            update_check: updates::initial_state(),
+            update_task: None,
         };
         workspace.start_scheduler(cx);
         workspace
@@ -1263,6 +1270,36 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Check the release feed off the UI thread and reflect the outcome in the
+    /// Settings row. This only reads the feed; it never downloads or installs.
+    fn start_update_check(&mut self, cx: &mut Context<Self>) {
+        if self.update_check == UpdateCheckState::Checking {
+            return;
+        }
+        let configured = updates::is_configured();
+        if !configured {
+            // No feed or public key in this build: say so instead of opening a
+            // socket to a release that does not exist yet.
+            self.update_check = UpdateCheckState::Unconfigured;
+            cx.notify();
+            return;
+        }
+        self.update_check = UpdateCheckState::Checking;
+        cx.notify();
+        // The check blocks on the network, so it runs on the background
+        // executor; only the state update touches GPUI.
+        self.update_task = Some(cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async { updates::check() })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.update_check = updates::state_for_result(configured, result);
+                cx.notify();
+            });
+        }));
+    }
+
     fn settings_row(
         &self,
         label: &'static str,
@@ -1852,6 +1889,9 @@ impl Workspace {
                     .text_sm()
                     .child(format!("OMP Desktop {} · Rust/GPUI", env!("CARGO_PKG_VERSION"))),
             )
+            .child(self.settings_row("Check for updates", self.update_check.label(), colors, cx, |this, _window, cx| {
+                this.start_update_check(cx);
+            }))
     }
 
     fn right_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2446,5 +2486,76 @@ impl Render for Workspace {
             .when(self.menu_open && !browser_visible, |element| {
                 element.child(self.session_menu(cx))
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Imported explicitly: `use super::*` would also pull in `gpui_kit`'s
+    // `test` attribute macro, which shadows the built-in one and does not
+    // expand under this crate root's default `recursion_limit`.
+    use gpui_kit::AppContext as _;
+    use std::path::PathBuf;
+
+    use omp_core::geometry::UiGeometry;
+    use omp_core::settings::AppSettings;
+
+    use super::{AppView, UpdateCheckState, Workspace, WorkspaceData, updates};
+
+    /// The Settings page must render the update row, and an unconfigured build
+    /// must land on the "not configured" label instead of touching the network.
+    #[test]
+    fn settings_page_renders_the_update_row() {
+        let mut cx = gpui_kit::TestAppContext::single();
+        cx.update(gpui_kit::init);
+        let root = tempfile::TempDir::new().expect("test root").keep();
+        let handle = cx.add_window(|window, cx| {
+            Workspace::new(
+                window,
+                cx,
+                WorkspaceData {
+                    geometry: UiGeometry::default(),
+                    geometry_path: root.join("ui-geometry.json"),
+                    home_dir: root.clone(),
+                    user_data_dir: root.clone(),
+                    omp_executable: PathBuf::from("omp"),
+                    settings: AppSettings::default(),
+                    projects: Vec::new(),
+                    sessions: Vec::new(),
+                },
+            )
+        });
+        let configured = updates::is_configured();
+        let (state, spawned) = handle
+            .update(&mut cx, |workspace, _, cx| {
+                workspace.view = AppView::Settings;
+                if !configured {
+                    workspace.start_update_check(cx);
+                }
+                (
+                    workspace.update_check.clone(),
+                    workspace.update_task.is_some(),
+                )
+            })
+            .expect("workspace window");
+        cx.update(|cx| {
+            cx.update_window(handle.into(), |_, window, cx| {
+                // Drawing the Settings page is what exercises the row: it
+                // builds every ABOUT row, including this one. Element queries
+                // are opt-in (`.test_support()`) and unused in this app.
+                window.draw(cx).clear(cx);
+            })
+            .expect("draw settings frame");
+        });
+        cx.quit();
+        if configured {
+            // A build with a real feed would check the network on click; the
+            // suite never triggers that, and only the offline path is asserted.
+            return;
+        }
+        assert_eq!(state, UpdateCheckState::Unconfigured);
+        assert_eq!(state.label(), "not configured");
+        // Nothing was queued: an unconfigured build does no network work at all.
+        assert!(!spawned);
     }
 }

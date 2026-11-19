@@ -14,6 +14,11 @@ name = "omp-desktop"
 path = "src/main.rs"
 
 [dependencies]
+# Update checks (src/updates.rs) only read the release feed and verify its minisign
+# signature; the app never downloads or installs from the updater. The default
+# feature is `rustls-tls`; both sides are spelled out so the TLS stack stays pinned
+# to rustls even if the crate's defaults change.
+cargo-packager-updater = { version = "0.2.3", default-features = false, features = ["rustls-tls"] }
 chrono.workspace = true
 gpui-kit = { version = "0.10", default-features = false, features = ["component", "assets", "gpui-fast"] }
 # The Browser pane hosts a native webview. `gpui-webview`'s `gpui-fast` feature must
