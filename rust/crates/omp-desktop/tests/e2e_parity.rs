@@ -15,6 +15,7 @@
 //! position or spawn a shell or an agent.
 
 use gpui_kit::AppContext as _;
+use gpui_kit::ClipboardItem;
 use gpui_kit::Context;
 use gpui_kit::Focusable as _;
 use gpui_kit::MouseButton;
@@ -22,7 +23,7 @@ use gpui_kit::TestAppContext;
 use gpui_kit::point;
 use gpui_kit::px;
 use gpui_kit::size;
-use gpui_kit::test::TestEventExt as _;
+use gpui_kit::test::{TestEventExt as _, TestWindowExt as _};
 use omp_core::geometry::{CENTER_MIN_WIDTH, UiGeometry};
 use omp_core::settings::{AppSettings, ConversationDensity, MessageEnterAction, Theme};
 use omp_core::state::{CURRENT_DESKTOP_STATE_FILENAME, NotificationRecord, Platform, StateStore};
@@ -1974,6 +1975,103 @@ fn transcript_preserves_roles_and_part_order(cx: &mut TestAppContext) {
             assert_eq!(result.is_error, Some(false));
         })
         .expect("workspace window");
+}
+
+/// The toolbar's Copy transcript action writes the visible transcript to the
+/// clipboard as one block per message; an empty transcript leaves whatever the
+/// clipboard already held untouched.
+#[gpui_kit::test]
+fn copy_transcript_writes_the_visible_text_and_no_ops_when_empty(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let home = root.join("home");
+    let bucket = home.join(".omp/agent/sessions/-omp-project");
+    let project = root.join("project");
+    let at = "2026-04-01T01:00:00.000Z";
+    write_session_entries(
+        &bucket,
+        "2026-04-01T00-00-00-000Z_019fdf24-c111-7000-8000-000000000013.jsonl",
+        "Copyable",
+        at,
+        &[
+            json!({
+                "type": "message",
+                "id": "u1",
+                "parentId": null,
+                "timestamp": at,
+                "message": { "role": "user", "content": "summarize the file" },
+            }),
+            json!({
+                "type": "message",
+                "id": "a1",
+                "parentId": "u1",
+                "timestamp": at,
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        { "type": "thinking", "thinking": "look first" },
+                        { "type": "text", "text": "reading it" },
+                    ],
+                },
+            }),
+        ],
+        &project,
+    );
+
+    let store = open_store(root);
+    let catalog = omp_core::sessions::list_sessions(&store, &home, false, None);
+    drop(store);
+    assert_eq!(catalog.len(), 1);
+
+    let mut data = test_data(root);
+    data.home_dir = home;
+    data.sessions = catalog;
+    let handle = cx.open_window(size(px(1280.0), px(800.0)), |window, cx| {
+        Workspace::new(window, cx, data)
+    });
+    handle
+        .update(cx, |workspace, _, cx| workspace.select_session(0, cx))
+        .expect("workspace window");
+
+    // The sentinel makes "nothing written" observable, not just "old text gone".
+    cx.write_to_clipboard(ClipboardItem::new_string("untouched".to_string()));
+    handle
+        .update(cx, |workspace, _, cx| workspace.copy_transcript(cx))
+        .expect("copy transcript");
+    assert_eq!(
+        cx.read_from_clipboard()
+            .and_then(|item| item.text())
+            .as_deref(),
+        Some("You\nsummarize the file\n\nOMP\nlook first\nreading it")
+    );
+
+    // The toolbar draws the button over a live transcript; the copy above is
+    // its handler, reached here without a measured click.
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+        })
+        .expect("transcript frame");
+    });
+
+    // No session means no transcript: copying leaves the sentinel in place.
+    let empty = tempfile::TempDir::new().expect("empty root");
+    let empty_handle =
+        cx.add_window(|window, cx| Workspace::new(window, cx, test_data(empty.path())));
+    cx.write_to_clipboard(ClipboardItem::new_string("untouched".to_string()));
+    empty_handle
+        .update(cx, |workspace, _, cx| {
+            assert!(workspace.transcript_messages().is_empty());
+            workspace.copy_transcript(cx);
+        })
+        .expect("empty workspace window");
+    assert_eq!(
+        cx.read_from_clipboard()
+            .and_then(|item| item.text())
+            .as_deref(),
+        Some("untouched")
+    );
 }
 
 /// A compaction record renders as a system message, and its token counts and

@@ -398,6 +398,18 @@ impl Workspace {
         &self.transcript
     }
 
+    /// Copies the visible transcript as plain text, one block per message.
+    ///
+    /// The toolbar's `Copy transcript` button and the parity harness both call
+    /// this; an empty transcript leaves the clipboard untouched.
+    pub fn copy_transcript(&self, cx: &mut Context<Self>) {
+        let text = transcript_clipboard_text(&self.transcript);
+        if text.is_empty() {
+            return;
+        }
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+    }
+
     pub fn composer_entity(&self) -> &Entity<InputState> {
         &self.composer
     }
@@ -851,6 +863,21 @@ impl Workspace {
                     .text_xs()
                     .text_color(colors.accent_foreground)
                     .child("idle"),
+            )
+            .child(
+                div()
+                    .id("copy-transcript")
+                    .aria_label("Copy transcript")
+                    .px_2()
+                    .py_0p5()
+                    .rounded(px(6.0))
+                    .border_1()
+                    .border_color(colors.border)
+                    .text_xs()
+                    .text_color(colors.foreground)
+                    .hover(|style| style.bg(colors.accent))
+                    .child("Copy transcript")
+                    .on_click(cx.listener(|this, _, _, cx| this.copy_transcript(cx))),
             )
             .child(div().flex_1())
             .child(self.toolbar_icon(
@@ -2278,15 +2305,6 @@ impl Workspace {
             .gap_4()
             .p_6()
             .children(self.transcript.iter().map(|message| {
-                let role = match message.role.as_str() {
-                    "user" => "You".to_string(),
-                    "assistant" => "OMP".to_string(),
-                    "agent" => message
-                        .agent_name
-                        .clone()
-                        .unwrap_or_else(|| "Agent".to_string()),
-                    other => other.to_string(),
-                };
                 div()
                     .flex()
                     .flex_col()
@@ -2296,26 +2314,13 @@ impl Workspace {
                             .text_xs()
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(colors.muted_foreground)
-                            .child(role),
+                            .child(transcript_role_label(message)),
                     )
                     .children(message.parts.iter().map(|part| {
-                        let text = match part.kind.as_str() {
-                            "text" => part.text.clone().unwrap_or_default(),
-                            "thinking" => part.text.clone().unwrap_or_default(),
-                            "toolCall" => format!(
-                                "⚙ {}",
-                                part.name.clone().unwrap_or_else(|| "tool".to_string())
-                            ),
-                            "toolResult" => format!("↳ {}", part.text.clone().unwrap_or_default()),
-                            "compaction" => format!(
-                                "Context compacted · {} → {} tokens",
-                                part.tokens_before.unwrap_or(0),
-                                part.tokens_after.unwrap_or(0)
-                            ),
-                            "image" => "[image]".to_string(),
-                            other => format!("[{other}]"),
-                        };
-                        div().text_sm().text_color(colors.foreground).child(text)
+                        div()
+                            .text_sm()
+                            .text_color(colors.foreground)
+                            .child(transcript_part_text(part))
                     }))
             }))
             .into_any_element()
@@ -4744,6 +4749,62 @@ fn append_clipboard_text(current: &str, clipboard: &str) -> String {
         next.push_str(line.trim_end_matches('\r'));
     }
     next
+}
+
+/// The transcript's name for a message's author: the two known roles are
+/// relabelled, an agent carries its own name, and anything else keeps its role.
+fn transcript_role_label(message: &TranscriptMessage) -> String {
+    match message.role.as_str() {
+        "user" => "You".to_string(),
+        "assistant" => "OMP".to_string(),
+        "agent" => message
+            .agent_name
+            .clone()
+            .unwrap_or_else(|| "Agent".to_string()),
+        other => other.to_string(),
+    }
+}
+
+/// The text the transcript draws for one part: text and thinking as written,
+/// tool calls and results with their glyphs, compaction as its token counts.
+fn transcript_part_text(part: &TranscriptPart) -> String {
+    match part.kind.as_str() {
+        "text" | "thinking" => part.text.clone().unwrap_or_default(),
+        "toolCall" => format!(
+            "⚙ {}",
+            part.name.clone().unwrap_or_else(|| "tool".to_string())
+        ),
+        "toolResult" => format!("↳ {}", part.text.clone().unwrap_or_default()),
+        "compaction" => format!(
+            "Context compacted · {} → {} tokens",
+            part.tokens_before.unwrap_or(0),
+            part.tokens_after.unwrap_or(0)
+        ),
+        "image" => "[image]".to_string(),
+        other => format!("[{other}]"),
+    }
+}
+
+/// The plain text `Copy transcript` puts on the clipboard: one block per
+/// message, its author line followed by the parts the transcript shows, with a
+/// blank line between blocks. A message with no visible part text contributes
+/// nothing, so an empty transcript yields an empty string and copying no-ops.
+fn transcript_clipboard_text(messages: &[TranscriptMessage]) -> String {
+    let mut blocks: Vec<String> = Vec::new();
+    for message in messages {
+        let mut lines = vec![transcript_role_label(message)];
+        lines.extend(
+            message
+                .parts
+                .iter()
+                .map(transcript_part_text)
+                .filter(|text| !text.is_empty()),
+        );
+        if lines.len() > 1 {
+            blocks.push(lines.join("\n"));
+        }
+    }
+    blocks.join("\n\n")
 }
 
 /// Draws the terminal panel's tab bar: one tab per shell, then a `+` button.
