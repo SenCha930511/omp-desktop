@@ -78,6 +78,25 @@ pub struct TranscriptPart {
     pub summary: Option<String>,
 }
 
+impl TranscriptPart {
+    pub fn text(text: impl Into<String>) -> Self {
+        Self {
+            kind: "text".to_string(),
+            text: Some(text.into()),
+            id: None,
+            name: None,
+            args: None,
+            mime_type: None,
+            data: None,
+            is_error: None,
+            status: None,
+            tokens_before: None,
+            tokens_after: None,
+            summary: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TranscriptMessage {

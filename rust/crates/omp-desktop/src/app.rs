@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use gpui_kit::assets::IconName;
@@ -6,11 +7,17 @@ use gpui_kit::component::ActiveTheme;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use omp_core::agent::AgentManager;
 use omp_core::geometry::{ResolvedLayout, UiGeometry};
+use omp_core::models::CliContext;
 use omp_core::projects::ProjectRecord;
-use omp_core::sessions::SessionRecord;
+use omp_core::sessions::{self, SessionRecord, TranscriptMessage, TranscriptPart};
 use omp_core::settings::AppSettings;
+use omp_core::state::{
+    CURRENT_DESKTOP_STATE_FILENAME, LEGACY_DESKTOP_STATE_FILENAME, Platform, StateStore,
+};
 use omp_core::turn_changes::TurnChanges;
+use serde_json::{Value, json};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RightPane {
@@ -26,6 +33,9 @@ enum RightPane {
 pub struct WorkspaceData {
     pub geometry: UiGeometry,
     pub geometry_path: PathBuf,
+    pub home_dir: PathBuf,
+    pub user_data_dir: PathBuf,
+    pub omp_executable: PathBuf,
     pub settings: AppSettings,
     pub projects: Vec<ProjectRecord>,
     pub sessions: Vec<SessionRecord>,
@@ -34,10 +44,20 @@ pub struct WorkspaceData {
 pub struct Workspace {
     geometry: UiGeometry,
     geometry_path: PathBuf,
+    home_dir: PathBuf,
+    user_data_dir: PathBuf,
+    omp_executable: PathBuf,
+    store: Option<Arc<Mutex<StateStore>>>,
+    agents: AgentManager,
+    runtime_id: Option<String>,
+    streaming_index: Option<usize>,
+    drain_task: Option<Task<()>>,
     layout: ResolvedLayout,
     settings: AppSettings,
     projects: Vec<ProjectRecord>,
     sessions: Vec<SessionRecord>,
+    transcript: Vec<TranscriptMessage>,
+    transcript_error: Option<String>,
     selected_session: Option<usize>,
     composer: Entity<InputState>,
     right_pane: RightPane,
@@ -53,13 +73,30 @@ impl Workspace {
         let width = f32::from(window.bounds().size.width);
         let layout = data.geometry.resolve(width as f64);
         let composer = cx.new(|cx| InputState::new(window, cx).placeholder("Ask OMP…"));
+        let store = StateStore::open(
+            data.user_data_dir.join(CURRENT_DESKTOP_STATE_FILENAME),
+            Some(data.user_data_dir.join(LEGACY_DESKTOP_STATE_FILENAME)),
+            Platform::current(),
+        )
+        .ok()
+        .map(|store| Arc::new(Mutex::new(store)));
         Self {
             geometry: data.geometry,
             geometry_path: data.geometry_path,
+            home_dir: data.home_dir,
+            user_data_dir: data.user_data_dir,
+            omp_executable: data.omp_executable,
+            store,
+            agents: AgentManager::default(),
+            runtime_id: None,
+            streaming_index: None,
+            drain_task: None,
             layout,
             settings: data.settings,
             projects: data.projects,
             sessions: data.sessions,
+            transcript: Vec::new(),
+            transcript_error: None,
             selected_session: None,
             composer,
             right_pane: RightPane::Launcher,
@@ -73,6 +110,14 @@ impl Workspace {
 
     pub fn layout(&self) -> &ResolvedLayout {
         &self.layout
+    }
+
+    pub fn transcript_messages(&self) -> &[TranscriptMessage] {
+        &self.transcript
+    }
+
+    pub fn composer_entity(&self) -> &Entity<InputState> {
+        &self.composer
     }
 
     fn track_bounds(&mut self, window: &Window, cx: &mut Context<Self>) {
@@ -297,18 +342,208 @@ impl Workspace {
             .on_click(on_click)
     }
 
+    pub fn select_session(&mut self, index: usize, cx: &mut Context<Self>) {
+        if let Some(runtime_id) = self.runtime_id.take() {
+            self.agents.stop(&runtime_id);
+        }
+        self.streaming_index = None;
+        self.selected_session = Some(index);
+        self.transcript.clear();
+        self.transcript_error = None;
+        if let Some(session) = self.sessions.get(index) {
+            let root = sessions::session_root(&self.home_dir);
+            match sessions::read_transcript(&root, &session.file_path) {
+                Ok(messages) => self.transcript = messages,
+                Err(error) => self.transcript_error = Some(error.message),
+            }
+        }
+        self.ensure_runtime(cx);
+        cx.notify();
+    }
+
+    fn ensure_runtime(&mut self, cx: &mut Context<Self>) {
+        if self.runtime_id.is_some() {
+            return;
+        }
+        let Some(store) = self.store.clone() else {
+            return;
+        };
+        let Some(index) = self.selected_session else {
+            return;
+        };
+        let Some(session) = self.sessions.get(index) else {
+            return;
+        };
+        let cwd = session.project_path.clone();
+        let session_path = session.file_path.clone();
+        let context = CliContext {
+            executable: self.omp_executable.clone(),
+            home_dir: self.home_dir.clone(),
+            root_dir: self.user_data_dir.clone(),
+            extra_env: Vec::new(),
+        };
+        let store = store.lock().expect("state lock");
+        match self.agents.start(
+            &store,
+            Platform::current(),
+            &context,
+            &json!({ "cwd": cwd, "sessionPath": session_path }),
+        ) {
+            Ok(info) => {
+                self.runtime_id = info
+                    .get("runtimeId")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                self.start_drain(cx);
+            }
+            Err(error) => self.transcript_error = Some(error.message),
+        }
+    }
+
+    fn start_drain(&mut self, cx: &mut Context<Self>) {
+        if self.drain_task.is_some() {
+            return;
+        }
+        self.drain_task = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(50))
+                    .await;
+                if this
+                    .update(cx, |this, cx| {
+                        this.drain_agent_events();
+                        cx.notify();
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }));
+    }
+
+    pub fn drain_agent_events(&mut self) {
+        let Some(runtime_id) = self.runtime_id.clone() else {
+            return;
+        };
+        for envelope in self.agents.drain_events(Some(&runtime_id)) {
+            let event = &envelope["event"];
+            match event.get("type").and_then(Value::as_str) {
+                Some("message_update") => {
+                    if let Some(delta) = event
+                        .pointer("/assistantMessageEvent/delta")
+                        .and_then(Value::as_str)
+                    {
+                        self.append_assistant_delta(delta);
+                    }
+                }
+                Some("agent_end") => self.streaming_index = None,
+                Some("compaction_end") => {
+                    let before = event
+                        .get("result")
+                        .and_then(|result| result.get("tokensBefore"))
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0);
+                    let after = event
+                        .get("result")
+                        .and_then(|result| result.get("tokensAfter"))
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0);
+                    self.transcript.push(TranscriptMessage {
+                        id: format!("compaction-{}", self.transcript.len()),
+                        role: "system".to_string(),
+                        timestamp: None,
+                        agent_name: None,
+                        parts: vec![TranscriptPart {
+                            kind: "compaction".to_string(),
+                            tokens_before: Some(before),
+                            tokens_after: Some(after),
+                            status: Some("done".to_string()),
+                            ..TranscriptPart::text("")
+                        }],
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn append_assistant_delta(&mut self, delta: &str) {
+        let index = match self.streaming_index {
+            Some(index) => index,
+            None => {
+                self.transcript.push(TranscriptMessage {
+                    id: format!("assistant-{}", self.transcript.len()),
+                    role: "assistant".to_string(),
+                    timestamp: None,
+                    agent_name: None,
+                    parts: vec![TranscriptPart::text("")],
+                });
+                let index = self.transcript.len() - 1;
+                self.streaming_index = Some(index);
+                index
+            }
+        };
+        if let Some(message) = self.transcript.get_mut(index)
+            && let Some(part) = message.parts.first_mut()
+        {
+            let text = part.text.get_or_insert_with(String::new);
+            text.push_str(delta);
+        }
+    }
+
+    pub fn send_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.composer.read(cx).value().to_string();
+        if text.trim().is_empty() {
+            return;
+        }
+        let Some(runtime_id) = self.runtime_id.clone() else {
+            self.transcript_error =
+                Some("Select a granted project session before sending a prompt.".to_string());
+            cx.notify();
+            return;
+        };
+        if let Err(error) = self
+            .agents
+            .command(&runtime_id, &json!({ "type": "prompt", "message": text }))
+        {
+            self.transcript_error = Some(error.message);
+            cx.notify();
+            return;
+        }
+        self.transcript.push(TranscriptMessage {
+            id: format!("user-{}", self.transcript.len()),
+            role: "user".to_string(),
+            timestamp: None,
+            agent_name: None,
+            parts: vec![TranscriptPart::text(text)],
+        });
+        let composer = self.composer.clone();
+        composer.update(cx, |state, cx| state.set_value("", window, cx));
+        cx.notify();
+    }
+
     fn transcript(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.theme().colors;
-        let messages = self
-            .selected_session
-            .and_then(|index| self.sessions.get(index))
-            .map(|session| {
-                vec![
-                    ("You", session.preview.clone().unwrap_or_else(|| "Start a conversation with OMP.".to_string())),
-                    ("OMP", "The native Rust workspace is running. Connect a session to stream the transcript.".to_string()),
-                ]
-            })
-            .unwrap_or_else(|| vec![("OMP", "Select a session or create a new one.".to_string())]);
+        if let Some(error) = &self.transcript_error {
+            return div()
+                .p_6()
+                .text_sm()
+                .text_color(colors.danger)
+                .child(error.clone());
+        }
+        if self.transcript.is_empty() {
+            let text = if self.selected_session.is_some() {
+                "This session has no renderable messages yet."
+            } else {
+                "Select a session or create a new one."
+            };
+            return div()
+                .p_6()
+                .text_sm()
+                .text_color(colors.muted_foreground)
+                .child(text);
+        }
         div()
             .flex()
             .flex_col()
@@ -316,7 +551,16 @@ impl Workspace {
             .overflow_hidden()
             .gap_4()
             .p_6()
-            .children(messages.into_iter().map(|(role, text)| {
+            .children(self.transcript.iter().map(|message| {
+                let role = match message.role.as_str() {
+                    "user" => "You".to_string(),
+                    "assistant" => "OMP".to_string(),
+                    "agent" => message
+                        .agent_name
+                        .clone()
+                        .unwrap_or_else(|| "Agent".to_string()),
+                    other => other.to_string(),
+                };
                 div()
                     .flex()
                     .flex_col()
@@ -328,7 +572,24 @@ impl Workspace {
                             .text_color(colors.muted_foreground)
                             .child(role),
                     )
-                    .child(div().text_sm().text_color(colors.foreground).child(text))
+                    .children(message.parts.iter().map(|part| {
+                        let text = match part.kind.as_str() {
+                            "text" => part.text.clone().unwrap_or_default(),
+                            "toolCall" => format!(
+                                "⚙ {}",
+                                part.name.clone().unwrap_or_else(|| "tool".to_string())
+                            ),
+                            "toolResult" => format!("↳ {}", part.text.clone().unwrap_or_default()),
+                            "compaction" => format!(
+                                "Context compacted · {} → {} tokens",
+                                part.tokens_before.unwrap_or(0),
+                                part.tokens_after.unwrap_or(0)
+                            ),
+                            "image" => "[image]".to_string(),
+                            other => format!("[{other}]"),
+                        };
+                        div().text_sm().text_color(colors.foreground).child(text)
+                    }))
             }))
     }
 
@@ -387,7 +648,27 @@ impl Workspace {
             .p_4()
             .border_t_1()
             .border_color(colors.border)
-            .child(Input::new(&self.composer))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(div().flex_1().child(Input::new(&self.composer)))
+                    .child(
+                        div()
+                            .id("send-prompt")
+                            .px_3()
+                            .py_1()
+                            .rounded(px(6.0))
+                            .bg(colors.primary)
+                            .text_color(colors.primary_foreground)
+                            .text_sm()
+                            .child("Send")
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.send_prompt(window, cx)),
+                            ),
+                    ),
+            )
             .child(
                 div()
                     .flex()

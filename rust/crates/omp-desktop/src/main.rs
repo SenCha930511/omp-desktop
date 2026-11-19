@@ -42,6 +42,22 @@ fn parse_arg(args: &[String], prefix: &str) -> Option<String> {
         .find_map(|arg| arg.strip_prefix(prefix).map(str::to_string))
 }
 
+fn resolve_omp_executable(settings: &omp_core::settings::AppSettings) -> PathBuf {
+    let configured = settings.omp_runtime_path();
+    if !configured.is_empty() {
+        return PathBuf::from(configured);
+    }
+    if let Some(path) = std::env::var_os("PATH") {
+        for directory in std::env::split_paths(&path) {
+            let candidate = directory.join("omp");
+            if candidate.is_file() {
+                return candidate;
+            }
+        }
+    }
+    PathBuf::from("omp")
+}
+
 fn load_workspace_data(user_data_dir: &Path) -> WorkspaceData {
     let home = omp_core::paths::home_dir();
     let state_path = user_data_dir.join(CURRENT_DESKTOP_STATE_FILENAME);
@@ -59,6 +75,9 @@ fn load_workspace_data(user_data_dir: &Path) -> WorkspaceData {
     WorkspaceData {
         geometry,
         geometry_path,
+        home_dir: home,
+        user_data_dir: user_data_dir.to_path_buf(),
+        omp_executable: resolve_omp_executable(&settings),
         settings,
         projects: project_records,
         sessions: session_records,
