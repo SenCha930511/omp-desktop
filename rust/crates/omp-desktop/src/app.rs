@@ -10,7 +10,7 @@ use gpui_kit::*;
 use omp_core::agent::AgentManager;
 use omp_core::geometry::{ResolvedLayout, UiGeometry};
 use omp_core::models::CliContext;
-use omp_core::projects::ProjectRecord;
+use omp_core::projects::{self, ProjectRecord};
 use omp_core::sessions::{self, SessionRecord, TranscriptMessage, TranscriptPart};
 use omp_core::settings::AppSettings;
 use omp_core::state::{
@@ -118,6 +118,10 @@ impl Workspace {
 
     pub fn composer_entity(&self) -> &Entity<InputState> {
         &self.composer
+    }
+
+    pub fn projects(&self) -> &[ProjectRecord] {
+        &self.projects
     }
 
     fn track_bounds(&mut self, window: &Window, cx: &mut Context<Self>) {
@@ -358,6 +362,46 @@ impl Workspace {
             }
         }
         self.ensure_runtime(cx);
+        cx.notify();
+    }
+
+    pub fn add_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let _ = window;
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Add project folder".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = receiver.await
+                && let Some(path) = paths.first().cloned()
+            {
+                let _ = this.update(cx, |this, cx| this.grant_project(&path, cx));
+            }
+        })
+        .detach();
+    }
+
+    pub fn grant_project(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
+        let Some(store) = self.store.clone() else {
+            self.transcript_error = Some("The desktop state store is unavailable.".to_string());
+            cx.notify();
+            return;
+        };
+        let mut store = store.lock().expect("state lock");
+        match projects::grant_project(
+            &mut store,
+            &self.home_dir,
+            Platform::current(),
+            &path.display().to_string(),
+        ) {
+            Ok(_) => {
+                self.projects = projects::list_projects(&store);
+                self.transcript_error = None;
+            }
+            Err(error) => self.transcript_error = Some(error.message),
+        }
         cx.notify();
     }
 

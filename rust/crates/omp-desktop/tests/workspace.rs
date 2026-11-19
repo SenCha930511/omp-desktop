@@ -209,3 +209,21 @@ fn sends_a_prompt_through_the_real_omp_fixture(cx: &mut TestAppContext) {
         })
         .expect("workspace window");
 }
+
+#[gpui_kit::test]
+fn grants_a_project_into_the_persisted_store(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let root = tempfile::TempDir::new().expect("test root");
+    let project = root.path().join("workspace");
+    std::fs::create_dir_all(&project).expect("project");
+    let mut data = test_data(UiGeometry::default());
+    data.home_dir = root.path().to_path_buf();
+    data.user_data_dir = root.path().join("user-data");
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.grant_project(&project, cx);
+            assert_eq!(workspace.projects().len(), 1);
+        })
+        .expect("workspace window");
+}
