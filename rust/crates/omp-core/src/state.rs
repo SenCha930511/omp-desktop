@@ -19,6 +19,10 @@ const MAX_ARCHIVED_SESSIONS: usize = 5_000;
 const MAX_PINNED_SESSIONS: usize = 500;
 const MAX_DISMISSED_PROJECT_PATHS: usize = 1_024;
 const MAX_SCHEDULES: usize = 500;
+const MAX_NOTIFICATIONS: usize = 200;
+const MAX_NOTIFICATION_ID_CHARS: usize = 256;
+const MAX_NOTIFICATION_TITLE_CHARS: usize = 200;
+const MAX_NOTIFICATION_BODY_CHARS: usize = 4_000;
 const WINDOWS_LEGACY_TOMBSTONE_KEY: &str = "gooeyPiV4Migration";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -206,6 +210,21 @@ pub struct AutomationScheduleRecord {
     pub unknown: BTreeMap<String, Value>,
 }
 
+/// One entry in the in-app activity list. The Electron app keeps this list
+/// across reloads and lets the user clear it, so it lives in the state file
+/// next to the sessions and schedules.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationRecord {
+    pub id: String,
+    pub title: String,
+    pub body: String,
+    pub created_at: String,
+    pub read: bool,
+    #[serde(flatten)]
+    pub unknown: BTreeMap<String, Value>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DesktopState {
@@ -216,6 +235,8 @@ pub struct DesktopState {
     pub pinned_sessions: Vec<String>,
     pub dismissed_project_paths: Vec<String>,
     pub schedules: Vec<AutomationScheduleRecord>,
+    /// Absent in older state files, where it parses as an empty list.
+    pub notifications: Vec<NotificationRecord>,
     #[serde(flatten)]
     pub unknown: BTreeMap<String, Value>,
 }
@@ -230,6 +251,7 @@ impl Default for DesktopState {
             pinned_sessions: Vec::new(),
             dismissed_project_paths: Vec::new(),
             schedules: Vec::new(),
+            notifications: Vec::new(),
             unknown: BTreeMap::new(),
         }
     }
@@ -589,6 +611,24 @@ pub fn parse_schedule(value: &Value, pre_harness: bool) -> Option<AutomationSche
     })
 }
 
+fn parse_notification(value: &Value) -> Option<NotificationRecord> {
+    let record = value.as_object()?;
+    let id = bounded_string(record.get("id"), MAX_NOTIFICATION_ID_CHARS, false)
+        .filter(|text| !text.contains('\0'))?;
+    let title = bounded_string(record.get("title"), MAX_NOTIFICATION_TITLE_CHARS, false)
+        .filter(|text| !text.contains('\0'))?;
+    Some(NotificationRecord {
+        id,
+        title,
+        body: bounded_string(record.get("body"), MAX_NOTIFICATION_BODY_CHARS, true)
+            .filter(|text| !text.contains('\0'))
+            .unwrap_or_default(),
+        created_at: valid_date(record.get("createdAt"))?,
+        read: record.get("read").and_then(Value::as_bool).unwrap_or(false),
+        unknown: unknown_fields(record, &["id", "title", "body", "createdAt", "read"]),
+    })
+}
+
 pub fn parse_state(value: &Value, path: &str) -> Result<(u32, DesktopState)> {
     let record = value.as_object().ok_or_else(|| {
         CoreError::new(
@@ -700,6 +740,24 @@ pub fn parse_state(value: &Value, path: &str) -> Result<(u32, DesktopState)> {
         dismissed_project_paths = dismissed_project_paths
             .split_off(dismissed_project_paths.len() - MAX_DISMISSED_PROJECT_PATHS);
     }
+    let mut notifications: Vec<NotificationRecord> = Vec::new();
+    let mut seen_notification_ids = BTreeSet::new();
+    if let Some(items) = record.get("notifications").and_then(Value::as_array) {
+        for item in items {
+            let Some(notification) = parse_notification(item) else {
+                continue;
+            };
+            if !seen_notification_ids.insert(notification.id.clone()) {
+                continue;
+            }
+            notifications.push(notification);
+        }
+    }
+    if notifications.len() > MAX_NOTIFICATIONS {
+        // The list is chronological, so the newest entries are the last ones.
+        let excess = notifications.len() - MAX_NOTIFICATIONS;
+        notifications.drain(0..excess);
+    }
     Ok((
         version as u32,
         DesktopState {
@@ -710,6 +768,7 @@ pub fn parse_state(value: &Value, path: &str) -> Result<(u32, DesktopState)> {
             pinned_sessions,
             dismissed_project_paths,
             schedules,
+            notifications,
             unknown: unknown_fields(
                 record,
                 &[
@@ -720,6 +779,7 @@ pub fn parse_state(value: &Value, path: &str) -> Result<(u32, DesktopState)> {
                     "pinnedSessions",
                     "dismissedProjectPaths",
                     "schedules",
+                    "notifications",
                 ],
             ),
         },
@@ -1335,5 +1395,152 @@ pub fn migrate_legacy_user_data(
         migrated: true,
         reason: None,
         copied_files,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use tempfile::TempDir;
+
+    fn write_state(path: &Path, notifications: Value) {
+        let value = json!({
+            "version": CURRENT_DESKTOP_STATE_VERSION,
+            "projects": [],
+            "settings": {},
+            "archivedSessions": [],
+            "pinnedSessions": [],
+            "dismissedProjectPaths": [],
+            "schedules": [],
+            "notifications": notifications,
+            "_futureTop": { "keep": true },
+        });
+        fs::write(
+            path,
+            serde_json::to_string_pretty(&value).expect("serialize state"),
+        )
+        .expect("write state");
+    }
+
+    fn open_state(path: &Path) -> StateStore {
+        StateStore::open(path.to_path_buf(), None, Platform::Linux).expect("open state")
+    }
+
+    #[test]
+    fn notifications_round_trip_with_unknown_fields_and_skip_invalid_records() {
+        let temp = TempDir::new().expect("temp dir");
+        let path = temp.path().join(CURRENT_DESKTOP_STATE_FILENAME);
+        write_state(
+            &path,
+            json!([
+                {
+                    "id": "build-finished",
+                    "title": "Build finished",
+                    "body": "The parity suite passed.",
+                    "createdAt": "2026-11-19T10:00:00.000Z",
+                    "read": false,
+                    "_futureNotification": { "keep": true },
+                },
+                {
+                    "id": "waiting",
+                    "title": "Waiting for input",
+                    "body": "",
+                    "createdAt": "2026-11-19T11:00:00.000Z",
+                    "read": true,
+                },
+                // A duplicate id and invalid records never reach the list.
+                {
+                    "id": "build-finished",
+                    "title": "Duplicate",
+                    "body": "",
+                    "createdAt": "2026-11-19T12:00:00.000Z",
+                    "read": false,
+                },
+                {
+                    "id": "bad-date",
+                    "title": "Bad date",
+                    "body": "",
+                    "createdAt": "yesterday",
+                    "read": false,
+                },
+                {
+                    "id": "empty-title",
+                    "title": "",
+                    "body": "",
+                    "createdAt": "2026-11-19T12:00:00.000Z",
+                    "read": false,
+                },
+            ]),
+        );
+
+        let mut store = open_state(&path);
+        {
+            let notifications = &store.state().notifications;
+            assert_eq!(notifications.len(), 2);
+            assert_eq!(notifications[0].id, "build-finished");
+            assert_eq!(notifications[0].created_at, "2026-11-19T10:00:00.000Z");
+            assert!(!notifications[0].read);
+            assert_eq!(
+                notifications[0].unknown.get("_futureNotification"),
+                Some(&json!({ "keep": true }))
+            );
+            assert!(notifications[1].read);
+            assert!(notifications[1].body.is_empty());
+        }
+        // A save writes the parsed list back, dropping the invalid records while
+        // keeping every record's unknown fields.
+        store
+            .update(|state| {
+                state.notifications[1].title = "Waiting for input".to_string();
+                Ok(())
+            })
+            .expect("persist notifications");
+        drop(store);
+
+        let raw = fs::read_to_string(&path).expect("read state");
+        let saved: Value = serde_json::from_str(&raw).expect("parse state");
+        let saved_notifications = saved["notifications"].as_array().expect("notifications");
+        assert_eq!(saved_notifications.len(), 2);
+        assert_eq!(
+            saved_notifications[0]["createdAt"],
+            "2026-11-19T10:00:00.000Z"
+        );
+        assert_eq!(
+            saved_notifications[0]["_futureNotification"],
+            json!({ "keep": true })
+        );
+        assert_eq!(saved_notifications[1]["read"], json!(true));
+        assert_eq!(saved["_futureTop"], json!({ "keep": true }));
+        // The known list is not echoed through the flattened unknown map, which
+        // would otherwise serialize the key twice.
+        assert_eq!(raw.matches("\"notifications\"").count(), 1);
+    }
+
+    #[test]
+    fn notifications_are_capped_at_the_newest_two_hundred() {
+        let temp = TempDir::new().expect("temp dir");
+        let path = temp.path().join(CURRENT_DESKTOP_STATE_FILENAME);
+        let records: Vec<Value> = (0..MAX_NOTIFICATIONS + 5)
+            .map(|index| {
+                json!({
+                    "id": format!("notification-{index}"),
+                    "title": format!("Notification {index}"),
+                    "body": "",
+                    "createdAt": "2026-11-19T10:00:00.000Z",
+                    "read": index % 2 == 0,
+                })
+            })
+            .collect();
+        write_state(&path, Value::Array(records));
+
+        let store = open_state(&path);
+        let notifications = &store.state().notifications;
+        assert_eq!(notifications.len(), MAX_NOTIFICATIONS);
+        assert_eq!(notifications[0].id, "notification-5");
+        assert_eq!(
+            notifications[MAX_NOTIFICATIONS - 1].id,
+            format!("notification-{}", MAX_NOTIFICATIONS + 4)
+        );
     }
 }

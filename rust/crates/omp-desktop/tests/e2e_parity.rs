@@ -25,7 +25,7 @@ use gpui_kit::size;
 use gpui_kit::test::TestEventExt as _;
 use omp_core::geometry::{CENTER_MIN_WIDTH, UiGeometry};
 use omp_core::settings::{AppSettings, ConversationDensity, MessageEnterAction, Theme};
-use omp_core::state::{CURRENT_DESKTOP_STATE_FILENAME, Platform, StateStore};
+use omp_core::state::{CURRENT_DESKTOP_STATE_FILENAME, NotificationRecord, Platform, StateStore};
 use omp_core::turn_changes::{TurnBaseline, compute_turn_changes};
 use omp_desktop::app::{AppView, Workspace, WorkspaceData};
 use omp_desktop::ime::{CompositionGuard, IME_POST_COMPOSITION_GUARD_MS};
@@ -3048,13 +3048,13 @@ fn agent_frame_normalization_never_reaches_the_panes_without_a_runtime(cx: &mut 
 /// pane name it can show round-trips through the funnel its rows use. The rows
 /// do not opt into gpui-kit's element registry, so the Summary row is clicked at
 /// its measured position to prove the row list really drives `set_right_pane`;
-/// the remaining names — Live Voice included, which lives on the toolbar rather
-/// than in the row list — are then opened by name.
+/// the remaining names — Live Voice and Activity included, which live on the
+/// toolbar rather than in the row list — are then opened by name.
 #[gpui_kit::test]
 fn launcher_overview_reaches_every_right_pane_name(cx: &mut TestAppContext) {
     const PANE_X: f32 = 1100.0;
     const SUMMARY_ROW_Y: f32 = 70.0;
-    const NAMES: [&str; 7] = [
+    const NAMES: [&str; 8] = [
         "summary",
         "review",
         "files",
@@ -3062,6 +3062,7 @@ fn launcher_overview_reaches_every_right_pane_name(cx: &mut TestAppContext) {
         "side-question",
         "subagents",
         "live-voice",
+        "activity",
     ];
 
     cx.update(gpui_kit::init);
@@ -3229,4 +3230,71 @@ fn review_snapshot_reports_a_tracked_file_diff_and_clears_after_revert(cx: &mut 
             assert_eq!(cleared.text, "");
         })
         .expect("workspace window");
+}
+
+/// The Activity pane reads the persisted notifications and clears them through
+/// `store.update`, so the empty list is what a fresh store reads back.
+#[gpui_kit::test]
+fn activity_notifications_survive_a_reload_and_clear_all_persists(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+
+    // Seeding goes through the same store the workspace opens, so the records
+    // reach the app the way a previous run's state file would.
+    {
+        let mut store = open_store(root);
+        store
+            .update(|state| {
+                state.notifications = vec![
+                    NotificationRecord {
+                        id: "build-finished".to_string(),
+                        title: "Build finished".to_string(),
+                        body: "The parity suite passed.".to_string(),
+                        created_at: "2026-11-19T10:00:00.000Z".to_string(),
+                        read: false,
+                        unknown: Default::default(),
+                    },
+                    NotificationRecord {
+                        id: "waiting".to_string(),
+                        title: "Waiting for input".to_string(),
+                        body: "Review the staged changes.".to_string(),
+                        created_at: "2026-11-19T11:00:00.000Z".to_string(),
+                        read: true,
+                        unknown: Default::default(),
+                    },
+                ];
+                Ok(())
+            })
+            .expect("seed notifications");
+    }
+
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, test_data(root)));
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.set_right_pane("activity", cx);
+
+            let state = snapshot(workspace, cx);
+            assert_eq!(state["rightPane"], "activity");
+            let notifications = state["notifications"].as_array().expect("notifications");
+            assert_eq!(notifications.len(), 2);
+            assert_eq!(notifications[0]["title"], "Build finished");
+            assert_eq!(notifications[0]["read"], json!(false));
+            assert_eq!(notifications[0]["createdAt"], "2026-11-19T10:00:00.000Z");
+            assert_eq!(notifications[1]["body"], "Review the staged changes.");
+            assert_eq!(notifications[1]["read"], json!(true));
+
+            workspace.clear_notifications(cx);
+            let cleared = snapshot(workspace, cx);
+            assert!(
+                cleared["notifications"]
+                    .as_array()
+                    .expect("notifications")
+                    .is_empty()
+            );
+        })
+        .expect("workspace window");
+
+    let store = open_store(root);
+    assert!(store.state().notifications.is_empty());
 }

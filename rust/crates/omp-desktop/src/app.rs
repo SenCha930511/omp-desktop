@@ -24,7 +24,8 @@ use omp_core::schedules;
 use omp_core::sessions::{self, SessionRecord, TranscriptMessage, TranscriptPart};
 use omp_core::settings::AppSettings;
 use omp_core::state::{
-    CURRENT_DESKTOP_STATE_FILENAME, LEGACY_DESKTOP_STATE_FILENAME, Platform, StateStore,
+    CURRENT_DESKTOP_STATE_FILENAME, LEGACY_DESKTOP_STATE_FILENAME, NotificationRecord, Platform,
+    StateStore,
 };
 use omp_core::turn_changes::{TurnBaseline, TurnChanges, compute_turn_changes};
 use serde_json::{Value, json};
@@ -71,6 +72,7 @@ enum RightPane {
     SideQuestion,
     LiveVoice,
     Subagents,
+    Activity,
 }
 
 impl RightPane {
@@ -85,6 +87,7 @@ impl RightPane {
             RightPane::SideQuestion => "side-question",
             RightPane::Subagents => "subagents",
             RightPane::LiveVoice => "live-voice",
+            RightPane::Activity => "activity",
         }
     }
 
@@ -98,6 +101,7 @@ impl RightPane {
             "side-question" => RightPane::SideQuestion,
             "subagents" => RightPane::Subagents,
             "live-voice" => RightPane::LiveVoice,
+            "activity" => RightPane::Activity,
             _ => return None,
         })
     }
@@ -159,6 +163,9 @@ pub struct Workspace {
     plugin_catalog: Option<PluginCatalog>,
     plugin_error: Option<String>,
     schedules: Vec<Value>,
+    // The in-app activity list mirrors the persisted notifications: the state
+    // file is the source of truth, so clearing here goes through `store.update`.
+    notifications: Vec<NotificationRecord>,
     right_pane: RightPane,
     // Live voice is RPC-driven: the harness owns the microphone and the pane only
     // mirrors the normalized `live_*` events plus the commands it sent.
@@ -299,6 +306,7 @@ impl Workspace {
             plugin_catalog: None,
             plugin_error: None,
             schedules: Vec::new(),
+            notifications: Vec::new(),
             right_pane: RightPane::Launcher,
             live_phase: "idle".to_string(),
             live_levels: 0.0,
@@ -337,6 +345,7 @@ impl Workspace {
             update_check: updates::initial_state(),
             update_task: None,
         };
+        workspace.refresh_notifications();
         workspace.start_scheduler(cx);
         workspace
     }
@@ -392,6 +401,7 @@ impl Workspace {
         match target {
             RightPane::Review => self.refresh_review(),
             RightPane::Files => self.refresh_files(),
+            RightPane::Activity => self.refresh_notifications(),
             // The Browser pane opens one blank tab; its webview needs a window,
             // so `render` builds it on the next frame.
             RightPane::Browser => self.browser.prepare(),
@@ -500,6 +510,7 @@ impl Workspace {
                 "error": self.review_error,
             },
             "schedules": self.schedules,
+            "notifications": self.notifications,
         })
     }
 
@@ -727,6 +738,23 @@ impl Workspace {
                     .child("idle"),
             )
             .child(div().flex_1())
+            .child(self.toolbar_icon(
+                "notifications",
+                IconName::Bell,
+                if self.right_pane == RightPane::Activity {
+                    colors.primary
+                } else {
+                    colors.foreground
+                },
+                cx.listener(|this, _, _, cx| {
+                    if this.right_pane == RightPane::Activity {
+                        this.right_pane = RightPane::Launcher;
+                        cx.notify();
+                    } else {
+                        this.set_right_pane("activity", cx);
+                    }
+                }),
+            ))
             .child(self.toolbar_icon(
                 "live-voice",
                 IconName::Mic,
@@ -2223,6 +2251,36 @@ impl Workspace {
     pub fn schedules(&self) -> &[Value] {
         &self.schedules
     }
+
+    /// Reloads the activity list from the state file, which owns it.
+    pub fn refresh_notifications(&mut self) {
+        self.notifications = match self.store.as_ref() {
+            Some(store) => {
+                let store = store.lock().expect("state lock");
+                store.state().notifications.clone()
+            }
+            None => Vec::new(),
+        };
+    }
+
+    pub fn notifications(&self) -> &[NotificationRecord] {
+        &self.notifications
+    }
+
+    /// Clears the activity list through `store.update`, so the empty list is
+    /// what a reload reads. A failed save leaves the list untouched.
+    pub fn clear_notifications(&mut self, cx: &mut Context<Self>) {
+        if let Some(store) = self.store.clone() {
+            let mut store = store.lock().expect("state lock");
+            let _ = store.update(|state| {
+                state.notifications.clear();
+                Ok(())
+            });
+        }
+        self.refresh_notifications();
+        cx.notify();
+    }
+
     pub fn refresh_files(&mut self) {
         let Some(store) = self.store.clone() else {
             self.files.clear();
@@ -3144,6 +3202,11 @@ impl Workspace {
             ),
             (RightPane::Subagents, "Subagents", IconName::Bot),
         ];
+        let unread = self
+            .notifications
+            .iter()
+            .filter(|notification| !notification.read)
+            .count();
         let content = match self.right_pane {
             RightPane::Launcher => None,
             RightPane::Summary => Some(self.summary_content(cx).into_any_element()),
@@ -3153,6 +3216,7 @@ impl Workspace {
             RightPane::Subagents => Some(self.subagents_content(cx).into_any_element()),
             RightPane::SideQuestion => Some(self.side_question_content(cx).into_any_element()),
             RightPane::LiveVoice => Some(self.live_voice_content(cx).into_any_element()),
+            RightPane::Activity => Some(self.activity_content(cx).into_any_element()),
         };
         let title = match self.right_pane {
             RightPane::Launcher => "Overview",
@@ -3163,6 +3227,7 @@ impl Workspace {
             RightPane::SideQuestion => "Side Question",
             RightPane::Subagents => "Subagents",
             RightPane::LiveVoice => "Live Voice",
+            RightPane::Activity => "Activity",
         };
         div()
             .flex()
@@ -3252,15 +3317,19 @@ impl Workspace {
             .child(div().h(px(1.0)).my_2().bg(colors.border))
             .child(
                 div()
+                    .id("activity")
+                    .aria_label("Activity")
                     .flex()
                     .items_center()
                     .gap_2()
                     .px_2()
                     .py_1()
+                    .rounded(px(6.0))
                     .text_sm()
                     .text_color(colors.foreground)
+                    .hover(|style| style.bg(colors.accent))
                     .child(IconName::Activity)
-                    .child("Background Tasks")
+                    .child("Activity")
                     .child(div().flex_1())
                     .child(
                         div()
@@ -3268,8 +3337,11 @@ impl Workspace {
                             .rounded(px(999.0))
                             .bg(colors.accent)
                             .text_xs()
-                            .child("0"),
-                    ),
+                            .child(unread.to_string()),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.set_right_pane("activity", cx);
+                    })),
             )
     }
 
@@ -3463,6 +3535,116 @@ impl Workspace {
                         .text_sm()
                         .text_color(colors.muted_foreground)
                         .child("No background runtimes."),
+                )
+            })
+            .child(list)
+    }
+
+    /// The Activity pane lists the persisted notifications newest first and
+    /// clears them through the state file.
+    fn activity_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = cx.theme().colors;
+        let unread = self
+            .notifications
+            .iter()
+            .filter(|notification| !notification.read)
+            .count();
+        let mut list = div().flex().flex_col().gap_1();
+        for notification in self.notifications.iter().rev() {
+            let read = notification.read;
+            list = list.child(
+                div()
+                    .id(format!("notification-{}", notification.id))
+                    .flex()
+                    .flex_col()
+                    .gap_0p5()
+                    .px_2()
+                    .py_1p5()
+                    .rounded(px(6.0))
+                    .border_1()
+                    .border_color(colors.border)
+                    .bg(colors.background)
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(colors.foreground)
+                                    .child(notification.title.clone()),
+                            )
+                            .child(div().flex_1())
+                            .when(!read, |element| {
+                                element.child(
+                                    div().size(px(6.0)).rounded(px(999.0)).bg(colors.primary),
+                                )
+                            }),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(colors.muted_foreground)
+                            .child(notification.body.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(colors.muted_foreground)
+                            .child(notification.created_at.clone()),
+                    ),
+            );
+        }
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .p_2()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child("Activity"),
+                    )
+                    .child(
+                        div()
+                            .px_2()
+                            .rounded(px(999.0))
+                            .bg(colors.accent)
+                            .text_xs()
+                            .child(format!("{unread} unread")),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .id("clear-notifications")
+                            .aria_label("Clear all")
+                            .px_2()
+                            .py_1()
+                            .rounded(px(6.0))
+                            .border_1()
+                            .border_color(colors.border)
+                            .text_xs()
+                            .text_color(colors.foreground)
+                            .hover(|style| style.bg(colors.accent))
+                            .child("Clear all")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.clear_notifications(cx);
+                            })),
+                    ),
+            )
+            .when(self.notifications.is_empty(), |element| {
+                element.child(
+                    div()
+                        .text_sm()
+                        .text_color(colors.muted_foreground)
+                        .child("No activity yet."),
                 )
             })
             .child(list)
