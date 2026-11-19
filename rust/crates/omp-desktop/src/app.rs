@@ -1,6 +1,8 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -111,6 +113,83 @@ impl RightPane {
         })
     }
 }
+
+/// Which entry point asked to close, so the confirmation's `Close anyway`
+/// finishes that action instead of guessing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CloseIntent {
+    /// The window's own close button or shortcut.
+    Window,
+    /// The tray's Quit command.
+    Quit,
+}
+
+/// Whether a close has to ask first.
+///
+/// Closing with no agent run is immediate; a live run gets the confirmation
+/// overlay, exactly like the Electron app's `shutdownPrompt`.
+pub fn should_confirm_close(running: bool) -> bool {
+    running
+}
+
+/// The app-wide close guard.
+///
+/// The window's `on_window_should_close` handler, the tray's Quit command and
+/// the Workspace that draws the confirmation all read the same guard, so one
+/// approval covers both entry points. The flags are atomics so the guard can be
+/// cloned into each of them; the view link never leaves the GPUI main thread.
+#[derive(Clone, Default)]
+pub struct CloseGuard {
+    agent_active: Arc<AtomicBool>,
+    approved: Arc<AtomicBool>,
+    workspace: Rc<RefCell<Option<WeakEntity<Workspace>>>>,
+}
+
+impl CloseGuard {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Records whether an agent run is live. The Workspace writes this whenever
+    /// a runtime starts or stops, which is what the tray's Quit reads.
+    pub fn set_agent_active(&self, active: bool) {
+        self.agent_active.store(active, Ordering::SeqCst);
+    }
+
+    pub fn agent_active(&self) -> bool {
+        self.agent_active.load(Ordering::SeqCst)
+    }
+
+    /// Records the user's approval, so the close that follows the confirmation
+    /// is let through without asking again.
+    pub fn approve(&self) {
+        self.approved.store(true, Ordering::SeqCst);
+    }
+
+    pub fn approved(&self) -> bool {
+        self.approved.load(Ordering::SeqCst)
+    }
+
+    /// Forgets an approval: a cancelled prompt asks again next time.
+    pub fn clear_approval(&self) {
+        self.approved.store(false, Ordering::SeqCst);
+    }
+
+    /// Links the live view, which is what a close has to ask.
+    fn attach(&self, workspace: WeakEntity<Workspace>) {
+        *self.workspace.borrow_mut() = Some(workspace);
+    }
+
+    /// The live view, unless it has been dropped.
+    fn workspace(&self) -> Option<Entity<Workspace>> {
+        self.workspace
+            .borrow()
+            .as_ref()
+            .and_then(WeakEntity::upgrade)
+    }
+}
+
+impl gpui_kit::Global for CloseGuard {}
 
 pub struct WorkspaceData {
     pub geometry: UiGeometry,
@@ -245,12 +324,20 @@ pub struct Workspace {
     // `captures/`, or why the frame could not be written. Only one is set.
     capture_path: Option<PathBuf>,
     capture_error: Option<String>,
+    // The close guard is shared with `main`'s window handler and the tray's
+    // Quit command; the confirmation below is the one dialog both entry
+    // points draw, and it only exists while a close is being asked about.
+    close_guard: CloseGuard,
+    close_prompt: Option<CloseIntent>,
 }
 
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>, data: WorkspaceData) -> Self {
         let width = f32::from(window.bounds().size.width);
         let layout = data.geometry.resolve(width as f64);
+        // `main` installs the guard before the window opens, so the close
+        // handler and this view share one; a test without one gets its own.
+        let close_guard = cx.try_global::<CloseGuard>().cloned().unwrap_or_default();
         let composer = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("Ask OMP…")
@@ -403,8 +490,12 @@ impl Workspace {
             update_task: None,
             capture_path: None,
             capture_error: None,
+            close_guard,
+            close_prompt: None,
         };
         workspace.refresh_notifications();
+        workspace.close_guard.attach(cx.weak_entity());
+        workspace.sync_close_guard();
         workspace.start_scheduler(cx);
         workspace
     }
@@ -460,6 +551,65 @@ impl Workspace {
             }
         }
         cx.notify();
+    }
+
+    /// Whether an agent run is live: a streaming runtime or a scheduled run.
+    ///
+    /// This is the one definition of "active" for closing; the Electron app
+    /// reaches the same answer from its runtime list.
+    pub fn agent_active(&self) -> bool {
+        self.runtime_id.is_some() || !self.scheduled_runs.is_empty()
+    }
+
+    /// Mirrors [`Workspace::agent_active`] into the shared guard, which is what
+    /// the tray's Quit command reads without touching the view.
+    fn sync_close_guard(&self) {
+        self.close_guard.set_agent_active(self.agent_active());
+    }
+
+    /// Whether the close confirmation is on screen.
+    pub fn close_prompt_open(&self) -> bool {
+        self.close_prompt.is_some()
+    }
+
+    /// Asks to close, and reports whether the caller may close now.
+    ///
+    /// With no agent run the answer is immediate; a live run parks the question
+    /// in the confirmation overlay and answers `false`, so the window stays up
+    /// and the app keeps streaming while the user decides.
+    pub fn request_close(&mut self, intent: CloseIntent, cx: &mut Context<Self>) -> bool {
+        self.sync_close_guard();
+        if !should_confirm_close(self.agent_active()) {
+            // The quit intent has no window to close, so it finishes here.
+            if intent == CloseIntent::Quit {
+                cx.quit();
+            }
+            return true;
+        }
+        self.close_prompt = Some(intent);
+        cx.notify();
+        false
+    }
+
+    /// `Close anyway`: records the approval and finishes the close that asked.
+    pub fn confirm_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(intent) = self.close_prompt.take() else {
+            return;
+        };
+        self.close_guard.approve();
+        cx.notify();
+        match intent {
+            CloseIntent::Window => window.remove_window(),
+            CloseIntent::Quit => cx.quit(),
+        }
+    }
+
+    /// `Cancel`: the app keeps running, and the next close asks again.
+    pub fn cancel_close(&mut self, cx: &mut Context<Self>) {
+        if self.close_prompt.take().is_some() {
+            self.close_guard.clear_approval();
+            cx.notify();
+        }
     }
 
     pub fn composer_entity(&self) -> &Entity<InputState> {
@@ -565,6 +715,11 @@ impl Workspace {
         json!({
             "view": self.view.name(),
             "rightPane": self.right_pane.name(),
+            // The close confirmation, while a close is waiting on an answer.
+            "closePrompt": self.close_prompt.map(|intent| match intent {
+                CloseIntent::Window => "window",
+                CloseIntent::Quit => "quit",
+            }),
             // The launcher's pin and what it is counting. `overviewVisible`
             // is derived: the launcher is drawn for the workspace view, and for
             // every other view only while it is pinned.
@@ -1541,6 +1696,8 @@ impl Workspace {
         if let Some(runtime_id) = self.runtime_id.take() {
             self.agents.stop(&runtime_id);
         }
+        // The runtime is gone, so a close no longer has to ask.
+        self.sync_close_guard();
         self.reset_live_voice();
         self.reset_dictation();
         self.streaming_index = None;
@@ -1697,6 +1854,7 @@ impl Workspace {
                 if let Some(runtime_id) = self.runtime_id.take() {
                     self.agents.stop(&runtime_id);
                 }
+                self.sync_close_guard();
                 self.reset_live_voice();
                 self.reset_dictation();
                 self.streaming_index = None;
@@ -1764,6 +1922,7 @@ impl Workspace {
                     .and_then(Value::as_str)
                     .map(str::to_string);
                 self.start_drain(cx);
+                self.sync_close_guard();
             }
             Err(error) => self.runtime_error = Some(error.message),
         }
@@ -1773,6 +1932,8 @@ impl Workspace {
         if let Some(runtime_id) = self.runtime_id.take() {
             self.agents.stop(&runtime_id);
         }
+        // The replaced session's runtime stopped above, so the guard follows.
+        self.sync_close_guard();
         self.reset_live_voice();
         self.reset_dictation();
         self.streaming_index = None;
@@ -1811,6 +1972,7 @@ impl Workspace {
                     .and_then(Value::as_str)
                     .map(str::to_string);
                 self.start_drain(cx);
+                self.sync_close_guard();
             }
             Err(error) => self.runtime_error = Some(error.message),
         }
@@ -3176,6 +3338,8 @@ impl Workspace {
                             run_id,
                         });
                     }
+                    // A scheduled run counts as an active agent for closing.
+                    self.sync_close_guard();
                 }
                 Err(error) => {
                     self.record_schedule_outcome(
@@ -3215,6 +3379,7 @@ impl Workspace {
             self.agents.stop(&run.runtime_id);
         }
         self.scheduled_runs = active;
+        self.sync_close_guard();
     }
 
     fn finish_schedule_run(&self, schedule_id: &str, run_id: &str, status: &str) {
@@ -5210,6 +5375,137 @@ impl Workspace {
                 }),
             )
     }
+
+    /// The close confirmation for whichever entry point asked, wired to this
+    /// view's own `Close anyway` and `Cancel`.
+    fn close_confirmation(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        close_confirmation(
+            cx.theme().colors,
+            cx.listener(|this, _: &ClickEvent, window, cx| this.confirm_close(window, cx)),
+            cx.listener(|this, _: &ClickEvent, _, cx| this.cancel_close(cx)),
+        )
+    }
+}
+
+/// The tray's Quit command funnels through here, so quitting asks the same
+/// question the window's close does.
+///
+/// Returns whether the caller may stop: quitting with no agent run is
+/// immediate, while a live run leaves the app up with the confirmation overlay
+/// and a later Quit asks again. The caller runs on the GPUI thread (the tray
+/// forwards its menu events to it), so this only touches app state.
+pub fn request_app_quit(app: &mut App) -> bool {
+    let guard = app.try_global::<CloseGuard>().cloned().unwrap_or_default();
+    if guard.approved() {
+        // The user already answered this shutdown; a closed window has no
+        // overlay left to draw, so the answer stands.
+        app.quit();
+        return true;
+    }
+    let Some(workspace) = guard.workspace() else {
+        // No view to ask: quitting is all that is left.
+        guard.approve();
+        app.quit();
+        return true;
+    };
+    workspace.update(app, |this, cx| this.request_close(CloseIntent::Quit, cx))
+}
+
+/// The confirmation's copy, shared by the renderer and the test that draws it
+/// with no agent behind it.
+const CLOSE_CONFIRM_TITLE: &str = "Close OMP Desktop while an agent is running?";
+const CLOSE_CONFIRM_DETAIL: &str = "An agent run is still in progress and will be stopped.";
+const CLOSE_CONFIRM_ACCEPT: &str = "Close anyway";
+const CLOSE_CONFIRM_CANCEL: &str = "Cancel";
+
+/// A confirmation button click: the caller already knows which button it drew,
+/// so the handlers share the click listener shape `on_click` takes.
+type CloseConfirmAction = dyn Fn(&ClickEvent, &mut Window, &mut App);
+
+/// Draws the close confirmation over the whole window: a dimmed backdrop and a
+/// centered card with `Cancel` and `Close anyway`.
+///
+/// The window's close and the tray's Quit both land here, so the app asks the
+/// same question either way and only `Close anyway` lets the close through.
+fn close_confirmation(
+    colors: ThemeColor,
+    on_accept: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    on_cancel: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let on_accept: Rc<CloseConfirmAction> = Rc::new(on_accept);
+    let on_cancel: Rc<CloseConfirmAction> = Rc::new(on_cancel);
+    div()
+        .id("close-confirmation")
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(black().opacity(0.32))
+        // A modal: the backdrop takes the clicks that miss the card, so the
+        // view underneath cannot be driven while the question is open.
+        .on_click(|_, _, _| {})
+        .child(
+            div()
+                .w(px(380.0))
+                .rounded(px(12.0))
+                .border_1()
+                .border_color(colors.border)
+                .bg(colors.background)
+                .p_4()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .child(div().text_base().child(CLOSE_CONFIRM_TITLE))
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(colors.muted_foreground)
+                        .child(CLOSE_CONFIRM_DETAIL),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .justify_end()
+                        .gap_2()
+                        .child(
+                            div()
+                                .id("close-confirmation-cancel")
+                                .aria_label(CLOSE_CONFIRM_CANCEL)
+                                .px_3()
+                                .py_1()
+                                .rounded(px(6.0))
+                                .border_1()
+                                .border_color(colors.border)
+                                .text_sm()
+                                .child(CLOSE_CONFIRM_CANCEL)
+                                .hover(|style| style.bg(colors.accent))
+                                .on_click({
+                                    let on_cancel = on_cancel.clone();
+                                    move |event, window, cx| on_cancel(event, window, cx)
+                                }),
+                        )
+                        .child(
+                            div()
+                                .id("close-confirmation-accept")
+                                .aria_label(CLOSE_CONFIRM_ACCEPT)
+                                .px_3()
+                                .py_1()
+                                .rounded(px(6.0))
+                                .bg(colors.danger)
+                                .text_color(colors.primary_foreground)
+                                .text_sm()
+                                .child(CLOSE_CONFIRM_ACCEPT)
+                                .on_click({
+                                    let on_accept = on_accept.clone();
+                                    move |event, window, cx| on_accept(event, window, cx)
+                                }),
+                        ),
+                ),
+        )
 }
 
 /// A tab bar click that names the tab it came from.
@@ -5493,6 +5789,11 @@ fn session_hidden(dismissed: &[String], granted: &[String], project_path: &str) 
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The guard is `main`'s and the tray's view of "an agent is live"; this
+        // view owns the truth, so every frame mirrors it and the confirmation
+        // below only exists while a close is being asked about.
+        self.sync_close_guard();
+        let close_prompt = self.close_prompt.is_some();
         if let Some(follow_up) = self.submit_requested.take() {
             cx.defer_in(window, move |this, window, cx| {
                 this.send_prompt_with_action(window, cx, follow_up);
@@ -5547,9 +5848,12 @@ impl Render for Workspace {
         let show_sidebar = self.layout.sidebar_docked;
         let show_right = self.layout.right_pane_docked;
         // A native webview keeps its last frame when the pane stops rendering, and on Windows
-        // it covers everything in its bounds, so it is shown only while the pane is on screen.
-        let browser_visible =
-            self.view == AppView::Workspace && show_right && self.right_pane == RightPane::Browser;
+        // it covers everything in its bounds, so it is shown only while the pane is on screen
+        // and no confirmation is covering it.
+        let browser_visible = self.view == AppView::Workspace
+            && show_right
+            && self.right_pane == RightPane::Browser
+            && !close_prompt;
         self.browser.set_visible(browser_visible, cx);
         if browser_visible {
             if self.browser.needs_webview() {
@@ -5567,6 +5871,7 @@ impl Render for Workspace {
         }
         if self.view == AppView::Settings {
             return div()
+                .relative()
                 .flex()
                 .flex_row()
                 .size_full()
@@ -5578,10 +5883,14 @@ impl Render for Workspace {
                 .when(self.overview_visible(), |element| {
                     element.child(self.right_pane(cx))
                 })
-                .child(self.settings_page(cx));
+                .child(self.settings_page(cx))
+                .when(close_prompt, |element| {
+                    element.child(self.close_confirmation(cx))
+                });
         }
         if self.view == AppView::Plugins {
             return div()
+                .relative()
                 .flex()
                 .flex_row()
                 .size_full()
@@ -5591,10 +5900,14 @@ impl Render for Workspace {
                 .when(self.overview_visible(), |element| {
                     element.child(self.right_pane(cx))
                 })
-                .child(self.plugins_page(cx));
+                .child(self.plugins_page(cx))
+                .when(close_prompt, |element| {
+                    element.child(self.close_confirmation(cx))
+                });
         }
         if self.view == AppView::Schedules {
             return div()
+                .relative()
                 .flex()
                 .flex_row()
                 .size_full()
@@ -5604,7 +5917,10 @@ impl Render for Workspace {
                 .when(self.overview_visible(), |element| {
                     element.child(self.right_pane(cx))
                 })
-                .child(self.schedules_page(cx));
+                .child(self.schedules_page(cx))
+                .when(close_prompt, |element| {
+                    element.child(self.close_confirmation(cx))
+                });
         }
         div()
             .relative()
@@ -5643,6 +5959,9 @@ impl Render for Workspace {
             })
             .when(self.menu_open && !browser_visible, |element| {
                 element.child(self.session_menu(cx))
+            })
+            .when(close_prompt, |element| {
+                element.child(self.close_confirmation(cx))
             })
     }
 }
@@ -6052,13 +6371,14 @@ mod tests {
     use omp_core::settings::AppSettings;
 
     use super::{
-        AppView, AskDialog, AskOption, AskQuestion, DictationState, LIVE_TRANSCRIPT_LIMIT,
-        LiveVoiceState, RightPane, TERMINAL_MENU_ITEMS, TerminalMenuAction, TerminalTabSpec,
-        TerminalTabSpecs, UpdateCheckState, Workspace, WorkspaceData, append_clipboard_text,
-        append_dictation_text, append_side_answer, apply_dictation_frame, apply_live_voice_event,
-        ask_answers_ready, ask_cancel_payload, ask_submit_payload, capture_path,
-        parse_ask_questions, side_answer_delta, terminal_menu, terminal_menu_action,
-        terminal_tab_bar, updates, write_capture,
+        AppView, AskDialog, AskOption, AskQuestion, CLOSE_CONFIRM_ACCEPT, CLOSE_CONFIRM_CANCEL,
+        CloseGuard, CloseIntent, DictationState, LIVE_TRANSCRIPT_LIMIT, LiveVoiceState, RightPane,
+        TERMINAL_MENU_ITEMS, TerminalMenuAction, TerminalTabSpec, TerminalTabSpecs,
+        UpdateCheckState, Workspace, WorkspaceData, append_clipboard_text, append_dictation_text,
+        append_side_answer, apply_dictation_frame, apply_live_voice_event, ask_answers_ready,
+        ask_cancel_payload, ask_submit_payload, capture_path, close_confirmation,
+        parse_ask_questions, should_confirm_close, side_answer_delta, terminal_menu,
+        terminal_menu_action, terminal_tab_bar, updates, write_capture,
     };
 
     /// A capture is stamped in UTC under `<user_data_dir>/captures`, and the PNG
@@ -6144,6 +6464,217 @@ mod tests {
                 );
             })
             .expect("workspace window");
+    }
+
+    /// A close asks only while an agent run is live: an idle app closes at
+    /// once, a live runtime parks the question in the confirmation overlay,
+    /// `Cancel` clears it, and `Close anyway` approves the close.
+    #[test]
+    fn close_confirmation_guards_a_live_runtime() {
+        assert!(!should_confirm_close(false));
+        assert!(should_confirm_close(true));
+
+        let mut cx = gpui_kit::TestAppContext::single();
+        cx.update(gpui_kit::init);
+        let root = tempfile::TempDir::new().expect("test root").keep();
+        // `main` installs the guard before the window opens; the view picks it
+        // up from there, so a close attempt and the overlay share one state.
+        let guard = CloseGuard::new();
+        cx.update(|cx| cx.set_global(guard.clone()));
+        let handle = cx.add_window(|window, cx| {
+            Workspace::new(
+                window,
+                cx,
+                WorkspaceData {
+                    geometry: UiGeometry::default(),
+                    geometry_path: root.join("ui-geometry.json"),
+                    home_dir: root.clone(),
+                    user_data_dir: root.clone(),
+                    omp_executable: root.join("missing-omp"),
+                    settings: AppSettings::default(),
+                    projects: Vec::new(),
+                    sessions: Vec::new(),
+                },
+            )
+        });
+
+        // No agent run: the close is allowed and nothing is asked.
+        let (allowed, prompt) = handle
+            .update(&mut cx, |workspace, _, cx| {
+                let allowed = workspace.request_close(CloseIntent::Window, cx);
+                (allowed, workspace.close_prompt_open())
+            })
+            .expect("workspace window");
+        assert!(allowed);
+        assert!(!prompt);
+        assert!(!guard.agent_active());
+
+        // A live runtime (the id is all "active" needs; no agent starts): the
+        // close is refused and the question is on screen.
+        let (allowed, prompt, guard_active) = handle
+            .update(&mut cx, |workspace, _, cx| {
+                workspace.runtime_id = Some("test-runtime".to_string());
+                let allowed = workspace.request_close(CloseIntent::Window, cx);
+                (
+                    allowed,
+                    workspace.debug_snapshot(cx)["closePrompt"].clone(),
+                    workspace.close_guard.agent_active(),
+                )
+            })
+            .expect("workspace window");
+        assert!(!allowed);
+        assert_eq!(prompt, json!("window"));
+        assert!(guard_active);
+        assert!(guard.agent_active());
+
+        // The overlay is what the refused close draws; drawing the frame
+        // exercises it with no agent behind it.
+        cx.update(|cx| {
+            cx.update_window(*handle, |_, window, cx| {
+                window.draw(cx).clear(cx);
+            })
+            .expect("draw close confirmation");
+        });
+
+        // Cancel keeps the app running and leaves no approval behind.
+        let (prompt, approved) = handle
+            .update(&mut cx, |workspace, _, cx| {
+                workspace.cancel_close(cx);
+                (
+                    workspace.close_prompt_open(),
+                    workspace.close_guard.approved(),
+                )
+            })
+            .expect("workspace window");
+        assert!(!prompt);
+        assert!(!approved);
+
+        // The tray's Quit asks the same question, and names itself so
+        // `Close anyway` can quit instead of closing a window.
+        let (allowed, prompt) = handle
+            .update(&mut cx, |workspace, _, cx| {
+                let allowed = workspace.request_close(CloseIntent::Quit, cx);
+                (allowed, workspace.debug_snapshot(cx)["closePrompt"].clone())
+            })
+            .expect("workspace window");
+        assert!(!allowed);
+        assert_eq!(prompt, json!("quit"));
+        handle
+            .update(&mut cx, |workspace, _, cx| workspace.cancel_close(cx))
+            .expect("workspace window");
+
+        // A second close asks again, and `Close anyway` approves it.
+        let (prompt, approved) = handle
+            .update(&mut cx, |workspace, window, cx| {
+                assert!(!workspace.request_close(CloseIntent::Window, cx));
+                workspace.confirm_close(window, cx);
+                (
+                    workspace.close_prompt_open(),
+                    workspace.close_guard.approved(),
+                )
+            })
+            .expect("workspace window");
+        assert!(!prompt);
+        assert!(approved);
+        assert!(guard.approved());
+    }
+
+    /// The confirmation overlay draws with no agent behind it: a dimmed
+    /// backdrop and the two buttons the close handler asks about.
+    #[test]
+    fn close_confirmation_renders_without_an_agent() {
+        use gpui_kit::component::ActiveTheme as _;
+
+        struct TestOverlay;
+
+        impl gpui_kit::Render for TestOverlay {
+            fn render(
+                &mut self,
+                _window: &mut gpui_kit::Window,
+                cx: &mut gpui_kit::Context<Self>,
+            ) -> impl gpui_kit::IntoElement {
+                close_confirmation(cx.theme().colors, |_, _, _| {}, |_, _, _| {})
+            }
+        }
+
+        let mut cx = gpui_kit::TestAppContext::single();
+        cx.update(gpui_kit::init);
+        let handle = cx.add_window(|_, _| TestOverlay);
+        cx.update(|cx| {
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.draw(cx).clear(cx);
+            })
+            .expect("draw close confirmation");
+        });
+        cx.quit();
+        // The two answers are the ones the Electron dialog offered.
+        assert_eq!(CLOSE_CONFIRM_CANCEL, "Cancel");
+        assert_eq!(CLOSE_CONFIRM_ACCEPT, "Close anyway");
+    }
+
+    /// The handler `main` registers is what the platform asks: an idle app lets
+    /// the window close, and a live runtime refuses the close and raises the
+    /// overlay instead.
+    #[test]
+    fn registered_close_handler_asks_the_view() {
+        let mut cx = gpui_kit::TestAppContext::single();
+        cx.update(gpui_kit::init);
+        let root = tempfile::TempDir::new().expect("test root").keep();
+        let guard = CloseGuard::new();
+        cx.update(|cx| cx.set_global(guard.clone()));
+        let handle = cx.add_window(|window, cx| {
+            Workspace::new(
+                window,
+                cx,
+                WorkspaceData {
+                    geometry: UiGeometry::default(),
+                    geometry_path: root.join("ui-geometry.json"),
+                    home_dir: root.clone(),
+                    user_data_dir: root.clone(),
+                    omp_executable: root.join("missing-omp"),
+                    settings: AppSettings::default(),
+                    projects: Vec::new(),
+                    sessions: Vec::new(),
+                },
+            )
+        });
+        // The same registration `main` performs once the window opens.
+        let workspace = handle.root(&mut cx).expect("workspace root");
+        cx.update(|cx| {
+            (*handle)
+                .update(cx, |_, window, cx| {
+                    window.on_window_should_close(cx, move |_window, app| {
+                        workspace
+                            .update(app, |this, cx| this.request_close(CloseIntent::Window, cx))
+                    });
+                })
+                .expect("register close handler");
+        });
+
+        // No agent run: the window closes without a question.
+        let mut visual = gpui_kit::VisualTestContext::from_window(*handle, &cx);
+        assert!(visual.simulate_close(), "an idle app closes at once");
+        let prompt = handle
+            .update(&mut cx, |workspace, _, cx| {
+                workspace.debug_snapshot(cx)["closePrompt"].clone()
+            })
+            .expect("workspace window");
+        assert_eq!(prompt, json!(null));
+
+        // A live runtime: the close is refused and the overlay is raised.
+        handle
+            .update(&mut cx, |workspace, _, _| {
+                workspace.runtime_id = Some("test-runtime".to_string());
+            })
+            .expect("workspace window");
+        let mut visual = gpui_kit::VisualTestContext::from_window(*handle, &cx);
+        assert!(!visual.simulate_close(), "a live runtime refuses the close");
+        let prompt = handle
+            .update(&mut cx, |workspace, _, cx| {
+                workspace.debug_snapshot(cx)["closePrompt"].clone()
+            })
+            .expect("workspace window");
+        assert_eq!(prompt, json!("window"));
     }
 
     /// The Settings page must render the update row, and an unconfigured build

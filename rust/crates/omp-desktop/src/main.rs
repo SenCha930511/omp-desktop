@@ -15,7 +15,7 @@ use omp_core::settings::AppSettings;
 use omp_core::state::{
     CURRENT_DESKTOP_STATE_FILENAME, LEGACY_DESKTOP_STATE_FILENAME, Platform, StateStore,
 };
-use omp_desktop::app::{Workspace, WorkspaceData};
+use omp_desktop::app::{CloseGuard, CloseIntent, Workspace, WorkspaceData};
 
 const APP_ID: &str = "com.omp.desktop.rust.dev";
 const SMOKE_URL: &str = "omp-desktop://app/index.html";
@@ -178,6 +178,10 @@ fn main() {
     let application = gpui_kit::application();
     application.run(move |cx| {
         gpui_kit::init(cx);
+        // The close guard is shared by the window's close handler, the tray's
+        // Quit command and the view that draws the confirmation.
+        let close_guard = CloseGuard::new();
+        cx.set_global(close_guard.clone());
         let handle = gpui_kit::open_window(options, cx, move |window, cx| {
             if let Some(path) = smoke_path.clone() {
                 // The native smoke test must prove the window painted; the
@@ -202,16 +206,33 @@ fn main() {
             }
             cx.new(|cx| Workspace::new(window, cx, data))
         });
-        // Keep the window handle: the tray's "Open OMP Desktop" command raises this
-        // window (a failed open is reported instead of silently dropped).
-        let window_handle = match &handle {
-            Ok((window, _)) => Some(*window),
+        // Keep the window handle and the view: the tray's "Open OMP Desktop"
+        // command raises this window (a failed open is reported instead of
+        // silently dropped), and the close handler asks the view whether a
+        // close has to confirm first.
+        let opened = match &handle {
+            Ok((window, workspace)) => Some((*window, workspace.downgrade())),
             Err(err) => {
                 eprintln!("omp-desktop: could not open the main window: {err:?}");
                 None
             }
         };
-        if let Some(window) = window_handle {
+        if let Some((window, workspace)) = opened {
+            // The handler stays non-blocking: with no agent run the view says
+            // yes and the window closes at once; with one it parks the question
+            // in the confirmation overlay and the close is refused for now.
+            let guard = close_guard.clone();
+            let _ = window.update(cx, |_, window, cx| {
+                window.on_window_should_close(cx, move |_window, app| {
+                    if guard.approved() {
+                        return true;
+                    }
+                    let Some(workspace) = workspace.upgrade() else {
+                        return true;
+                    };
+                    workspace.update(app, |this, cx| this.request_close(CloseIntent::Window, cx))
+                });
+            });
             match tray::init(cx, window) {
                 Ok(tray) => {
                     if let Some(path) = tray_smoke_path {

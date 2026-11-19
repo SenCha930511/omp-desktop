@@ -151,8 +151,12 @@ pub fn init(cx: &mut App, window: AnyWindowHandle) -> Result<Tray, TrayError> {
                     });
                 }
                 TrayCommand::Quit => {
-                    cx.update(|app| app.quit());
-                    break;
+                    // The app decides: an idle app quits at once, while a live
+                    // agent run shows the close confirmation and keeps this
+                    // task alive so a later Quit can still quit.
+                    if cx.update(omp_desktop::app::request_app_quit) {
+                        break;
+                    }
                 }
             }
         }

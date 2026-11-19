@@ -28,7 +28,10 @@ use omp_core::geometry::{CENTER_MIN_WIDTH, UiGeometry};
 use omp_core::settings::{AppSettings, ConversationDensity, MessageEnterAction, Theme};
 use omp_core::state::{CURRENT_DESKTOP_STATE_FILENAME, NotificationRecord, Platform, StateStore};
 use omp_core::turn_changes::{TurnBaseline, compute_turn_changes};
-use omp_desktop::app::{AppView, Workspace, WorkspaceData};
+use omp_desktop::app::{
+    AppView, CloseGuard, CloseIntent, Workspace, WorkspaceData, request_app_quit,
+    should_confirm_close,
+};
 use omp_desktop::ime::{CompositionGuard, IME_POST_COMPOSITION_GUARD_MS};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -3854,4 +3857,56 @@ fn capture_workspace_reports_the_saved_path_or_the_render_error(cx: &mut TestApp
             assert!(workspace.transcript_messages().is_empty());
         })
         .expect("workspace window");
+}
+
+/// Closing with no agent run is immediate: the close is allowed, no overlay is
+/// raised, and the guard stays idle. The pure helper is the rule both entry
+/// points share.
+#[gpui_kit::test]
+fn closing_without_an_agent_run_is_immediate(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    assert!(!should_confirm_close(false));
+    assert!(should_confirm_close(true));
+
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    // `main` installs the guard before the window opens, so the close handler
+    // and the view share one.
+    let guard = CloseGuard::new();
+    cx.update(|cx| cx.set_global(guard.clone()));
+    let data = test_data(root);
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+
+    let (allowed, prompt) = handle
+        .update(cx, |workspace, _, cx| {
+            let allowed = workspace.request_close(CloseIntent::Window, cx);
+            (allowed, snapshot(workspace, cx)["closePrompt"].clone())
+        })
+        .expect("workspace window");
+    assert!(allowed);
+    assert_eq!(prompt, json!(null));
+    assert!(!guard.agent_active());
+    assert!(!guard.approved());
+}
+
+/// The tray's Quit takes the same route through the guard: with no agent run
+/// the app quits at once instead of raising the confirmation.
+#[gpui_kit::test]
+fn tray_quit_without_an_agent_run_quits(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let guard = CloseGuard::new();
+    cx.update(|cx| cx.set_global(guard.clone()));
+    let data = test_data(root);
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+
+    // The view is the source of truth while it is alive, and it has no runtime.
+    assert!(cx.update(request_app_quit));
+    let prompt = handle
+        .update(cx, |workspace, _, cx| {
+            snapshot(workspace, cx)["closePrompt"].clone()
+        })
+        .expect("workspace window");
+    assert_eq!(prompt, json!(null));
 }
