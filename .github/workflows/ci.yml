@@ -364,7 +364,8 @@ jobs:
             echo 'OMP_CONFORMANCE_ADAPTER_ARGV=["rust/target/debug/omp-conformance"]' >> "$GITHUB_ENV"
           fi
       - run: npm run toolchain:bootstrap
-      - run: npm ci
+      # The Rust adapter path does not load Electron; skip its native postinstall.
+      - run: npm ci --ignore-scripts
       - run: npm run release:preflight:toolchain
       - name: Run the conformance suite against the Rust adapter
         run: node node_modules/vitest/vitest.mjs run --config vitest.conformance.config.ts --reporter=json --outputFile="${{ env.OMP_CONFORMANCE_VITEST_JSON }}"
