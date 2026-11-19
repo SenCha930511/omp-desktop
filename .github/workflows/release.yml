@@ -50,7 +50,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: ${{ env.RELEASE_REF }}
+          ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -223,6 +223,14 @@ jobs:
       - name: Build ad-hoc signed macOS packages for beta distribution
         if: env.RELEASE_MAC_UNSIGNED_ENABLED == 'true'
         run: node scripts/release/package.mjs --qa --platform mac --skip-verify --arch ${{ matrix.arch }}
+      - name: Launch the packaged application
+        run: node scripts/release/smoke-packaged-app.mjs --platform mac --arch ${{ matrix.arch }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: failure()
+        with:
+          name: packaged-smoke-diagnostics-mac-${{ matrix.arch }}
+          path: release/mac/${{ matrix.arch }}/packaged-smoke-diagnostics.log
+          if-no-files-found: error
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: omp-desktop-public-macos-${{ matrix.arch }}

@@ -8,7 +8,7 @@ The repository's `main` branch protection must require pull requests and require
 
 The required checks are exactly the ten normal pull-request gates:
 
-- `production-audit`
+- `Production dependency audit`
 - `quality`
 - `hermetic-e2e`
 - `windows-state-migration`
@@ -21,7 +21,7 @@ The required checks are exactly the ten normal pull-request gates:
 
 Do not require `local-qa-package`: it is manual local QA, runs only through `workflow_dispatch`, and is intentionally excluded from pull-request validation.
 
-`Production dependency audit` is a seventh pull-request gate: it runs the exception-aware `npm run audit:production` evaluator against the exact PR head, and the release workflow runs the same evaluator against its validated immutable SHA before any package or publication job. After the check context first appears on a pull request, a repository administrator must add `Production dependency audit` to the required status checks on `main`. The scheduled [dependency-audit workflow](../.github/workflows/audit.yml) remains for advisories disclosed after merge.
+`Production dependency audit` runs the exception-aware `npm run audit:production` evaluator against the exact PR head, and the release workflow runs the same evaluator against its validated immutable SHA before any package or publication job. After the check context first appears on a pull request, a repository administrator must add this exact named context to the required status checks on `main`. The scheduled [dependency-audit workflow](../.github/workflows/audit.yml) remains for advisories disclosed after merge.
 
 GitHub merge queues are not available to this public repository while it is owned by a personal account. Consequently, `merge_group` or a required merge queue cannot enforce this policy here; strict up-to-date branch protection is the supported latest-main control. If the repository moves to an organization, merge-queue support should be designed and tested separately before enabling it.
 
@@ -133,7 +133,7 @@ The [release workflow](../.github/workflows/release.yml) runs for a semantic-ver
 | `quality` | Run `release:verify:package` for that SHA. |
 | `conformance` | Run `npm run test:conformance` for that SHA across macOS, Linux, and Windows before any native package job. |
 | `hermetic-e2e` | Build and run the Electron E2E suite for that SHA. |
-| `package` | Build both native macOS architectures. Credential preflight is fail-closed; public verification checks the signing identity, required microphone entitlements on the app and every Electron helper, the notarization staple on each packaged app, Gatekeeper, artifact integrity, fuses, native layout/architecture, and package budgets. |
+| `package` | Build both native macOS architectures. Credential preflight is fail-closed; public verification checks the signing identity, required microphone entitlements on the app and every Electron helper, the notarization staple on each packaged app, Gatekeeper, artifact integrity, fuses, native layout/architecture, and package budgets. Both native macOS architectures must pass the packaged application launch smoke before their artifacts are uploaded. |
 | `package-linux` | Build the configured Linux architectures on native runners and apply the Linux package/runtime verification path. |
 | `package-windows` | When explicitly enabled, build either Authenticode-signed public packages or unsigned beta packages. Signed mode requires signing secrets and the configured signer subject and/or thumbprint. |
 | `release-packages` | Reject failed prerequisites, collect the enabled platform artifacts, generate checksums, attest provenance, and publish or resume the GitHub Release with write permission scoped to this final job. |
