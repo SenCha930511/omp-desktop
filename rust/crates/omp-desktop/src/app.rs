@@ -540,6 +540,7 @@ impl Workspace {
                     if let Some(bounds) = this.last_bounds {
                         this.layout = this.geometry.resolve(bounds.2 as f64);
                     }
+                    this.resize_terminal();
                     this.schedule_geometry_save(cx);
                     cx.notify();
                 }),
@@ -1386,6 +1387,7 @@ impl Workspace {
                         if let Some(bounds) = this.last_bounds {
                             this.layout = this.geometry.resolve(bounds.2 as f64);
                         }
+                        this.resize_terminal();
                         this.refresh_review();
                         cx.notify();
                     })),
@@ -3399,6 +3401,57 @@ mod tests {
         assert!(answer.is_empty());
         assert!(error.is_none());
         assert!(!streaming);
+    }
+
+    /// The terminal panel draws with no shell attached: rendering must not
+    /// spawn a PTY, and the transcript stays untouched.
+    #[test]
+    fn terminal_panel_renders_without_starting_a_shell() {
+        let mut cx = gpui_kit::TestAppContext::single();
+        cx.update(gpui_kit::init);
+        let root = tempfile::TempDir::new().expect("test root").keep();
+        let handle = cx.add_window(|window, cx| {
+            Workspace::new(
+                window,
+                cx,
+                WorkspaceData {
+                    geometry: UiGeometry::default(),
+                    geometry_path: root.join("ui-geometry.json"),
+                    home_dir: root.clone(),
+                    user_data_dir: root.clone(),
+                    omp_executable: PathBuf::from("omp"),
+                    settings: AppSettings::default(),
+                    projects: Vec::new(),
+                    sessions: Vec::new(),
+                },
+            )
+        });
+        handle
+            .update(&mut cx, |workspace, _, _| {
+                workspace.terminal_open = true;
+                workspace.terminal_error = Some("shell unavailable".to_string());
+                workspace.layout = workspace.geometry.resolve(1600.0);
+            })
+            .expect("workspace window");
+        cx.update(|cx| {
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.draw(cx).clear(cx);
+            })
+            .expect("draw terminal frame");
+        });
+        let (transcript, open, started) = handle
+            .update(&mut cx, |workspace, _, _| {
+                (
+                    workspace.transcript.len(),
+                    workspace.terminal_open,
+                    workspace.terminal.is_some(),
+                )
+            })
+            .expect("workspace window");
+        cx.quit();
+        assert_eq!(transcript, 0);
+        assert!(open);
+        assert!(!started);
     }
 
     /// Side-question deltas accumulate in order; thinking deltas are skipped.

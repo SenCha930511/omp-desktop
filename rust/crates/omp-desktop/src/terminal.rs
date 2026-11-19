@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 
 use async_channel::{Receiver, Sender};
-use portable_pty::{Child, ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
+use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use vt100::Parser;
 
 /// Rows requested from the PTY. The panel body is sized for this many lines.
@@ -157,15 +157,22 @@ impl TerminalSession {
         // The slave side must be closed in the parent, or the reader never
         // sees EOF when the shell exits.
         drop(pty.slave);
-
-        let reader = pty
-            .master
-            .try_clone_reader()
-            .map_err(|error| format!("Could not read from the terminal: {error}"))?;
-        let writer = pty
-            .master
-            .take_writer()
-            .map_err(|error| format!("Could not write to the terminal: {error}"))?;
+        let reader = match pty.master.try_clone_reader() {
+            Ok(reader) => reader,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("Could not read from the terminal: {error}"));
+            }
+        };
+        let writer = match pty.master.take_writer() {
+            Ok(writer) => writer,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("Could not write to the terminal: {error}"));
+            }
+        };
 
         let shared = Arc::new(Mutex::new(TerminalState {
             parser: Parser::new(rows, cols, 0),
@@ -179,6 +186,7 @@ impl TerminalSession {
             .spawn(move || read_loop(reader, reader_shared, sender));
         if let Err(error) = spawned {
             let _ = child.kill();
+            let _ = child.wait();
             return Err(format!("Could not start the terminal reader: {error}"));
         }
 
@@ -253,6 +261,7 @@ impl TerminalSession {
             .map_err(|error| format!("Could not resize the terminal: {error}"))?;
         TerminalState::lock(&self.shared)
             .parser
+            .screen_mut()
             .set_size(rows, cols);
         self.rows = rows;
         self.cols = cols;
