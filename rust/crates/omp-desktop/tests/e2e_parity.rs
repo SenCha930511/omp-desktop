@@ -140,6 +140,10 @@ fn seed_two_sessions(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
     (home, older, newer)
 }
 
+fn same_path(left: &str, right: &Path) -> bool {
+    Path::new(left) == right
+}
+
 fn transcript_text(workspace: &Workspace) -> Vec<String> {
     workspace
         .transcript_messages()
@@ -172,8 +176,8 @@ fn catalog_order_drives_session_selection(cx: &mut TestAppContext) {
     drop(store);
     let titles: Vec<&str> = catalog.iter().map(|record| record.title.as_str()).collect();
     assert_eq!(titles, ["Newer", "Older"]);
-    assert_eq!(catalog[0].file_path, newer.display().to_string());
-    assert_eq!(catalog[1].file_path, older.display().to_string());
+    assert!(same_path(&catalog[0].file_path, &newer));
+    assert!(same_path(&catalog[1].file_path, &older));
 
     let mut data = test_data(root);
     data.home_dir = home;
@@ -252,7 +256,7 @@ fn pinning_a_session_persists_without_reordering_the_catalog(cx: &mut TestAppCon
     assert_eq!(titles, ["Newer", "Older"]);
     assert!(records[1].pinned, "the pinned session is Older");
     assert!(!records[0].pinned);
-    assert_eq!(records[1].file_path, older.display().to_string());
+    assert!(same_path(&records[1].file_path, &older));
 }
 
 #[gpui_kit::test]
@@ -288,7 +292,7 @@ fn archiving_a_session_persists_and_leaves_the_catalog(cx: &mut TestAppContext) 
     assert_eq!(all.len(), 2);
     let archived = all
         .iter()
-        .find(|record| record.file_path == older.display().to_string())
+        .find(|record| same_path(&record.file_path, &older))
         .expect("archived session record");
     assert!(archived.archived);
     assert!(older.exists(), "archiving keeps the JSONL file");
