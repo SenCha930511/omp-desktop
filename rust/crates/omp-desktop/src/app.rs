@@ -692,9 +692,7 @@ impl Workspace {
                             .rounded(px(6.0))
                             .hover(|style| style.bg(colors.accent))
                             .child(IconName::X)
-                            .on_click(
-                                cx.listener(|this, _, _, cx| this.close_terminal(cx)),
-                            ),
+                            .on_click(cx.listener(|this, _, _, cx| this.close_terminal(cx))),
                     ),
             )
             .child(

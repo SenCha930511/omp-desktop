@@ -613,3 +613,4 @@ fn side_question_pane_renders_without_touching_the_transcript(cx: &mut TestAppCo
             assert_eq!(workspace.transcript_messages().len(), 2);
         })
         .expect("side question window");
+}

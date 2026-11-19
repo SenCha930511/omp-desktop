@@ -292,14 +292,20 @@ impl Drop for TerminalSession {
 
 /// Reads PTY output until EOF or an error, mirroring it into the parser and
 /// waking the panel once per chunk.
-fn read_loop(mut reader: Box<dyn Read + Send>, shared: Arc<Mutex<TerminalState>>, sender: Sender<()>) {
+fn read_loop(
+    mut reader: Box<dyn Read + Send>,
+    shared: Arc<Mutex<TerminalState>>,
+    sender: Sender<()>,
+) {
     let mut buffer = [0u8; READ_BUFFER];
     let mut read_error = None;
     loop {
         match reader.read(&mut buffer) {
             Ok(0) => break,
             Ok(count) => {
-                TerminalState::lock(&shared).parser.process(&buffer[..count]);
+                TerminalState::lock(&shared)
+                    .parser
+                    .process(&buffer[..count]);
                 // A full channel already holds a wake-up for the panel.
                 let _ = sender.try_send(());
             }
@@ -333,10 +339,7 @@ mod tests {
     #[test]
     fn screen_text_keeps_indentation_and_drops_padding() {
         let contents = "  total 4\n  file.txt     \n\n\n";
-        assert_eq!(
-            normalize_screen_text(contents),
-            "  total 4\n  file.txt"
-        );
+        assert_eq!(normalize_screen_text(contents), "  total 4\n  file.txt");
         assert_eq!(normalize_screen_text("\n \n\t\n"), "");
         assert_eq!(normalize_screen_text("one\ntwo"), "one\ntwo");
     }
