@@ -13,7 +13,14 @@
 //! Each tab owns its own webview, created lazily on the UI thread, and the pane keeps only
 //! the active tab's view on screen. All of them are owned by the [`Workspace`], so they are
 //! dropped with the window.
+//!
+//! Every tab also gets an isolated profile under `<user data dir>/browser-tabs/<tab-id>`:
+//! wry gives that directory to WebView2 and WebKitGTK, while macOS names a per-tab WKWebView
+//! data store instead, because WKWebView has no data directory. Closing a tab removes the
+//! directory best-effort, so one page's cookies and storage never reach another tab; a named
+//! WKWebView store is not a directory, so the system keeps it.
 
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use async_channel::Sender;
@@ -25,7 +32,8 @@ use gpui_kit::*;
 use gpui_webview::WebView;
 use omp_core::url_policy::parse_http_url;
 use serde_json::Value;
-use wry::WebViewBuilder;
+#[cfg(target_os = "macos")]
+use wry::WebViewBuilderExtDarwin as _;
 
 use crate::app::Workspace;
 
@@ -242,19 +250,29 @@ enum CaptureMessage {
 /// Each tab owns its native webview, so switching tabs hides a loaded page instead of
 /// reloading it, and closing a tab drops (and hides) its view. `id` names the tab in
 /// IPC messages: indices shift when a tab closes, ids do not.
+///
+/// Each tab also owns an isolated profile directory: wry takes its user data folder (or
+/// WebKit data manager) from the context the tab built its webview with, so one page's
+/// cookies and storage never reach another tab.
 pub struct BrowserTab {
     id: u64,
     webview: Option<Entity<WebView>>,
+    /// The context the webview was built with; wry asks it to outlive its webview.
+    web_context: Option<WebContext>,
+    /// This tab's isolated profile, removed when the tab closes.
+    data_dir: PathBuf,
     url: String,
     error: Option<String>,
     annotation: Option<String>,
 }
 
 impl BrowserTab {
-    fn new(id: u64, url: &str) -> Self {
+    fn new(id: u64, url: &str, data_dir: PathBuf) -> Self {
         Self {
             id,
             webview: None,
+            web_context: None,
+            data_dir,
             url: url.to_string(),
             error: None,
             annotation: None,
@@ -304,6 +322,66 @@ pub fn tab_after_close(active: usize, closing: usize, len: usize) -> Option<usiz
     Some(next.min(remaining - 1))
 }
 
+/// The subdirectory of the app's user data dir that holds one profile per tab.
+const BROWSER_TABS_DIR: &str = "browser-tabs";
+
+/// The directory one tab's profile lives in: `<root>/<tab-id>`.
+///
+/// A tab's cookies and storage stay in its own directory, so they never reach another
+/// tab, and a tab that reuses the id later starts from a clean profile once the closed
+/// tab's directory is gone.
+pub fn tab_data_dir(root: &Path, id: u64) -> PathBuf {
+    root.join(id.to_string())
+}
+
+/// The app's user data dir, resolved the way `main` resolves it.
+///
+/// The pane is built before `WorkspaceData` reaches the `Workspace`, so it cannot read the
+/// directory `main` already picked. It repeats that resolution here, `--user-data-dir=`
+/// override included, so both point at the same place.
+fn user_data_dir() -> Option<PathBuf> {
+    let arg_dir = std::env::args()
+        .find_map(|arg| arg.strip_prefix("--user-data-dir=").map(PathBuf::from))
+        .filter(|dir| !dir.as_os_str().is_empty());
+    if let Some(dir) = arg_dir {
+        return Some(dir);
+    }
+    #[cfg(target_os = "macos")]
+    let dir = std::env::var_os("HOME")
+        .map(|home| PathBuf::from(home).join("Library/Application Support/OMP Desktop Rust Dev"));
+    #[cfg(windows)]
+    let dir =
+        std::env::var_os("APPDATA").map(|dir| PathBuf::from(dir).join("OMP Desktop Rust Dev"));
+    #[cfg(not(any(target_os = "macos", windows)))]
+    let dir = std::env::var_os("XDG_DATA_HOME")
+        .map(|dir| PathBuf::from(dir).join("omp-desktop-rust-dev"))
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(|home| PathBuf::from(home).join(".local/share/omp-desktop-rust-dev"))
+        });
+    dir
+}
+
+/// Where the pane keeps its per-tab profiles: under the app's user data dir, or in the
+/// system temp dir when no user data dir can be named.
+fn profiles_root() -> PathBuf {
+    user_data_dir()
+        .map(|dir| dir.join(BROWSER_TABS_DIR))
+        .unwrap_or_else(|| std::env::temp_dir().join("omp-desktop-browser-tabs"))
+}
+
+/// WKWebView has no data directory, so a tab names a custom data store instead.
+///
+/// The first eight bytes tag the store as this app's; the rest is the tab id, so the store
+/// is as stable as the tab's directory name.
+#[cfg(target_os = "macos")]
+fn tab_data_store_identifier(id: u64) -> [u8; 16] {
+    let mut identifier = [0u8; 16];
+    identifier[..8].copy_from_slice(b"omp-tab-");
+    identifier[8..].copy_from_slice(&id.to_be_bytes());
+    identifier
+}
+
 /// Address bar, tab bar, history controls and the native webviews of the Browser pane.
 ///
 /// Only the active tab's webview is drawn; the others stay loaded but hidden.
@@ -311,6 +389,8 @@ pub struct BrowserPane {
     address: Entity<InputState>,
     _address_subscription: Subscription,
     tabs: Vec<BrowserTab>,
+    /// Root of the per-tab profiles; resolved once, when the pane is built.
+    profiles_root: PathBuf,
     active_tab: usize,
     /// The id the next tab takes; ids survive the index shifts of closing tabs.
     next_tab_id: u64,
@@ -366,6 +446,7 @@ impl BrowserPane {
             address,
             _address_subscription: address_subscription,
             tabs: Vec::new(),
+            profiles_root: profiles_root(),
             active_tab: 0,
             next_tab_id: 1,
             navigate_requested: false,
@@ -401,20 +482,33 @@ impl BrowserPane {
             return;
         }
         let id = tab.id;
+        let data_dir = tab.data_dir.clone();
         let sender = self.capture_sender.clone();
-        let builder = WebViewBuilder::new().with_url(BLANK_PAGE).with_ipc_handler(
-            move |request: wry::http::Request<String>| {
+        // The directory exists before the webview does, so a build that fails leaves
+        // nothing behind and a tab that closes always has a profile to clean up.
+        let _ = std::fs::create_dir_all(&data_dir);
+        // wry reads the profile from the context: WebView2's user data folder and
+        // WebKitGTK's data manager both come from it, so this tab's cookies and storage
+        // stay in `data_dir` instead of the engine's default profile.
+        let mut context = WebContext::new(Some(data_dir.clone()));
+        let builder = WebViewBuilder::new_with_web_context(&mut context)
+            .with_url(BLANK_PAGE)
+            .with_ipc_handler(move |request: wry::http::Request<String>| {
                 // Pages may post anything, so the drain task filters by the envelope kind.
                 let _ = sender.try_send(CaptureMessage::Posted {
                     tab: id,
                     message: request.into_body(),
                 });
-            },
-        );
+            });
+        // WKWebView has no data directory, so on macOS the tab names a custom data store
+        // instead. It is as stable as the tab's directory name.
+        #[cfg(target_os = "macos")]
+        let builder = builder.with_data_store_identifier(tab_data_store_identifier(id));
         match WebView::build(builder, window, cx) {
             Ok(webview) => {
                 if let Some(tab) = self.tab_mut(id) {
                     tab.webview = Some(cx.new(|_| webview));
+                    tab.web_context = Some(context);
                     tab.error = None;
                 }
             }
@@ -422,6 +516,7 @@ impl BrowserPane {
                 if let Some(tab) = self.tab_mut(id) {
                     tab.error = Some(format!("The native webview could not start: {error}"));
                 }
+                let _ = std::fs::remove_dir_all(&data_dir);
             }
         }
     }
@@ -477,10 +572,22 @@ impl BrowserPane {
         if index >= len {
             return;
         }
-        let closed = self.tabs.remove(index).id;
+        let BrowserTab {
+            id: closed,
+            webview,
+            web_context,
+            data_dir,
+            ..
+        } = self.tabs.remove(index);
         if self.capture_tab == Some(closed) {
             self.capture_tab = None;
         }
+        // The profile can only go once nothing holds it: drop the native view and its
+        // context first. A directory an engine still has open (Windows keeps the WebView2
+        // folder for a moment after the view goes) is left behind rather than reported.
+        drop(webview);
+        drop(web_context);
+        let _ = std::fs::remove_dir_all(&data_dir);
         match tab_after_close(self.active_tab, index, len) {
             Some(next) => self.active_tab = next,
             None => self.active_tab = 0,
@@ -492,7 +599,8 @@ impl BrowserPane {
     fn push_tab(&mut self) {
         let id = self.next_tab_id;
         self.next_tab_id += 1;
-        self.tabs.push(BrowserTab::new(id, BLANK_PAGE));
+        let data_dir = tab_data_dir(&self.profiles_root, id);
+        self.tabs.push(BrowserTab::new(id, BLANK_PAGE, data_dir));
         self.active_tab = self.tabs.len() - 1;
     }
 
@@ -972,10 +1080,12 @@ fn browser_tab_bar(
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::{
         BLANK_PAGE, BrowserTab, CAPTURE_KIND, PostedCapture, annotation_script, append_annotation,
         browser_tab_bar, capture_from_message, format_annotation, normalize_address,
-        tab_after_close, tab_label,
+        tab_after_close, tab_data_dir, tab_label,
     };
 
     #[test]
@@ -1109,11 +1219,36 @@ mod tests {
         assert_eq!(tab_after_close(0, 0, 0), None);
     }
 
+    /// Each tab's profile is its own directory under the pane's root, and asking for the
+    /// path touches nothing: the directory is created when the webview is built.
+    #[test]
+    fn tab_data_dirs_are_distinct_and_under_the_root() {
+        let root = std::env::temp_dir().join(format!("omp-tab-dirs-{}", std::process::id()));
+        assert_eq!(tab_data_dir(&root, 1), root.join("1"));
+        assert_eq!(tab_data_dir(&root, 1), tab_data_dir(&root, 1));
+        assert_ne!(tab_data_dir(&root, 1), tab_data_dir(&root, 2));
+        // A tab id is one path component, not a nested path.
+        assert_eq!(tab_data_dir(&root, 9).parent(), Some(root.as_path()));
+        // Pure: nothing was created on disk.
+        assert!(!root.exists());
+    }
+
+    /// WKWebView stores are named, not directories, so each tab has to name its own.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn tab_data_store_identifiers_are_distinct_per_tab() {
+        assert_ne!(tab_data_store_identifier(1), tab_data_store_identifier(2));
+        assert_eq!(tab_data_store_identifier(1), tab_data_store_identifier(1));
+        assert_eq!(&tab_data_store_identifier(7)[..8], b"omp-tab-");
+    }
+
     #[test]
     fn a_new_tab_is_blank_until_a_page_loads() {
-        let tab = BrowserTab::new(7, BLANK_PAGE);
+        let tab = BrowserTab::new(7, BLANK_PAGE, tab_data_dir(Path::new("profiles"), 7));
         assert_eq!(tab.id, 7);
         assert!(tab.webview.is_none());
+        assert!(tab.web_context.is_none());
+        assert_eq!(tab.data_dir, Path::new("profiles").join("7"));
         assert!(tab.error.is_none());
         assert!(tab.annotation.is_none());
         // The blank page reads as an empty address field.
