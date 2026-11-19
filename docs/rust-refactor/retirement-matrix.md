@@ -21,7 +21,7 @@ by the Rust unit and smoke tests below.
 | Terminal | `terminal.rs` PTY helpers, tabs, panel render test |
 | Live voice | `app.rs` live-event helper tests, pane render test; dictation is not implemented |
 | Updater feed | `prepare-rust-update-feed.mjs` validation tests; release.yml is not wired |
-| Parity harness | `tests/e2e_parity.rs`, 40 of 88 scenarios |
+| Parity harness | `tests/e2e_parity.rs`, 50 of 88 scenarios |
 | Updater | `updates.rs` state tests, Settings row render test |
 | Packaging | macOS `.app`, Linux `.deb`, Windows NSIS packaged-smoke CI jobs |
 | Conformance | 10 files, 20 tests against the Rust adapter on macOS, Linux, and Windows |
@@ -30,7 +30,7 @@ by the Rust unit and smoke tests below.
 
 - Dictation credentials and the app-managed STT path; live voice is RPC-driven.
 - Wiring the updater feed and signatures into `release.yml`.
-- The remaining 48 Playwright scenarios, including terminal per-session restore,
+- The remaining 38 Playwright scenarios, including terminal per-session restore,
   agent-driven browser tabs, dictation, and the responsive workspace interactions.
 - The final Electron cutover gate.
 
