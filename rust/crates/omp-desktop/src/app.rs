@@ -330,6 +330,14 @@ pub struct Workspace {
     projects: Vec<ProjectRecord>,
     sessions: Vec<SessionRecord>,
     transcript: Vec<TranscriptMessage>,
+    // The transcript's own scroll state: the handle carries the offset, range
+    // and child bounds the at-bottom check reads, and `scroll_to_item` is how
+    // an append follows the newest message.
+    transcript_scroll: ScrollHandle,
+    // Whether the transcript is pinned to its newest message. It starts true
+    // and is re-read on every scroll event, so a reader who scrolls up stops
+    // the auto-follow until the `Jump to latest` control re-pins it.
+    transcript_at_bottom: bool,
     // The harness's own view of the queued follow-ups (`session_action_update`).
     // The optimistic queued row in the transcript is the immediate trace; this
     // list is what the harness reports, and the two are never merged.
@@ -535,6 +543,8 @@ impl Workspace {
             projects: data.projects,
             sessions,
             transcript: Vec::new(),
+            transcript_scroll: ScrollHandle::new(),
+            transcript_at_bottom: true,
             queued_follow_ups: Vec::new(),
             transcript_error: None,
             runtime_error: None,
@@ -628,6 +638,53 @@ impl Workspace {
             return;
         }
         cx.write_to_clipboard(ClipboardItem::new_string(text));
+    }
+
+    /// Re-pins the transcript to its newest message.
+    ///
+    /// The `Jump to latest` control and the parity harness both call this, so
+    /// a scenario never has to click a measured position. The scroll is
+    /// requested on the handle and lands in the frame `cx.notify` requests.
+    pub fn jump_to_transcript_latest(&mut self, cx: &mut Context<Self>) {
+        self.transcript_at_bottom = true;
+        self.follow_transcript_tail();
+        cx.notify();
+    }
+
+    /// Re-reads whether the transcript sits at its bottom edge.
+    ///
+    /// `on_scroll` calls this after the handle has taken the event's delta, so
+    /// the drawn `Jump to latest` control follows the reader instead of a
+    /// stale frame.
+    fn sync_transcript_at_bottom(&mut self) {
+        let handle = &self.transcript_scroll;
+        self.transcript_at_bottom = transcript_is_at_bottom(
+            f32::from(handle.offset().y),
+            f32::from(handle.max_offset().y),
+            f32::from(handle.bounds().size.height),
+            TRANSCRIPT_BOTTOM_THRESHOLD,
+        );
+    }
+
+    /// Keeps the transcript on its newest message after an append, but only
+    /// while the reader is already at the bottom: someone who scrolled up
+    /// keeps their place and gets the `Jump to latest` control instead.
+    fn follow_transcript_tail(&self) {
+        if !self.transcript_at_bottom {
+            return;
+        }
+        let Some(last) = self.transcript.len().checked_sub(1) else {
+            return;
+        };
+        if self.transcript_scroll.bounds().size.height <= px(0.0) {
+            // Before the first layout the handle has no bounds, so an item
+            // request would be consumed by a prepaint that cannot scroll yet.
+            // The bottom flag is applied by the same frame's paint, which is
+            // where the content size first becomes known.
+            self.transcript_scroll.scroll_to_bottom();
+        } else {
+            self.transcript_scroll.scroll_to_item(last);
+        }
     }
 
     /// Renders the whole window into `<user_data_dir>/captures` and reports the
@@ -850,6 +907,9 @@ impl Workspace {
             "sessions": sessions,
             "selectedSession": self.selected_session,
             "transcript": transcript,
+            // Whether the transcript is pinned to its newest message: false
+            // means a reader scrolled up and the jump control is drawn.
+            "transcriptAtBottom": self.transcript_at_bottom,
             // Whether a turn is in flight, so a send would queue a follow-up.
             "running": self.running,
             // What the harness reports as queued behind the running turn.
@@ -1840,11 +1900,17 @@ impl Workspace {
         // are reopened from its spec, never handed over from the old one.
         self.restore_terminal_tabs(cx);
         self.transcript.clear();
+        // A switch lands on the newest message of the session it opens, the
+        // same way a fresh read of this one would.
+        self.transcript_at_bottom = true;
         self.transcript_error = None;
         if let Some(session) = self.sessions.get(index) {
             let root = sessions::session_root(&self.home_dir);
             match sessions::read_transcript(&root, &session.file_path) {
-                Ok(messages) => self.transcript = messages,
+                Ok(messages) => {
+                    self.transcript = messages;
+                    self.follow_transcript_tail();
+                }
                 Err(error) => self.transcript_error = Some(error.message),
             }
         }
@@ -2086,6 +2152,8 @@ impl Workspace {
         self.terminal_specs.remove(DRAFT_TERMINAL_KEY);
         self.restore_terminal_tabs(cx);
         self.transcript.clear();
+        // The draft starts empty and follows the first message it gets.
+        self.transcript_at_bottom = true;
         self.transcript_error = None;
         self.runtime_error = None;
         self.turn_baseline = None;
@@ -2258,6 +2326,7 @@ impl Workspace {
                             ..TranscriptPart::text("")
                         }],
                     });
+                    self.follow_transcript_tail();
                 }
                 Some("live_phase" | "live_levels" | "live_transcript" | "live_end") => {
                     // Live voice never touches the transcript: the pane owns these frames.
@@ -2919,6 +2988,9 @@ impl Workspace {
                 });
             }
         }
+        // A streamed reply grows the last row, so a reader at the bottom keeps
+        // seeing it arrive; one who scrolled up stays where they were.
+        self.follow_transcript_tail();
     }
 
     pub fn send_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -3029,6 +3101,9 @@ impl Workspace {
                 parts: vec![TranscriptPart::text(text)],
             });
         }
+        // Both rows land at the tail, so a reader at the bottom sees their own
+        // message; a reader who scrolled up keeps their place.
+        self.follow_transcript_tail();
         let composer = self.composer.clone();
         composer.update(cx, |state, cx| state.set_value("", window, cx));
         cx.notify();
@@ -3057,12 +3132,24 @@ impl Workspace {
                 .child(text)
                 .into_any_element();
         }
-        div()
+        let scroll = div()
             .id("transcript-scroll")
             .flex()
             .flex_col()
             .flex_1()
+            .min_h(px(0.0))
             .overflow_y_scroll()
+            .track_scroll(&self.transcript_scroll)
+            .on_scroll(cx.listener(|this, _, _, cx| {
+                let was_at_bottom = this.transcript_at_bottom;
+                this.sync_transcript_at_bottom();
+                // The scroll area redraws itself for the new offset; this
+                // frame is for the control that appears once the reader
+                // leaves the bottom.
+                if this.transcript_at_bottom != was_at_bottom {
+                    cx.notify();
+                }
+            }))
             .gap_4()
             .p_6()
             .children(self.transcript.iter().map(|message| {
@@ -3087,7 +3174,46 @@ impl Workspace {
                             })
                             .child(transcript_part_text(part))
                     }))
-            }))
+            }));
+        // The rows and the `Jump to latest` control share one box, so the
+        // control floats over the transcript instead of taking height away
+        // from it and shifting what the reader was looking at.
+        div()
+            .relative()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h(px(0.0))
+            .child(scroll)
+            .when(!self.transcript_at_bottom, |element| {
+                element.child(
+                    div()
+                        .absolute()
+                        .left(px(0.0))
+                        .right(px(0.0))
+                        .bottom(px(16.0))
+                        .flex()
+                        .justify_center()
+                        .child(
+                            div()
+                                .id("transcript-jump-latest")
+                                .aria_label("Jump to latest")
+                                .px_3()
+                                .py_1()
+                                .rounded(px(6.0))
+                                .border_1()
+                                .border_color(colors.border)
+                                .bg(colors.primary)
+                                .text_xs()
+                                .text_color(colors.primary_foreground)
+                                .hover(|style| style.bg(colors.primary.opacity(0.9)))
+                                .child("Jump to latest")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.jump_to_transcript_latest(cx);
+                                })),
+                        ),
+                )
+            })
             .into_any_element()
     }
 
@@ -5858,6 +5984,27 @@ fn append_clipboard_text(current: &str, clipboard: &str) -> String {
     next
 }
 
+/// How close to the transcript's bottom edge still counts as pinned: a few
+/// lines of slack, so a rounding gap or a partially scrolled row does not
+/// unpin the auto-follow.
+const TRANSCRIPT_BOTTOM_THRESHOLD: f32 = 24.0;
+
+/// Whether a scroll area sits at its bottom edge.
+///
+/// `offset` is the scroll offset gpui reports, which grows more negative as
+/// the content scrolls up, and `max_offset` is the positive distance the
+/// content can scroll, so `max_offset + offset` is the gap left below the
+/// viewport: zero at the bottom and growing as the reader scrolls up.
+/// `viewport` is the scroll area's height; before its first layout it is zero,
+/// and a view with nothing to scroll has no bottom to be away from, so both
+/// count as at the bottom.
+fn transcript_is_at_bottom(offset: f32, max_offset: f32, viewport: f32, threshold: f32) -> bool {
+    if viewport <= 0.0 || max_offset <= 0.0 {
+        return true;
+    }
+    max_offset + offset <= threshold
+}
+
 /// The transcript's name for a message's author: the two known roles are
 /// relabelled, an agent carries its own name, and anything else keeps its role.
 fn transcript_role_label(message: &TranscriptMessage) -> String {
@@ -6633,14 +6780,16 @@ mod tests {
     use super::{
         AppView, AskDialog, AskOption, AskQuestion, CLOSE_CONFIRM_ACCEPT, CLOSE_CONFIRM_CANCEL,
         CloseGuard, CloseIntent, ContextUsage, DictationState, LIVE_TRANSCRIPT_LIMIT,
-        LiveVoiceState, RightPane, TERMINAL_MENU_ITEMS, TerminalMenuAction, TerminalTabSpec,
-        TerminalTabSpecs, UpdateCheckState, Workspace, WorkspaceData, append_clipboard_text,
-        append_dictation_text, append_side_answer, apply_dictation_frame, apply_live_voice_event,
-        ask_answers_ready, ask_cancel_payload, ask_submit_payload, capture_path,
-        close_confirmation, context_percent, context_usage_label, group_digits,
-        parse_ask_questions, parse_context_usage, should_confirm_close, side_answer_delta,
-        terminal_menu, terminal_menu_action, terminal_tab_bar, updates, write_capture,
+        LiveVoiceState, RightPane, TERMINAL_MENU_ITEMS, TRANSCRIPT_BOTTOM_THRESHOLD,
+        TerminalMenuAction, TerminalTabSpec, TerminalTabSpecs, UpdateCheckState, Workspace,
+        WorkspaceData, append_clipboard_text, append_dictation_text, append_side_answer,
+        apply_dictation_frame, apply_live_voice_event, ask_answers_ready, ask_cancel_payload,
+        ask_submit_payload, capture_path, close_confirmation, context_percent, context_usage_label,
+        group_digits, parse_ask_questions, parse_context_usage, should_confirm_close,
+        side_answer_delta, terminal_menu, terminal_menu_action, terminal_tab_bar,
+        transcript_is_at_bottom, updates, write_capture,
     };
+    use omp_core::sessions::{TranscriptMessage, TranscriptPart};
 
     /// A capture is stamped in UTC under `<user_data_dir>/captures`, and the PNG
     /// that name points at decodes back to the frame that was written.
@@ -8308,5 +8457,220 @@ mod tests {
                 assert!(error.contains("Unknown agent runtime"), "error: {error}");
             })
             .expect("workspace window");
+    }
+
+    /// The at-bottom reading has a little slack, treats a view that never laid
+    /// out or cannot scroll as pinned, and notices a reader who scrolled up.
+    #[test]
+    fn transcript_at_bottom_threshold_reads_the_scroll_gap() {
+        const SLACK: f32 = 24.0;
+        // An empty transcript, or one whose scroll area has no height yet, has
+        // no bottom to be away from.
+        assert!(transcript_is_at_bottom(0.0, 0.0, 600.0, SLACK));
+        assert!(transcript_is_at_bottom(-120.0, 0.0, 600.0, SLACK));
+        assert!(transcript_is_at_bottom(0.0, 500.0, 0.0, SLACK));
+        // At the bottom the offset equals the range; a few pixels up is still
+        // the bottom, while most of a viewport is not.
+        assert!(transcript_is_at_bottom(-500.0, 500.0, 600.0, SLACK));
+        assert!(transcript_is_at_bottom(-480.0, 500.0, 600.0, SLACK));
+        assert!(!transcript_is_at_bottom(-400.0, 500.0, 600.0, SLACK));
+        assert!(!transcript_is_at_bottom(0.0, 500.0, 600.0, SLACK));
+    }
+
+    /// The transcript follows its newest row while the reader stays at the
+    /// bottom; a scroll up stops the follow and draws the jump control, and a
+    /// click on that control re-pins the view. Frames are really drawn, so the
+    /// scroll handle has the bounds and range the workspace reads.
+    #[test]
+    fn transcript_follows_the_tail_until_the_reader_scrolls_up() {
+        use gpui_kit::test::TestEventExt as _;
+        use gpui_kit::{
+            InputEvent as _, MouseButton, ScrollDelta, ScrollEvent, ScrollSource, TouchPhase,
+            point, px, size,
+        };
+
+        let mut cx = gpui_kit::TestAppContext::single();
+        cx.update(gpui_kit::init);
+        let root = tempfile::TempDir::new().expect("test root").keep();
+        let handle = cx.open_window(size(px(1280.0), px(800.0)), |window, cx| {
+            Workspace::new(
+                window,
+                cx,
+                WorkspaceData {
+                    geometry: UiGeometry::default(),
+                    geometry_path: root.join("ui-geometry.json"),
+                    home_dir: root.join("home"),
+                    user_data_dir: root.join("user-data"),
+                    omp_executable: root.join("missing-omp"),
+                    settings: AppSettings::default(),
+                    projects: Vec::new(),
+                    sessions: Vec::new(),
+                },
+            )
+        });
+
+        // A transcript long enough to scroll. The rows are pushed directly
+        // because this case is about the scroll state, not about a session read.
+        handle
+            .update(&mut cx, |workspace, _, cx| {
+                for index in 0..40 {
+                    workspace.transcript.push(TranscriptMessage {
+                        id: format!("user-{index}"),
+                        role: "user".to_string(),
+                        timestamp: None,
+                        agent_name: None,
+                        parts: vec![TranscriptPart::text(format!(
+                            "message {index} {}",
+                            "padding ".repeat(24)
+                        ))],
+                    });
+                }
+                // The same tail-follow a session read performs.
+                workspace.follow_transcript_tail();
+                cx.notify();
+            })
+            .expect("workspace window");
+
+        let draw = |cx: &mut gpui_kit::TestAppContext| {
+            cx.update(|cx| {
+                cx.update_window(handle.into(), |_, window, cx| {
+                    window.draw(cx).clear(cx);
+                })
+                .expect("frame");
+            });
+        };
+        draw(&mut cx);
+
+        let (at_bottom, offset, max_offset, bounds) = handle
+            .update(&mut cx, |workspace, _, _| {
+                (
+                    workspace.transcript_at_bottom,
+                    workspace.transcript_scroll.offset(),
+                    workspace.transcript_scroll.max_offset(),
+                    workspace.transcript_scroll.bounds(),
+                )
+            })
+            .expect("scroll state");
+        assert!(
+            f32::from(max_offset.y) > 0.0,
+            "the transcript has to overflow for this case"
+        );
+        assert!(at_bottom);
+        assert_eq!(offset.y, -max_offset.y);
+
+        // A wheel event over the rows scrolls up and unpins the follow.
+        let position = bounds.center();
+        cx.update(|cx| {
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.dispatch_event(
+                    ScrollEvent {
+                        position,
+                        delta: ScrollDelta::Pixels(point(px(0.0), px(120.0))),
+                        modifiers: Default::default(),
+                        touch_phase: TouchPhase::Moved,
+                        source: ScrollSource::Pointer,
+                    }
+                    .to_platform_input(),
+                    cx,
+                );
+            })
+            .expect("scroll frame");
+        });
+        draw(&mut cx);
+        let (at_bottom, offset) = handle
+            .update(&mut cx, |workspace, _, _| {
+                (
+                    workspace.transcript_at_bottom,
+                    workspace.transcript_scroll.offset(),
+                )
+            })
+            .expect("scroll state");
+        assert!(!at_bottom, "scrolling up has to unpin the follow");
+        let gap = f32::from(offset.y) + f32::from(max_offset.y);
+        assert!(
+            (gap - 120.0).abs() < 1.0,
+            "the wheel delta has to reach the transcript, gap: {gap}"
+        );
+        let scrolled_offset = offset;
+
+        // A row that arrives while the reader is up there must not yank them.
+        handle
+            .update(&mut cx, |workspace, _, cx| {
+                workspace.append_assistant_delta("text_delta", "a new reply");
+                cx.notify();
+            })
+            .expect("append");
+        draw(&mut cx);
+        let (at_bottom, offset) = handle
+            .update(&mut cx, |workspace, _, _| {
+                (
+                    workspace.transcript_at_bottom,
+                    workspace.transcript_scroll.offset(),
+                )
+            })
+            .expect("scroll state");
+        assert!(!at_bottom);
+        assert_eq!(
+            offset.y, scrolled_offset.y,
+            "an append must not move a scrolled reader"
+        );
+
+        // The jump control is the button drawn over the bottom of the rows;
+        // clicking it re-pins and lands on the newest row.
+        let bounds = handle
+            .update(&mut cx, |workspace, _, _| {
+                workspace.transcript_scroll.bounds()
+            })
+            .expect("scroll state");
+        let click = point(bounds.center().x, bounds.bottom() - px(28.0));
+        cx.update(|cx| {
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.pointer_down(click, MouseButton::Left, cx);
+                window.pointer_up(click, MouseButton::Left, cx);
+            })
+            .expect("click frame");
+        });
+        draw(&mut cx);
+        let (at_bottom, offset, max_offset) = handle
+            .update(&mut cx, |workspace, _, _| {
+                (
+                    workspace.transcript_at_bottom,
+                    workspace.transcript_scroll.offset(),
+                    workspace.transcript_scroll.max_offset(),
+                )
+            })
+            .expect("scroll state");
+        assert!(at_bottom, "the jump control has to re-pin the follow");
+        // The last row is scrolled into view; the scroll area's own bottom
+        // padding stays below the fold, so the gap is at most that padding.
+        let gap = f32::from(offset.y) + f32::from(max_offset.y);
+        assert!(
+            (0.0..=TRANSCRIPT_BOTTOM_THRESHOLD).contains(&gap),
+            "jump left a gap of {gap}"
+        );
+
+        // Pinned again, the next streamed delta follows the tail.
+        handle
+            .update(&mut cx, |workspace, _, cx| {
+                workspace.append_assistant_delta("text_delta", " and more");
+                cx.notify();
+            })
+            .expect("append");
+        draw(&mut cx);
+        let (at_bottom, offset, max_offset) = handle
+            .update(&mut cx, |workspace, _, _| {
+                (
+                    workspace.transcript_at_bottom,
+                    workspace.transcript_scroll.offset(),
+                    workspace.transcript_scroll.max_offset(),
+                )
+            })
+            .expect("scroll state");
+        assert!(at_bottom);
+        let gap = f32::from(offset.y) + f32::from(max_offset.y);
+        assert!(
+            (0.0..=TRANSCRIPT_BOTTOM_THRESHOLD).contains(&gap),
+            "follow left a gap of {gap}"
+        );
     }
 }
