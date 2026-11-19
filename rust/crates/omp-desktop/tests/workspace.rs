@@ -227,3 +227,53 @@ fn grants_a_project_into_the_persisted_store(cx: &mut TestAppContext) {
         })
         .expect("workspace window");
 }
+
+#[gpui_kit::test]
+fn review_panel_reads_and_stages_real_git_changes(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let root = tempfile::TempDir::new().expect("test root");
+    let project = root.path().join("repo");
+    std::fs::create_dir_all(&project).expect("repo");
+    let run = |args: &[&str]| {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(&project)
+            .status()
+            .expect("git");
+        assert!(status.success());
+    };
+    run(&["init", "-q", "-b", "main"]);
+    run(&["config", "user.name", "OMP Test"]);
+    run(&["config", "user.email", "test@example.com"]);
+    std::fs::write(project.join("a.txt"), "line1\n").expect("seed");
+    run(&["add", "a.txt"]);
+    run(&["commit", "-qm", "initial"]);
+
+    let mut data = test_data(UiGeometry::default());
+    data.home_dir = root.path().join("home");
+    data.user_data_dir = root.path().join("user-data");
+    std::fs::create_dir_all(&data.home_dir).expect("home");
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.grant_project(&project, cx);
+            std::fs::write(project.join("a.txt"), "line1\nline2\n").expect("edit");
+            workspace.refresh_review();
+            let status = workspace.review_status().expect("status");
+            assert!(
+                status
+                    .files
+                    .iter()
+                    .any(|file| file.path == "a.txt" && !file.staged)
+            );
+            workspace.stage_path("a.txt", true, cx);
+            let staged = workspace.review_status().expect("status");
+            assert!(
+                staged
+                    .files
+                    .iter()
+                    .any(|file| file.path == "a.txt" && file.staged)
+            );
+        })
+        .expect("workspace window");
+}

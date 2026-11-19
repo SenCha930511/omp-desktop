@@ -9,6 +9,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use omp_core::agent::AgentManager;
 use omp_core::geometry::{ResolvedLayout, UiGeometry};
+use omp_core::git::{self, GitStatus};
 use omp_core::models::CliContext;
 use omp_core::projects::{self, ProjectRecord};
 use omp_core::sessions::{self, SessionRecord, TranscriptMessage, TranscriptPart};
@@ -16,7 +17,7 @@ use omp_core::settings::AppSettings;
 use omp_core::state::{
     CURRENT_DESKTOP_STATE_FILENAME, LEGACY_DESKTOP_STATE_FILENAME, Platform, StateStore,
 };
-use omp_core::turn_changes::TurnChanges;
+use omp_core::turn_changes::{TurnBaseline, TurnChanges, compute_turn_changes};
 use serde_json::{Value, json};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,6 +65,9 @@ pub struct Workspace {
     overview_open: bool,
     menu_open: bool,
     turn_changes: TurnChanges,
+    turn_baseline: Option<TurnBaseline>,
+    review_status: Option<GitStatus>,
+    review_error: Option<String>,
     last_bounds: Option<(f32, f32, f32, f32)>,
     save_task: Option<Task<()>>,
 }
@@ -103,6 +107,9 @@ impl Workspace {
             overview_open: false,
             menu_open: false,
             turn_changes: TurnChanges::default(),
+            turn_baseline: None,
+            review_status: None,
+            review_error: None,
             last_bounds: None,
             save_task: None,
         }
@@ -122,6 +129,10 @@ impl Workspace {
 
     pub fn projects(&self) -> &[ProjectRecord] {
         &self.projects
+    }
+
+    pub fn review_status(&self) -> Option<&GitStatus> {
+        self.review_status.as_ref()
     }
 
     fn track_bounds(&mut self, window: &Window, cx: &mut Context<Self>) {
@@ -481,7 +492,10 @@ impl Workspace {
                         self.append_assistant_delta(delta);
                     }
                 }
-                Some("agent_end") => self.streaming_index = None,
+                Some("agent_end") => {
+                    self.streaming_index = None;
+                    self.finish_turn();
+                }
                 Some("compaction_end") => {
                     let before = event
                         .get("result")
@@ -547,6 +561,9 @@ impl Workspace {
             cx.notify();
             return;
         };
+        if self.turn_baseline.is_none() {
+            self.turn_baseline = self.capture_turn_baseline();
+        }
         if let Err(error) = self
             .agents
             .command(&runtime_id, &json!({ "type": "prompt", "message": text }))
@@ -637,6 +654,61 @@ impl Workspace {
             }))
     }
 
+    fn project_cwd(&self) -> Option<String> {
+        self.selected_session
+            .and_then(|index| self.sessions.get(index))
+            .map(|session| session.project_path.clone())
+            .or_else(|| {
+                self.projects
+                    .first()
+                    .map(|project| project.primary_folder.clone())
+            })
+    }
+
+    fn capture_turn_baseline(&self) -> Option<TurnBaseline> {
+        let store = self.store.as_ref()?;
+        let cwd = self.project_cwd()?;
+        let store = store.lock().expect("state lock");
+        let files = git::snapshot_files(&store, Platform::current(), &cwd);
+        (!files.is_empty()).then(|| TurnBaseline::capture(files))
+    }
+
+    fn finish_turn(&mut self) {
+        let Some(baseline) = self.turn_baseline.take() else {
+            return;
+        };
+        let Some(store) = self.store.clone() else {
+            return;
+        };
+        let Some(cwd) = self.project_cwd() else {
+            return;
+        };
+        let files = {
+            let store = store.lock().expect("state lock");
+            git::snapshot_files(&store, Platform::current(), &cwd)
+        };
+        self.turn_changes = compute_turn_changes(&baseline, files);
+        self.refresh_review();
+    }
+
+    pub fn refresh_review(&mut self) {
+        let Some(store) = self.store.clone() else {
+            return;
+        };
+        let Some(cwd) = self.project_cwd() else {
+            return;
+        };
+        let store = store.lock().expect("state lock");
+        let status = git::status(&store, Platform::current(), &cwd);
+        if let Some(error) = status.error.clone() {
+            self.review_error = Some(error);
+            self.review_status = None;
+        } else {
+            self.review_error = None;
+            self.review_status = Some(status);
+        }
+    }
+
     fn turn_changes_card(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.theme().colors;
         div()
@@ -672,6 +744,7 @@ impl Workspace {
             .child(div().flex_1())
             .child(
                 div()
+                    .id("turn-review")
                     .px_2()
                     .py_0p5()
                     .rounded(px(6.0))
@@ -679,7 +752,16 @@ impl Workspace {
                     .border_color(colors.border)
                     .text_xs()
                     .text_color(colors.foreground)
-                    .child("📄+ Review"),
+                    .child("📄+ Review")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.right_pane = RightPane::Review;
+                        this.geometry.right_pane_open = true;
+                        if let Some(bounds) = this.last_bounds {
+                            this.layout = this.geometry.resolve(bounds.2 as f64);
+                        }
+                        this.refresh_review();
+                        cx.notify();
+                    })),
             )
     }
 
@@ -747,6 +829,21 @@ impl Workspace {
             ),
             (RightPane::Subagents, "Subagents", IconName::Bot),
         ];
+        let content = match self.right_pane {
+            RightPane::Launcher => None,
+            RightPane::Summary => Some(self.summary_content(cx).into_any_element()),
+            RightPane::Review => Some(self.review_content(cx).into_any_element()),
+            other => Some(self.placeholder_content(other, cx).into_any_element()),
+        };
+        let title = match self.right_pane {
+            RightPane::Launcher => "Overview",
+            RightPane::Summary => "Summary",
+            RightPane::Review => "Review",
+            RightPane::Files => "Files",
+            RightPane::Browser => "Browser",
+            RightPane::SideQuestion => "Side Question",
+            RightPane::Subagents => "Subagents",
+        };
         div()
             .flex()
             .flex_col()
@@ -773,26 +870,59 @@ impl Workspace {
                     .child(IconName::Search)
                     .child("Search or enter a URL"),
             )
-            .children(items.into_iter().map(|(pane, label, icon)| {
-                let selected = self.right_pane == pane;
-                div()
-                    .id(label)
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .px_2()
-                    .py_1p5()
-                    .rounded(px(6.0))
-                    .text_sm()
-                    .text_color(colors.foreground)
-                    .when(selected, |element| element.bg(colors.accent))
-                    .child(icon)
-                    .child(label)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.right_pane = pane;
-                        cx.notify();
-                    }))
-            }))
+            .when(self.right_pane != RightPane::Launcher, |element| {
+                element.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .px_2()
+                        .py_1()
+                        .text_sm()
+                        .text_color(colors.foreground)
+                        .child(
+                            div()
+                                .id("right-pane-back")
+                                .px_2()
+                                .rounded(px(6.0))
+                                .text_xs()
+                                .text_color(colors.muted_foreground)
+                                .hover(|style| style.bg(colors.accent))
+                                .child("‹ Back")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.right_pane = RightPane::Launcher;
+                                    cx.notify();
+                                })),
+                        )
+                        .child(title),
+                )
+            })
+            .children(content)
+            .when(self.right_pane == RightPane::Launcher, |element| {
+                element.children(items.into_iter().map(|(pane, label, icon)| {
+                    let selected = self.right_pane == pane;
+                    div()
+                        .id(label)
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .px_2()
+                        .py_1p5()
+                        .rounded(px(6.0))
+                        .text_sm()
+                        .text_color(colors.foreground)
+                        .when(selected, |element| element.bg(colors.accent))
+                        .child(icon)
+                        .child(label)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.right_pane = pane;
+                            if pane == RightPane::Review {
+                                this.refresh_review();
+                            }
+                            cx.notify();
+                        }))
+                }))
+            })
             .child(div().h(px(1.0)).my_2().bg(colors.border))
             .child(
                 div()
@@ -815,6 +945,234 @@ impl Workspace {
                             .child("0"),
                     ),
             )
+    }
+
+    fn summary_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = cx.theme().colors;
+        let (title, project, status) = self
+            .selected_session
+            .and_then(|index| self.sessions.get(index))
+            .map(|session| {
+                (
+                    session.title.clone(),
+                    session.project_path.clone(),
+                    session.status.clone(),
+                )
+            })
+            .unwrap_or_else(|| {
+                (
+                    "No session selected".to_string(),
+                    String::new(),
+                    "idle".to_string(),
+                )
+            });
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .p_2()
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(colors.foreground)
+                    .child(title),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(colors.muted_foreground)
+                    .child(project),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_xs()
+                    .text_color(colors.muted_foreground)
+                    .child("Status")
+                    .child(
+                        div()
+                            .px_2()
+                            .rounded(px(999.0))
+                            .bg(colors.accent)
+                            .child(status),
+                    ),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(colors.muted_foreground)
+                    .child("todoPhases"),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(colors.foreground)
+                    .child("No plan items yet."),
+            )
+    }
+
+    fn review_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = cx.theme().colors;
+        if let Some(error) = &self.review_error {
+            return div()
+                .p_2()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(colors.danger)
+                        .child(error.clone()),
+                )
+                .child(
+                    div()
+                        .id("review-refresh")
+                        .px_2()
+                        .py_1()
+                        .rounded(px(6.0))
+                        .border_1()
+                        .border_color(colors.border)
+                        .text_xs()
+                        .child("Refresh")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.refresh_review();
+                            cx.notify();
+                        })),
+                );
+        }
+        let Some(status) = &self.review_status else {
+            return div()
+                .p_2()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(colors.muted_foreground)
+                        .child("Load the current branch and changed files."),
+                )
+                .child(
+                    div()
+                        .id("review-load")
+                        .px_2()
+                        .py_1()
+                        .rounded(px(6.0))
+                        .border_1()
+                        .border_color(colors.border)
+                        .text_xs()
+                        .child("Refresh")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.refresh_review();
+                            cx.notify();
+                        })),
+                );
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .p_2()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_xs()
+                    .text_color(colors.muted_foreground)
+                    .child(format!(
+                        "Branch: {}",
+                        status
+                            .branch
+                            .clone()
+                            .unwrap_or_else(|| "detached".to_string())
+                    ))
+                    .child(format!("{} changed", status.files.len())),
+            )
+            .children(status.files.iter().map(|file| {
+                let path = file.path.clone();
+                let staged = file.staged;
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_2()
+                    .py_1()
+                    .rounded(px(6.0))
+                    .hover(|style| style.bg(colors.accent))
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(colors.foreground)
+                            .child(path.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(if staged {
+                                colors.success
+                            } else {
+                                colors.muted_foreground
+                            })
+                            .child(if staged { "staged" } else { "unstaged" }),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .id(format!("toggle-{path}"))
+                            .px_2()
+                            .rounded(px(6.0))
+                            .border_1()
+                            .border_color(colors.border)
+                            .text_xs()
+                            .child(if staged { "Unstage" } else { "Stage" })
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.stage_path(&path, !staged, cx);
+                            })),
+                    )
+            }))
+    }
+
+    fn placeholder_content(&self, pane: RightPane, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = cx.theme().colors;
+        let label = match pane {
+            RightPane::Files => "Files",
+            RightPane::Browser => "Browser",
+            RightPane::SideQuestion => "Side Question",
+            RightPane::Subagents => "Subagents",
+            _ => "Panel",
+        };
+        div()
+            .p_2()
+            .text_sm()
+            .text_color(colors.muted_foreground)
+            .child(format!("{label} is not wired to a native view yet."))
+    }
+
+    pub fn stage_path(&mut self, path: &str, staged: bool, cx: &mut Context<Self>) {
+        let Some(store) = self.store.clone() else {
+            return;
+        };
+        let Some(cwd) = self.project_cwd() else {
+            return;
+        };
+        let store = store.lock().expect("state lock");
+        let result = if staged {
+            git::stage(&store, Platform::current(), &cwd, &[path.to_string()])
+        } else {
+            git::unstage(&store, Platform::current(), &cwd, &[path.to_string()])
+        };
+        drop(store);
+        if let Err(error) = result {
+            self.review_error = Some(error.message);
+        } else {
+            self.refresh_review();
+        }
+        cx.notify();
     }
 
     fn overview_popover(&self, cx: &mut Context<Self>) -> impl IntoElement {

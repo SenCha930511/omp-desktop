@@ -8,6 +8,7 @@ use crate::error::{CoreError, Result};
 use crate::projects;
 use crate::settings::CheckoutStrategy;
 use crate::state::{Platform, StateStore};
+use crate::turn_changes::FileSnapshot;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -167,6 +168,66 @@ pub fn status(store: &StateStore, platform: Platform, cwd: &str) -> GitStatus {
         files,
         error: None,
     }
+}
+
+/// Captures per-file line counts for the current worktree and index. This is
+/// the baseline input for the turn-only diff card.
+pub fn snapshot_files(store: &StateStore, platform: Platform, cwd: &str) -> Vec<FileSnapshot> {
+    let Ok(cwd) = authorize(store, platform, cwd) else {
+        return Vec::new();
+    };
+    let mut files: std::collections::BTreeMap<String, FileSnapshot> =
+        std::collections::BTreeMap::new();
+    for (args, staged) in [
+        (&["diff", "--numstat"][..], false),
+        (&["diff", "--cached", "--numstat"][..], true),
+    ] {
+        let Ok(outcome) = run_git(&cwd, args) else {
+            continue;
+        };
+        if !outcome.ok {
+            continue;
+        }
+        for line in outcome.output.lines() {
+            let mut parts = line.splitn(3, '\t');
+            let (Some(additions), Some(deletions), Some(path)) =
+                (parts.next(), parts.next(), parts.next())
+            else {
+                continue;
+            };
+            let additions = additions.parse::<u64>().unwrap_or(0);
+            let deletions = deletions.parse::<u64>().unwrap_or(0);
+            let entry = files
+                .entry(path.to_string())
+                .or_insert_with(|| FileSnapshot {
+                    path: path.to_string(),
+                    additions: 0,
+                    deletions: 0,
+                    staged,
+                });
+            entry.additions += additions;
+            entry.deletions += deletions;
+            entry.staged = entry.staged || staged;
+        }
+    }
+    if let Ok(outcome) = run_git(&cwd, &["ls-files", "--others", "--exclude-standard"]) {
+        for path in outcome
+            .output
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+        {
+            let additions = std::fs::read_to_string(cwd.join(path))
+                .map(|text| text.lines().count() as u64)
+                .unwrap_or(0);
+            files.entry(path.to_string()).or_insert(FileSnapshot {
+                path: path.to_string(),
+                additions,
+                deletions: 0,
+                staged: false,
+            });
+        }
+    }
+    files.into_values().collect()
 }
 
 pub fn diff(
