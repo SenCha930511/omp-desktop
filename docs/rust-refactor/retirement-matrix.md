@@ -3,7 +3,9 @@
 The 88 Playwright scenarios in `tests/e2e/app.spec.ts` remain the Electron
 retirement gate. They run against the Electron application today. The Rust app
 does not yet have an equivalent Playwright harness, so the gate is **not closed**
-by the Rust unit and smoke tests below.
+by the Rust unit and smoke tests below. The 60 Rust parity tests include several
+variants of the same Electron scenario, so the distinct-scenario count is about
+55, not 60.
 
 ## Rust evidence that exists
 
@@ -21,7 +23,7 @@ by the Rust unit and smoke tests below.
 | Terminal | `terminal.rs` PTY helpers, tabs, panel render test |
 | Live voice | `app.rs` live-event helper tests, pane render test; dictation is not implemented |
 | Updater feed | `prepare-rust-update-feed.mjs` validation tests; release.yml is not wired |
-| Parity harness | `tests/e2e_parity.rs`, 60 of 88 scenarios |
+| Parity harness | `tests/e2e_parity.rs`, 60 tests mapping to about 55 distinct scenarios |
 | Updater | `updates.rs` state tests, Settings row render test |
 | Packaging | macOS `.app`, Linux `.deb`, Windows NSIS packaged-smoke CI jobs |
 | Conformance | 10 files, 20 tests against the Rust adapter on macOS, Linux, and Windows |
@@ -30,7 +32,7 @@ by the Rust unit and smoke tests below.
 
 - Dictation credentials and the app-managed STT path; live voice is RPC-driven.
 - Wiring the updater feed and signatures into `release.yml`.
-- The remaining 28 Playwright scenarios, including terminal per-session restore,
+- The remaining 33 Playwright scenarios, including terminal per-session restore,
   agent-driven browser tabs, dictation, and the responsive workspace interactions.
 - The final Electron cutover gate.
 
