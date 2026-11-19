@@ -6,7 +6,7 @@ This page explains how to reproduce and interpret OMP Desktop's validation gates
 
 The repository's `main` branch protection must require pull requests and require status checks to pass with **Require branches to be up to date before merging** enabled (`required_status_checks.strict: true`). This strict latest-main requirement prevents a PR from merging on a newer base than the integration state validated by CI.
 
-The required checks are exactly the eighteen normal pull-request gates:
+The required checks are exactly the nineteen normal pull-request gates:
 
 - `Production dependency audit`
 - `quality`
@@ -23,6 +23,7 @@ The required checks are exactly the eighteen normal pull-request gates:
 - `Rust conformance (windows-2022)`
 - `Rust packaged smoke`
 - `Rust packaged smoke (Linux deb)`
+- `Rust packaged smoke (Windows nsis)`
 - `packaging-smoke (macos-15, mac, arm64, --config.mac.identity=null)`
 - `packaging-smoke (ubuntu-22.04, linux, x64)`
 - `packaging-smoke (windows-2022, win, x64)`
@@ -91,6 +92,7 @@ The [CI workflow](../.github/workflows/ci.yml) runs on pull requests, pushes to 
 | `rust-conformance` | Pull request, `main`, manual dispatch | The cross-language conformance suite passes against the Rust adapter with the required-capability gate active, and the adapter capability and test-count summary is uploaded as an artifact. |
 | `rust-package-smoke` | Pull request, `main`, manual dispatch | `cargo-packager` builds the macOS `.app`, the packaged binary draws a real GPUI first frame, and its smoke marker is uploaded. |
 | `rust-package-smoke-linux` | Pull request, `main`, manual dispatch | `cargo-packager` builds the Linux `.deb`, the extracted binary draws a real GPUI first frame under Xvfb, and its smoke marker is uploaded. |
+| `rust-package-smoke-windows` | Pull request, `main`, manual dispatch | `cargo-packager` builds the Windows NSIS installer, installs it silently into a temporary directory, and the installed binary draws a real GPUI first frame; the marker and installer are uploaded. |
 | `packaging-smoke` | Pull requests only | Native macOS arm64, Linux x64, and Windows x64 runners build unpacked applications and launch them with `--packaged-smoke`. Linux and Windows additionally verify the ASAR layout and exact native-unpack allowlist. These are unsigned smoke builds, not public installers. |
 | `local-qa-package` | Manual dispatch only | Native runners create and verify installable local-QA artifacts for macOS, Linux, and Windows, then upload the configured artifact set. These artifacts are not represented as signed or notarized public releases. |
 

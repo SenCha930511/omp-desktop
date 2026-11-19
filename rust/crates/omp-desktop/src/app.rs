@@ -69,6 +69,7 @@ pub struct Workspace {
     streaming_index: Option<usize>,
     drain_task: Option<Task<()>>,
     scheduler_task: Option<Task<()>>,
+    scheduled_runtimes: Vec<String>,
     layout: ResolvedLayout,
     settings: AppSettings,
     projects: Vec<ProjectRecord>,
@@ -135,6 +136,7 @@ impl Workspace {
             streaming_index: None,
             drain_task: None,
             scheduler_task: None,
+            scheduled_runtimes: Vec::new(),
             layout,
             settings: data.settings,
             projects: data.projects,
@@ -1033,6 +1035,7 @@ impl Workspace {
     }
 
     fn run_due_schedules(&mut self, cx: &mut Context<Self>) {
+        self.drain_scheduled_runtimes();
         let Some(store) = self.store.clone() else {
             return;
         };
@@ -1131,6 +1134,8 @@ impl Workspace {
                         && let Some(runtime_id) = runtime_id.as_deref()
                     {
                         self.agents.stop(runtime_id);
+                    } else if let Some(runtime_id) = runtime_id.as_deref() {
+                        self.scheduled_runtimes.push(runtime_id.to_string());
                     }
                     self.record_schedule_outcome(
                         &store,
@@ -1157,6 +1162,26 @@ impl Workspace {
             self.refresh_schedules();
         }
         cx.notify();
+    }
+
+    fn drain_scheduled_runtimes(&mut self) {
+        let mut active = Vec::new();
+        for runtime_id in std::mem::take(&mut self.scheduled_runtimes) {
+            let events = self.agents.drain_events(Some(&runtime_id));
+            let ended = events.iter().any(|envelope| {
+                envelope.pointer("/event/type").and_then(Value::as_str) == Some("agent_end")
+            });
+            if ended {
+                self.agents.stop(&runtime_id);
+            } else {
+                active.push(runtime_id);
+            }
+        }
+        while active.len() > 8 {
+            let runtime_id = active.remove(0);
+            self.agents.stop(&runtime_id);
+        }
+        self.scheduled_runtimes = active;
     }
 
     fn record_schedule_outcome(

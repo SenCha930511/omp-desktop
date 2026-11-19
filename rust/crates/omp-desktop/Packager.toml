@@ -7,12 +7,17 @@ authors = ["OMP Desktop contributors"]
 binaries = [{ path = "omp-desktop", main = true }]
 binariesDir = "../../target/debug"
 outDir = "../../dist"
+# `assets/icon.ico` is not checked in yet, so the NSIS installer falls back to
+# its default icon. Add the .ico here and set `[nsis] installer_icon` once a
+# Windows icon exists; cargo-packager 0.11.8 needs no other `[nsis]` keys
+# (current-user install mode is the default and it downloads its own NSIS).
 icons = ["../../../assets/icon.icns", "../../../assets/icon.png"]
-formats = ["app", "deb"]
+formats = ["app", "deb", "nsis"]
 
-# `app` is macOS-only and `deb` is Linux-only. cargo-packager ignores formats
-# that do not apply to the current host, so a bare `cargo packager` produces the
-# native package on either platform.
+# `app` is macOS-only, `deb` is Linux-only, and `nsis` is Windows-only, but
+# cargo-packager 0.11.8 only compiles `deb` out off Linux: it still attempts
+# `app` and `nsis` on every host. Pass `--formats` explicitly
+# (`cargo packager --formats app|deb|nsis`) to build only the native package.
 [deb]
 section = "devel"
 depends = [

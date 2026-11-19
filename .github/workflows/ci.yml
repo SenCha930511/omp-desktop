@@ -459,3 +459,72 @@ jobs:
             ${{ runner.temp }}/rust-smoke.json
             rust/dist/omp-desktop_*_amd64.deb
           if-no-files-found: error
+
+  rust-package-smoke-windows:
+    name: Rust packaged smoke (Windows nsis)
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: rust-${{ runner.os }}-${{ hashFiles('rust/Cargo.lock') }}
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install 1.100.0 --profile minimal
+      - run: rustup default 1.100.0
+      - name: Install cargo-packager
+        run: cargo install cargo-packager --locked --version 0.11.8
+      - name: Build the native application
+        run: cargo build -p omp-desktop --locked
+        working-directory: rust
+      # cargo-packager 0.11.8 downloads its own pinned NSIS 3.09 toolchain on
+      # Windows, so no system NSIS install (`choco install nsis`) is required.
+      - name: Package the Windows NSIS installer
+        run: cargo packager --formats nsis
+        working-directory: rust/crates/omp-desktop
+      - name: Install the NSIS package silently
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installer = Get-ChildItem -Path 'rust/dist' -Filter '*-setup.exe' | Select-Object -First 1
+          if (-not $installer) { throw 'cargo-packager produced no NSIS installer in rust/dist' }
+          $installDir = Join-Path $env:RUNNER_TEMP 'omp-nsis-install'
+          # `/S` installs silently, `/NS` skips the desktop and Start menu
+          # shortcuts, and `/D=` must be the last argument and unquoted.
+          # RUNNER_TEMP contains no spaces, so argument quoting cannot break it.
+          $process = Start-Process -FilePath $installer.FullName -ArgumentList '/S', '/NS', "/D=$installDir" -PassThru
+          if (-not $process.WaitForExit(180000)) {
+            taskkill /T /F /PID $process.Id
+            throw 'The NSIS installer did not finish within three minutes'
+          }
+          $process.WaitForExit()
+          if ($process.ExitCode -ne 0) { throw "The NSIS installer exited with $($process.ExitCode)" }
+          if (-not (Test-Path (Join-Path $installDir 'omp-desktop.exe'))) { throw "The installer did not place omp-desktop.exe in $installDir" }
+      - name: Launch the installed application and wait for the first frame
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installDir = Join-Path $env:RUNNER_TEMP 'omp-nsis-install'
+          $marker = Join-Path $env:RUNNER_TEMP 'rust-smoke.json'
+          $userData = Join-Path $env:RUNNER_TEMP 'rust-user-data'
+          Remove-Item -LiteralPath $marker -ErrorAction SilentlyContinue
+          $process = Start-Process -FilePath (Join-Path $installDir 'omp-desktop.exe') -ArgumentList "--packaged-smoke=$marker", "--user-data-dir=$userData" -PassThru
+          if (-not $process.WaitForExit(240000)) {
+            taskkill /T /F /PID $process.Id
+            throw 'The packaged application did not exit after drawing the first frame'
+          }
+          $process.WaitForExit()
+          if ($process.ExitCode -ne 0) { throw "The packaged application exited with $($process.ExitCode)" }
+          if (-not (Test-Path -LiteralPath $marker)) { throw 'The packaged application exited without writing the readiness marker' }
+          $markerJson = Get-Content -LiteralPath $marker -Raw | ConvertFrom-Json
+          if ($markerJson.event -ne 'gooeypi-packaged-smoke-ready') { throw "Unexpected marker event: $($markerJson.event)" }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rust-packaged-smoke-windows
+          path: |
+            ${{ runner.temp }}/rust-smoke.json
+            rust/dist/*-setup.exe
+          if-no-files-found: error
