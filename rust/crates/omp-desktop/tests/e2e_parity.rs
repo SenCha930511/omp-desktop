@@ -5369,3 +5369,253 @@ fn cancelled_fork_changes_nothing(cx: &mut TestAppContext) {
         })
         .expect("workspace window");
 }
+
+/// The Electron harness appends to the session JSONL from its own process, so
+/// the view polls the selected file: a valid append shows up on the next tick
+/// of its timer without a manual reload, a reader who scrolled up keeps their
+/// place, and an unreadable write is reported only once it persists and then
+/// recovers.
+#[gpui_kit::test]
+fn external_session_writes_reload_on_the_next_check(cx: &mut TestAppContext) {
+    use gpui_kit::{InputEvent as _, ScrollDelta, ScrollEvent, ScrollSource, TouchPhase};
+    use std::io::Write as _;
+
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let home = root.join("home");
+    let bucket = home.join(".omp/agent/sessions/-omp-project");
+    let project = root.join("project");
+    let at = "2026-04-01T01:00:00.000Z";
+    // Enough rows to overflow the transcript, so the follow state is real.
+    let entries: Vec<Value> = (0..40)
+        .map(|index| {
+            json!({
+                "type": "message",
+                "id": format!("u{index}"),
+                "parentId": null,
+                "timestamp": at,
+                "message": {
+                    "role": "user",
+                    "content": format!("message {index} {}", "padding ".repeat(24)),
+                },
+            })
+        })
+        .collect();
+    let path = write_session_entries(
+        &bucket,
+        "2026-04-01T00-00-00-000Z_019fdf24-f444-7000-8000-000000000014.jsonl",
+        "Live",
+        at,
+        &entries,
+        &project,
+    );
+
+    let store = open_store(root);
+    let catalog = omp_core::sessions::list_sessions(&store, &home, false, None);
+    drop(store);
+    assert_eq!(catalog.len(), 1);
+
+    let mut data = test_data(root);
+    data.home_dir = home;
+    data.sessions = catalog;
+    let handle = cx.open_window(size(px(1280.0), px(800.0)), |window, cx| {
+        Workspace::new(window, cx, data)
+    });
+
+    // Nothing is selected, so a check has no file to watch and reads nothing.
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.check_transcript_external_change(cx);
+            let state = snapshot(workspace, cx);
+            assert_eq!(state["transcriptReloads"], json!(0));
+            assert!(workspace.transcript_messages().is_empty());
+        })
+        .expect("unselected check");
+
+    // Selecting the session reads it and pins the view to its newest row.
+    handle
+        .update(cx, |workspace, _, cx| workspace.select_session(0, cx))
+        .expect("select session");
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+        })
+        .expect("transcript frame");
+    });
+    let state = handle
+        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
+        .expect("selected snapshot");
+    assert_eq!(state["transcript"].as_array().map(Vec::len), Some(40));
+    assert_eq!(state["transcriptAtBottom"], json!(true));
+    assert_eq!(state["transcriptReloads"], json!(0));
+    assert!(
+        state["transcriptMtime"].is_number(),
+        "the watched file reports its modified time"
+    );
+
+    // A valid append from another process lands on the next check, and the
+    // pinned view follows it.
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .expect("open session file");
+    file.write_all(
+        format!(
+            "{}\n",
+            json!({
+                "type": "message",
+                "id": "u-ext-1",
+                "parentId": null,
+                "timestamp": at,
+                "message": { "role": "user", "content": "written by another process" },
+            })
+        )
+        .as_bytes(),
+    )
+    .expect("append entry");
+    drop(file);
+    // The periodic watcher is what picks it up: no check is called by hand.
+    cx.executor().advance_clock(Duration::from_secs(3));
+    cx.run_until_parked();
+    let state = handle
+        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
+        .expect("reloaded snapshot");
+    assert_eq!(state["transcript"].as_array().map(Vec::len), Some(41));
+    assert_eq!(state["transcriptReloads"], json!(1));
+    assert_eq!(state["transcriptAtBottom"], json!(true));
+    assert_eq!(
+        state["transcript"][40]["parts"][0]["text"],
+        json!("written by another process")
+    );
+
+    // A reader who scrolled up keeps their place across the next append.
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.dispatch_event(
+                ScrollEvent {
+                    position: point(px(600.0), px(400.0)),
+                    delta: ScrollDelta::Pixels(point(px(0.0), px(120.0))),
+                    modifiers: Default::default(),
+                    touch_phase: TouchPhase::Moved,
+                    source: ScrollSource::Pointer,
+                }
+                .to_platform_input(),
+                cx,
+            );
+        })
+        .expect("scroll frame");
+    });
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+        })
+        .expect("scrolled frame");
+    });
+    let state = handle
+        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
+        .expect("scrolled snapshot");
+    assert_eq!(state["transcriptAtBottom"], json!(false));
+
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .expect("open session file");
+    file.write_all(
+        format!(
+            "{}\n",
+            json!({
+                "type": "message",
+                "id": "u-ext-2",
+                "parentId": null,
+                "timestamp": at,
+                "message": { "role": "user", "content": "second external message" },
+            })
+        )
+        .as_bytes(),
+    )
+    .expect("append entry");
+    drop(file);
+    let state = handle
+        .update(cx, |workspace, _, cx| {
+            workspace.check_transcript_external_change(cx);
+            snapshot(workspace, cx)
+        })
+        .expect("unpinned snapshot");
+    assert_eq!(state["transcript"].as_array().map(Vec::len), Some(42));
+    assert_eq!(state["transcriptReloads"], json!(2));
+    assert_eq!(state["transcriptAtBottom"], json!(false));
+    assert_eq!(
+        state["transcript"][41]["parts"][0]["text"],
+        json!("second external message")
+    );
+
+    // A write that is not valid UTF-8 cannot be read. One failed check is a
+    // file still being written and is not reported; the same state twice is a
+    // failure the pane names, and the rows already on screen stay.
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .expect("open session file");
+    file.write_all(&[0xff, 0xfe]).expect("invalid bytes");
+    drop(file);
+    let (first, second) = handle
+        .update(cx, |workspace, _, cx| {
+            workspace.check_transcript_external_change(cx);
+            let first = workspace.transcript_error().map(str::to_string);
+            workspace.check_transcript_external_change(cx);
+            (first, workspace.transcript_error().map(str::to_string))
+        })
+        .expect("failed checks");
+    assert_eq!(first, None, "one unreadable write is not reported");
+    let error = second.expect("a persistent read failure is reported");
+    assert!(
+        error.contains("Could not read the session file"),
+        "error: {error}"
+    );
+    let state = handle
+        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
+        .expect("failed snapshot");
+    assert_eq!(state["transcript"].as_array().map(Vec::len), Some(42));
+    assert_eq!(state["transcriptReloads"], json!(2));
+
+    // Rewriting the file with valid entries recovers the view, still unpinned.
+    let mut recovered: Vec<Value> = entries.clone();
+    for (id, text) in [
+        ("u-ext-1", "written by another process"),
+        ("u-ext-2", "second external message"),
+    ] {
+        recovered.push(json!({
+            "type": "message",
+            "id": id,
+            "parentId": null,
+            "timestamp": at,
+            "message": { "role": "user", "content": text },
+        }));
+    }
+    write_session_entries(
+        &bucket,
+        "2026-04-01T00-00-00-000Z_019fdf24-f444-7000-8000-000000000014.jsonl",
+        "Live",
+        at,
+        &recovered,
+        &project,
+    );
+    let state = handle
+        .update(cx, |workspace, _, cx| {
+            workspace.check_transcript_external_change(cx);
+            snapshot(workspace, cx)
+        })
+        .expect("recovered snapshot");
+    assert_eq!(state["transcript"].as_array().map(Vec::len), Some(42));
+    assert_eq!(state["transcriptReloads"], json!(3));
+    assert_eq!(state["transcriptAtBottom"], json!(false));
+    assert_eq!(
+        handle
+            .update(cx, |workspace, _, _| {
+                workspace.transcript_error().map(str::to_string)
+            })
+            .expect("recovered error"),
+        None
+    );
+}
