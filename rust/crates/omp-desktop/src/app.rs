@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -35,7 +36,7 @@ use browser::BrowserPane;
 #[path = "terminal.rs"]
 mod terminal;
 
-use terminal::TerminalSession;
+use terminal::{TerminalSession, TerminalTabSpec, TerminalTabSpecs};
 use updates::UpdateCheckState;
 #[path = "updates.rs"]
 mod updates;
@@ -119,6 +120,10 @@ struct ScheduledRun {
     run_id: String,
 }
 
+/// The bucket a new, not yet saved session files its terminal tabs under. It
+/// lives only until the session list hands out a real id.
+const DRAFT_TERMINAL_KEY: &str = "new-session";
+
 pub struct Workspace {
     geometry: UiGeometry,
     geometry_path: PathBuf,
@@ -178,6 +183,11 @@ pub struct Workspace {
     // draws and sends input to, and stays in range while any tab is open.
     terminals: Vec<TerminalSession>,
     active_terminal: usize,
+    // A live PTY cannot be serialized, so a session switch stops the shells and
+    // files what each tab was (`shell`, `cwd`) under that session's id. The
+    // panel's open state stays global; switching back reopens fresh shells from
+    // the spec instead of reusing the previous session's shell.
+    terminal_specs: HashMap<String, TerminalTabSpecs>,
     terminal_open: bool,
     terminal_input: Entity<InputState>,
     _terminal_input_subscription: Subscription,
@@ -306,6 +316,7 @@ impl Workspace {
             browser,
             terminals: Vec::new(),
             active_terminal: 0,
+            terminal_specs: HashMap::new(),
             terminal_open: false,
             terminal_input,
             _terminal_input_subscription: terminal_input_subscription,
@@ -468,6 +479,12 @@ impl Workspace {
                 "error": self.terminal_error,
                 "tabs": self.terminals.len(),
                 "activeTab": self.active_terminal,
+                // What a switch would reopen: live shells are never reused,
+                // only the specs filed under the selected session are.
+                "restoredTabs": self
+                    .terminal_specs
+                    .get(&self.terminal_key())
+                    .map_or(0, TerminalTabSpecs::len),
             },
             "browser": {
                 "webviewPending": self.browser.needs_webview(),
@@ -805,13 +822,37 @@ impl Workspace {
             .on_click(on_click)
     }
 
-    /// Opens the terminal panel and, on first use, starts the user's shell in
-    /// the selected project's directory (falling back to the process's own).
-    /// A PTY or spawn failure is shown inside the panel instead of panicking.
+    /// The bucket a session's terminal tabs are filed under: the session's
+    /// stable id, or the draft key while a new session has no id yet.
+    fn terminal_key(&self) -> String {
+        self.selected_session
+            .and_then(|index| self.sessions.get(index))
+            .map(|session| session.id.clone())
+            .unwrap_or_else(|| DRAFT_TERMINAL_KEY.to_string())
+    }
+
+    /// The tabs the selected session remembers, if any.
+    fn current_terminal_specs(&self) -> TerminalTabSpecs {
+        self.terminal_specs
+            .get(&self.terminal_key())
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Opens the terminal panel and restores the selected session's tabs.
+    ///
+    /// A session with no saved tabs starts one shell in the selected project's
+    /// directory; a session that has some reopens exactly those. Either way a
+    /// PTY or spawn failure is shown inside the panel instead of panicking.
     fn start_terminal(&mut self, cx: &mut Context<Self>) {
         self.terminal_open = true;
         if self.terminals.is_empty() {
-            self.open_terminal_tab(cx);
+            let specs = self.current_terminal_specs();
+            if specs.is_empty() {
+                self.open_terminal_tab(cx);
+            } else {
+                self.reopen_terminal_tabs(&specs, cx);
+            }
         }
         cx.notify();
     }
@@ -824,7 +865,8 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Starts one shell for a new tab and watches its output.
+    /// Starts one shell for a new tab, files its spec under the current
+    /// session and watches its output.
     ///
     /// A spawn failure is recorded instead of panicking; the panel stays open
     /// so the message is visible and `+` can retry.
@@ -836,34 +878,87 @@ impl Workspace {
         let (rows, cols) = terminal::size_for_width(self.layout.center_width);
         match TerminalSession::spawn(cwd.as_deref(), rows, cols) {
             Ok(session) => {
-                let notifications = session.notifications();
-                self.terminals.push(session);
-                self.active_terminal = self.terminals.len() - 1;
-                self.terminal_error = None;
-                // Wake on output bursts rather than polling; the channel closes
-                // when this tab's session is dropped, which ends this task.
-                self.terminal_tasks.push(cx.spawn(async move |this, cx| {
-                    while notifications.recv().await.is_ok() {
-                        let still_open = this
-                            .update(cx, |this, cx| {
-                                cx.notify();
-                                !this.terminals.is_empty()
-                            })
-                            .unwrap_or(false);
-                        if !still_open {
-                            break;
-                        }
-                    }
-                }));
+                let spec = TerminalTabSpec::from_session(&session);
+                self.adopt_terminal(session, cx);
+                let key = self.terminal_key();
+                self.terminal_specs.entry(key).or_default().add(spec);
             }
             Err(error) => self.terminal_error = Some(error),
         }
     }
 
-    /// Makes `index` the tab the panel draws and sends input to.
+    /// Reopens one saved tab with a fresh shell: the session that owned the
+    /// old shell is gone, so only the spec's program and directory carry over.
+    fn restore_terminal_tab(&mut self, spec: &TerminalTabSpec, cx: &mut Context<Self>) {
+        let (rows, cols) = terminal::size_for_width(self.layout.center_width);
+        match TerminalSession::spawn_with_shell(
+            spec.shell.as_str(),
+            spec.cwd.as_deref(),
+            rows,
+            cols,
+        ) {
+            Ok(session) => self.adopt_terminal(session, cx),
+            Err(error) => self.terminal_error = Some(error),
+        }
+    }
+
+    /// Reopens every spec in order and selects the tab that was active.
+    fn reopen_terminal_tabs(&mut self, specs: &TerminalTabSpecs, cx: &mut Context<Self>) {
+        for spec in specs.tabs() {
+            self.restore_terminal_tab(spec, cx);
+        }
+        if !self.terminals.is_empty() {
+            self.active_terminal = specs.active().min(self.terminals.len() - 1);
+        }
+    }
+
+    /// Stops the live shells and reopens the tabs the newly selected session
+    /// remembers. A closed panel only drops the shells: its specs stay filed
+    /// for the next open, and `terminal_open` itself is global.
+    fn restore_terminal_tabs(&mut self, cx: &mut Context<Self>) {
+        self.terminals.clear();
+        self.terminal_tasks.clear();
+        self.active_terminal = 0;
+        self.terminal_error = None;
+        if !self.terminal_open {
+            return;
+        }
+        let specs = self.current_terminal_specs();
+        self.reopen_terminal_tabs(&specs, cx);
+    }
+
+    /// Pushes a freshly started shell into the panel and watches its output.
+    fn adopt_terminal(&mut self, session: TerminalSession, cx: &mut Context<Self>) {
+        let notifications = session.notifications();
+        self.terminals.push(session);
+        self.active_terminal = self.terminals.len() - 1;
+        self.terminal_error = None;
+        // Wake on output bursts rather than polling; the channel closes when
+        // this tab's session is dropped, which ends this task.
+        self.terminal_tasks.push(cx.spawn(async move |this, cx| {
+            while notifications.recv().await.is_ok() {
+                let still_open = this
+                    .update(cx, |this, cx| {
+                        cx.notify();
+                        !this.terminals.is_empty()
+                    })
+                    .unwrap_or(false);
+                if !still_open {
+                    break;
+                }
+            }
+        }));
+    }
+
+    /// Makes `index` the tab the panel draws and sends input to, and remembers
+    /// it as the session's active tab.
     fn select_terminal_tab(&mut self, index: usize, cx: &mut Context<Self>) {
         if index < self.terminals.len() {
             self.active_terminal = index;
+            let key = self.terminal_key();
+            if let Some(specs) = self.terminal_specs.get_mut(&key) {
+                specs.select(index);
+            }
             cx.notify();
         }
     }
@@ -876,7 +971,15 @@ impl Workspace {
             return;
         }
         self.terminals.remove(index);
-        match terminal::tab_after_close(self.active_terminal, index, len) {
+        let next = terminal::tab_after_close(self.active_terminal, index, len);
+        let key = self.terminal_key();
+        if let Some(specs) = self.terminal_specs.get_mut(&key) {
+            specs.close(index);
+            if let Some(next) = next {
+                specs.select(next);
+            }
+        }
+        match next {
             Some(next) => {
                 self.active_terminal = next;
                 cx.notify();
@@ -885,13 +988,23 @@ impl Workspace {
         }
     }
 
-    /// Closes the panel and every tab; dropping the sessions kills the shells.
+    /// Closes the panel and every live tab; dropping the sessions kills the
+    /// shells. The session's specs stay filed, so reopening the panel restores
+    /// the same tabs; a bucket left empty is dropped.
     fn close_terminal(&mut self, cx: &mut Context<Self>) {
         self.terminals.clear();
         self.terminal_tasks.clear();
         self.active_terminal = 0;
         self.terminal_open = false;
         self.terminal_error = None;
+        let key = self.terminal_key();
+        if self
+            .terminal_specs
+            .get(&key)
+            .is_some_and(TerminalTabSpecs::is_empty)
+        {
+            self.terminal_specs.remove(&key);
+        }
         cx.notify();
     }
 
@@ -933,11 +1046,20 @@ impl Workspace {
             .terminal_error
             .clone()
             .or_else(|| active.and_then(TerminalSession::error));
-        let labels: Vec<String> = self
-            .terminals
-            .iter()
-            .map(|session| terminal::tab_label(session.shell(), session.cwd()))
-            .collect();
+        // With no live shell the bar still shows the session's saved tabs, so a
+        // panel opened without a shell is not blank; no specs means no tabs.
+        let (labels, active_tab) = if self.terminals.is_empty() {
+            let specs = self.current_terminal_specs();
+            let labels: Vec<String> = specs.tabs().iter().map(TerminalTabSpec::label).collect();
+            (labels, specs.active())
+        } else {
+            let labels: Vec<String> = self
+                .terminals
+                .iter()
+                .map(|session| terminal::tab_label(session.shell(), session.cwd()))
+                .collect();
+            (labels, self.active_terminal)
+        };
         let entity = cx.entity();
         let select = {
             let entity = entity.clone();
@@ -987,12 +1109,7 @@ impl Workspace {
                     ),
             )
             .child(terminal_tab_bar(
-                &labels,
-                self.active_terminal,
-                colors,
-                select,
-                close_tab,
-                new_tab,
+                &labels, active_tab, colors, select, close_tab, new_tab,
             ))
             .child(
                 div()
@@ -1058,6 +1175,9 @@ impl Workspace {
         self.turn_baseline = None;
         self.turn_changes = TurnChanges::default();
         self.selected_session = Some(index);
+        // The previous session's shells stop here; the new session's own tabs
+        // are reopened from its spec, never handed over from the old one.
+        self.restore_terminal_tabs(cx);
         self.transcript.clear();
         self.transcript_error = None;
         if let Some(session) = self.sessions.get(index) {
@@ -1164,6 +1284,11 @@ impl Workspace {
         self.reset_dictation();
         self.streaming_index = None;
         self.selected_session = None;
+        // A new session starts with a fresh terminal: the draft bucket held
+        // the tabs of the session it replaced, so it is dropped rather than
+        // carried into this one.
+        self.terminal_specs.remove(DRAFT_TERMINAL_KEY);
+        self.restore_terminal_tabs(cx);
         self.transcript.clear();
         self.transcript_error = None;
         self.runtime_error = None;
@@ -3807,6 +3932,7 @@ impl Workspace {
             return;
         };
         let file = self.sessions[index].file_path.clone();
+        let id = self.sessions[index].id.clone();
         let pinned = self.sessions[index].pinned;
         let root = sessions::session_root(&self.home_dir);
         let mut store = store.lock().expect("state lock");
@@ -3819,6 +3945,12 @@ impl Workspace {
             }
             "Delete" => {
                 let _ = sessions::delete_session(&mut store, &root, &file);
+                // The deleted session's shells cannot outlive it: stop the live
+                // ones and drop the spec that would reopen them.
+                self.terminal_specs.remove(&id);
+                self.terminals.clear();
+                self.terminal_tasks.clear();
+                self.active_terminal = 0;
                 self.selected_session = None;
                 self.transcript.clear();
             }
@@ -4365,10 +4497,10 @@ mod tests {
     use omp_core::settings::AppSettings;
 
     use super::{
-        AppView, DictationState, LIVE_TRANSCRIPT_LIMIT, LiveVoiceState, RightPane,
-        UpdateCheckState, Workspace, WorkspaceData, append_dictation_text, append_side_answer,
-        apply_dictation_frame, apply_live_voice_event, side_answer_delta, terminal_tab_bar,
-        updates,
+        AppView, DictationState, LIVE_TRANSCRIPT_LIMIT, LiveVoiceState, RightPane, TerminalTabSpec,
+        TerminalTabSpecs, UpdateCheckState, Workspace, WorkspaceData, append_dictation_text,
+        append_side_answer, apply_dictation_frame, apply_live_voice_event, side_answer_delta,
+        terminal_tab_bar, updates,
     };
 
     /// The Settings page must render the update row, and an unconfigured build
@@ -4529,6 +4661,174 @@ mod tests {
         assert_eq!(transcript, 0);
         assert!(open);
         assert_eq!(tabs, 0);
+    }
+
+    /// A session with no saved tabs draws the panel's empty state: nothing is
+    /// restored, no shell starts, and the snapshot reports zero restorable
+    /// tabs.
+    #[test]
+    fn terminal_panel_renders_empty_without_restored_tabs() {
+        let mut cx = gpui_kit::TestAppContext::single();
+        cx.update(gpui_kit::init);
+        let root = tempfile::TempDir::new().expect("test root").keep();
+        let handle = cx.add_window(|window, cx| {
+            Workspace::new(
+                window,
+                cx,
+                WorkspaceData {
+                    geometry: UiGeometry::default(),
+                    geometry_path: root.join("ui-geometry.json"),
+                    home_dir: root.clone(),
+                    user_data_dir: root.clone(),
+                    omp_executable: root.join("missing-omp"),
+                    settings: AppSettings::default(),
+                    projects: Vec::new(),
+                    sessions: Vec::new(),
+                },
+            )
+        });
+        let (restored, tabs, open, buckets) = handle
+            .update(&mut cx, |workspace, _, cx| {
+                workspace.terminal_open = true;
+                workspace.layout = workspace.geometry.resolve(1600.0);
+                let state = workspace.debug_snapshot(cx);
+                (
+                    state["terminal"]["restoredTabs"].clone(),
+                    state["terminal"]["tabs"].clone(),
+                    state["terminal"]["open"].clone(),
+                    workspace.terminal_specs.len(),
+                )
+            })
+            .expect("workspace window");
+        cx.update(|cx| {
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.draw(cx).clear(cx);
+            })
+            .expect("draw terminal frame");
+        });
+        cx.quit();
+        assert_eq!(restored, json!(0));
+        assert_eq!(tabs, json!(0));
+        assert_eq!(open, json!(true));
+        // Neither the render nor the snapshot invents a spec bucket.
+        assert_eq!(buckets, 0);
+    }
+
+    /// Switching sessions files each session's tabs under its own id: the
+    /// specs survive the switch, no shell is reused, and a closed panel never
+    /// spawns one.
+    #[test]
+    fn switching_sessions_restores_only_that_sessions_tabs() {
+        fn record(root: &std::path::Path, id: &str) -> omp_core::sessions::SessionRecord {
+            omp_core::sessions::SessionRecord {
+                id: id.to_string(),
+                harness: "omp".to_string(),
+                file_path: root.join(format!("{id}.jsonl")).display().to_string(),
+                project_path: root.display().to_string(),
+                title: id.to_string(),
+                created_at: "2026-04-01T00:00:00.000Z".to_string(),
+                updated_at: "2026-04-01T00:00:00.000Z".to_string(),
+                last_user_message_at: None,
+                status: "complete".to_string(),
+                model: None,
+                provider: None,
+                thinking_level: None,
+                depth: 0,
+                parent_session: None,
+                last_user_texts: Vec::new(),
+                pinned: false,
+                unread: false,
+                preview: None,
+                archived: false,
+            }
+        }
+
+        let mut cx = gpui_kit::TestAppContext::single();
+        cx.update(gpui_kit::init);
+        let root = tempfile::TempDir::new().expect("test root").keep();
+        let handle = cx.add_window({
+            let root = root.clone();
+            move |window, cx| {
+                Workspace::new(
+                    window,
+                    cx,
+                    WorkspaceData {
+                        geometry: UiGeometry::default(),
+                        geometry_path: root.join("ui-geometry.json"),
+                        home_dir: root.clone(),
+                        user_data_dir: root.clone(),
+                        // The runtime never starts: the path does not resolve.
+                        omp_executable: root.join("missing-omp"),
+                        settings: AppSettings::default(),
+                        projects: Vec::new(),
+                        sessions: vec![record(&root, "session-a"), record(&root, "session-b")],
+                    },
+                )
+            }
+        });
+        let (first, second, back, live) = handle
+            .update(&mut cx, |workspace, _, cx| {
+                let mut one = TerminalTabSpecs::default();
+                one.add(TerminalTabSpec {
+                    cwd: Some(PathBuf::from("/tmp/a")),
+                    shell: "/bin/sh".to_string(),
+                });
+                let mut two = TerminalTabSpecs::default();
+                two.add(TerminalTabSpec {
+                    cwd: Some(PathBuf::from("/tmp/b")),
+                    shell: "/bin/sh".to_string(),
+                });
+                two.add(TerminalTabSpec {
+                    cwd: None,
+                    shell: "/bin/sh".to_string(),
+                });
+                workspace
+                    .terminal_specs
+                    .insert("session-a".to_string(), one);
+                workspace
+                    .terminal_specs
+                    .insert("session-b".to_string(), two);
+
+                workspace.select_session(0, cx);
+                let first = workspace.debug_snapshot(cx)["terminal"]["restoredTabs"].clone();
+                let closed = workspace.terminals.len();
+                workspace.select_session(1, cx);
+                let second = workspace.debug_snapshot(cx)["terminal"]["restoredTabs"].clone();
+                let still_closed = workspace.terminals.len();
+                workspace.select_session(0, cx);
+                let back = workspace.debug_snapshot(cx)["terminal"]["restoredTabs"].clone();
+                (first, second, back, closed + still_closed)
+            })
+            .expect("workspace window");
+        let (error, tabs) = handle
+            .update(&mut cx, |workspace, _, cx| {
+                // Reopening the panel replays the selected session's spec. The
+                // spec names a program that is not installed, so the restore
+                // records the failure instead of starting a shell: the replay
+                // path runs and never falls back to another session's shell.
+                let mut bogus = TerminalTabSpecs::default();
+                bogus.add(TerminalTabSpec {
+                    cwd: None,
+                    shell: "/nonexistent/omp-test-shell".to_string(),
+                });
+                workspace
+                    .terminal_specs
+                    .insert("session-b".to_string(), bogus);
+                workspace.terminal_open = true;
+                workspace.select_session(1, cx);
+                (workspace.terminal_error.clone(), workspace.terminals.len())
+            })
+            .expect("workspace window");
+        cx.quit();
+        assert_eq!(first, json!(1));
+        assert_eq!(second, json!(2));
+        // Back on the first session: its own single tab, untouched by the
+        // second session's two.
+        assert_eq!(back, json!(1));
+        // The panel stayed closed, so no shell was ever started.
+        assert_eq!(live, 0);
+        assert_eq!(tabs, 0);
+        assert!(error.is_some());
     }
 
     /// The tab bar draws with no tabs (just `+`) and with one tab, without a

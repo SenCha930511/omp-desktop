@@ -124,6 +124,104 @@ pub fn tab_after_close(active: usize, closing: usize, len: usize) -> Option<usiz
     Some(next.min(remaining - 1))
 }
 
+/// What one tab remembers while its session is not selected.
+///
+/// A live PTY cannot be serialized, so switching sessions stops the shells and
+/// keeps this instead: the program to start again and the directory to start
+/// it in. Switching back reopens a fresh shell from the spec rather than
+/// handing the previous session's shell to the new one.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TerminalTabSpec {
+    /// The directory the shell started in, when one was requested.
+    pub cwd: Option<PathBuf>,
+    /// The program the shell ran, as the tab labels it.
+    pub shell: String,
+}
+
+impl TerminalTabSpec {
+    /// The spec that reopens `session`'s shell in its directory.
+    pub fn from_session(session: &TerminalSession) -> Self {
+        Self {
+            cwd: session.cwd().map(Path::to_path_buf),
+            shell: session.shell().to_string(),
+        }
+    }
+
+    /// The label this tab shows once its shell has been reopened.
+    pub fn label(&self) -> String {
+        tab_label(&self.shell, self.cwd.as_deref())
+    }
+}
+
+/// The tab specs one session remembers, plus the tab that was active.
+///
+/// The panel keeps this per session id; a switch replays it into fresh shells.
+/// `active` always indexes an existing tab, or is zero while there is none.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TerminalTabSpecs {
+    tabs: Vec<TerminalTabSpec>,
+    active: usize,
+}
+
+impl TerminalTabSpecs {
+    /// The specs to reopen, in tab order.
+    pub fn tabs(&self) -> &[TerminalTabSpec] {
+        &self.tabs
+    }
+
+    /// How many tabs this session remembers.
+    pub fn len(&self) -> usize {
+        self.tabs.len()
+    }
+
+    /// True when the session has no tabs, so the panel draws its empty state.
+    pub fn is_empty(&self) -> bool {
+        self.tabs.is_empty()
+    }
+
+    /// The tab that should be active after a reopen.
+    pub fn active(&self) -> usize {
+        self.active
+    }
+
+    /// Files a tab at the end and makes it the active one.
+    pub fn add(&mut self, spec: TerminalTabSpec) -> usize {
+        self.tabs.push(spec);
+        self.active = self.tabs.len() - 1;
+        self.active
+    }
+
+    /// Makes `index` the active tab. A stale index is rejected and leaves the
+    /// current tab selected.
+    pub fn select(&mut self, index: usize) -> bool {
+        if index >= self.tabs.len() {
+            return false;
+        }
+        self.active = index;
+        true
+    }
+
+    /// Drops one tab and returns the tab that is active afterwards, or `None`
+    /// when no tab is left. Closing a stale index is a no-op.
+    pub fn close(&mut self, index: usize) -> Option<usize> {
+        if index >= self.tabs.len() {
+            return (!self.tabs.is_empty()).then_some(self.active);
+        }
+        let len = self.tabs.len();
+        self.tabs.remove(index);
+        match tab_after_close(self.active, index, len) {
+            Some(next) => {
+                self.active = next;
+                Some(next)
+            }
+            None => {
+                self.active = 0;
+                None
+            }
+        }
+    }
+}
+
 /// Parser state shared between the reader thread and the UI thread.
 struct TerminalState {
     parser: Parser,
@@ -158,10 +256,23 @@ pub struct TerminalSession {
 }
 
 impl TerminalSession {
-    /// Starts `shell` in `cwd` (the process's own directory when `None`) on a
-    /// new PTY. Every failure is returned as a message the panel can show; no
-    /// path here panics on a missing shell or an unavailable PTY.
+    /// Starts the user's shell in `cwd` (the process's own directory when
+    /// `None`) on a new PTY. Every failure is returned as a message the panel
+    /// can show; no path here panics on a missing shell or an unavailable PTY.
     pub fn spawn(cwd: Option<&Path>, rows: u16, cols: u16) -> Result<Self, String> {
+        Self::spawn_with_shell(&default_shell(), cwd, rows, cols)
+    }
+
+    /// Starts `shell` in `cwd` on a new PTY.
+    ///
+    /// A restored tab reopens through this: the saved spec names the program
+    /// and directory, so the reopened shell matches the one it replaced.
+    pub fn spawn_with_shell(
+        shell: &str,
+        cwd: Option<&Path>,
+        rows: u16,
+        cols: u16,
+    ) -> Result<Self, String> {
         let rows = clamp_dimension(rows, DEFAULT_ROWS);
         let cols = clamp_dimension(cols, DEFAULT_COLS);
         let pty = native_pty_system()
@@ -173,7 +284,7 @@ impl TerminalSession {
             })
             .map_err(|error| format!("Could not open a pseudo terminal: {error}"))?;
 
-        let shell = default_shell();
+        let shell = shell.to_string();
         let mut command = CommandBuilder::new(&shell);
         command.env("TERM", "xterm-256color");
         command.env("COLORTERM", "truecolor");
@@ -357,11 +468,11 @@ fn read_loop(
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     use super::{
-        clamp_dimension, encode_input, normalize_screen_text, size_for_width, tab_after_close,
-        tab_label,
+        TerminalTabSpec, TerminalTabSpecs, clamp_dimension, encode_input, normalize_screen_text,
+        size_for_width, tab_after_close, tab_label,
     };
 
     #[test]
@@ -415,5 +526,53 @@ mod tests {
             tab_label("/bin/zsh", Some(Path::new("/tmp/project"))),
             "/bin/zsh · /tmp/project"
         );
+    }
+
+    /// The per-session tab specs add, select and close exactly like the live
+    /// tabs do: no PTY is opened, and the active index never dangles.
+    #[test]
+    fn tab_specs_add_select_and_close_without_a_shell() {
+        let mut specs = TerminalTabSpecs::default();
+        assert!(specs.is_empty());
+        assert_eq!(specs.len(), 0);
+        assert_eq!(specs.active(), 0);
+
+        let first = specs.add(TerminalTabSpec {
+            cwd: Some(PathBuf::from("/tmp/one")),
+            shell: "/bin/sh".to_string(),
+        });
+        assert_eq!(first, 0);
+        assert_eq!(specs.active(), 0);
+
+        let second = specs.add(TerminalTabSpec {
+            cwd: None,
+            shell: "/bin/zsh".to_string(),
+        });
+        assert_eq!(second, 1);
+        assert_eq!(specs.len(), 2);
+        // Adding a tab makes it the active one.
+        assert_eq!(specs.active(), 1);
+
+        // Selecting moves the marker; a stale index leaves it alone.
+        assert!(specs.select(0));
+        assert_eq!(specs.active(), 0);
+        assert!(!specs.select(9));
+        assert_eq!(specs.active(), 0);
+
+        // Closing the active first tab activates the one that slid into place.
+        assert_eq!(specs.close(0), Some(0));
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs.active(), 0);
+        assert_eq!(specs.tabs()[0].shell, "/bin/zsh");
+        assert_eq!(specs.tabs()[0].label(), "/bin/zsh · home");
+
+        // The last tab leaves nothing to activate.
+        assert_eq!(specs.close(0), None);
+        assert!(specs.is_empty());
+        assert_eq!(specs.active(), 0);
+
+        // A stale close is a no-op rather than a panic.
+        assert_eq!(specs.close(3), None);
+        assert_eq!(specs.tabs().first().map(TerminalTabSpec::label), None);
     }
 }
