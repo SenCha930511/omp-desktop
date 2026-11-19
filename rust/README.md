@@ -106,7 +106,7 @@ The packaged binary writes the same first-frame marker as the development build.
 
 ## Remaining work
 
-- Terminal, live voice, and browser element annotations are present; dictation remains.
+- Terminal, live voice, dictation, and browser element annotations are present.
 - The workspace, Schedules, Browser, Files, Subagents, Side Question, Settings, Extensions, Review, and Summary are present.
 - The tray is present on macOS, Windows, and Linux; a Linux session without an AppIndicator host logs and continues.
 - The updater feed generator is present; wiring it into `release.yml` and signing remains. The client reads `not configured` without `OMP_UPDATER_PUBKEY`.
