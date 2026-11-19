@@ -22,8 +22,8 @@ use gpui_kit::point;
 use gpui_kit::px;
 use gpui_kit::size;
 use gpui_kit::test::TestEventExt as _;
-use omp_core::geometry::UiGeometry;
-use omp_core::settings::{AppSettings, ConversationDensity, Theme};
+use omp_core::geometry::{CENTER_MIN_WIDTH, UiGeometry};
+use omp_core::settings::{AppSettings, ConversationDensity, MessageEnterAction, Theme};
 use omp_core::state::{CURRENT_DESKTOP_STATE_FILENAME, Platform, StateStore};
 use omp_desktop::app::{AppView, Workspace, WorkspaceData};
 use serde_json::{Value, json};
@@ -890,4 +890,423 @@ fn schedules_pane_reports_an_empty_list(cx: &mut TestAppContext) {
             assert_eq!(state["schedules"], json!([]));
         })
         .expect("workspace window");
+}
+
+/// The composer's Enter action toggles and outlives the window.
+///
+/// The snapshot's `settings` object carries the theme and density, while the
+/// Enter action is read from `settings()`; the round trip is therefore proven
+/// through the getter and a store reopened over the same state file.
+#[gpui_kit::test]
+fn composer_enter_action_toggles_and_persists(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, test_data(root)));
+    handle
+        .update(cx, |workspace, _, cx| {
+            assert_eq!(
+                workspace.settings().message_enter_action,
+                MessageEnterAction::Steer
+            );
+
+            workspace.update_setting(json!({ "messageEnterAction": "queue" }), cx);
+            assert_eq!(
+                workspace.settings().message_enter_action,
+                MessageEnterAction::Queue
+            );
+            // The snapshot is still a settings view of the same state.
+            assert_eq!(
+                snapshot(workspace, cx)["settings"]["density"],
+                "comfortable"
+            );
+
+            workspace.update_setting(json!({ "messageEnterAction": "steer" }), cx);
+            assert_eq!(
+                workspace.settings().message_enter_action,
+                MessageEnterAction::Steer
+            );
+
+            workspace.update_setting(json!({ "messageEnterAction": "queue" }), cx);
+            assert_eq!(
+                workspace.settings().message_enter_action,
+                MessageEnterAction::Queue
+            );
+        })
+        .expect("workspace window");
+
+    let store = open_store(root);
+    assert_eq!(
+        store.settings().message_enter_action,
+        MessageEnterAction::Queue
+    );
+}
+
+/// The theme lands in the state file and in the next window's snapshot.
+#[gpui_kit::test]
+fn theme_setting_round_trips_through_the_state_file_and_snapshot(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, test_data(root)));
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.update_setting(json!({ "theme": "light" }), cx);
+            assert_eq!(workspace.settings().theme, Theme::Light);
+            assert_eq!(snapshot(workspace, cx)["settings"]["theme"], "light");
+
+            workspace.update_setting(json!({ "theme": "dark" }), cx);
+            assert_eq!(workspace.settings().theme, Theme::Dark);
+            assert_eq!(snapshot(workspace, cx)["settings"]["theme"], "dark");
+        })
+        .expect("workspace window");
+
+    let store = open_store(root);
+    assert_eq!(store.settings().theme, Theme::Dark);
+
+    // A window bootstrapped from the persisted settings starts dark.
+    let mut data = test_data(root);
+    data.settings = store.settings();
+    drop(store);
+    let reopened = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    reopened
+        .update(cx, |workspace, _, cx| {
+            assert_eq!(workspace.settings().theme, Theme::Dark);
+            assert_eq!(snapshot(workspace, cx)["settings"]["theme"], "dark");
+        })
+        .expect("reopened window");
+}
+
+/// Density and text size persist together, in the snapshot and on disk.
+#[gpui_kit::test]
+fn conversation_density_and_text_size_persist(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, test_data(root)));
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.update_setting(
+                json!({ "conversationDensity": "compact", "interfaceFontScale": 115 }),
+                cx,
+            );
+
+            assert_eq!(
+                workspace.settings().conversation_density,
+                ConversationDensity::Compact
+            );
+            assert_eq!(workspace.settings().interface_font_scale, 115);
+            assert_eq!(snapshot(workspace, cx)["settings"]["density"], "compact");
+        })
+        .expect("workspace window");
+
+    let store = open_store(root);
+    assert_eq!(
+        store.settings().conversation_density,
+        ConversationDensity::Compact
+    );
+    assert_eq!(store.settings().interface_font_scale, 115);
+}
+
+/// A wide right pane yields to the center column instead of squeezing it below
+/// its minimum: the pane is clamped so `centerWidth` lands exactly on the floor.
+#[gpui_kit::test]
+fn narrow_window_layout_keeps_the_center_at_its_minimum_width(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let geometry = UiGeometry {
+        right_pane_width: 720.0,
+        ..UiGeometry::default()
+    };
+    let mut data = test_data(root);
+    data.geometry = geometry;
+    let handle = cx.open_window(size(px(1000.0), px(800.0)), |window, cx| {
+        Workspace::new(window, cx, data)
+    });
+    handle
+        .update(cx, |workspace, _, cx| {
+            let layout = &snapshot(workspace, cx)["layout"];
+            assert_eq!(layout["sidebarDocked"], json!(true));
+            assert_eq!(layout["sidebarWidth"].as_f64(), Some(248.0));
+            assert_eq!(layout["rightPaneDocked"], json!(true));
+            // 1000 - 248 - 392 leaves the center exactly at its 360px floor.
+            assert_eq!(layout["rightPaneWidth"].as_f64(), Some(392.0));
+            assert_eq!(layout["centerWidth"].as_f64(), Some(CENTER_MIN_WIDTH));
+            assert_eq!(layout["overlay"], json!(null));
+            assert!(workspace.layout().center_width >= CENTER_MIN_WIDTH);
+        })
+        .expect("narrow window");
+}
+
+/// Settings, Workspace and Schedules navigation never clears the transcript.
+#[gpui_kit::test]
+fn settings_to_workspace_to_schedules_keeps_the_transcript(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let (home, _older, _newer) = seed_two_sessions(root);
+    let store = open_store(root);
+    let catalog = omp_core::sessions::list_sessions(&store, &home, false, None);
+    drop(store);
+
+    let mut data = test_data(root);
+    data.home_dir = home;
+    data.sessions = catalog;
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.select_session(0, cx);
+            assert_eq!(transcript_text(workspace), ["newer prompt", "newer reply"]);
+
+            workspace.set_view(AppView::Settings, cx);
+            assert_eq!(snapshot(workspace, cx)["view"], "settings");
+            assert_eq!(transcript_text(workspace), ["newer prompt", "newer reply"]);
+
+            workspace.set_view(AppView::Workspace, cx);
+            assert_eq!(snapshot(workspace, cx)["view"], "workspace");
+            assert_eq!(transcript_text(workspace), ["newer prompt", "newer reply"]);
+
+            workspace.set_view(AppView::Schedules, cx);
+            let state = snapshot(workspace, cx);
+            assert_eq!(state["view"], "schedules");
+            assert_eq!(state["schedules"], json!([]));
+            assert_eq!(transcript_text(workspace), ["newer prompt", "newer reply"]);
+            assert_eq!(workspace.transcript_messages().len(), 2);
+
+            workspace.set_view(AppView::Workspace, cx);
+            assert_eq!(transcript_text(workspace), ["newer prompt", "newer reply"]);
+        })
+        .expect("workspace window");
+}
+
+/// Switching right panes Review -> Files -> Launcher leaves the transcript be.
+#[gpui_kit::test]
+fn right_pane_review_to_files_to_launcher_keeps_the_transcript(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let repo = seed_repo(root);
+    let home = root.join("home");
+    let bucket = home.join(".omp/agent/sessions/-repo");
+    write_session(
+        &bucket,
+        "2026-04-01T00-00-00-000Z_019fdf24-eeee-7000-8000-000000000005.jsonl",
+        "Pane Hop",
+        "2026-04-01T00:00:01.000Z",
+        "main prompt",
+        "main reply",
+        &repo,
+    );
+    let mut store = open_store(root);
+    omp_core::projects::grant_project(
+        &mut store,
+        &home,
+        Platform::current(),
+        repo.to_str().expect("repo path"),
+    )
+    .expect("grant");
+    let projects = omp_core::projects::list_projects(&store);
+    let sessions = omp_core::sessions::list_sessions(&store, &home, false, None);
+    drop(store);
+
+    let mut data = test_data(root);
+    data.home_dir = home;
+    data.projects = projects;
+    data.sessions = sessions;
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.select_session(0, cx);
+            assert_eq!(transcript_text(workspace), ["main prompt", "main reply"]);
+
+            workspace.set_right_pane("review", cx);
+            let review = snapshot(workspace, cx);
+            assert_eq!(review["rightPane"], "review");
+            assert_eq!(review["review"]["status"]["branch"], "main");
+            assert_eq!(transcript_text(workspace), ["main prompt", "main reply"]);
+
+            workspace.set_right_pane("files", cx);
+            let files = snapshot(workspace, cx);
+            assert_eq!(files["rightPane"], "files");
+            assert_eq!(files["files"]["error"], json!(null));
+            let paths: Vec<&str> = files["files"]["entries"]
+                .as_array()
+                .expect("entries")
+                .iter()
+                .filter_map(|entry| entry["path"].as_str())
+                .collect();
+            assert_eq!(paths, ["a.txt"]);
+            assert_eq!(transcript_text(workspace), ["main prompt", "main reply"]);
+
+            workspace.set_right_pane("launcher", cx);
+            assert_eq!(snapshot(workspace, cx)["rightPane"], "launcher");
+            assert_eq!(transcript_text(workspace), ["main prompt", "main reply"]);
+            assert_eq!(workspace.transcript_messages().len(), 2);
+        })
+        .expect("workspace window");
+}
+
+/// Live Voice starts idle and stays runtime-free across pane switches.
+#[gpui_kit::test]
+fn live_voice_snapshot_starts_idle_without_a_runtime(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, test_data(root)));
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.set_right_pane("live-voice", cx);
+
+            let state = snapshot(workspace, cx);
+            assert_eq!(state["rightPane"], "live-voice");
+            assert_eq!(state["liveVoice"]["runtime"], json!(false));
+            assert_eq!(state["liveVoice"]["phase"], "idle");
+            assert_eq!(state["liveVoice"]["active"], json!(false));
+            assert_eq!(state["liveVoice"]["muted"], json!(false));
+            assert_eq!(state["liveVoice"]["error"], json!(null));
+
+            workspace.set_right_pane("launcher", cx);
+            assert_eq!(
+                snapshot(workspace, cx)["liveVoice"]["runtime"],
+                json!(false)
+            );
+        })
+        .expect("workspace window");
+}
+
+/// The terminal panel opens and closes from the toolbar without a shell.
+///
+/// `set_right_pane("terminal")` opens the panel; the only close control is the
+/// toolbar's terminal icon, which is not registered with gpui-kit, so it is
+/// clicked at its measured window-local position in a 1280x800 window. The
+/// center column starts after the 248px sidebar and ends 12px before the right
+/// pane; five 28px icons sit on an 8px gap, so `terminal-panel` (second from the
+/// left) centres on x=786, y=22.
+#[gpui_kit::test]
+fn terminal_panel_opens_and_closes_without_spawning_a_shell(cx: &mut TestAppContext) {
+    const TERMINAL_ICON_X: f32 = 786.0;
+    const TOOLBAR_Y: f32 = 22.0;
+
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let handle = cx.open_window(size(px(1280.0), px(800.0)), |window, cx| {
+        Workspace::new(window, cx, test_data(root))
+    });
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.set_right_pane("terminal", cx);
+
+            let opened = snapshot(workspace, cx);
+            assert_eq!(opened["terminal"]["open"], json!(true));
+            assert_eq!(opened["terminal"]["session"], json!(false));
+            assert_eq!(opened["terminal"]["running"], json!(false));
+            assert_eq!(opened["terminal"]["error"], json!(null));
+        })
+        .expect("workspace window");
+
+    click_at(cx, handle, TERMINAL_ICON_X, TOOLBAR_Y);
+
+    handle
+        .update(cx, |workspace, _, cx| {
+            let closed = snapshot(workspace, cx);
+            assert_eq!(closed["terminal"]["open"], json!(false));
+            assert_eq!(closed["terminal"]["session"], json!(false));
+            assert_eq!(closed["terminal"]["running"], json!(false));
+            assert_eq!(closed["terminal"]["error"], json!(null));
+            assert!(
+                closed["transcript"]
+                    .as_array()
+                    .expect("transcript")
+                    .is_empty()
+            );
+        })
+        .expect("workspace window");
+}
+
+/// The Files pane names the missing project instead of listing anything.
+#[gpui_kit::test]
+fn files_pane_reports_an_error_without_a_project(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, test_data(root)));
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.set_right_pane("files", cx);
+
+            let state = snapshot(workspace, cx);
+            assert_eq!(state["rightPane"], "files");
+            assert_eq!(state["files"]["entries"], json!([]));
+            assert_eq!(state["files"]["skipped"], json!(0));
+            assert_eq!(
+                state["files"]["error"],
+                "Select a project to browse its files."
+            );
+        })
+        .expect("workspace window");
+}
+
+/// Deleting the only schedule leaves the Schedules view reporting an empty list.
+#[gpui_kit::test]
+fn schedules_pane_reports_an_empty_list_after_delete(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let home = root.join("home");
+    let project = root.join("project");
+    std::fs::create_dir_all(&project).expect("project");
+
+    let mut store = open_store(root);
+    omp_core::projects::grant_project(
+        &mut store,
+        &home,
+        Platform::current(),
+        project.to_str().expect("project path"),
+    )
+    .expect("grant");
+    let project_id = omp_core::projects::list_projects(&store)
+        .first()
+        .expect("granted project")
+        .id
+        .clone();
+    let schedule = omp_core::schedules::create(
+        &mut store,
+        &json!({
+            "title": "Delete sweep",
+            "prompt": "Clean up",
+            "target": { "kind": "project", "projectId": project_id },
+            "timing": { "kind": "once", "at": "2030-01-01T00:00:00.000Z" },
+            "execution": { "model": "anthropic/claude", "thinking": "medium", "speed": "normal" },
+        }),
+        "user",
+    )
+    .expect("create schedule");
+    let schedule_id = schedule["id"].as_str().expect("schedule id").to_string();
+    drop(store);
+
+    let mut data = test_data(root);
+    data.home_dir = home;
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.set_view(AppView::Schedules, cx);
+            let populated = snapshot(workspace, cx);
+            assert_eq!(populated["view"], "schedules");
+            assert_eq!(
+                populated["schedules"].as_array().expect("schedules").len(),
+                1
+            );
+            assert_eq!(populated["schedules"][0]["id"], schedule_id.as_str());
+
+            workspace.delete_schedule(&schedule_id, cx);
+            let emptied = snapshot(workspace, cx);
+            assert_eq!(emptied["view"], "schedules");
+            assert_eq!(emptied["schedules"], json!([]));
+        })
+        .expect("workspace window");
+
+    let store = open_store(root);
+    assert!(omp_core::schedules::list(&store).is_empty());
 }
