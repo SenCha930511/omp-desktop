@@ -39,7 +39,8 @@ variants of the same Electron scenario, so the distinct-scenario count is about
 | Plugin install | Source field, background install, catalog refresh |
 | Session mention | Bounded recent-session menu inserts an @path |
 | Math segments | Inline/display chips with an unchanged copy path |
-| Parity harness | `tests/e2e_parity.rs`, 93 tests mapping to about 85 distinct scenarios; 3 browser UI tests are gated off Linux |
+| Responsive layout | Right pane collapses behind a Details overlay under 1100px |
+| Parity harness | `tests/e2e_parity.rs`, 94 tests mapping to about 86 distinct scenarios; 3 browser UI tests are gated off Linux |
 | Updater | `updates.rs` state tests, Settings row render test |
 | Packaging | macOS `.app`, Linux `.deb`, Windows NSIS packaged-smoke CI jobs |
 | Conformance | 10 files, 21 tests against the Rust adapter on macOS, Linux, and Windows |
@@ -47,8 +48,8 @@ variants of the same Electron scenario, so the distinct-scenario count is about
 ## Groups that remain unclosed
 
 - Wiring the updater feed and signatures into `release.yml`.
-- The remaining 3 Playwright scenarios, notification capture, terminal selection
-  context, and the responsive workspace.
+- The remaining 2 Playwright scenarios, notification capture, and terminal
+  selection context.
 - The final Electron cutover gate.
 
 Until the remaining Playwright matrix runs against the Rust app, the Electron
