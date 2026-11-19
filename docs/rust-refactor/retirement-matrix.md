@@ -17,13 +17,13 @@ variants of the same Electron scenario, so the distinct-scenario count is about
 | Sessions, pin/archive/delete, transcript reads | `omp-core` session tests, `Workspace` pane tests |
 | Settings, Extensions, Review, Summary | `Workspace` pane tests, `omp-core` settings/plugins/git tests |
 | Schedules | `omp-core` scheduler tests (15), Schedules pane test |
-| Browser | `browser.rs` URL tests, live WKWebView runtime smoke, element annotation capture, tabs |
+| Browser | `browser.rs` URL tests, live WKWebView runtime smoke, annotations, tabs, per-tab profiles |
 | Files, Subagents, Side Question | `Workspace` pane tests, `omp-core` project-file tests |
 | Tray | `tray.rs` tests, `--tray-smoke` on macOS; Linux tray construction |
-| Terminal | `terminal.rs` PTY helpers, tabs, panel render test |
+| Terminal | `terminal.rs` PTY helpers, tabs, per-session restore, panel render test |
 | Live voice | `app.rs` live-event helper tests, pane render test; dictation is not implemented |
 | Updater feed | `prepare-rust-update-feed.mjs` validation tests; release.yml is not wired |
-| Parity harness | `tests/e2e_parity.rs`, 60 tests mapping to about 55 distinct scenarios |
+| Parity harness | `tests/e2e_parity.rs`, 60 tests mapping to about 57 distinct scenarios |
 | Updater | `updates.rs` state tests, Settings row render test |
 | Packaging | macOS `.app`, Linux `.deb`, Windows NSIS packaged-smoke CI jobs |
 | Conformance | 10 files, 20 tests against the Rust adapter on macOS, Linux, and Windows |
@@ -32,7 +32,7 @@ variants of the same Electron scenario, so the distinct-scenario count is about
 
 - Dictation credentials and the app-managed STT path; live voice is RPC-driven.
 - Wiring the updater feed and signatures into `release.yml`.
-- The remaining 33 Playwright scenarios, including terminal per-session restore,
+- The remaining 31 Playwright scenarios, including browser guest lifecycle,
   agent-driven browser tabs, dictation, and the responsive workspace interactions.
 - The final Electron cutover gate.
 
