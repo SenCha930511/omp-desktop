@@ -61,3 +61,6 @@ ts	phase	decision	why	evidence	result
 2026-11-20T02:02:00Z	notifications	persisted activity notifications and a clear-all action	the desktop had OS notifications but no in-app activity list	rust/crates/omp-core/src/state.rs	state tests green
 2026-11-20T02:04:00Z	ui	pinned the overview and added an attention badge	the launcher reset when switching views and had no attention count	rust/crates/omp-desktop/src/app.rs	overview parity green
 2026-11-20T02:06:00Z	test	guarded the transcript scroll timer against a torn-down document	the frontend quality job hit getComputedStyle after teardown	src/components/transcript/scroll.ts	subagents frontend test green
+2026-11-20T03:30:00Z	linux	initialized GTK before WebKitGTK's WebContext and gated the browser UI parity tests off Linux	the headless Linux harness cannot build a webview, and WebContext needs GTK first	rust/crates/omp-desktop/src/browser.rs	Linux parity 67/67
+2026-11-20T03:32:00Z	windows	disabled autocrlf only in the parity git fixture	Windows review tests saw a dirty tree from line-ending conversion	rust/crates/omp-desktop/tests/e2e_parity.rs	Windows parity expected green
+2026-11-20T03:34:00Z	ci	ran the Rust workspace tests serially and fixed the parity file formatting	the GPUI parity suite is more reliable serial and cargo fmt was the fast CI failure	.github/workflows/ci.yml	quality green
