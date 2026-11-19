@@ -1,5 +1,14 @@
 #![recursion_limit = "512"]
 
+// The system tray is a native NSStatusItem (macOS) / notification-area icon (Windows),
+// so it — and the `tray-icon` dependency — only exist there. Linux is deliberately
+// excluded: `tray-icon`'s Linux backend links GTK3 *and* libappindicator plus libxdo
+// (`libappindicator3-dev`/`libayatana-appindicator3-dev`, `libxdo-dev`), which the
+// Linux build image does not install (it has `libgtk-3-dev` for the Browser pane's
+// webview). Adding a Linux tray needs those packages in CI first; see `src/tray.rs`.
+#[cfg(any(target_os = "macos", windows))]
+mod tray;
+
 use std::path::{Path, PathBuf};
 
 use gpui_kit::*;
@@ -130,12 +139,37 @@ fn arm_smoke_marker(window: &mut Window, path: PathBuf, version: String, frames:
     });
 }
 
+/// The tray smoke writes a marker once the icon exists and the menu command path has
+/// run, then quits — it must never leave the process behind.
+#[cfg(any(target_os = "macos", windows))]
+fn arm_tray_smoke_marker(window: &mut Window, path: PathBuf, tray: tray::Tray, frames: u8) {
+    window.on_next_frame(move |window, cx| {
+        if frames > 1 {
+            arm_tray_smoke_marker(window, path, tray, frames - 1);
+            return;
+        }
+        let payload = serde_json::json!({
+            "trayInstalled": true,
+            "trayCommandsHandled": tray.handled_commands(),
+        });
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(&path, format!("{}\n", payload));
+        cx.quit();
+    });
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let user_data_dir = parse_arg(&args, "--user-data-dir=")
         .map(PathBuf::from)
         .unwrap_or_else(default_user_data_dir);
     let smoke_path = parse_arg(&args, "--packaged-smoke=").map(PathBuf::from);
+    // `--tray-smoke=<path>`: writes a marker after the tray is up and the menu command
+    // path has run, then quits. macOS/Windows only, matching the tray itself.
+    #[cfg(any(target_os = "macos", windows))]
+    let tray_smoke_path = parse_arg(&args, "--tray-smoke=").map(PathBuf::from);
     let dump_layout_path = parse_arg(&args, "--dump-layout=").map(PathBuf::from);
     let data = load_workspace_data(&user_data_dir);
     let geometry_for_dump = data.geometry.clone();
@@ -174,6 +208,35 @@ fn main() {
             }
             cx.new(|cx| Workspace::new(window, cx, data))
         });
-        let _ = handle;
+        // Keep the window handle: the tray's "Open OMP Desktop" command raises this
+        // window (a failed open is reported instead of silently dropped).
+        let window_handle = match &handle {
+            Ok((window, _)) => Some(*window),
+            Err(err) => {
+                eprintln!("omp-desktop: could not open the main window: {err:?}");
+                None
+            }
+        };
+        #[cfg(any(target_os = "macos", windows))]
+        if let Some(window) = window_handle {
+            match tray::init(cx, window) {
+                Ok(tray) => {
+                    if let Some(path) = tray_smoke_path {
+                        // Drive the same channel the menu callback uses, so the smoke
+                        // covers forwarding, not just construction.
+                        tray.send(tray::TrayCommand::OpenWindow);
+                        // Only a window can arm a frame callback, and the tray holds the
+                        // same handle the app opened.
+                        let _ = window.update(cx, |_, window, _| {
+                            arm_tray_smoke_marker(window, path, tray, 3);
+                        });
+                    }
+                }
+                // A tray is a convenience: without one the app still runs.
+                Err(err) => eprintln!("omp-desktop: system tray unavailable: {err}"),
+            }
+        }
+        #[cfg(not(any(target_os = "macos", windows)))]
+        let _ = window_handle;
     });
 }
