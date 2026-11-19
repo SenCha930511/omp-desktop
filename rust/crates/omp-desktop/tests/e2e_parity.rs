@@ -2918,3 +2918,315 @@ fn review_pane_reports_a_staged_new_file_and_a_clean_tree(cx: &mut TestAppContex
         })
         .expect("workspace window");
 }
+
+/// The URL policy is the single gate for every address the app opens: the
+/// Browser pane's address bar and home tab, and the Settings row that stores
+/// the home, all funnel through `parse_http_url`. Credentials, non-http
+/// schemes and hosts a URL parser cannot resolve are refused, while a plain
+/// http/https address with a host is accepted — and the Settings path really
+/// does drop a rejected address instead of persisting it.
+#[gpui_kit::test]
+fn url_policy_rejects_unsafe_addresses_and_accepts_http_urls(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+
+    for (address, message) in [
+        (
+            "https://user:pass@example.com",
+            "must not contain credentials",
+        ),
+        ("https://user@example.com", "must not contain credentials"),
+        ("javascript:alert(1)", "must use http or https"),
+        ("file:///etc/passwd", "must use http or https"),
+        ("https://", "must be a valid URL"),
+        ("https://exa mple.com", "must be a valid URL"),
+    ] {
+        let error = omp_core::url_policy::parse_http_url(address, "Address").expect_err(address);
+        assert!(
+            error.message.contains(message),
+            "{address} reported {:?}",
+            error.message
+        );
+        assert_eq!(error.code, "TypeError");
+    }
+
+    for address in [
+        "https://example.com",
+        "http://example.com/docs?q=1",
+        "https://example.com:8443/x",
+    ] {
+        let parsed = omp_core::url_policy::parse_http_url(address, "Address")
+            .unwrap_or_else(|error| panic!("{address}: {}", error.message));
+        assert!(matches!(parsed.scheme(), "http" | "https"));
+        assert!(parsed.host_str().is_some(), "{address} has no host");
+    }
+
+    // The Settings row stores the Browser home through the same gate, so a
+    // rejected address leaves both the live settings and the state file alone.
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, test_data(root)));
+    handle
+        .update(cx, |workspace, _, cx| {
+            let default_home = workspace.settings().browser_home.clone();
+            workspace.update_setting(json!({ "browserHome": "javascript:alert(1)" }), cx);
+            assert_eq!(workspace.settings().browser_home, default_home);
+            workspace.update_setting(
+                json!({ "browserHome": "https://user:pass@example.com" }),
+                cx,
+            );
+            assert_eq!(workspace.settings().browser_home, default_home);
+            workspace.update_setting(json!({ "browserHome": "https://example.com/docs" }), cx);
+            assert_eq!(
+                workspace.settings().browser_home,
+                "https://example.com/docs"
+            );
+        })
+        .expect("workspace window");
+
+    let store = open_store(root);
+    assert_eq!(store.settings().browser_home, "https://example.com/docs");
+}
+
+/// Agent event normalization lives in `omp_core::agent::normalize_event`, which
+/// is private: only `AgentManager::drain_events` reaches it, and that needs a
+/// spawned `omp` runtime, which this suite never starts. The harness therefore
+/// pins the public boundary the normalizer feeds: with no runtime the public
+/// drain hands out no envelopes at all, and the workspace's live-voice state and
+/// transcript stay exactly as they started, so neither a malformed nor a valid
+/// `live_*`/`dictation_*` frame can reach a pane here. Once `normalize_event` is
+/// public, this case should feed it the malformed frames (an unknown
+/// `live_phase`, a negative `live_transcript` turn, a `dictation_state` without
+/// a capture id) next to the valid ones and assert the drop/keep split directly.
+#[gpui_kit::test]
+fn agent_frame_normalization_never_reaches_the_panes_without_a_runtime(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+
+    // The manager has no runtime to read frames from, so it normalizes nothing.
+    let mut agents = omp_core::agent::AgentManager::default();
+    assert!(agents.list().is_empty());
+    assert!(agents.drain_events(None).is_empty());
+    assert!(agents.drain_events(Some("omp-1")).is_empty());
+    agents.stop_all();
+    assert!(agents.drain_events(None).is_empty());
+
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, test_data(root)));
+    handle
+        .update(cx, |workspace, _, cx| {
+            let before = snapshot(workspace, cx);
+            workspace.drain_agent_events();
+            workspace.drain_agent_events();
+            let after = snapshot(workspace, cx);
+
+            assert_eq!(after["liveVoice"], before["liveVoice"]);
+            assert_eq!(after["liveVoice"]["runtime"], json!(false));
+            assert_eq!(after["liveVoice"]["phase"], "idle");
+            assert_eq!(after["liveVoice"]["active"], json!(false));
+            assert_eq!(after["liveVoice"]["muted"], json!(false));
+            assert_eq!(after["liveVoice"]["error"], json!(null));
+            // The fields the normalizer's `live_*` frames write, and no others.
+            let mut keys: Vec<&str> = after["liveVoice"]
+                .as_object()
+                .expect("live voice state")
+                .keys()
+                .map(String::as_str)
+                .collect();
+            keys.sort_unstable();
+            assert_eq!(keys, ["active", "error", "muted", "phase", "runtime"]);
+
+            // No frame ever lands in the transcript or the composer.
+            assert_eq!(after["transcript"], json!([]));
+            assert_eq!(after["composer"]["text"], "");
+            assert_eq!(after["subagents"], json!([]));
+            assert_eq!(after["rightPane"], "launcher");
+        })
+        .expect("workspace window");
+}
+
+/// The launcher overview is the right pane a fresh window opens on, and every
+/// pane name it can show round-trips through the funnel its rows use. The rows
+/// do not opt into gpui-kit's element registry, so the Summary row is clicked at
+/// its measured position to prove the row list really drives `set_right_pane`;
+/// the remaining names — Live Voice included, which lives on the toolbar rather
+/// than in the row list — are then opened by name.
+#[gpui_kit::test]
+fn launcher_overview_reaches_every_right_pane_name(cx: &mut TestAppContext) {
+    const PANE_X: f32 = 1100.0;
+    const SUMMARY_ROW_Y: f32 = 70.0;
+    const NAMES: [&str; 7] = [
+        "summary",
+        "review",
+        "files",
+        "browser",
+        "side-question",
+        "subagents",
+        "live-voice",
+    ];
+
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let handle = cx.open_window(size(px(1280.0), px(800.0)), |window, cx| {
+        Workspace::new(window, cx, test_data(root))
+    });
+    handle
+        .update(cx, |workspace, _, cx| {
+            let launcher = snapshot(workspace, cx);
+            assert_eq!(launcher["rightPane"], "launcher");
+            assert_eq!(launcher["layout"]["rightPaneDocked"], json!(true));
+        })
+        .expect("launcher window");
+
+    // The Summary row is the first launcher row: clicking it opens its pane.
+    click_at(cx, handle, PANE_X, SUMMARY_ROW_Y);
+    handle
+        .update(cx, |workspace, _, cx| {
+            assert_eq!(snapshot(workspace, cx)["rightPane"], "summary");
+        })
+        .expect("summary row");
+
+    handle
+        .update(cx, |workspace, _, cx| {
+            for name in NAMES {
+                workspace.set_right_pane(name, cx);
+                let state = snapshot(workspace, cx);
+                assert_eq!(state["rightPane"], name);
+                assert_eq!(state["layout"]["rightPaneDocked"], json!(true));
+                assert_eq!(state["transcript"], json!([]));
+            }
+            workspace.set_right_pane("launcher", cx);
+            assert_eq!(snapshot(workspace, cx)["rightPane"], "launcher");
+        })
+        .expect("pane names");
+}
+
+/// Below the compact breakpoint the right pane stops docking and becomes an
+/// overlay, so the center column keeps its floor; below the small breakpoint
+/// both panes overlay it. Opening a pane in that band never squeezes the center
+/// below `CENTER_MIN_WIDTH`, and the snapshot reports both docked flags with the
+/// overlay name.
+#[gpui_kit::test]
+fn compact_layout_snapshot_reports_the_overlay_and_keeps_the_center_minimum(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+
+    // 900px sits inside the compact band (720 < 900 <= 980): the sidebar docks,
+    // the right pane overlays it.
+    let compact = cx.open_window(size(px(900.0), px(800.0)), |window, cx| {
+        Workspace::new(window, cx, test_data(root))
+    });
+    compact
+        .update(cx, |workspace, _, cx| {
+            let state = snapshot(workspace, cx);
+            let layout = &state["layout"];
+            assert_eq!(state["rightPane"], "launcher");
+            assert_eq!(layout["sidebarDocked"], json!(true));
+            assert_eq!(layout["sidebarWidth"].as_f64(), Some(248.0));
+            assert_eq!(layout["rightPaneDocked"], json!(false));
+            assert_eq!(layout["rightPaneWidth"].as_f64(), Some(0.0));
+            assert_eq!(layout["centerWidth"].as_f64(), Some(652.0));
+            assert_eq!(layout["overlay"], "rightPane");
+            assert!(workspace.layout().center_width >= CENTER_MIN_WIDTH);
+
+            // Opening a pane keeps it overlaid instead of taking center width.
+            workspace.set_right_pane("files", cx);
+            let opened = snapshot(workspace, cx);
+            assert_eq!(opened["rightPane"], "files");
+            assert_eq!(opened["layout"]["rightPaneDocked"], json!(false));
+            assert_eq!(opened["layout"]["rightPaneWidth"].as_f64(), Some(0.0));
+            assert_eq!(opened["layout"]["overlay"], "rightPane");
+            assert_eq!(opened["layout"]["centerWidth"].as_f64(), Some(652.0));
+            assert!(workspace.layout().center_width >= CENTER_MIN_WIDTH);
+        })
+        .expect("compact window");
+
+    // 640px is below the small breakpoint: neither pane docks, both overlay.
+    let small = cx.open_window(size(px(640.0), px(800.0)), |window, cx| {
+        Workspace::new(window, cx, test_data(root))
+    });
+    small
+        .update(cx, |workspace, _, cx| {
+            let state = snapshot(workspace, cx);
+            let layout = &state["layout"];
+            assert_eq!(layout["sidebarDocked"], json!(false));
+            assert_eq!(layout["sidebarWidth"].as_f64(), Some(0.0));
+            assert_eq!(layout["rightPaneDocked"], json!(false));
+            assert_eq!(layout["rightPaneWidth"].as_f64(), Some(0.0));
+            assert_eq!(layout["centerWidth"].as_f64(), Some(640.0));
+            assert_eq!(layout["overlay"], "rightPane");
+            assert!(workspace.layout().center_width >= CENTER_MIN_WIDTH);
+        })
+        .expect("small window");
+}
+
+/// The Review pane reports a modified tracked file as an unstaged change, and
+/// the public diff for that path carries the added line inside a hunk; reverting
+/// the file clears both the snapshot and the diff.
+#[gpui_kit::test]
+fn review_snapshot_reports_a_tracked_file_diff_and_clears_after_revert(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let repo = seed_repo(root);
+    let repo_path = repo.to_str().expect("repo path");
+
+    let mut data = test_data(root);
+    data.home_dir = root.join("home");
+    std::fs::create_dir_all(&data.home_dir).expect("home");
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.grant_project(&repo, cx);
+            workspace.set_right_pane("review", cx);
+
+            let clean = snapshot(workspace, cx);
+            assert_eq!(clean["review"]["error"], json!(null));
+            assert_eq!(clean["review"]["status"]["files"], json!([]));
+
+            std::fs::write(repo.join("a.txt"), "line1\nline2\n").expect("edit");
+            workspace.refresh_review();
+            let dirty = snapshot(workspace, cx);
+            assert!(
+                dirty["review"]["status"]["files"]
+                    .as_array()
+                    .expect("files")
+                    .iter()
+                    .any(|file| file["path"] == "a.txt" && file["staged"] == json!(false)),
+                "review snapshot: {}",
+                dirty["review"]
+            );
+
+            // The pane's diff for that entry: the hunk and the added line.
+            let store = open_store(root);
+            let diff = omp_core::git::diff(&store, Platform::current(), repo_path, "a.txt", false)
+                .expect("diff");
+            assert!(diff.text.contains("@@"), "diff: {}", diff.text);
+            assert!(diff.text.contains("+line2"), "diff: {}", diff.text);
+            drop(store);
+
+            git(&repo, &["checkout", "--", "a.txt"]);
+            workspace.refresh_review();
+            let reverted = snapshot(workspace, cx);
+            assert_eq!(reverted["rightPane"], "review");
+            assert_eq!(reverted["review"]["error"], json!(null));
+            assert_eq!(reverted["review"]["status"]["files"], json!([]));
+            assert!(
+                workspace
+                    .review_status()
+                    .expect("clean status")
+                    .files
+                    .is_empty()
+            );
+
+            let store = open_store(root);
+            let cleared =
+                omp_core::git::diff(&store, Platform::current(), repo_path, "a.txt", false)
+                    .expect("diff after revert");
+            assert_eq!(cleared.text, "");
+        })
+        .expect("workspace window");
+}
