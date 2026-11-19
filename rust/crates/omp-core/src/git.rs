@@ -170,8 +170,7 @@ pub fn status(store: &StateStore, platform: Platform, cwd: &str) -> GitStatus {
     }
 }
 
-/// Captures per-file line counts for the current worktree and index. This is
-/// the baseline input for the turn-only diff card.
+/// Baseline input for the turn-only diff card (`TurnBaseline`).
 pub fn snapshot_files(store: &StateStore, platform: Platform, cwd: &str) -> Vec<FileSnapshot> {
     let Ok(cwd) = authorize(store, platform, cwd) else {
         return Vec::new();

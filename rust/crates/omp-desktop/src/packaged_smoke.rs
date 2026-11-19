@@ -4,9 +4,6 @@ use std::path::Path;
 pub const PACKAGED_SMOKE_EVENT: &str = "gooeypi-packaged-smoke-ready";
 pub const MAX_MARKER_BYTES: usize = 4_096;
 
-/// Writes the packaged-smoke marker only after the real GPUI window has drawn
-/// its first frame. The Electron version wrote it after an authorized IPC
-/// round trip; the native version must prove the window exists and painted.
 pub fn write_marker(path: &Path, url: &str, version: &str) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;

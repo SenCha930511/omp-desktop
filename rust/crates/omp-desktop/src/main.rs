@@ -134,6 +134,8 @@ fn main() {
         gpui_kit::init(cx);
         let handle = gpui_kit::open_window(options, cx, move |window, cx| {
             if let Some(path) = smoke_path.clone() {
+                // The native smoke test must prove the window painted; the
+                // Electron version proved an authorized IPC round trip.
                 window.on_next_frame(move |_, cx| {
                     let _ = omp_desktop::packaged_smoke::write_marker(&path, SMOKE_URL, &version);
                     cx.quit();
