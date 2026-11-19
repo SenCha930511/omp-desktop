@@ -18,7 +18,7 @@ by the Rust unit and smoke tests below.
 | Browser | `browser.rs` URL tests, live WKWebView runtime smoke, element annotation capture |
 | Files, Subagents, Side Question | `Workspace` pane tests, `omp-core` project-file tests |
 | Tray | `tray.rs` tests, `--tray-smoke` on macOS; Linux tray construction |
-| Terminal | `terminal.rs` PTY helpers, panel render test |
+| Terminal | `terminal.rs` PTY helpers, tabs, panel render test |
 | Live voice | `app.rs` live-event helper tests, pane render test; dictation is not implemented |
 | Updater feed | `prepare-rust-update-feed.mjs` validation tests; release.yml is not wired |
 | Parity harness | `tests/e2e_parity.rs`, 30 of 88 scenarios |
@@ -30,7 +30,7 @@ by the Rust unit and smoke tests below.
 
 - Dictation credentials and the app-managed STT path; live voice is RPC-driven.
 - Wiring the updater feed and signatures into `release.yml`.
-- The remaining 58 Playwright scenarios, including terminal tabs/restore,
+- The remaining 58 Playwright scenarios, including terminal per-session restore,
   agent-driven browser tabs, dictation, and the responsive workspace interactions.
 - The final Electron cutover gate.
 
