@@ -381,6 +381,9 @@ impl Workspace {
         match target {
             RightPane::Review => self.refresh_review(),
             RightPane::Files => self.refresh_files(),
+            // The Browser pane opens one blank tab; its webview needs a window,
+            // so `render` builds it on the next frame.
+            RightPane::Browser => self.browser.prepare(),
             _ => {}
         }
         cx.notify();
@@ -472,6 +475,8 @@ impl Workspace {
                     "error": self.browser.annotation_error(),
                     "preview": self.browser.annotation_preview(),
                 },
+                "tabs": self.browser.tab_count(),
+                "activeTab": self.browser.active_tab(),
             },
             "review": {
                 "status": self.review_status,
@@ -4565,6 +4570,58 @@ mod tests {
             });
         }
         cx.quit();
+    }
+
+    /// The Browser pane draws its blank state with no tabs: rendering must not
+    /// build a webview, and the pane stays usable for the next `+` or address.
+    #[test]
+    fn browser_pane_renders_blank_with_no_tabs() {
+        let mut cx = gpui_kit::TestAppContext::single();
+        cx.update(gpui_kit::init);
+        let root = tempfile::TempDir::new().expect("test root").keep();
+        let handle = cx.add_window(|window, cx| {
+            Workspace::new(
+                window,
+                cx,
+                WorkspaceData {
+                    geometry: UiGeometry::default(),
+                    geometry_path: root.join("ui-geometry.json"),
+                    home_dir: root.clone(),
+                    user_data_dir: root.clone(),
+                    omp_executable: PathBuf::from("omp"),
+                    settings: AppSettings::default(),
+                    projects: Vec::new(),
+                    sessions: Vec::new(),
+                },
+            )
+        });
+        handle
+            .update(&mut cx, |workspace, _, _| {
+                // Set the pane directly, so no blank tab is prepared for it.
+                workspace.right_pane = RightPane::Browser;
+                workspace.layout = workspace.geometry.resolve(1600.0);
+            })
+            .expect("workspace window");
+        cx.update(|cx| {
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.draw(cx).clear(cx);
+            })
+            .expect("draw browser frame");
+        });
+        let (tabs, active, pending) = handle
+            .update(&mut cx, |workspace, _, _| {
+                (
+                    workspace.browser.tab_count(),
+                    workspace.browser.active_tab(),
+                    workspace.browser.needs_webview(),
+                )
+            })
+            .expect("workspace window");
+        cx.quit();
+        assert_eq!(tabs, 0);
+        assert_eq!(active, 0);
+        // An empty pane is not waiting for a webview: it waits for a tab.
+        assert!(!pending);
     }
 
     /// Selecting or closing a tab with no sessions is a no-op, and closing the

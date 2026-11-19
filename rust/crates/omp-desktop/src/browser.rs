@@ -10,12 +10,16 @@
 //!   does not open its Overview or session popovers over it.
 //! * Native Wayland is unsupported. `main` starts Linux on X11/XWayland.
 //!
-//! The webview is created lazily, on the UI thread, the first time the pane is shown, and is
-//! owned by the [`Workspace`], so it is dropped with the window.
+//! Each tab owns its own webview, created lazily on the UI thread, and the pane keeps only
+//! the active tab's view on screen. All of them are owned by the [`Workspace`], so they are
+//! dropped with the window.
+
+use std::rc::Rc;
 
 use async_channel::Sender;
-use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::assets::IconName;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::{ActiveTheme as _, ThemeColor};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use gpui_webview::WebView;
@@ -222,27 +226,99 @@ fn capture_from_message(message: &str) -> Option<PostedCapture> {
     ))
 }
 
-/// What the page reported back after the Capture button armed the picker.
+/// What one tab's page reported back after the Capture button armed its picker.
+///
+/// Messages name the tab by id, not index: a tab closed or selected meanwhile must
+/// not hand its annotation to the wrong page.
 enum CaptureMessage {
     /// Result of the arming `evaluate_script`; empty when the page refused it.
-    Armed(String),
-    /// An IPC message posted by the picker.
-    Posted(String),
+    Armed { tab: u64, result: String },
+    /// An IPC message posted by that tab's picker.
+    Posted { tab: u64, message: String },
 }
 
-/// Address bar, history controls and the native webview of the Browser pane.
+/// One page in the Browser pane.
+///
+/// Each tab owns its native webview, so switching tabs hides a loaded page instead of
+/// reloading it, and closing a tab drops (and hides) its view. `id` names the tab in
+/// IPC messages: indices shift when a tab closes, ids do not.
+pub struct BrowserTab {
+    id: u64,
+    webview: Option<Entity<WebView>>,
+    url: String,
+    error: Option<String>,
+    annotation: Option<String>,
+}
+
+impl BrowserTab {
+    fn new(id: u64, url: &str) -> Self {
+        Self {
+            id,
+            webview: None,
+            url: url.to_string(),
+            error: None,
+            annotation: None,
+        }
+    }
+
+    /// What the address bar shows for this tab: the blank page reads as an empty
+    /// field, so the placeholder shows through.
+    fn address(&self) -> String {
+        if self.url == BLANK_PAGE {
+            String::new()
+        } else {
+            self.url.clone()
+        }
+    }
+}
+
+/// The label a tab shows: the page's host, or "New tab" until one loads.
+pub fn tab_label(url: &str) -> String {
+    let trimmed = url.trim();
+    if trimmed.is_empty() || trimmed == BLANK_PAGE {
+        return "New tab".to_string();
+    }
+    parse_http_url(trimmed, "Tab")
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(str::to_string))
+        .unwrap_or_else(|| trimmed.to_string())
+}
+
+/// The tab to select after `closing` leaves `len - 1` tabs, or `None` when the last
+/// tab closed and the pane falls back to its blank state.
+///
+/// Closing the active tab selects the one that slides into its place, falling back to
+/// the tab before it; closing an earlier tab shifts the active index down with it.
+pub fn tab_after_close(active: usize, closing: usize, len: usize) -> Option<usize> {
+    if len <= 1 {
+        return None;
+    }
+    let remaining = len - 1;
+    let next = if closing < active {
+        active - 1
+    } else if closing == active {
+        active.min(remaining - 1)
+    } else {
+        active
+    };
+    Some(next.min(remaining - 1))
+}
+
+/// Address bar, tab bar, history controls and the native webviews of the Browser pane.
+///
+/// Only the active tab's webview is drawn; the others stay loaded but hidden.
 pub struct BrowserPane {
     address: Entity<InputState>,
     _address_subscription: Subscription,
-    webview: Option<Entity<WebView>>,
-    error: Option<String>,
+    tabs: Vec<BrowserTab>,
+    active_tab: usize,
+    /// The id the next tab takes; ids survive the index shifts of closing tabs.
+    next_tab_id: u64,
     navigate_requested: bool,
     /// Feeds the arming result and the posted annotation into the drain task.
     capture_sender: Sender<CaptureMessage>,
-    /// The formatted annotation, waiting for the workspace to append it to the composer.
-    annotation: Option<String>,
-    /// True while the page is waiting for the click that picks an element.
-    capture_armed: bool,
+    /// The tab whose element picker is armed, waiting for its click.
+    capture_tab: Option<u64>,
     _capture_task: Task<()>,
 }
 
@@ -269,37 +345,18 @@ impl BrowserPane {
         let capture_task = cx.spawn(async move |this, cx| {
             while let Ok(message) = capture_results.recv().await {
                 match message {
-                    CaptureMessage::Armed(result) => {
-                        let armed = !result.trim().is_empty();
+                    CaptureMessage::Armed { tab, result } => {
                         let _ = this.update(cx, |workspace, cx| {
-                            workspace.browser.capture_armed = armed;
-                            if !armed {
-                                workspace.browser.error =
-                                    Some("The page did not accept the element picker.".to_string());
+                            if workspace.browser.apply_armed(tab, &result) {
+                                cx.notify();
                             }
-                            cx.notify();
                         });
                     }
-                    CaptureMessage::Posted(message) => {
-                        let Some(posted) = capture_from_message(&message) else {
-                            continue;
-                        };
-                        let outcome = match posted {
-                            PostedCapture::Cancelled => None,
-                            PostedCapture::Annotation(raw) => Some(format_annotation(&raw)),
-                        };
+                    CaptureMessage::Posted { tab, message } => {
                         let _ = this.update(cx, |workspace, cx| {
-                            workspace.browser.capture_armed = false;
-                            if let Some(outcome) = outcome {
-                                match outcome {
-                                    Ok(annotation) => {
-                                        workspace.browser.annotation = Some(annotation);
-                                        workspace.browser.error = None;
-                                    }
-                                    Err(error) => workspace.browser.error = Some(error),
-                                }
+                            if workspace.browser.apply_posted(tab, &message) {
+                                cx.notify();
                             }
-                            cx.notify();
                         });
                     }
                 }
@@ -308,40 +365,83 @@ impl BrowserPane {
         Self {
             address,
             _address_subscription: address_subscription,
-            webview: None,
-            error: None,
+            tabs: Vec::new(),
+            active_tab: 0,
+            next_tab_id: 1,
             navigate_requested: false,
             capture_sender,
-            annotation: None,
-            capture_armed: false,
+            capture_tab: None,
             _capture_task: capture_task,
         }
     }
 
-    /// Create the webview if this is the first visit to the pane.
+    /// Give the pane a tab to open when it is first shown.
     ///
-    /// `WebView::build` attaches the native view to the GPUI window, so it has to run on the
-    /// UI thread while the window is alive.
+    /// The webview itself needs a window, so it is built later, from `render` or the
+    /// tab's own click. Closing the last tab leaves the pane empty on purpose: only
+    /// this, a click on `+`, or a navigation starts a new one.
+    pub fn prepare(&mut self) {
+        if self.tabs.is_empty() {
+            self.push_tab();
+        }
+    }
+
+    /// Create the active tab's webview if it does not have one yet.
+    ///
+    /// `WebView::build` attaches the native view to the GPUI window, so it has to run
+    /// on the UI thread while the window is alive.
     pub fn ensure(&mut self, window: &mut Window, cx: &mut Context<Workspace>) {
-        if self.webview.is_some() {
+        if self.tabs.is_empty() {
+            self.push_tab();
+        }
+        let Some(tab) = self.tabs.get(self.active_tab) else {
+            return;
+        };
+        if tab.webview.is_some() {
             return;
         }
+        let id = tab.id;
         let sender = self.capture_sender.clone();
         let builder = WebViewBuilder::new().with_url(BLANK_PAGE).with_ipc_handler(
             move |request: wry::http::Request<String>| {
                 // Pages may post anything, so the drain task filters by the envelope kind.
-                let _ = sender.try_send(CaptureMessage::Posted(request.into_body()));
+                let _ = sender.try_send(CaptureMessage::Posted {
+                    tab: id,
+                    message: request.into_body(),
+                });
             },
         );
         match WebView::build(builder, window, cx) {
-            Ok(webview) => self.webview = Some(cx.new(|_| webview)),
-            Err(error) => self.error = Some(format!("The native webview could not start: {error}")),
+            Ok(webview) => {
+                if let Some(tab) = self.tab_mut(id) {
+                    tab.webview = Some(cx.new(|_| webview));
+                    tab.error = None;
+                }
+            }
+            Err(error) => {
+                if let Some(tab) = self.tab_mut(id) {
+                    tab.error = Some(format!("The native webview could not start: {error}"));
+                }
+            }
         }
     }
 
-    /// Whether the pane still has to build its webview.
+    /// Whether the pane still has to build its active tab's webview.
+    ///
+    /// An empty pane is not pending: it waits for `+` or a navigation, so leaving it
+    /// blank does not send `render` into building a view every frame.
     pub fn needs_webview(&self) -> bool {
-        self.webview.is_none() && self.error.is_none()
+        self.tabs
+            .get(self.active_tab)
+            .is_some_and(|tab| tab.webview.is_none() && tab.error.is_none())
+    }
+
+    pub fn tab_count(&self) -> usize {
+        self.tabs.len()
+    }
+
+    pub fn active_tab(&self) -> usize {
+        self.active_tab
     }
 
     pub fn request_navigate(&mut self) {
@@ -352,11 +452,77 @@ impl BrowserPane {
         std::mem::take(&mut self.navigate_requested)
     }
 
-    /// Arm the element picker in the page; the next click there inserts an annotation.
+    /// Add an about:blank tab, make it active and build its webview.
+    pub fn new_tab(&mut self, window: &mut Window, cx: &mut Context<Workspace>) {
+        self.push_tab();
+        self.ensure(window, cx);
+        self.sync_address(window, cx);
+        cx.notify();
+    }
+
+    /// Make `index` the tab the pane draws, sends navigation to and captures from.
+    pub fn select_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Workspace>) {
+        if index >= self.tabs.len() || index == self.active_tab {
+            return;
+        }
+        self.active_tab = index;
+        self.sync_address(window, cx);
+        cx.notify();
+    }
+
+    /// Close one tab, selecting the nearest remaining one. Closing the last tab
+    /// leaves the pane's blank state, where `+` or an address starts a new one.
+    pub fn close_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Workspace>) {
+        let len = self.tabs.len();
+        if index >= len {
+            return;
+        }
+        let closed = self.tabs.remove(index).id;
+        if self.capture_tab == Some(closed) {
+            self.capture_tab = None;
+        }
+        match tab_after_close(self.active_tab, index, len) {
+            Some(next) => self.active_tab = next,
+            None => self.active_tab = 0,
+        }
+        self.sync_address(window, cx);
+        cx.notify();
+    }
+
+    fn push_tab(&mut self) {
+        let id = self.next_tab_id;
+        self.next_tab_id += 1;
+        self.tabs.push(BrowserTab::new(id, BLANK_PAGE));
+        self.active_tab = self.tabs.len() - 1;
+    }
+
+    fn tab_mut(&mut self, id: u64) -> Option<&mut BrowserTab> {
+        self.tabs.iter_mut().find(|tab| tab.id == id)
+    }
+
+    /// Show the active tab's address, or clear the field for the blank page.
+    fn sync_address(&self, window: &mut Window, cx: &mut Context<Workspace>) {
+        let value = self
+            .tabs
+            .get(self.active_tab)
+            .map(BrowserTab::address)
+            .unwrap_or_default();
+        let address = self.address.clone();
+        address.update(cx, |state, cx| state.set_value(value, window, cx));
+    }
+
+    /// Arm the element picker in the active page; the next click there inserts an
+    /// annotation. The result names the tab, so switching tabs mid-capture keeps it.
     pub fn start_capture(&mut self, cx: &mut Context<Workspace>) {
-        self.capture_armed = false;
-        let Some(webview) = &self.webview else {
-            self.error = Some("Open a page before capturing an element.".to_string());
+        self.capture_tab = None;
+        let Some(tab) = self.tabs.get(self.active_tab) else {
+            cx.notify();
+            return;
+        };
+        let id = tab.id;
+        let Some(webview) = tab.webview.clone() else {
+            self.tabs[self.active_tab].error =
+                Some("Open a page before capturing an element.".to_string());
             cx.notify();
             return;
         };
@@ -365,77 +531,170 @@ impl BrowserPane {
             webview
                 .raw()
                 .evaluate_script_with_callback(annotation_script(), move |result| {
-                    let _ = sender.try_send(CaptureMessage::Armed(result));
+                    let _ = sender.try_send(CaptureMessage::Armed { tab: id, result });
                 })
         });
         match started {
             Ok(()) => {
-                self.capture_armed = true;
-                self.error = None;
+                self.capture_tab = Some(id);
+                if let Some(tab) = self.tab_mut(id) {
+                    tab.error = None;
+                }
             }
             Err(error) => {
-                self.error = Some(format!("Could not start the element capture: {error}"));
+                if let Some(tab) = self.tab_mut(id) {
+                    tab.error = Some(format!("Could not start the element capture: {error}"));
+                }
             }
         }
         cx.notify();
     }
 
-    /// The annotation the page captured, once, for the workspace to append to the composer.
+    /// The annotation the page captured, once, for the workspace to append to the
+    /// composer. The active tab's capture is preferred, but one that finished after
+    /// switching tabs is still delivered.
     pub fn take_annotation(&mut self) -> Option<String> {
-        self.annotation.take()
+        let active = self.active_tab;
+        if let Some(tab) = self.tabs.get_mut(active)
+            && let Some(annotation) = tab.annotation.take()
+        {
+            return Some(annotation);
+        }
+        self.tabs.iter_mut().find_map(|tab| tab.annotation.take())
     }
 
-    /// The pane's last annotation failure, for the workspace's debug snapshot.
+    /// The active tab's last annotation failure, for the workspace's debug snapshot.
     pub fn annotation_error(&self) -> Option<&str> {
-        self.error.as_deref()
+        self.tabs
+            .get(self.active_tab)
+            .and_then(|tab| tab.error.as_deref())
     }
 
     /// The annotation waiting for the composer, for the workspace's debug snapshot.
     pub fn annotation_preview(&self) -> Option<&str> {
-        self.annotation.as_deref()
+        self.tabs
+            .get(self.active_tab)
+            .and_then(|tab| tab.annotation.as_deref())
     }
 
-    /// Load the address bar's URL, reporting a rejected address above the page.
+    /// Apply an arming result; `true` when the pane's state changed.
+    fn apply_armed(&mut self, id: u64, result: &str) -> bool {
+        if !result.trim().is_empty() {
+            // The picker armed: `start_capture` already recorded the waiting tab.
+            return false;
+        }
+        if self.capture_tab == Some(id) {
+            self.capture_tab = None;
+        }
+        if let Some(tab) = self.tab_mut(id) {
+            tab.error = Some("The page did not accept the element picker.".to_string());
+        }
+        true
+    }
+
+    /// Apply an IPC message; `true` when the pane should repaint.
+    fn apply_posted(&mut self, id: u64, message: &str) -> bool {
+        let Some(posted) = capture_from_message(message) else {
+            return false;
+        };
+        let outcome = match posted {
+            PostedCapture::Cancelled => None,
+            PostedCapture::Annotation(raw) => Some(format_annotation(&raw)),
+        };
+        if self.capture_tab == Some(id) {
+            self.capture_tab = None;
+        }
+        let Some(tab) = self.tab_mut(id) else {
+            return true;
+        };
+        match outcome {
+            Some(Ok(annotation)) => {
+                tab.annotation = Some(annotation);
+                tab.error = None;
+            }
+            Some(Err(error)) => tab.error = Some(error),
+            None => {}
+        }
+        true
+    }
+
+    /// Load the address bar's URL into the active tab, reporting a rejected address
+    /// above the page. An empty pane opens its first tab first, so a rejected address
+    /// still has somewhere to report itself.
     pub fn submit(&mut self, window: &mut Window, cx: &mut Context<Workspace>) {
         self.navigate_requested = false;
-        // Loading a page discards the picker, so the hint has to go with it.
-        self.capture_armed = false;
         let address = self.address.read(cx).value().to_string();
         match normalize_address(&address) {
             Ok(url) => {
-                self.error = None;
+                // Only the previous rejection is cleared here; a webview that fails
+                // to start keeps its own message.
+                if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+                    tab.error = None;
+                }
                 self.ensure(window, cx);
-                if let Some(webview) = &self.webview {
-                    webview.update(cx, |webview, _| webview.load_url(&url));
+                let active = self.active_tab;
+                let loaded = match self.tabs.get_mut(active) {
+                    Some(tab) => match &tab.webview {
+                        Some(webview) => {
+                            webview.update(cx, |webview, _| webview.load_url(&url));
+                            tab.url = url.clone();
+                            if self.capture_tab == Some(tab.id) {
+                                // Loading a page discards the picker, so the hint goes with it.
+                                self.capture_tab = None;
+                            }
+                            true
+                        }
+                        None => false,
+                    },
+                    None => false,
+                };
+                if loaded {
                     // Show the address that actually loaded, not the shorthand that was typed.
                     let address = self.address.clone();
                     address.update(cx, |state, cx| state.set_value(url, window, cx));
                 }
             }
-            Err(message) => self.error = Some(message),
+            Err(message) => {
+                self.prepare();
+                if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+                    tab.error = Some(message);
+                }
+            }
         }
         cx.notify();
     }
 
-    /// Show or hide the native view with the pane. A webview that is not rendered keeps the
-    /// bounds of its last frame, so leaving the pane has to hide it explicitly.
+    /// Show only the active tab's native view while the pane is on screen.
+    ///
+    /// A webview that is not rendered keeps the bounds of its last frame, and on
+    /// Windows it covers everything in those bounds, so every inactive tab (and the
+    /// whole pane when it leaves) has to be hidden explicitly.
     pub fn set_visible(&self, visible: bool, cx: &mut Context<Workspace>) {
-        let Some(webview) = &self.webview else {
-            return;
-        };
-        webview.update(cx, |webview, _| {
-            if webview.visible() != visible {
-                if visible {
-                    webview.show();
-                } else {
-                    webview.hide();
+        for (index, tab) in self.tabs.iter().enumerate() {
+            let Some(webview) = &tab.webview else {
+                continue;
+            };
+            let show = visible && index == self.active_tab;
+            webview.update(cx, |webview, _| {
+                if webview.visible() != show {
+                    if show {
+                        webview.show();
+                    } else {
+                        webview.hide();
+                    }
                 }
-            }
-        });
+            });
+        }
+    }
+
+    fn active_webview(&self) -> Option<Entity<WebView>> {
+        self.tabs
+            .get(self.active_tab)
+            .and_then(|tab| tab.webview.clone())
     }
 
     fn back(&self, cx: &mut Context<Workspace>) {
-        if let Some(webview) = &self.webview {
+        if let Some(webview) = self.active_webview() {
             webview.update(cx, |webview, _| {
                 let _ = webview.back();
             });
@@ -443,7 +702,7 @@ impl BrowserPane {
     }
 
     fn forward(&self, cx: &mut Context<Workspace>) {
-        if let Some(webview) = &self.webview {
+        if let Some(webview) = self.active_webview() {
             webview.update(cx, |webview, _| {
                 let _ = webview.forward();
             });
@@ -451,7 +710,7 @@ impl BrowserPane {
     }
 
     fn reload(&self, cx: &mut Context<Workspace>) {
-        if let Some(webview) = &self.webview {
+        if let Some(webview) = self.active_webview() {
             webview.update(cx, |webview, _| {
                 let _ = webview.raw().reload();
             });
@@ -483,16 +742,45 @@ impl BrowserPane {
 
     pub fn content(&self, cx: &mut Context<Workspace>) -> impl IntoElement {
         let colors = cx.theme().colors;
-        let webview = self.webview.clone();
+        let tab = self.tabs.get(self.active_tab);
+        let webview = tab.and_then(|tab| tab.webview.clone());
+        let error = tab.and_then(|tab| tab.error.clone());
+        let armed = tab.is_some_and(|tab| self.capture_tab == Some(tab.id));
         // A failure is reported on its own line; until the webview exists there is nothing
         // else to show, and once it does the native view covers this area.
-        let preparing = webview.is_none() && self.error.is_none();
+        let preparing = tab.is_some() && webview.is_none() && error.is_none();
+        let empty = self.tabs.is_empty();
+        let labels: Vec<String> = self.tabs.iter().map(|tab| tab_label(&tab.url)).collect();
+        let entity = cx.entity();
+        let select = {
+            let entity = entity.clone();
+            move |index: usize, window: &mut Window, cx: &mut App| {
+                entity.update(cx, |this, cx| this.browser.select_tab(index, window, cx));
+            }
+        };
+        let close_tab = {
+            let entity = entity.clone();
+            move |index: usize, window: &mut Window, cx: &mut App| {
+                entity.update(cx, |this, cx| this.browser.close_tab(index, window, cx));
+            }
+        };
+        let new_tab = move |window: &mut Window, cx: &mut App| {
+            entity.update(cx, |this, cx| this.browser.new_tab(window, cx));
+        };
         div()
             .flex()
             .flex_col()
             .gap_2()
             .h_full()
             .min_h(px(0.0))
+            .child(browser_tab_bar(
+                &labels,
+                self.active_tab,
+                colors,
+                select,
+                close_tab,
+                new_tab,
+            ))
             .child(
                 div()
                     .flex()
@@ -540,10 +828,10 @@ impl BrowserPane {
                         cx,
                     )),
             )
-            .when_some(self.error.clone(), |element, message| {
+            .when_some(error, |element, message| {
                 element.child(div().text_xs().text_color(colors.danger).child(message))
             })
-            .when(self.capture_armed, |element| {
+            .when(armed, |element| {
                 element.child(
                     div()
                         .text_xs()
@@ -568,16 +856,126 @@ impl BrowserPane {
                                 .text_color(colors.muted_foreground)
                                 .child("Preparing the webview…"),
                         )
+                    })
+                    .when(empty, |element| {
+                        element.child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .items_center()
+                                .justify_center()
+                                .gap_2()
+                                .size_full()
+                                .text_xs()
+                                .text_color(colors.muted_foreground)
+                                .child("No page open.")
+                                .child(
+                                    div()
+                                        .id("browser-empty-new-tab")
+                                        .aria_label("New browser tab")
+                                        .px_2()
+                                        .py_1()
+                                        .rounded(px(6.0))
+                                        .border_1()
+                                        .border_color(colors.border)
+                                        .text_color(colors.foreground)
+                                        .hover(|style| style.bg(colors.accent))
+                                        .child("New tab")
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.browser.new_tab(window, cx);
+                                        })),
+                                ),
+                        )
                     }),
             )
     }
 }
 
+/// A tab bar click that names the tab it came from.
+type TabClick = dyn Fn(usize, &mut Window, &mut App);
+/// The tab bar's `+` click, which names no tab.
+type NewTabClick = dyn Fn(&mut Window, &mut App);
+
+/// Draws the Browser pane's tab bar: one tab per page, then a `+` button.
+///
+/// Labels and callbacks are all it reads, so a test can render it without a
+/// webview: selecting, closing and opening tabs are the caller's jobs.
+fn browser_tab_bar(
+    labels: &[String],
+    active: usize,
+    colors: ThemeColor,
+    on_select: impl Fn(usize, &mut Window, &mut App) + 'static,
+    on_close: impl Fn(usize, &mut Window, &mut App) + 'static,
+    on_new: impl Fn(&mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let on_select: Rc<TabClick> = Rc::new(on_select);
+    let on_close: Rc<TabClick> = Rc::new(on_close);
+    let on_new: Rc<NewTabClick> = Rc::new(on_new);
+    div()
+        .id("browser-tabs")
+        .flex()
+        .items_center()
+        .gap_1()
+        .pb_1()
+        .children(labels.iter().enumerate().map(|(index, label)| {
+            let is_active = index == active;
+            let select = Rc::clone(&on_select);
+            let close = Rc::clone(&on_close);
+            div()
+                .id(("browser-tab", index))
+                .aria_label("Browser tab")
+                .flex()
+                .items_center()
+                .gap_1()
+                .px_2()
+                .py_1()
+                .rounded(px(6.0))
+                .text_xs()
+                .text_color(if is_active {
+                    colors.foreground
+                } else {
+                    colors.muted_foreground
+                })
+                .when(is_active, |style| style.bg(colors.accent))
+                .hover(|style| style.bg(colors.accent))
+                .child(label.clone())
+                .child(
+                    div()
+                        .id(("browser-tab-close", index))
+                        .aria_label("Close tab")
+                        .rounded(px(4.0))
+                        .hover(|style| style.bg(colors.background))
+                        .child(IconName::X)
+                        .on_click(move |_, window, cx| {
+                            close(index, window, cx);
+                            // The tab under the button would otherwise also be
+                            // selected, moving the active tab as it closes.
+                            cx.stop_propagation();
+                        }),
+                )
+                .on_click(move |_, window, cx| select(index, window, cx))
+        }))
+        .child(
+            div()
+                .id("browser-new-tab")
+                .aria_label("New browser tab")
+                .px_2()
+                .py_1()
+                .rounded(px(6.0))
+                .text_xs()
+                .text_color(colors.muted_foreground)
+                .hover(|style| style.bg(colors.accent))
+                .child("+")
+                .on_click(move |_, window, cx| on_new(window, cx)),
+        )
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        CAPTURE_KIND, PostedCapture, annotation_script, append_annotation, capture_from_message,
-        format_annotation, normalize_address,
+        BLANK_PAGE, BrowserTab, CAPTURE_KIND, PostedCapture, annotation_script, append_annotation,
+        browser_tab_bar, capture_from_message, format_annotation, normalize_address,
+        tab_after_close, tab_label,
     };
 
     #[test]
@@ -693,5 +1091,85 @@ mod tests {
             append_annotation("trailing  ", annotation),
             format!("trailing {annotation}")
         );
+    }
+
+    #[test]
+    fn closing_a_tab_selects_its_neighbour() {
+        // The active middle tab gives way to the one that slides into place.
+        assert_eq!(tab_after_close(1, 1, 3), Some(1));
+        // Closing the active last tab falls back to the one before it.
+        assert_eq!(tab_after_close(2, 2, 3), Some(1));
+        // Closing an earlier tab shifts the active index down with it.
+        assert_eq!(tab_after_close(2, 0, 3), Some(1));
+        // Closing a later tab leaves the active index alone.
+        assert_eq!(tab_after_close(0, 2, 3), Some(0));
+        assert_eq!(tab_after_close(0, 1, 2), Some(0));
+        // The last tab leaves the pane blank.
+        assert_eq!(tab_after_close(0, 0, 1), None);
+        assert_eq!(tab_after_close(0, 0, 0), None);
+    }
+
+    #[test]
+    fn a_new_tab_is_blank_until_a_page_loads() {
+        let tab = BrowserTab::new(7, BLANK_PAGE);
+        assert_eq!(tab.id, 7);
+        assert!(tab.webview.is_none());
+        assert!(tab.error.is_none());
+        assert!(tab.annotation.is_none());
+        // The blank page reads as an empty address field.
+        assert_eq!(tab.address(), "");
+        assert_eq!(tab_label(&tab.url), "New tab");
+    }
+
+    #[test]
+    fn tab_labels_name_the_page_host() {
+        assert_eq!(tab_label("https://example.com/a?b=1"), "example.com");
+        assert_eq!(tab_label("  http://localhost:8080/  "), "localhost");
+        assert_eq!(tab_label(""), "New tab");
+        assert_eq!(tab_label(BLANK_PAGE), "New tab");
+        // Not a page this pane can load, so the label keeps what it has.
+        assert_eq!(tab_label("not a url"), "not a url");
+    }
+
+    /// The tab bar draws with no tabs (just `+`) and with one tab, without a
+    /// webview: it only reads labels and callbacks.
+    #[test]
+    fn browser_tab_bar_renders_with_zero_and_one_tab() {
+        use gpui_kit::AppContext as _;
+        use gpui_kit::component::ActiveTheme as _;
+
+        struct TestTabBar {
+            labels: Vec<String>,
+        }
+
+        impl gpui_kit::Render for TestTabBar {
+            fn render(
+                &mut self,
+                _window: &mut gpui_kit::Window,
+                cx: &mut gpui_kit::Context<Self>,
+            ) -> impl gpui_kit::IntoElement {
+                browser_tab_bar(
+                    &self.labels,
+                    0,
+                    cx.theme().colors,
+                    |_, _, _| {},
+                    |_, _, _| {},
+                    |_, _| {},
+                )
+            }
+        }
+
+        let mut cx = gpui_kit::TestAppContext::single();
+        cx.update(gpui_kit::init);
+        for labels in [Vec::new(), vec!["example.com".to_string()]] {
+            let handle = cx.add_window(|_, _| TestTabBar { labels });
+            cx.update(|cx| {
+                cx.update_window(handle.into(), |_, window, cx| {
+                    window.draw(cx).clear(cx);
+                })
+                .expect("draw tab bar frame");
+            });
+        }
+        cx.quit();
     }
 }
