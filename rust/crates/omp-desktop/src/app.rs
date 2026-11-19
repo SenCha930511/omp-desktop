@@ -1376,7 +1376,13 @@ impl Workspace {
                     "parts": message
                         .parts
                         .iter()
-                        .map(|part| json!({ "kind": part.kind, "text": part.text }))
+                        .map(|part| json!({
+                            "kind": part.kind,
+                            "text": part.text,
+                            // How many `$…$`/`$$…$$` runs the part is drawn
+                            // with, so a scenario can see the styled spans.
+                            "mathSegments": transcript_math_segments(part),
+                        }))
                         .collect::<Vec<Value>>(),
                 })
             })
@@ -3959,16 +3965,12 @@ impl Workspace {
                             )
                             .when_some(fork, |element, fork| element.child(fork)),
                     )
-                    .children(message.parts.iter().map(|part| {
-                        div()
-                            .text_sm()
-                            .text_color(if part.kind == "queued" {
-                                colors.muted_foreground
-                            } else {
-                                colors.foreground
-                            })
-                            .child(transcript_part_text(part))
-                    }))
+                    .children(
+                        message
+                            .parts
+                            .iter()
+                            .map(|part| transcript_part_element(part, colors)),
+                    )
             }));
         // The rows and the `Jump to latest` control share one box, so the
         // control floats over the transcript instead of taking height away
@@ -7831,6 +7833,206 @@ fn transcript_part_text(part: &TranscriptPart) -> String {
     }
 }
 
+/// One run of a transcript part: plain prose, or the body of a `$…$` or
+/// `$$…$$` span with its delimiters stripped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MathSegmentKind {
+    Text,
+    InlineMath,
+    DisplayMath,
+}
+
+/// A run of transcript text and what kind of run it is. Math segments keep the
+/// source between the delimiters, so nothing is reinterpreted: this renderer
+/// marks math readable, it does not lay TeX out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MathSegment {
+    kind: MathSegmentKind,
+    text: String,
+}
+
+/// Splits transcript text into plain runs and math runs.
+///
+/// `$$…$$` wins over `$…$`, a `\$` neither opens nor closes a span, and a
+/// marker with no closer stays plain text. Text with no math comes back as one
+/// `Text` segment holding the original string, so the split never rewrites a
+/// message.
+fn math_segments(text: &str) -> Vec<MathSegment> {
+    let mut segments: Vec<MathSegment> = Vec::new();
+    let mut plain_start = 0;
+    let mut index = 0;
+    while index < text.len() {
+        let rest = &text[index..];
+        let Some(current) = rest.chars().next() else {
+            break;
+        };
+        if current == '\\' {
+            // `\$` is a literal dollar sign: step over both bytes so it cannot
+            // open or close a span. Any other backslash is ordinary text.
+            index += current.len_utf8();
+            if rest[current.len_utf8()..].starts_with('$') {
+                index += 1;
+            }
+            continue;
+        }
+        if current != '$' {
+            index += current.len_utf8();
+            continue;
+        }
+        let display = rest.starts_with("$$");
+        let open = if display { "$$" } else { "$" };
+        let body_start = index + open.len();
+        match math_close(&text[body_start..], display) {
+            // An empty body is not math either: `$$` on its own stays text.
+            Some(close) if close > 0 => {
+                push_plain_segment(&mut segments, &text[plain_start..index]);
+                segments.push(MathSegment {
+                    kind: if display {
+                        MathSegmentKind::DisplayMath
+                    } else {
+                        MathSegmentKind::InlineMath
+                    },
+                    text: text[body_start..body_start + close].to_string(),
+                });
+                index = body_start + close + open.len();
+                plain_start = index;
+            }
+            // Unmatched: the marker is skipped but stays in the plain run.
+            _ => index = body_start,
+        }
+    }
+    push_plain_segment(&mut segments, &text[plain_start..]);
+    segments
+}
+
+/// The byte offset of the delimiter that closes a math body, if there is one.
+///
+/// An escaped `\$` inside the body closes nothing. An inline body ends at the
+/// first `$`; a display body ends only at `$$`.
+fn math_close(body: &str, display: bool) -> Option<usize> {
+    let mut index = 0;
+    while index < body.len() {
+        let rest = &body[index..];
+        let current = rest.chars().next()?;
+        if current == '\\' {
+            index += current.len_utf8();
+            if rest[current.len_utf8()..].starts_with('$') {
+                index += 1;
+            }
+            continue;
+        }
+        if current == '$' && (!display || rest.starts_with("$$")) {
+            return Some(index);
+        }
+        index += current.len_utf8();
+    }
+    None
+}
+
+/// Appends `text` as a plain run, skipping the empty runs a split leaves at the
+/// edges of a part that opens or closes with math.
+fn push_plain_segment(segments: &mut Vec<MathSegment>, text: &str) {
+    if !text.is_empty() {
+        segments.push(MathSegment {
+            kind: MathSegmentKind::Text,
+            text: text.to_string(),
+        });
+    }
+}
+
+/// The text a split came from: every run with its delimiters back, so the
+/// transcript's copy output stays the message as written.
+fn math_plain_text(segments: &[MathSegment]) -> String {
+    let mut text = String::new();
+    for segment in segments {
+        match segment.kind {
+            MathSegmentKind::Text => text.push_str(&segment.text),
+            MathSegmentKind::InlineMath => {
+                text.push('$');
+                text.push_str(&segment.text);
+                text.push('$');
+            }
+            MathSegmentKind::DisplayMath => {
+                text.push_str("$$");
+                text.push_str(&segment.text);
+                text.push_str("$$");
+            }
+        }
+    }
+    text
+}
+
+/// How many math runs a part draws. `debug_snapshot` reports it so a scenario
+/// can prove the styled spans exist without measuring pixels.
+fn transcript_math_segments(part: &TranscriptPart) -> usize {
+    math_segments(&transcript_part_text(part))
+        .iter()
+        .filter(|segment| segment.kind != MathSegmentKind::Text)
+        .count()
+}
+
+/// One math run as the reader sees it: the raw source in an italic chip, tinted
+/// and outlined so it reads as math rather than prose. The chip inherits the
+/// part's text color, so a queued row stays muted.
+fn math_span(segment: &MathSegment, colors: ThemeColor) -> AnyElement {
+    let chip = div()
+        .italic()
+        .rounded(px(4.0))
+        .px_1()
+        .border_1()
+        .border_color(colors.border)
+        .bg(colors.accent)
+        .child(math_plain_text(std::slice::from_ref(segment)));
+    match segment.kind {
+        // Display math takes its own centred line; inline math flows with the
+        // words around it.
+        MathSegmentKind::DisplayMath => chip.w_full().text_center().into_any_element(),
+        MathSegmentKind::InlineMath | MathSegmentKind::Text => chip.into_any_element(),
+    }
+}
+
+/// Draws one transcript part. A part with no math is the single text run it
+/// always was; a part with math is wrapped spans, its prose untouched and each
+/// math run in its own chip. Only the drawing splits, so `Copy transcript`
+/// still yields the message as written.
+fn transcript_part_element(part: &TranscriptPart, colors: ThemeColor) -> AnyElement {
+    let text = transcript_part_text(part);
+    let text_color = if part.kind == "queued" {
+        colors.muted_foreground
+    } else {
+        colors.foreground
+    };
+    let segments = math_segments(&text);
+    if segments
+        .iter()
+        .all(|segment| segment.kind == MathSegmentKind::Text)
+    {
+        return div()
+            .text_sm()
+            .text_color(text_color)
+            .child(text)
+            .into_any_element();
+    }
+    div()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .text_sm()
+        .text_color(text_color)
+        .children(
+            segments
+                .into_iter()
+                .filter(|segment| !segment.text.is_empty())
+                .map(|segment| match segment.kind {
+                    MathSegmentKind::Text => div().child(segment.text).into_any_element(),
+                    MathSegmentKind::InlineMath | MathSegmentKind::DisplayMath => {
+                        math_span(&segment, colors)
+                    }
+                }),
+        )
+        .into_any_element()
+}
+
 /// The folder under the user data directory that captures land in.
 const CAPTURE_DIR: &str = "captures";
 
@@ -8578,16 +8780,17 @@ mod tests {
     use super::{
         ATTACHMENT_MAX_BYTES, AppView, AskDialog, AskOption, AskQuestion, CLOSE_CONFIRM_ACCEPT,
         CLOSE_CONFIRM_CANCEL, CloseGuard, CloseIntent, ContextUsage, DictationState,
-        LIVE_TRANSCRIPT_LIMIT, LiveVoiceState, MODEL_PROVIDER_LIMIT, RightPane,
-        TERMINAL_MENU_ITEMS, TRANSCRIPT_BOTTOM_THRESHOLD, TerminalMenuAction, TerminalTabSpec,
-        TerminalTabSpecs, UpdateCheckState, Workspace, WorkspaceData, append_clipboard_text,
-        append_dictation_text, append_side_answer, apply_dictation_frame, apply_live_voice_event,
-        ask_answers_ready, ask_cancel_payload, ask_submit_payload, base64_encode, capture_path,
-        close_confirmation, composer_model_label, context_percent, context_usage_label,
-        filter_models, group_digits, image_mime, model_key, parse_ask_questions,
-        parse_context_usage, parse_model_key, provider_chips, read_pending_image,
-        should_confirm_close, side_answer_delta, terminal_menu, terminal_menu_action,
-        terminal_tab_bar, transcript_is_at_bottom, updates, write_capture,
+        LIVE_TRANSCRIPT_LIMIT, LiveVoiceState, MODEL_PROVIDER_LIMIT, MathSegment, MathSegmentKind,
+        RightPane, TERMINAL_MENU_ITEMS, TRANSCRIPT_BOTTOM_THRESHOLD, TerminalMenuAction,
+        TerminalTabSpec, TerminalTabSpecs, UpdateCheckState, Workspace, WorkspaceData,
+        append_clipboard_text, append_dictation_text, append_side_answer, apply_dictation_frame,
+        apply_live_voice_event, ask_answers_ready, ask_cancel_payload, ask_submit_payload,
+        base64_encode, capture_path, close_confirmation, composer_model_label, context_percent,
+        context_usage_label, filter_models, group_digits, image_mime, math_plain_text,
+        math_segments, model_key, parse_ask_questions, parse_context_usage, parse_model_key,
+        provider_chips, read_pending_image, should_confirm_close, side_answer_delta, terminal_menu,
+        terminal_menu_action, terminal_tab_bar, transcript_is_at_bottom, transcript_part_text,
+        updates, write_capture,
     };
     use omp_core::sessions::{TranscriptMessage, TranscriptPart};
 
@@ -10531,6 +10734,96 @@ mod tests {
             .expect("workspace window");
     }
 
+    /// A plain run for the math-splitter cases.
+    fn plain_run(text: &str) -> MathSegment {
+        MathSegment {
+            kind: MathSegmentKind::Text,
+            text: text.to_string(),
+        }
+    }
+
+    /// An inline `$…$` run, its delimiters stripped.
+    fn inline_run(text: &str) -> MathSegment {
+        MathSegment {
+            kind: MathSegmentKind::InlineMath,
+            text: text.to_string(),
+        }
+    }
+
+    /// A display `$$…$$` run, its delimiters stripped.
+    fn display_run(text: &str) -> MathSegment {
+        MathSegment {
+            kind: MathSegmentKind::DisplayMath,
+            text: text.to_string(),
+        }
+    }
+
+    /// `$…$` and `$$…$$` become their own runs, display first, and joining the
+    /// runs back puts every delimiter where the message had it.
+    #[test]
+    fn math_segments_split_inline_and_display_runs() {
+        let text = "area is $x^2$ and $$y$$ wide";
+        let segments = math_segments(text);
+        assert_eq!(
+            segments,
+            [
+                plain_run("area is "),
+                inline_run("x^2"),
+                plain_run(" and "),
+                display_run("y"),
+                plain_run(" wide"),
+            ]
+        );
+        // The copy output is this join: the split never rewrites the message.
+        assert_eq!(math_plain_text(&segments), text);
+        // Copying reads the part as written, so drawing is the only thing that
+        // splits.
+        assert_eq!(transcript_part_text(&TranscriptPart::text(text)), text);
+    }
+
+    /// Text with no math is one run holding the original string; unmatched,
+    /// empty and escaped markers stay the words the message had.
+    #[test]
+    fn math_segments_leave_plain_and_malformed_text_alone() {
+        assert_eq!(math_segments("just words"), [plain_run("just words")]);
+        assert_eq!(math_segments(""), []);
+        assert_eq!(math_segments("cost is $5"), [plain_run("cost is $5")]);
+        assert_eq!(math_segments("$$"), [plain_run("$$")]);
+        assert_eq!(math_segments("$$y$"), [plain_run("$$y$")]);
+        assert_eq!(math_segments(r"cost is \$5"), [plain_run(r"cost is \$5")]);
+        // A dollar escaped inside the body closes nothing.
+        assert_eq!(math_segments(r"$a\$b$"), [inline_run(r"a\$b")]);
+        assert_eq!(math_plain_text(&math_segments(r"$a\$b$")), r"$a\$b$");
+    }
+
+    /// Every marker in a part splits, and adjacent spans keep nothing between
+    /// them.
+    #[test]
+    fn math_segments_split_multiple_runs() {
+        assert_eq!(
+            math_segments("$a$ $b$"),
+            [inline_run("a"), plain_run(" "), inline_run("b")]
+        );
+        assert_eq!(
+            math_segments("$$a$$$$b$$"),
+            [display_run("a"), display_run("b")]
+        );
+        assert_eq!(
+            math_segments("$a^2$ then $$b$$ then $c$"),
+            [
+                inline_run("a^2"),
+                plain_run(" then "),
+                display_run("b"),
+                plain_run(" then "),
+                inline_run("c"),
+            ]
+        );
+        assert_eq!(
+            math_plain_text(&math_segments("$a^2$ then $$b$$ then $c$")),
+            "$a^2$ then $$b$$ then $c$"
+        );
+    }
+
     /// The at-bottom reading has a little slack, treats a view that never laid
     /// out or cannot scroll as pinned, and notices a reader who scrolled up.
     #[test]
@@ -10891,5 +11184,47 @@ mod tests {
                 assert_eq!(workspace.composer.read(cx).value().to_string(), "keep me");
             })
             .expect("reload");
+    }
+
+    /// A part with math draws as wrapped spans: a long message in a narrow row
+    /// wraps over several lines instead of overflowing sideways. The probe that
+    /// sized this also showed each math run in its own box — an inline chip on
+    /// a text line, a display chip across the row.
+    #[test]
+    fn transcript_math_part_wraps_inside_its_row() {
+        use gpui_kit::InteractiveElement as _;
+        use gpui_kit::{AvailableSpace, ParentElement as _, Styled as _, div, point, px, size};
+
+        use super::transcript_part_element;
+
+        let mut cx = gpui_kit::TestAppContext::single();
+        cx.update(gpui_kit::init);
+        let window = cx.add_empty_window();
+        let colors = window.update(|_, cx| cx.theme().colors);
+        let part = TranscriptPart::text(
+            "the area under the curve is $x^2$ and it grows without bound as the interval widens $$y$$ end of the message",
+        );
+        window.draw(
+            point(px(0.0), px(0.0)),
+            size(
+                AvailableSpace::Definite(px(240.0)),
+                AvailableSpace::Definite(px(600.0)),
+            ),
+            |_, _| {
+                div()
+                    .w(px(240.0))
+                    .debug_selector(|| "math-part".to_string())
+                    .child(transcript_part_element(&part, colors))
+            },
+        );
+        let bounds = window.debug_bounds("math-part").expect("part bounds");
+        // One unwrapped line is about 25px, so a taller row proves the spans
+        // wrapped inside the width instead of running past it.
+        assert!(
+            bounds.size.height > px(36.0),
+            "math part did not wrap: {:?}",
+            bounds.size.height
+        );
+        assert_eq!(bounds.size.width, px(240.0));
     }
 }

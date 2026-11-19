@@ -2515,6 +2515,84 @@ fn copy_transcript_writes_the_visible_text_and_no_ops_when_empty(cx: &mut TestAp
     );
 }
 
+/// A message carrying `$x^2$` and `$$y$$` draws as its prose plus math spans,
+/// and the frame builds with them: the snapshot counts the two math runs, and
+/// the copied text is still the message as written, delimiters included.
+#[gpui_kit::test]
+fn transcript_math_segments_render_and_leave_the_copied_text_alone(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let home = root.join("home");
+    let bucket = home.join(".omp/agent/sessions/-omp-project");
+    let project = root.join("project");
+    let at = "2026-04-01T01:00:00.000Z";
+    let prompt = "area is $x^2$ and $$y$$ wide";
+    write_session_entries(
+        &bucket,
+        "2026-04-01T00-00-00-000Z_019fdf24-d111-7000-8000-000000000014.jsonl",
+        "Math",
+        at,
+        &[json!({
+            "type": "message",
+            "id": "u1",
+            "parentId": null,
+            "timestamp": at,
+            "message": { "role": "user", "content": prompt },
+        })],
+        &project,
+    );
+
+    let store = open_store(root);
+    let catalog = omp_core::sessions::list_sessions(&store, &home, false, None);
+    drop(store);
+    assert_eq!(catalog.len(), 1);
+
+    let mut data = test_data(root);
+    data.home_dir = home;
+    data.sessions = catalog;
+    let handle = cx.open_window(size(px(1280.0), px(800.0)), |window, cx| {
+        Workspace::new(window, cx, data)
+    });
+    handle
+        .update(cx, |workspace, _, cx| workspace.select_session(0, cx))
+        .expect("workspace window");
+
+    // The part keeps its source text and reports the two math runs the
+    // renderer splits out, so the styled spans are observable without pixels.
+    handle
+        .update(cx, |workspace, _, cx| {
+            let state = snapshot(workspace, cx);
+            let part = &state["transcript"][0]["parts"][0];
+            assert_eq!(part["kind"], "text");
+            assert_eq!(part["text"], prompt);
+            assert_eq!(part["mathSegments"], json!(2));
+        })
+        .expect("math snapshot");
+
+    // The frame really builds with the wrapped spans drawn.
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+        })
+        .expect("math frame");
+    });
+
+    // Copying is unchanged: the split is a drawing detail, so the clipboard
+    // keeps both delimiters and the raw math text.
+    cx.write_to_clipboard(ClipboardItem::new_string("untouched".to_string()));
+    handle
+        .update(cx, |workspace, _, cx| workspace.copy_transcript(cx))
+        .expect("copy transcript");
+    let expected = format!("You\n{prompt}");
+    assert_eq!(
+        cx.read_from_clipboard()
+            .and_then(|item| item.text())
+            .as_deref(),
+        Some(expected.as_str())
+    );
+}
+
 /// The transcript opens on its newest message, a scroll up unpins the follow
 /// and draws the `Jump to latest` control, and the harness's re-pin lands back
 /// on the tail. Frames are really drawn, so the scroll handle has the bounds
