@@ -4279,3 +4279,324 @@ fn composer_send_while_running_queues_a_follow_up(cx: &mut TestAppContext) {
     assert_eq!(echoed["running"], json!(false));
     assert_eq!(echoed["queuedFollowUps"], json!([]));
 }
+
+/// A stand-in `omp` for the model tests: the conformance fixture already
+/// answers `models --json` with a catalog and logs every RPC command under the
+/// state directory, so a selection can be proven to reach a live runtime.
+#[cfg(unix)]
+fn install_fixture_omp(root: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let bin = root.join("bin");
+    std::fs::create_dir_all(&bin).expect("bin");
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../..")
+        .canonicalize()
+        .expect("repo root");
+    let fixture_script = repo.join("tests/conformance/fixtures/omp-fixture.mjs");
+    let fixture = bin.join("omp-fixture");
+    std::fs::write(
+        &fixture,
+        format!(
+            "#!/bin/sh\nexec \"{}\" \"{}\" \"$@\"\n",
+            std::env::var("NODE").unwrap_or_else(|_| "node".to_string()),
+            fixture_script.display()
+        ),
+    )
+    .expect("fixture");
+    std::fs::set_permissions(&fixture, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    fixture
+}
+
+/// A catalog the Settings picker can list without spawning `omp`, and the
+/// failing shape `load_catalog` reports (no models plus a warning).
+fn model_catalog(
+    models: &[(&str, &str, &str)],
+    warning: Option<&str>,
+) -> omp_core::models::ModelCatalog {
+    omp_core::models::ModelCatalog {
+        prime_version: "17.2.15".to_string(),
+        refreshed_at: "2026-04-02T00:00:00.000Z".to_string(),
+        models: models
+            .iter()
+            .map(|(provider, id, name)| omp_core::models::ModelDescriptor {
+                key: format!("{provider}/{id}"),
+                provider: provider.to_string(),
+                id: id.to_string(),
+                name: name.to_string(),
+                reasoning: false,
+                input: vec!["text".to_string()],
+                context_window: 100_000,
+                max_tokens: 8_192,
+                available_thinking_levels: Vec::new(),
+                fast_mode_supported: false,
+                available: true,
+            })
+            .collect(),
+        providers: Vec::new(),
+        warning: warning.map(str::to_string),
+        vision_delegation: None,
+        presets: Vec::new(),
+    }
+}
+
+/// The fixture's own record of the RPC commands it received.
+#[cfg(unix)]
+fn fixture_commands(root: &Path) -> Vec<Value> {
+    let path = root
+        .join("user-data")
+        .join("fixture-state")
+        .join("omp-commands.jsonl");
+    let log = std::fs::read_to_string(path).unwrap_or_default();
+    log.lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .collect()
+}
+
+/// Selecting a model in Settings persists it, moves the composer footer, and
+/// switches the live runtime; a catalog that cannot load is inline text that
+/// leaves the selection usable.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn model_selection_persists_reaches_the_footer_and_the_runtime(cx: &mut TestAppContext) {
+    use omp_core::projects;
+
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let home = root.join("home");
+    let project = root.join("project");
+    let fixture = install_fixture_omp(root);
+    for folder in [&home, &project, &root.join("user-data")] {
+        std::fs::create_dir_all(folder).expect("dir");
+    }
+    let project = project.canonicalize().expect("project path");
+
+    let mut store = open_store(root);
+    projects::grant_project(
+        &mut store,
+        &home,
+        Platform::current(),
+        project.to_str().expect("project path"),
+    )
+    .expect("grant");
+    drop(store);
+
+    let bucket = home.join(".omp/agent/sessions/-omp-project");
+    write_session(
+        &bucket,
+        "2026-04-02T00-00-00-000Z_019fdf24-eeee-7000-8000-000000000020.jsonl",
+        "Models",
+        "2026-04-02T00:00:00.000Z",
+        "first prompt",
+        "first reply",
+        &project,
+    );
+    let store = open_store(root);
+    let catalog = omp_core::sessions::list_sessions(&store, &home, false, None);
+    drop(store);
+
+    let mut data = test_data(root);
+    data.home_dir = home;
+    data.omp_executable = fixture;
+    data.sessions = catalog;
+    let handle = cx.open_window(size(px(1280.0), px(900.0)), |window, cx| {
+        Workspace::new(window, cx, data)
+    });
+    let window: gpui_kit::AnyWindowHandle = handle.into();
+    let handle = window.downcast::<Workspace>().expect("workspace handle");
+
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.select_session(0, cx);
+            assert_eq!(snapshot(workspace, cx)["liveVoice"]["runtime"], json!(true));
+
+            // The catalog is cached, so opening Settings does not spawn
+            // `omp models`; the picker lists what was injected.
+            workspace.apply_model_catalog(model_catalog(
+                &[
+                    ("anthropic", "claude-fixture", "Claude Fixture"),
+                    ("openai-codex", "gpt-5.4", "GPT-5.4 Fixture"),
+                ],
+                None,
+            ));
+            workspace.set_view(AppView::Settings, cx);
+
+            let opened = snapshot(workspace, cx);
+            assert_eq!(opened["view"], "settings");
+            assert_eq!(
+                opened["models"]["available"],
+                json!(["anthropic/claude-fixture", "openai-codex/gpt-5.4"])
+            );
+            assert_eq!(opened["models"]["selected"], "");
+            assert_eq!(opened["models"]["error"], json!(null));
+            assert_eq!(opened["models"]["loading"], json!(false));
+            assert_eq!(workspace.model_footer(), "Model: auto");
+
+            workspace.select_model("openai-codex/gpt-5.4", cx);
+            let selected = snapshot(workspace, cx);
+            assert_eq!(selected["models"]["selected"], "openai-codex/gpt-5.4");
+            assert_eq!(
+                selected["settings"]["selectedModel"],
+                "openai-codex/gpt-5.4"
+            );
+            // The fixture accepted the switch, so there is no status notice.
+            assert_eq!(selected["models"]["status"], json!(null));
+            assert_eq!(workspace.model_footer(), "Model: openai-codex/gpt-5.4");
+
+            let commands = fixture_commands(root);
+            let set_models: Vec<&Value> = commands
+                .iter()
+                .filter(|command| command["type"] == "set_model")
+                .collect();
+            assert_eq!(set_models.len(), 1, "one set_model reached the runtime");
+            assert_eq!(set_models[0]["provider"], "openai-codex");
+            assert_eq!(set_models[0]["modelId"], "gpt-5.4");
+
+            // A catalog that cannot load is visible and does not disable the
+            // selection: the persisted default is still applied and pushed.
+            workspace.apply_model_catalog(model_catalog(&[], Some("OMP is not installed")));
+            let failed = snapshot(workspace, cx);
+            assert_eq!(failed["models"]["error"], "OMP is not installed");
+            assert_eq!(failed["models"]["available"], json!([]));
+            assert_eq!(
+                failed["models"]["selected"], "openai-codex/gpt-5.4",
+                "the current model survives a failed catalog"
+            );
+
+            workspace.select_model("anthropic/claude-fixture", cx);
+            let switched = snapshot(workspace, cx);
+            assert_eq!(switched["models"]["selected"], "anthropic/claude-fixture");
+            assert_eq!(switched["models"]["status"], json!(null));
+            assert_eq!(workspace.model_footer(), "Model: anthropic/claude-fixture");
+
+            let commands = fixture_commands(root);
+            let set_models: Vec<&Value> = commands
+                .iter()
+                .filter(|command| command["type"] == "set_model")
+                .collect();
+            assert_eq!(set_models.len(), 2, "the second switch also reached it");
+            assert_eq!(set_models[1]["provider"], "anthropic");
+            assert_eq!(set_models[1]["modelId"], "claude-fixture");
+        })
+        .expect("workspace window");
+
+    // The Settings page draws the picker with the selection highlighted.
+    draw_frame(cx, window);
+
+    // The last choice is what the next window starts with.
+    let store = open_store(root);
+    assert_eq!(
+        store.settings().last_selected_model(),
+        "anthropic/claude-fixture"
+    );
+}
+
+/// Without a runtime the selection is still persisted and shown in the footer;
+/// a rejected key is not a selection at all.
+#[gpui_kit::test]
+fn model_selection_without_a_runtime_only_persists(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, test_data(root)));
+    handle
+        .update(cx, |workspace, _, cx| {
+            // No catalog loaded yet: Settings shows the current model and the
+            // load state instead of an empty page.
+            workspace.set_view(AppView::Settings, cx);
+            let loading = snapshot(workspace, cx);
+            assert_eq!(loading["models"]["selected"], "");
+            assert_eq!(loading["models"]["error"], json!(null));
+            assert_eq!(loading["models"]["available"], json!([]));
+
+            workspace.select_model("local/plain-model", cx);
+            let selected = snapshot(workspace, cx);
+            assert_eq!(selected["models"]["selected"], "local/plain-model");
+            assert_eq!(selected["settings"]["selectedModel"], "local/plain-model");
+            // No runtime is live, so nothing was rejected and nothing sent.
+            assert_eq!(selected["models"]["status"], json!(null));
+            assert_eq!(workspace.model_footer(), "Model: local/plain-model");
+
+            // A key with no id (or no provider) is not a selection.
+            workspace.select_model("local", cx);
+            workspace.select_model("", cx);
+            assert_eq!(
+                snapshot(workspace, cx)["models"]["selected"],
+                "local/plain-model"
+            );
+        })
+        .expect("workspace window");
+
+    let store = open_store(root);
+    assert_eq!(store.settings().last_selected_model(), "local/plain-model");
+}
+
+/// Opening Settings is what loads the catalog, and the load is cached: the
+/// picker fills from the harness on the frame after the click, and a second
+/// visit reuses the list instead of spawning `omp models` again.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn settings_loads_the_model_catalog_once_and_caches_it(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let home = root.join("home");
+    std::fs::create_dir_all(&home).expect("home");
+    std::fs::create_dir_all(root.join("user-data")).expect("user data");
+    let fixture = install_fixture_omp(root);
+
+    let mut data = test_data(root);
+    data.home_dir = home;
+    data.omp_executable = fixture;
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+
+    handle
+        .update(cx, |workspace, _, cx| {
+            // The view opens with the current model and a load in flight; the
+            // harness is never spawned on the click itself.
+            workspace.set_view(AppView::Settings, cx);
+            let opening = snapshot(workspace, cx);
+            assert_eq!(opening["view"], "settings");
+            assert_eq!(opening["models"]["loading"], json!(true));
+            assert_eq!(opening["models"]["available"], json!([]));
+        })
+        .expect("settings view");
+
+    cx.run_until_parked();
+
+    handle
+        .update(cx, |workspace, _, cx| {
+            let loaded = snapshot(workspace, cx);
+            assert_eq!(loaded["models"]["loading"], json!(false));
+            assert_eq!(loaded["models"]["error"], json!(null));
+            assert_eq!(
+                loaded["models"]["available"],
+                json!([
+                    "anthropic/claude-fixture",
+                    "openai-codex/gpt-5.4",
+                    "local/plain-model",
+                ]),
+                "the picker lists the harness catalog, minus its malformed entry"
+            );
+        })
+        .expect("loaded settings");
+
+    // Leaving and reopening Settings keeps the cached list: no second load.
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.set_view(AppView::Workspace, cx);
+            workspace.set_view(AppView::Settings, cx);
+            let reopened = snapshot(workspace, cx);
+            assert_eq!(reopened["models"]["loading"], json!(false));
+            assert_eq!(
+                reopened["models"]["available"],
+                json!([
+                    "anthropic/claude-fixture",
+                    "openai-codex/gpt-5.4",
+                    "local/plain-model",
+                ])
+            );
+        })
+        .expect("reopened settings");
+}
