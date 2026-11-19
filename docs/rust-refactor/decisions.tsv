@@ -51,3 +51,4 @@ ts	phase	decision	why	evidence	result
 2026-11-20T00:54:00Z	ui	added Files, Subagents, and Side Question panes	the right pane still had placeholders and the core APIs already existed	rust/crates/omp-desktop/src/app.rs	app tests green
 2026-11-20T01:00:00Z	tray	enabled the Linux tray with a runtime AppIndicator load	the tray now covers all desktop platforms and a missing host only logs	rust/crates/omp-desktop/src/tray.rs	Linux compile pending CI
 2026-11-20T01:02:00Z	ui	wired session rows, project rows, and New session to real runtimes	the shell rendered sessions and projects without click handlers	rust/crates/omp-desktop/src/app.rs	app tests green
+2026-11-20T01:15:00Z	linux	verified the GTK, tray, updater, and webview build in an Ubuntu 22.04 container	the CI Linux compile is slow to queue and the tray needed a local check	rust/crates/omp-desktop/src/tray.rs	Docker cargo check green
