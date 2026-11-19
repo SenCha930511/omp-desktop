@@ -8,8 +8,14 @@
 //! ordering, the session menu's persisted mutations, schedule editing, the full
 //! review stage/unstage cycle, composer drafts across views and the side-question
 //! pane.
+//!
+//! The second half drives `Workspace::set_right_pane` and
+//! `Workspace::debug_snapshot`: the public harness that reaches every right pane
+//! and reads the state back as JSON, so a scenario never has to click a measured
+//! position or spawn a shell or an agent.
 
 use gpui_kit::AppContext as _;
+use gpui_kit::Context;
 use gpui_kit::MouseButton;
 use gpui_kit::TestAppContext;
 use gpui_kit::point;
@@ -20,7 +26,7 @@ use omp_core::geometry::UiGeometry;
 use omp_core::settings::{AppSettings, ConversationDensity, Theme};
 use omp_core::state::{CURRENT_DESKTOP_STATE_FILENAME, Platform, StateStore};
 use omp_desktop::app::{AppView, Workspace, WorkspaceData};
-use serde_json::json;
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
 fn test_data(root: &Path) -> WorkspaceData {
@@ -519,9 +525,10 @@ fn composer_draft_survives_a_view_switch(cx: &mut TestAppContext) {
 
 /// The Side Question pane draws its own input and leaves the transcript alone.
 ///
-/// The pane selector is not part of the public `Workspace` API, and gpui-kit only
-/// addresses elements that opt into `.test_support()`, so the launcher row is
-/// clicked at its measured window-local position in a 1280x800 window: the rows
+/// The harness reaches panes through `set_right_pane`, but this case keeps
+/// clicking the launcher row: gpui-kit only addresses elements that opt into
+/// `.test_support()`, so it is clicked at its measured window-local position in
+/// a 1280x800 window: the rows
 /// sit at Summary 70, Review 109, Files 148, Browser 187, Side Question 224 and
 /// Subagents 263, on roughly a 39px pitch. The Review row doubles as the control:
 /// `select_session` only refreshes the review panel while that pane is open, so a
@@ -617,4 +624,270 @@ fn side_question_pane_renders_without_touching_the_transcript(cx: &mut TestAppCo
             assert_eq!(workspace.transcript_messages().len(), 2);
         })
         .expect("side question window");
+}
+
+/// The workspace state the harness reads back, as JSON.
+fn snapshot(workspace: &Workspace, cx: &mut Context<Workspace>) -> Value {
+    workspace.debug_snapshot(cx)
+}
+
+/// A project with one directory and one file, so the Files pane has both kinds.
+fn seed_project(root: &Path) -> PathBuf {
+    let project = root.join("project");
+    std::fs::create_dir_all(project.join("src")).expect("project");
+    std::fs::write(project.join("README.md"), "# Parity\n").expect("readme");
+    std::fs::write(project.join("src/lib.rs"), "pub fn parity() {}\n").expect("lib");
+    project
+}
+
+/// The Files pane lists a granted project's entries, directories first.
+#[gpui_kit::test]
+fn files_pane_lists_a_granted_project(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let project = seed_project(root);
+
+    let mut data = test_data(root);
+    data.home_dir = root.join("home");
+    std::fs::create_dir_all(&data.home_dir).expect("home");
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.grant_project(&project, cx);
+            workspace.set_right_pane("files", cx);
+
+            let state = snapshot(workspace, cx);
+            assert_eq!(state["rightPane"], "files");
+            assert_eq!(state["files"]["error"], json!(null));
+            assert_eq!(state["files"]["skipped"], json!(0));
+            let entries = state["files"]["entries"].as_array().expect("entries");
+            let paths: Vec<&str> = entries
+                .iter()
+                .filter_map(|entry| entry["path"].as_str())
+                .collect();
+            assert_eq!(paths, ["src", "src/lib.rs", "README.md"]);
+            assert_eq!(entries[0]["kind"], "directory");
+            assert_eq!(entries[1]["kind"], "file");
+        })
+        .expect("workspace window");
+}
+
+/// The Subagents pane opens with no agent runtime started.
+#[gpui_kit::test]
+fn subagents_pane_reports_an_empty_runtime_list(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, test_data(root)));
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.set_right_pane("subagents", cx);
+
+            let state = snapshot(workspace, cx);
+            assert_eq!(state["rightPane"], "subagents");
+            assert_eq!(state["subagents"], json!([]));
+            assert!(
+                state["transcript"]
+                    .as_array()
+                    .expect("transcript")
+                    .is_empty()
+            );
+        })
+        .expect("workspace window");
+}
+
+/// Live Voice opens on its idle phase while no runtime can carry the audio.
+#[gpui_kit::test]
+fn live_voice_pane_reports_the_unconfigured_phase(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, test_data(root)));
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.set_right_pane("live-voice", cx);
+
+            let state = snapshot(workspace, cx);
+            assert_eq!(state["rightPane"], "live-voice");
+            assert_eq!(state["liveVoice"]["runtime"], json!(false));
+            assert_eq!(state["liveVoice"]["phase"], "idle");
+            assert_eq!(state["liveVoice"]["active"], json!(false));
+            assert_eq!(state["liveVoice"]["error"], json!(null));
+        })
+        .expect("workspace window");
+}
+
+/// The terminal panel opens stopped: no PTY, no shell and no error.
+#[gpui_kit::test]
+fn terminal_panel_opens_stopped_without_spawning_a_shell(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, test_data(root)));
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.set_right_pane("terminal", cx);
+
+            let state = snapshot(workspace, cx);
+            assert_eq!(state["terminal"]["open"], json!(true));
+            assert_eq!(state["terminal"]["session"], json!(false));
+            assert_eq!(state["terminal"]["running"], json!(false));
+            assert_eq!(state["terminal"]["error"], json!(null));
+            // The terminal is a panel of its own, not a right-pane page.
+            assert_eq!(state["rightPane"], "launcher");
+        })
+        .expect("workspace window");
+}
+
+/// The Browser pane opens with nothing captured and no annotation error.
+///
+/// A headless window never loads a page, so the picker has no failure to report
+/// and no annotation waiting for the composer: the pane reports that clean state
+/// instead of leaving the last capture behind.
+#[gpui_kit::test]
+fn browser_pane_opens_and_reports_the_annotation_state(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, test_data(root)));
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.set_right_pane("browser", cx);
+
+            let state = snapshot(workspace, cx);
+            assert_eq!(state["rightPane"], "browser");
+            assert_eq!(
+                state["browser"]["annotation"],
+                json!({ "error": null, "preview": null })
+            );
+            assert_eq!(state["composer"]["text"], "");
+        })
+        .expect("workspace window");
+}
+
+/// Settings navigation round-trips: the snapshot follows the view, and the
+/// settings it reports are the ones the state file just took.
+#[gpui_kit::test]
+fn settings_navigation_round_trips_through_the_snapshot(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, test_data(root)));
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.update_setting(json!({ "theme": "dark" }), cx);
+            workspace.update_setting(json!({ "conversationDensity": "compact" }), cx);
+
+            workspace.set_view(AppView::Settings, cx);
+            let settings = snapshot(workspace, cx);
+            assert_eq!(settings["view"], "settings");
+            assert_eq!(settings["settings"]["theme"], "dark");
+            assert_eq!(settings["settings"]["density"], "compact");
+
+            workspace.set_view(AppView::Workspace, cx);
+            let workspace_view = snapshot(workspace, cx);
+            assert_eq!(workspace_view["view"], "workspace");
+            assert_eq!(workspace_view["settings"], settings["settings"]);
+        })
+        .expect("workspace window");
+}
+
+/// A 1280px window docks both panes and leaves the rest to the transcript.
+#[gpui_kit::test]
+fn layout_snapshot_reports_the_docked_widths(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let handle = cx.open_window(size(px(1280.0), px(800.0)), |window, cx| {
+        Workspace::new(window, cx, test_data(root))
+    });
+    handle
+        .update(cx, |workspace, _, cx| {
+            let layout = &snapshot(workspace, cx)["layout"];
+            assert_eq!(layout["sidebarDocked"], json!(true));
+            assert_eq!(layout["sidebarWidth"].as_f64(), Some(248.0));
+            assert_eq!(layout["rightPaneDocked"], json!(true));
+            assert_eq!(layout["rightPaneWidth"].as_f64(), Some(360.0));
+            assert_eq!(layout["centerWidth"].as_f64(), Some(672.0));
+            assert_eq!(layout["overlay"], json!(null));
+        })
+        .expect("workspace window");
+}
+
+/// A draft is part of the snapshot and outlives any pane switch.
+#[gpui_kit::test]
+fn composer_draft_is_visible_in_the_snapshot_and_survives_a_pane_switch(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, test_data(root)));
+    handle
+        .update(cx, |workspace, window, cx| {
+            let composer = workspace.composer_entity().clone();
+            composer.update(cx, |state, cx| {
+                state.set_value("half-written prompt", window, cx);
+            });
+            assert_eq!(
+                snapshot(workspace, cx)["composer"]["text"],
+                "half-written prompt"
+            );
+
+            workspace.set_right_pane("subagents", cx);
+            assert_eq!(
+                snapshot(workspace, cx)["composer"]["text"],
+                "half-written prompt"
+            );
+            workspace.set_right_pane("launcher", cx);
+            assert_eq!(
+                snapshot(workspace, cx)["composer"]["text"],
+                "half-written prompt"
+            );
+        })
+        .expect("workspace window");
+}
+
+/// The Review pane reports the granted repository's branch and a clean tree.
+#[gpui_kit::test]
+fn review_pane_reports_the_branch_of_a_granted_repo(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let repo = seed_repo(root);
+
+    let mut data = test_data(root);
+    data.home_dir = root.join("home");
+    std::fs::create_dir_all(&data.home_dir).expect("home");
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.grant_project(&repo, cx);
+            workspace.set_right_pane("review", cx);
+
+            let state = snapshot(workspace, cx);
+            assert_eq!(state["rightPane"], "review");
+            assert_eq!(state["review"]["error"], json!(null));
+            assert_eq!(state["review"]["status"]["isRepo"], json!(true));
+            assert_eq!(state["review"]["status"]["branch"], "main");
+            assert_eq!(state["review"]["status"]["files"], json!([]));
+        })
+        .expect("workspace window");
+}
+
+/// The Schedules view opens on an empty state file with nothing to run.
+#[gpui_kit::test]
+fn schedules_pane_reports_an_empty_list(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, test_data(root)));
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.set_view(AppView::Schedules, cx);
+
+            let state = snapshot(workspace, cx);
+            assert_eq!(state["view"], "schedules");
+            assert_eq!(state["schedules"], json!([]));
+        })
+        .expect("workspace window");
 }

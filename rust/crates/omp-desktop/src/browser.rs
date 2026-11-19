@@ -385,6 +385,16 @@ impl BrowserPane {
         self.annotation.take()
     }
 
+    /// The pane's last annotation failure, for the workspace's debug snapshot.
+    pub fn annotation_error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+
+    /// The annotation waiting for the composer, for the workspace's debug snapshot.
+    pub fn annotation_preview(&self) -> Option<&str> {
+        self.annotation.as_deref()
+    }
+
     /// Load the address bar's URL, reporting a rejected address above the page.
     pub fn submit(&mut self, window: &mut Window, cx: &mut Context<Workspace>) {
         self.navigate_requested = false;

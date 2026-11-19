@@ -47,6 +47,18 @@ pub enum AppView {
     Schedules,
 }
 
+impl AppView {
+    /// The snapshot's spelling of this view.
+    fn name(self) -> &'static str {
+        match self {
+            AppView::Workspace => "workspace",
+            AppView::Settings => "settings",
+            AppView::Plugins => "plugins",
+            AppView::Schedules => "schedules",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RightPane {
     Launcher,
@@ -57,6 +69,36 @@ enum RightPane {
     SideQuestion,
     LiveVoice,
     Subagents,
+}
+
+impl RightPane {
+    /// The snapshot's spelling of this pane; also what `set_right_pane` takes.
+    fn name(self) -> &'static str {
+        match self {
+            RightPane::Launcher => "launcher",
+            RightPane::Summary => "summary",
+            RightPane::Review => "review",
+            RightPane::Files => "files",
+            RightPane::Browser => "browser",
+            RightPane::SideQuestion => "side-question",
+            RightPane::Subagents => "subagents",
+            RightPane::LiveVoice => "live-voice",
+        }
+    }
+
+    fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "launcher" => RightPane::Launcher,
+            "summary" => RightPane::Summary,
+            "review" => RightPane::Review,
+            "files" => RightPane::Files,
+            "browser" => RightPane::Browser,
+            "side-question" => RightPane::SideQuestion,
+            "subagents" => RightPane::Subagents,
+            "live-voice" => RightPane::LiveVoice,
+            _ => return None,
+        })
+    }
 }
 
 pub struct WorkspaceData {
@@ -303,6 +345,128 @@ impl Workspace {
 
     pub fn settings(&self) -> &AppSettings {
         &self.settings
+    }
+
+    /// Selects a right-pane page by name and refreshes what it shows.
+    ///
+    /// The launcher rows and the parity harness both funnel through here, so a
+    /// scenario can reach a pane without clicking a measured position.
+    /// `terminal` names the panel under the transcript rather than a right-pane
+    /// page: opening it shows the panel but never spawns a shell.
+    pub fn set_right_pane(&mut self, pane: &str, cx: &mut Context<Self>) {
+        if pane == "terminal" {
+            self.terminal_open = true;
+            cx.notify();
+            return;
+        }
+        let Some(target) = RightPane::from_name(pane) else {
+            panic!("unknown right pane: {pane}");
+        };
+        self.right_pane = target;
+        // The pane only draws while the geometry docks it, so asking for a pane
+        // opens it first, exactly like the toolbar's panel button.
+        self.geometry.right_pane_open = true;
+        if let Some(bounds) = self.last_bounds {
+            self.layout = self.geometry.resolve(bounds.2 as f64);
+        }
+        self.resize_terminal();
+        self.schedule_geometry_save(cx);
+        match target {
+            RightPane::Review => self.refresh_review(),
+            RightPane::Files => self.refresh_files(),
+            _ => {}
+        }
+        cx.notify();
+    }
+
+    /// A read-only JSON view of the state the parity harness asserts on.
+    ///
+    /// Every field is copied out of live state: nothing is fetched, spawned or
+    /// mutated, so a scenario can snapshot before and after an action. The
+    /// composer's text lives in its own entity, which is why this needs `cx`.
+    pub fn debug_snapshot(&self, cx: &mut Context<Self>) -> Value {
+        let sessions: Vec<Value> = self
+            .sessions
+            .iter()
+            .map(|session| {
+                json!({
+                    "title": session.title,
+                    "pinned": session.pinned,
+                    "archived": session.archived,
+                    "projectPath": session.project_path,
+                })
+            })
+            .collect();
+        let transcript: Vec<Value> = self
+            .transcript
+            .iter()
+            .map(|message| {
+                json!({
+                    "role": message.role,
+                    "parts": message
+                        .parts
+                        .iter()
+                        .map(|part| json!({ "kind": part.kind, "text": part.text }))
+                        .collect::<Vec<Value>>(),
+                })
+            })
+            .collect();
+        let files: Vec<Value> = self
+            .files
+            .iter()
+            .map(|entry| json!({ "path": entry.path, "kind": entry.kind }))
+            .collect();
+        json!({
+            "view": self.view.name(),
+            "rightPane": self.right_pane.name(),
+            "layout": {
+                "sidebarDocked": self.layout.sidebar_docked,
+                "sidebarWidth": self.layout.sidebar_width,
+                "rightPaneDocked": self.layout.right_pane_docked,
+                "rightPaneWidth": self.layout.right_pane_width,
+                "centerWidth": self.layout.center_width,
+                "overlay": self.layout.overlay,
+            },
+            "sessions": sessions,
+            "selectedSession": self.selected_session,
+            "transcript": transcript,
+            "settings": {
+                "theme": self.settings.theme,
+                "density": self.settings.conversation_density,
+            },
+            "composer": { "text": self.composer.read(cx).value().to_string() },
+            "files": {
+                "entries": files,
+                "skipped": self.files_skipped,
+                "error": self.files_error,
+            },
+            "subagents": self.agents.list(),
+            "liveVoice": {
+                "runtime": self.runtime_id.is_some(),
+                "phase": self.live_phase,
+                "active": self.live_active,
+                "muted": self.live_muted,
+                "error": self.live_error,
+            },
+            "terminal": {
+                "open": self.terminal_open,
+                "session": self.terminal.is_some(),
+                "running": self.terminal.as_ref().is_some_and(TerminalSession::is_running),
+                "error": self.terminal_error,
+            },
+            "browser": {
+                "webviewPending": self.browser.needs_webview(),
+                "annotation": {
+                    "error": self.browser.annotation_error(),
+                    "preview": self.browser.annotation_preview(),
+                },
+            },
+            "review": {
+                "status": self.review_status,
+                "error": self.review_error,
+            },
+            "schedules": self.schedules,
+        })
     }
 
     fn track_bounds(&mut self, window: &Window, cx: &mut Context<Self>) {
@@ -2871,17 +3035,12 @@ impl Workspace {
                         .child(icon)
                         .child(label)
                         .on_click(cx.listener(move |this, _, window, cx| {
-                            this.right_pane = pane;
-                            if pane == RightPane::Review {
-                                this.refresh_review();
-                            }
+                            this.set_right_pane(pane.name(), cx);
+                            // A launcher row is the only control that can build
+                            // the webview, and it has the window to attach it to.
                             if pane == RightPane::Browser {
                                 this.browser.ensure(window, cx);
                             }
-                            if pane == RightPane::Files {
-                                this.refresh_files();
-                            }
-                            cx.notify();
                         }))
                 }))
             })
