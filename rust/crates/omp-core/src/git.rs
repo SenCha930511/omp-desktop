@@ -408,6 +408,16 @@ fn refused(code: &str, message: impl Into<String>) -> CheckoutOutcome {
     }
 }
 
+#[cfg(windows)]
+fn normalized_path_text(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+#[cfg(not(windows))]
+fn normalized_path_text(path: &Path) -> String {
+    path.to_string_lossy().into_owned()
+}
+
 fn applied(path: Option<String>) -> CheckoutOutcome {
     CheckoutOutcome {
         kind: "applied".to_string(),
@@ -459,7 +469,7 @@ pub fn execute_checkout(
                     format!("Worktree path already exists: {}", path.display()),
                 ));
             }
-            let path_text = path.display().to_string();
+            let path_text = normalized_path_text(&path);
             let outcome = run_git(&root, &["worktree", "add", "-b", branch, &path_text])?;
             if !outcome.ok {
                 return Ok(refused(
@@ -581,14 +591,14 @@ mod tests {
         .expect("create");
         assert_eq!(outcome.kind, "applied");
         let path = expected_worktree(&fixture, "feature/one");
-        let path_text = path.to_str().expect("path");
-        assert_eq!(outcome.path.as_deref(), Some(path_text));
+        let path_text = normalized_path_text(&path);
+        assert_eq!(outcome.path.as_deref(), Some(path_text.as_str()));
         assert!(path.is_dir());
         let catalog = checkout_catalog(&fixture.store, &fixture.project_id).expect("catalog");
         assert_eq!(catalog.strategy, "worktree");
         assert!(catalog.checkouts.iter().any(|entry| {
             entry.branch.as_deref() == Some("feature/one")
-                && entry.path.as_deref() == Some(path_text)
+                && entry.path.as_deref() == Some(path_text.as_str())
         }));
     }
 
@@ -610,7 +620,7 @@ mod tests {
         assert_eq!(outcome.kind, "applied");
         assert_eq!(
             outcome.path.as_deref(),
-            expected_worktree(&fixture, "feature/one").to_str()
+            Some(normalized_path_text(&expected_worktree(&fixture, "feature/one")).as_str())
         );
         assert_eq!(current_branch(&fixture.root).as_deref(), Some("main"));
     }

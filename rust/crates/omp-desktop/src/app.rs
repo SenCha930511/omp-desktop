@@ -62,6 +62,12 @@ pub struct WorkspaceData {
     pub sessions: Vec<SessionRecord>,
 }
 
+struct ScheduledRun {
+    runtime_id: String,
+    schedule_id: String,
+    run_id: String,
+}
+
 pub struct Workspace {
     geometry: UiGeometry,
     geometry_path: PathBuf,
@@ -74,7 +80,7 @@ pub struct Workspace {
     streaming_index: Option<usize>,
     drain_task: Option<Task<()>>,
     scheduler_task: Option<Task<()>>,
-    scheduled_runtimes: Vec<String>,
+    scheduled_runs: Vec<ScheduledRun>,
     layout: ResolvedLayout,
     settings: AppSettings,
     projects: Vec<ProjectRecord>,
@@ -143,7 +149,7 @@ impl Workspace {
             streaming_index: None,
             drain_task: None,
             scheduler_task: None,
-            scheduled_runtimes: Vec::new(),
+            scheduled_runs: Vec::new(),
             layout,
             settings: data.settings,
             projects: data.projects,
@@ -1138,14 +1144,8 @@ impl Workspace {
                             Some("The scheduled runtime did not return an id".to_string()),
                         ),
                     };
-                    if status == "failed"
-                        && let Some(runtime_id) = runtime_id.as_deref()
-                    {
-                        self.agents.stop(runtime_id);
-                    } else if let Some(runtime_id) = runtime_id.as_deref() {
-                        self.scheduled_runtimes.push(runtime_id.to_string());
-                    }
-                    self.record_schedule_outcome(
+                    let runtime_for_run = runtime_id.clone();
+                    let run_id = self.record_schedule_outcome(
                         &store,
                         &schedule.id,
                         &scheduled_for,
@@ -1153,6 +1153,17 @@ impl Workspace {
                         runtime_id,
                         error,
                     );
+                    if status == "failed" {
+                        if let Some(runtime_id) = runtime_for_run.as_deref() {
+                            self.agents.stop(runtime_id);
+                        }
+                    } else if let (Some(runtime_id), Some(run_id)) = (runtime_for_run, run_id) {
+                        self.scheduled_runs.push(ScheduledRun {
+                            runtime_id,
+                            schedule_id: schedule.id.clone(),
+                            run_id,
+                        });
+                    }
                 }
                 Err(error) => {
                     self.record_schedule_outcome(
@@ -1174,22 +1185,46 @@ impl Workspace {
 
     fn drain_scheduled_runtimes(&mut self) {
         let mut active = Vec::new();
-        for runtime_id in std::mem::take(&mut self.scheduled_runtimes) {
-            let events = self.agents.drain_events(Some(&runtime_id));
+        for run in std::mem::take(&mut self.scheduled_runs) {
+            let events = self.agents.drain_events(Some(&run.runtime_id));
             let ended = events.iter().any(|envelope| {
                 envelope.pointer("/event/type").and_then(Value::as_str) == Some("agent_end")
             });
             if ended {
-                self.agents.stop(&runtime_id);
+                self.finish_schedule_run(&run.schedule_id, &run.run_id, "succeeded");
+                self.agents.stop(&run.runtime_id);
             } else {
-                active.push(runtime_id);
+                active.push(run);
             }
         }
         while active.len() > 8 {
-            let runtime_id = active.remove(0);
-            self.agents.stop(&runtime_id);
+            let run = active.remove(0);
+            self.finish_schedule_run(&run.schedule_id, &run.run_id, "interrupted");
+            self.agents.stop(&run.runtime_id);
         }
-        self.scheduled_runtimes = active;
+        self.scheduled_runs = active;
+    }
+
+    fn finish_schedule_run(&self, schedule_id: &str, run_id: &str, status: &str) {
+        let Some(store) = self.store.clone() else {
+            return;
+        };
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let mut store = store.lock().expect("state lock");
+        let _ = store.update(|state| {
+            if let Some(schedule) = state
+                .schedules
+                .iter_mut()
+                .find(|schedule| schedule.id == schedule_id)
+                && let Some(run) = schedule.runs.iter_mut().find(|run| run.id == run_id)
+            {
+                run.status = status.to_string();
+                run.finished_at = Some(now.clone());
+                schedule.revision += 1;
+                schedule.updated_at = now.clone();
+            }
+            Ok(())
+        });
     }
 
     fn record_schedule_outcome(
@@ -1200,7 +1235,7 @@ impl Workspace {
         status: &str,
         session_id: Option<String>,
         error: Option<String>,
-    ) {
+    ) -> Option<String> {
         let now = Utc::now();
         let outcome = scheduler::ScheduleRunOutcome {
             status: status.to_string(),
@@ -1208,7 +1243,14 @@ impl Workspace {
             error,
         };
         let mut store = store.lock().expect("state lock");
-        let _ = scheduler::record(&mut store, id, scheduled_for, &outcome, now);
+        let value = scheduler::record(&mut store, id, scheduled_for, &outcome, now).ok()?;
+        value
+            .get("runs")?
+            .as_array()?
+            .last()?
+            .get("id")?
+            .as_str()
+            .map(str::to_string)
     }
 
     pub fn update_setting(&mut self, patch: Value, cx: &mut Context<Self>) {
