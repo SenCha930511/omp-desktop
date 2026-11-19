@@ -6,6 +6,12 @@ on:
       - main
   pull_request:
   workflow_dispatch:
+    inputs:
+      adapter_cmd:
+        description: Optional conformance adapter command (defaults to reference Node adapter)
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -114,6 +120,42 @@ jobs:
       - run: npm run release:preflight:toolchain
       - run: npm exec -- vitest run tests/backend/store-windows-migration.test.ts
 
+  conformance:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+          - runner: ubuntu-22.04
+          - runner: windows-2022
+    runs-on: ${{ matrix.runner }}
+    env:
+      OMP_CONFORMANCE_ADAPTER_CMD: ${{ inputs.adapter_cmd || vars.OMP_CONFORMANCE_ADAPTER_CMD || '' }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm run toolchain:bootstrap
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            ~/Library/Caches/electron
+            ~/.cache/electron
+            ~/Library/Caches/electron-builder
+            ~/.cache/electron-builder
+            ~/AppData/Local/electron/Cache
+            ~/AppData/Local/electron-builder/Cache
+          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - run: npm ci
+      - run: npm run release:preflight:toolchain
+      - name: Build reference Node conformance adapter
+        if: env.OMP_CONFORMANCE_ADAPTER_CMD == ''
+        run: npm run conformance:build-adapter
+      - name: Run conformance test suite
+        run: npm run test:conformance
+
   packaging-smoke:
     if: github.event_name == 'pull_request'
     strategy:
@@ -165,10 +207,9 @@ jobs:
           sudo chown root:root release/linux/${{ matrix.arch }}/linux-unpacked/chrome-sandbox
           sudo chmod 4755 release/linux/${{ matrix.arch }}/linux-unpacked/chrome-sandbox
       - name: Launch the packaged application
-        if: matrix.target != 'mac'
         run: node scripts/release/smoke-packaged-app.mjs --platform ${{ matrix.target }} --arch ${{ matrix.arch }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: failure() && matrix.target != 'mac'
+        if: failure()
         with:
           name: packaged-smoke-diagnostics-${{ matrix.target }}-${{ matrix.arch }}
           path: release/${{ matrix.target }}/${{ matrix.arch }}/packaged-smoke-diagnostics.log

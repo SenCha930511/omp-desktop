@@ -684,6 +684,20 @@ else if (JSON.stringify(args) === ${JSON.stringify(JSON.stringify(expectedInstal
     expect(ciWorkflow).toContain('verify-cross-platform-package.mjs --platform ${{ matrix.target }} --arch ${{ matrix.arch }} --unpacked-only')
   })
 
+  test('runs the cross-platform conformance suite and macOS launch smoke in CI', () => {
+    type Workflow = {
+      jobs: Record<string, { strategy?: { matrix?: { include?: Array<Record<string, string>> } }; steps?: Array<{ name?: string; if?: string; run?: string }> }>
+    }
+    const ci = load(readFileSync('.github/workflows/ci.yml', 'utf8')) as Workflow
+    const conformanceRunners = (ci.jobs.conformance?.strategy?.matrix?.include ?? []).map((entry) => entry.runner).sort()
+    expect(conformanceRunners).toEqual(['macos-14', 'ubuntu-22.04', 'windows-2022'])
+    expect(ci.jobs.conformance?.steps?.some((step) => step.run === 'npm run test:conformance')).toBe(true)
+
+    const smokeLaunchStep = ci.jobs['packaging-smoke']?.steps?.find((step) => step.name === 'Launch the packaged application')
+    expect(smokeLaunchStep?.run).toBe('node scripts/release/smoke-packaged-app.mjs --platform ${{ matrix.target }} --arch ${{ matrix.arch }}')
+    expect(smokeLaunchStep?.if).toBeUndefined()
+  })
+
   test('gates every pull-request head and pinned release SHA on the named production audit', () => {
     type WorkflowJob = {
       name?: string
@@ -713,7 +727,7 @@ else if (JSON.stringify(args) === ${JSON.stringify(JSON.stringify(expectedInstal
     expect(releaseAuditSteps[0].name).toBe(ciAuditSteps[0].name)
 
     for (const jobName of ['package', 'package-linux', 'package-windows']) {
-      expect(release.jobs[jobName].needs, `${jobName} must wait for the pinned production audit`).toEqual(['validate', 'production-audit', 'quality', 'hermetic-e2e'])
+      expect(release.jobs[jobName].needs, `${jobName} must wait for the pinned production audit`).toEqual(['validate', 'production-audit', 'quality', 'conformance', 'hermetic-e2e'])
     }
     expect(release.jobs['release-packages'].needs).toEqual(['validate', 'production-audit', 'package', 'package-linux', 'package-windows'])
     expect(release.jobs['release-packages'].steps?.find((step) => step.name === 'Fail if a release prerequisite did not succeed')?.if).toContain("needs.production-audit.result != 'success'")
@@ -800,7 +814,7 @@ else if (JSON.stringify(args) === ${JSON.stringify(JSON.stringify(expectedInstal
     expect(workflow).toContain('actions/attest-build-provenance@')
     expect(workflow).toContain('gh release create "$RELEASE_TAG" release-assets/*')
     expect(workflow).toContain('gh release upload "$RELEASE_TAG" release-assets/* --clobber')
-    expect(workflow).toContain('gh release edit "$RELEASE_TAG" --verify-tag --draft=false --latest')
+    expect(workflow).toContain('gh release edit "$RELEASE_TAG" --verify-tag --draft=false "${release_channel_args[@]}"')
     expect(workflow).toContain('is already published and will not be replaced')
     expect(workflow).toContain('--verify-tag')
     expect(workflow).toContain('--fail-on-no-commits')
@@ -813,9 +827,52 @@ else if (JSON.stringify(args) === ${JSON.stringify(JSON.stringify(expectedInstal
     expect(workflow).toContain('exit 1')
   })
 
+  test('rechecks the version tag immediately before querying or publishing the release', () => {
+    const parsed = load(readFileSync('.github/workflows/release.yml', 'utf8')) as {
+      jobs: Record<string, { steps?: Array<{ name?: string; run?: string; env?: Record<string, string> }> }>
+    }
+    const publish = parsed.jobs['release-packages'].steps?.find((step) => step.name === 'Publish GitHub Release')
+    const script = publish?.run ?? ''
+    const resolveTag = 'tag_sha=$(gh api repos/${{ github.repository }}/commits/$RELEASE_TAG --jq .sha)'
+    const compareTag = 'if [ "$tag_sha" != "${{ needs.validate.outputs.sha }}" ]; then'
+    const existingReleaseQuery = script.indexOf('gh release view "$RELEASE_TAG" --json isDraft')
+    const tagResolution = script.indexOf(resolveTag)
+    const tagComparison = script.indexOf(compareTag)
+
+    expect(script.trimStart().startsWith(resolveTag)).toBe(true)
+    expect(tagComparison).toBeGreaterThan(tagResolution)
+    expect(script.slice(tagComparison, existingReleaseQuery)).toContain('exit 1')
+    expect(existingReleaseQuery).toBeGreaterThan(tagComparison)
+    expect(publish?.env?.GH_TOKEN).toBe('${{ github.token }}')
+  })
+
+  test('keeps signed releases latest and moves every unsigned beta mode to prerelease', () => {
+    const parsed = load(readFileSync('.github/workflows/release.yml', 'utf8')) as {
+      jobs: Record<string, { steps?: Array<{ name?: string; run?: string }> }>
+    }
+    const script = parsed.jobs['release-packages'].steps?.find((step) => step.name === 'Publish GitHub Release')?.run ?? ''
+
+    expect(script).toContain('release_channel_args=(--latest)')
+    expect(script).toContain('if [ "$RELEASE_MAC_UNSIGNED_ENABLED" = \'true\' ] || [ "$RELEASE_WINDOWS_UNSIGNED_ENABLED" = \'true\' ]; then\n  release_channel_args=(--prerelease)\nfi')
+    expect(script).toContain('gh release edit "$RELEASE_TAG" --verify-tag --draft=false "${release_channel_args[@]}"')
+    expect(script).toMatch(/gh release create "\$RELEASE_TAG" release-assets\/\*[\s\S]*?"\$\{release_channel_args\[@\]\}"/)
+    expect(script).not.toMatch(/gh release (?:create|edit)[^\n]*--latest/)
+  })
+
   test('pins every release job to one commit SHA resolved by validate', () => {
     const workflow = readFileSync('.github/workflows/release.yml', 'utf8')
-    const parsed = load(workflow) as { jobs: Record<string, { outputs?: Record<string, string>; steps?: Array<{ id?: string; run?: string; with?: Record<string, unknown> }> }> }
+    const parsed = load(workflow) as {
+      env: Record<string, string>
+      on: {
+        push: { tags: string[] }
+        workflow_dispatch: { inputs: { tag: { required: boolean; type: string } } }
+      }
+      jobs: Record<string, { outputs?: Record<string, string>; steps?: Array<{ id?: string; run?: string; with?: Record<string, unknown> }> }>
+    }
+    expect(parsed.env.RELEASE_TAG).toBe('${{ inputs.tag || github.ref_name }}')
+    expect(parsed.on.push.tags).toEqual(['v*.*.*'])
+    expect(parsed.on.workflow_dispatch.inputs.tag).toMatchObject({ required: true, type: 'string' })
+    expect(workflow).not.toContain('RELEASE_REF')
     expect(parsed.jobs.validate.outputs).toEqual({ sha: '${{ steps.resolve.outputs.sha }}' })
     expect(parsed.jobs.validate.steps?.find((step) => step.id === 'resolve')?.run).toContain('git rev-parse HEAD^{commit}')
     // validate resolves the movable tag once; every other job checks out that
@@ -823,7 +880,7 @@ else if (JSON.stringify(args) === ${JSON.stringify(JSON.stringify(expectedInstal
     for (const [name, job] of Object.entries(parsed.jobs)) {
       const checkouts = (job.steps ?? []).filter((step) => step.with && 'ref' in step.with)
       expect(checkouts.length, name).toBeGreaterThan(0)
-      for (const step of checkouts) expect(step.with?.ref, name).toBe(name === 'validate' ? '${{ env.RELEASE_REF }}' : '${{ needs.validate.outputs.sha }}')
+      for (const step of checkouts) expect(step.with?.ref, name).toBe(name === 'validate' ? '${{ env.RELEASE_TAG }}' : '${{ needs.validate.outputs.sha }}')
     }
     // The ancestry check depends on the full history fetched above.
     expect(workflow).toContain('# fetch-depth: 0 above is what populates refs/remotes/origin/*')
@@ -868,9 +925,58 @@ else if (JSON.stringify(args) === ${JSON.stringify(JSON.stringify(expectedInstal
     expect(releaseWorkflow).not.toContain('--universal')
   })
 
+  test('launches every packaged macOS architecture before uploading release artifacts', () => {
+    const parsed = load(readFileSync('.github/workflows/release.yml', 'utf8')) as {
+      jobs: {
+        package: {
+          strategy: { matrix: { include: Array<{ arch: string; runner: string }> } }
+          steps: Array<{ name?: string; if?: string; uses?: string; run?: string; with?: Record<string, unknown> }>
+        }
+      }
+    }
+    const packageJob = parsed.jobs.package
+    expect(packageJob.strategy.matrix.include).toEqual([
+      { arch: 'arm64', runner: 'macos-15' },
+      { arch: 'x64', runner: 'macos-15-intel' },
+    ])
+    const steps = packageJob.steps
+    const signedBuildIndex = steps.findIndex((step) => step.name === 'Build, sign, notarize, and verify release packages')
+    const adHocBuildIndex = steps.findIndex((step) => step.name === 'Build ad-hoc signed macOS packages for beta distribution')
+    const smokeIndexes = steps.flatMap((step, index) => (step.name === 'Launch the packaged application' ? [index] : []))
+    const publicUploadIndex = steps.findIndex((step) => step.with?.name === 'omp-desktop-public-macos-${{ matrix.arch }}')
+    const diagnosticsIndex = steps.findIndex((step) => step.with?.name === 'packaged-smoke-diagnostics-mac-${{ matrix.arch }}')
+
+    expect(signedBuildIndex).toBeGreaterThanOrEqual(0)
+    expect(steps[signedBuildIndex].if).toBe("env.RELEASE_MAC_UNSIGNED_ENABLED != 'true'")
+    expect(steps[signedBuildIndex].run).toBe('npm run package:mac -- --skip-verify --arch ${{ matrix.arch }}')
+    expect(adHocBuildIndex).toBeGreaterThanOrEqual(0)
+    expect(steps[adHocBuildIndex].if).toBe("env.RELEASE_MAC_UNSIGNED_ENABLED == 'true'")
+    expect(steps[adHocBuildIndex].run).toBe('node scripts/release/package.mjs --qa --platform mac --skip-verify --arch ${{ matrix.arch }}')
+    expect(smokeIndexes).toHaveLength(1)
+    const smokeIndex = smokeIndexes[0]
+    const smoke = steps[smokeIndex]
+    expect(smoke.run).toBe('node scripts/release/smoke-packaged-app.mjs --platform mac --arch ${{ matrix.arch }}')
+    expect(smoke.if).toBeUndefined()
+    expect(smokeIndex).toBeGreaterThan(signedBuildIndex)
+    expect(smokeIndex).toBeGreaterThan(adHocBuildIndex)
+    expect(publicUploadIndex).toBeGreaterThanOrEqual(0)
+    expect(smokeIndex).toBeLessThan(publicUploadIndex)
+    expect(diagnosticsIndex).toBeGreaterThan(smokeIndex)
+    expect(diagnosticsIndex).toBeLessThan(publicUploadIndex)
+    expect(steps[diagnosticsIndex]).toMatchObject({
+      uses: 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02',
+      if: 'failure()',
+      with: {
+        name: 'packaged-smoke-diagnostics-mac-${{ matrix.arch }}',
+        path: 'release/mac/${{ matrix.arch }}/packaged-smoke-diagnostics.log',
+        'if-no-files-found': 'error',
+      },
+    })
+  })
+
   test('ships both Linux architectures as separately labeled native builds', () => {
     const releaseWorkflow = readFileSync('.github/workflows/release.yml', 'utf8')
-    expect(releaseWorkflow).toMatch(/package-linux:\n {4}needs: \[validate, production-audit, quality, hermetic-e2e\]\n {4}strategy:/)
+    expect(releaseWorkflow).toMatch(/package-linux:\n {4}needs: \[validate, production-audit, quality, conformance, hermetic-e2e\]\n {4}strategy:/)
     expect(releaseWorkflow).toMatch(/- arch: arm64\n {12}runner: ubuntu-24\.04-arm/)
     expect(releaseWorkflow).toMatch(/- arch: x64\n {12}runner: ubuntu-22\.04/)
     expect(releaseWorkflow).toContain('runs-on: ${{ matrix.runner }}')

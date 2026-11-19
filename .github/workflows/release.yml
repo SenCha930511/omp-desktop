@@ -20,6 +20,11 @@ on:
         required: false
         default: false
         type: boolean
+      include_windows_unsigned:
+        description: Build unsigned Windows packages for beta distribution (skips Authenticode signing)
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -45,7 +50,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: ${{ env.RELEASE_REF }}
+          ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -97,6 +102,40 @@ jobs:
       - run: npm run release:preflight:toolchain
       - run: npm run release:verify:package
 
+  conformance:
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+          - runner: ubuntu-22.04
+          - runner: windows-2022
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.validate.outputs.sha }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm run toolchain:bootstrap
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            ~/Library/Caches/electron
+            ~/.cache/electron
+            ~/Library/Caches/electron-builder
+            ~/.cache/electron-builder
+            ~/AppData/Local/electron/Cache
+            ~/AppData/Local/electron-builder/Cache
+          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - run: npm ci
+      - run: npm run release:preflight:toolchain
+      - run: npm run conformance:build-adapter
+      - run: npm run test:conformance
+
   hermetic-e2e:
     needs: validate
     runs-on: macos-15
@@ -123,7 +162,7 @@ jobs:
       - run: npm run test:e2e:hermetic
 
   package:
-    needs: [validate, production-audit, quality, hermetic-e2e]
+    needs: [validate, production-audit, quality, conformance, hermetic-e2e]
     strategy:
       # Ship both mac architectures as separate DMG/ZIP builds. Each leg runs
       # on a runner whose native architecture matches the target so
@@ -184,6 +223,14 @@ jobs:
       - name: Build ad-hoc signed macOS packages for beta distribution
         if: env.RELEASE_MAC_UNSIGNED_ENABLED == 'true'
         run: node scripts/release/package.mjs --qa --platform mac --skip-verify --arch ${{ matrix.arch }}
+      - name: Launch the packaged application
+        run: node scripts/release/smoke-packaged-app.mjs --platform mac --arch ${{ matrix.arch }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: failure()
+        with:
+          name: packaged-smoke-diagnostics-mac-${{ matrix.arch }}
+          path: release/mac/${{ matrix.arch }}/packaged-smoke-diagnostics.log
+          if-no-files-found: error
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: omp-desktop-public-macos-${{ matrix.arch }}
@@ -194,7 +241,7 @@ jobs:
           if-no-files-found: error
 
   package-linux:
-    needs: [validate, production-audit, quality, hermetic-e2e]
+    needs: [validate, production-audit, quality, conformance, hermetic-e2e]
     strategy:
       # Ship both Linux architectures from native runners so npm install and
       # electron-builder package node-pty and ZeroMQ for the matching ABI.
@@ -258,7 +305,7 @@ jobs:
 
   package-windows:
     if: (github.event_name == 'workflow_dispatch' && (inputs.include_windows || inputs.include_windows_unsigned)) || (github.event_name == 'push' && (vars.RELEASE_WINDOWS_ENABLED == 'true' || vars.RELEASE_WINDOWS_UNSIGNED_ENABLED == 'true'))
-    needs: [validate, production-audit, quality, hermetic-e2e]
+    needs: [validate, production-audit, quality, conformance, hermetic-e2e]
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -358,6 +405,15 @@ jobs:
           subject-path: release-assets/*
       - name: Publish GitHub Release
         run: |
+          tag_sha=$(gh api repos/${{ github.repository }}/commits/$RELEASE_TAG --jq .sha)
+          if [ "$tag_sha" != "${{ needs.validate.outputs.sha }}" ]; then
+            echo "Release tag $RELEASE_TAG moved from validated commit ${{ needs.validate.outputs.sha }} to $tag_sha."
+            exit 1
+          fi
+          release_channel_args=(--latest)
+          if [ "$RELEASE_MAC_UNSIGNED_ENABLED" = 'true' ] || [ "$RELEASE_WINDOWS_UNSIGNED_ENABLED" = 'true' ]; then
+            release_channel_args=(--prerelease)
+          fi
           existing=$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft 2>/dev/null || true)
           if [ "$existing" = 'false' ]; then
             echo "Release $RELEASE_TAG is already published and will not be replaced."
@@ -372,7 +428,7 @@ jobs:
               gh release delete-asset "$RELEASE_TAG" "$stale" --yes
             done < stale-assets.txt
             gh release upload "$RELEASE_TAG" release-assets/* --clobber
-            gh release edit "$RELEASE_TAG" --verify-tag --draft=false --latest
+            gh release edit "$RELEASE_TAG" --verify-tag --draft=false "${release_channel_args[@]}"
           else
             gh release create "$RELEASE_TAG" release-assets/* \
               --verify-tag \
@@ -380,7 +436,7 @@ jobs:
               --generate-notes \
               --notes "Every installer and archive is covered by SHA256SUMS.txt and GitHub build-provenance attestations." \
               --title "OMP Desktop ${RELEASE_TAG#v}" \
-              --latest
+              "${release_channel_args[@]}"
           fi
         env:
           GH_TOKEN: ${{ github.token }}

@@ -51,15 +51,16 @@ function dispatchOnly(job: RecordValue): boolean {
 }
 
 function matrixContexts(jobId: string, job: RecordValue): string[] {
+  const displayName = typeof job.name === 'string' && job.name.trim() ? job.name : jobId
   const matrix = record(record(job.strategy).matrix)
   const include = matrix.include
-  if (!Array.isArray(include)) return [jobId]
+  if (!Array.isArray(include)) return [displayName]
 
   return include.map((entry) => {
     const values = Object.values(record(entry))
       .filter((value) => value !== '' && value !== null && value !== undefined)
       .map(String)
-    return values.length > 0 ? `${jobId} (${values.join(', ')})` : jobId
+    return values.length > 0 ? `${displayName} (${values.join(', ')})` : displayName
   })
 }
 
@@ -129,6 +130,15 @@ describe('validation guide structure', () => {
 
     expect(new Set(documentedExclusions)).toEqual(new Set(derivedExclusions))
     expect(new Set(requiredChecks)).toEqual(new Set(requiredContexts(ciJobs)))
+    expect(protectedSection).not.toMatch(
+      /`Production dependency audit`\s+is\s+(?:a|an)\s+(?:\d+(?:st|nd|rd|th)?|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth)\s+pull-request gate/i,
+    )
+  })
+
+  test('requires the macOS packaged launch smoke before public artifact upload', () => {
+    const releaseRows = firstTableRows(section(validation, 'Public release validation'))
+    const packageRow = releaseRows.find(([job]) => job === '`package`')
+    expect(packageRow?.[1]).toMatch(/both .*macOS .*architectures.*launch smoke.*before .*upload/i)
   })
 
   test('does not hard-code a suite count', () => {
