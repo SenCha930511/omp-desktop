@@ -15,21 +15,24 @@ by the Rust unit and smoke tests below.
 | Sessions, pin/archive/delete, transcript reads | `omp-core` session tests, `Workspace` pane tests |
 | Settings, Extensions, Review, Summary | `Workspace` pane tests, `omp-core` settings/plugins/git tests |
 | Schedules | `omp-core` scheduler tests (15), Schedules pane test |
-| Browser | `browser.rs` URL tests, live WKWebView runtime smoke |
+| Browser | `browser.rs` URL tests, live WKWebView runtime smoke, element annotation capture |
 | Files, Subagents, Side Question | `Workspace` pane tests, `omp-core` project-file tests |
 | Tray | `tray.rs` tests, `--tray-smoke` on macOS; Linux tray construction |
+| Terminal | `terminal.rs` PTY helpers, panel render test |
+| Live voice | `app.rs` live-event helper tests, pane render test; dictation is not implemented |
+| Updater feed | `prepare-rust-update-feed.mjs` validation tests; release.yml is not wired |
+| Parity harness | `tests/e2e_parity.rs`, 10 of 88 scenarios |
 | Updater | `updates.rs` state tests, Settings row render test |
 | Packaging | macOS `.app`, Linux `.deb`, Windows NSIS packaged-smoke CI jobs |
 | Conformance | 10 files, 20 tests against the Rust adapter on macOS, Linux, and Windows |
 
 ## Groups that remain unclosed
 
-- Terminal and voice surfaces.
-- The updater release feed and signing pipeline.
-- The full 88-scenario Playwright run against the Rust app, including browser
-  annotation capture, agent-driven browser tabs, terminal panel behavior, voice,
-  and the remaining workspace interactions.
+- Dictation credentials and the app-managed STT path; live voice is RPC-driven.
+- Wiring the updater feed and signatures into `release.yml`.
+- The remaining 78 Playwright scenarios, including terminal tabs/restore,
+  agent-driven browser tabs, dictation, and the responsive workspace interactions.
 - The final Electron cutover gate.
 
-Until the Playwright matrix runs against the Rust app and the terminal/voice
-surfaces exist, the Electron app remains the shipping desktop application.
+Until the remaining Playwright matrix runs against the Rust app and dictation
+exists, the Electron app remains the shipping desktop application.
