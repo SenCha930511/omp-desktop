@@ -440,7 +440,7 @@ pub fn connect_mcp(
         _ => return Err(CoreError::invalid("MCP scope must be user or project")),
     };
     let path = mcp_file(agent_dir, project.as_deref(), scope)?;
-    let mut file = read_json_file(&path)?;
+    let mut file = read_json_file(&path, "MCP settings")?;
     if !file.is_object() {
         file = json!({});
     }
@@ -546,7 +546,7 @@ pub fn connect_mcp(
         .as_object_mut()
         .expect("servers object")
         .insert(name.to_string(), Value::Object(definition));
-    write_json(&path, &file)?;
+    write_json(&path, &file, "MCP settings")?;
     Ok(json!({ "ok": true }))
 }
 
@@ -583,7 +583,7 @@ pub fn set_mcp_enabled(
         _ => return Err(CoreError::invalid("MCP scope must be user or project")),
     };
     let path = mcp_file(agent_dir, project.as_deref(), scope)?;
-    let mut file = read_json_file(&path)?;
+    let mut file = read_json_file(&path, "MCP settings")?;
     let root = file
         .as_object_mut()
         .ok_or_else(|| CoreError::invalid("MCP settings are not an object"))?;
@@ -624,7 +624,7 @@ pub fn set_mcp_enabled(
         "enabledServers".to_string(),
         Value::Array(enabled_servers.into_iter().map(Value::String).collect()),
     );
-    write_json(&path, &file)?;
+    write_json(&path, &file, "MCP settings")?;
     Ok(json!({ "ok": true }))
 }
 
@@ -675,11 +675,11 @@ pub fn mutate_capability(
     };
     if kind == "mcp" && action == "remove" {
         let path = mcp_file(agent_dir, project.as_deref(), scope)?;
-        let mut file = read_json_file(&path)?;
+        let mut file = read_json_file(&path, "MCP settings")?;
         if let Some(servers) = file.get_mut("mcpServers").and_then(Value::as_object_mut) {
             servers.remove(name);
         }
-        write_json(&path, &file)?;
+        write_json(&path, &file, "MCP settings")?;
         return Ok(json!({ "ok": true }));
     }
     if kind == "package" {
@@ -761,4 +761,130 @@ pub fn install(context: &CliContext, source: &str) -> Result<Value> {
         .output()
         .map_err(|error| CoreError::io("Could not run omp plugin install", error))?;
     Ok(json!({ "ok": output.status.success() }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture() -> (tempfile::TempDir, PathBuf, crate::state::StateStore) {
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let home = temp.path().join("home");
+        let agent_dir = home.join(".omp").join("agent");
+        std::fs::create_dir_all(&agent_dir).expect("agent dir");
+        let package = home
+            .join(".omp")
+            .join("plugins")
+            .join("node_modules")
+            .join("demo-package");
+        std::fs::create_dir_all(&package).expect("package dir");
+        std::fs::write(
+            package.join("package.json"),
+            json!({ "name": "demo-package", "description": "Demo package" }).to_string(),
+        )
+        .expect("package manifest");
+        let store = crate::state::StateStore::open(
+            temp.path().join("user-data").join("state.json"),
+            None,
+            crate::state::Platform::Linux,
+        )
+        .expect("store");
+        (temp, agent_dir, store)
+    }
+
+    fn package_row(agent_dir: &Path, name: &str) -> SkillRecord {
+        discover(agent_dir, None)
+            .skills
+            .into_iter()
+            .find(|skill| skill.kind == "package" && skill.name == name)
+            .unwrap_or_else(|| panic!("{name} package row"))
+    }
+
+    fn toggle(action: &str, name: &str) -> Value {
+        json!({ "kind": "package", "action": action, "name": name, "scope": "user" })
+    }
+
+    #[test]
+    fn package_toggles_persist_to_the_plugin_lock_and_discovery_follows() {
+        let (_temp, agent_dir, store) = fixture();
+        let lock_path = plugins_lock_file(&plugins_root(&agent_dir, None));
+        assert!(package_row(&agent_dir, "demo-package").enabled);
+
+        // Keep a CLI-shaped entry so the mutation can prove it preserves the
+        // fields `omp plugin` writes alongside `enabled`.
+        std::fs::create_dir_all(lock_path.parent().expect("plugins root")).expect("plugins root");
+        std::fs::write(
+            &lock_path,
+            json!({
+                "plugins": {
+                    "demo-package": { "enabled": true, "enabledFeatures": ["skills"], "version": "1.0.0" }
+                },
+                "settings": {}
+            })
+            .to_string(),
+        )
+        .expect("lock");
+
+        mutate_capability(
+            &agent_dir,
+            &store,
+            crate::state::Platform::Linux,
+            &toggle("disable", "demo-package"),
+        )
+        .expect("disable");
+        let lock: Value =
+            serde_json::from_str(&std::fs::read_to_string(&lock_path).expect("read lock"))
+                .expect("lock json");
+        assert_eq!(lock["plugins"]["demo-package"]["enabled"], json!(false));
+        assert_eq!(lock["plugins"]["demo-package"]["version"], json!("1.0.0"));
+        assert_eq!(
+            lock["plugins"]["demo-package"]["enabledFeatures"],
+            json!(["skills"])
+        );
+        assert_eq!(lock["settings"], json!({}));
+        assert!(!package_row(&agent_dir, "demo-package").enabled);
+
+        mutate_capability(
+            &agent_dir,
+            &store,
+            crate::state::Platform::Linux,
+            &toggle("enable", "demo-package"),
+        )
+        .expect("enable");
+        let lock: Value =
+            serde_json::from_str(&std::fs::read_to_string(&lock_path).expect("read lock"))
+                .expect("lock json");
+        assert_eq!(lock["plugins"]["demo-package"]["enabled"], json!(true));
+        assert!(package_row(&agent_dir, "demo-package").enabled);
+    }
+
+    #[test]
+    fn package_mutations_reject_unknown_names_and_actions() {
+        let (_temp, agent_dir, store) = fixture();
+        let lock_path = plugins_lock_file(&plugins_root(&agent_dir, None));
+
+        let error = mutate_capability(
+            &agent_dir,
+            &store,
+            crate::state::Platform::Linux,
+            &toggle("disable", "missing-package"),
+        )
+        .expect_err("unknown package");
+        assert!(error.message.contains("not installed"), "{}", error.message);
+
+        let error = mutate_capability(
+            &agent_dir,
+            &store,
+            crate::state::Platform::Linux,
+            &toggle("remove", "demo-package"),
+        )
+        .expect_err("unknown action");
+        assert!(
+            error.message.contains("action is invalid"),
+            "{}",
+            error.message
+        );
+
+        assert!(!lock_path.exists());
+    }
 }
