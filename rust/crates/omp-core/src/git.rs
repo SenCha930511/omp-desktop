@@ -69,6 +69,8 @@ pub struct CheckoutOutcome {
     pub code: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
 }
 
 fn run_git(cwd: &Path, args: &[&str]) -> Result<ProcessOutcome> {
@@ -397,12 +399,43 @@ fn current_branch(root: &Path) -> Option<String> {
         })
 }
 
+fn refused(code: &str, message: impl Into<String>) -> CheckoutOutcome {
+    CheckoutOutcome {
+        kind: "refused".to_string(),
+        code: Some(code.to_string()),
+        message: Some(message.into()),
+        path: None,
+    }
+}
+
+fn applied(path: Option<String>) -> CheckoutOutcome {
+    CheckoutOutcome {
+        kind: "applied".to_string(),
+        code: None,
+        message: None,
+        path,
+    }
+}
+
+/// Deterministic sibling of the project root for a worktree checkout.
+fn worktree_path(root: &Path, branch: &str) -> Result<PathBuf> {
+    let parent = root
+        .parent()
+        .ok_or_else(|| CoreError::invalid("Project root has no parent directory"))?;
+    let name = root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("worktree");
+    Ok(parent.join(format!("{name}-{}", branch.replace('/', "-"))))
+}
+
 pub fn execute_checkout(
     store: &StateStore,
     project_id: &str,
     action: &Value,
 ) -> Result<CheckoutOutcome> {
     let root = project_root(store, project_id)?;
+    let strategy = store.state().settings.checkout_strategy;
     let operation = action
         .get("operation")
         .and_then(Value::as_str)
@@ -412,33 +445,232 @@ pub fn execute_checkout(
         .and_then(Value::as_str)
         .filter(|branch| !branch.is_empty())
         .ok_or_else(|| CoreError::invalid("Checkout action requires a branch"))?;
-    let status = status(store, Platform::current(), &root.display().to_string());
-    if !status.files.is_empty() {
-        return Ok(CheckoutOutcome {
-            kind: "refused".to_string(),
-            code: Some("dirty-worktree".to_string()),
-            message: Some("The worktree has uncommitted changes".to_string()),
-        });
+    if !matches!(operation, "create" | "switch") {
+        return Err(CoreError::invalid(format!(
+            "Unsupported checkout operation: {operation}"
+        )));
     }
-    let outcome = match operation {
-        "create" => run_git(&root, &["switch", "-c", branch])?,
-        "switch" => run_git(&root, &["switch", branch])?,
-        other => {
-            return Err(CoreError::invalid(format!(
-                "Unsupported checkout operation: {other}"
-            )));
+    match strategy {
+        CheckoutStrategy::Worktree if operation == "create" => {
+            let path = worktree_path(&root, branch)?;
+            if path.exists() {
+                return Ok(refused(
+                    "worktree-exists",
+                    format!("Worktree path already exists: {}", path.display()),
+                ));
+            }
+            let path_text = path.display().to_string();
+            let outcome = run_git(&root, &["worktree", "add", "-b", branch, &path_text])?;
+            if !outcome.ok {
+                return Ok(refused(
+                    "git-failed",
+                    outcome.reason.unwrap_or(outcome.output),
+                ));
+            }
+            Ok(applied(Some(path_text)))
         }
-    };
-    if !outcome.ok {
-        return Ok(CheckoutOutcome {
-            kind: "refused".to_string(),
-            code: Some("git-failed".to_string()),
-            message: outcome.reason.or(Some(outcome.output)),
-        });
+        CheckoutStrategy::Worktree => {
+            let catalog = checkout_catalog(store, project_id)?;
+            let path = catalog
+                .checkouts
+                .into_iter()
+                .find(|entry| entry.branch.as_deref() == Some(branch))
+                .and_then(|entry| entry.path);
+            match path {
+                Some(path) => Ok(applied(Some(path))),
+                None => Ok(refused(
+                    "unknown-worktree",
+                    format!("No worktree checks out {branch}"),
+                )),
+            }
+        }
+        CheckoutStrategy::Branch => {
+            let status = status(store, Platform::current(), &root.display().to_string());
+            if !status.files.is_empty() {
+                return Ok(refused(
+                    "dirty-worktree",
+                    "The worktree has uncommitted changes",
+                ));
+            }
+            let outcome = match operation {
+                "create" => run_git(&root, &["switch", "-c", branch])?,
+                _ => run_git(&root, &["switch", branch])?,
+            };
+            if !outcome.ok {
+                return Ok(refused(
+                    "git-failed",
+                    outcome.reason.unwrap_or(outcome.output),
+                ));
+            }
+            Ok(applied(None))
+        }
     }
-    Ok(CheckoutOutcome {
-        kind: "applied".to_string(),
-        code: None,
-        message: None,
-    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::fs;
+
+    struct Fixture {
+        _temp: tempfile::TempDir,
+        store: StateStore,
+        project_id: String,
+        root: PathBuf,
+    }
+
+    fn git(cwd: &Path, args: &[&str]) -> ProcessOutcome {
+        let outcome = run_git(cwd, args).expect("git");
+        assert!(outcome.ok, "git {args:?} failed: {}", outcome.output);
+        outcome
+    }
+
+    fn fixture(strategy: &str) -> Fixture {
+        let temp = tempfile::TempDir::new().expect("temp");
+        let root = temp.path().join("repo");
+        fs::create_dir_all(&root).expect("repo dir");
+        git(&root, &["init", "-q", "-b", "main"]);
+        git(&root, &["config", "user.email", "test@example.com"]);
+        git(&root, &["config", "user.name", "Test User"]);
+        git(&root, &["config", "commit.gpgsign", "false"]);
+        fs::write(root.join("README.md"), "hello\n").expect("readme");
+        git(&root, &["add", "README.md"]);
+        git(&root, &["commit", "-q", "-m", "init"]);
+        let root = crate::paths::canonicalize(&root).expect("canonical");
+        let mut store = StateStore::open(
+            temp.path().join("state").join("omp-desktop-state-v4.json"),
+            None,
+            Platform::current(),
+        )
+        .expect("store");
+        let project = projects::grant_project(
+            &mut store,
+            temp.path(),
+            Platform::current(),
+            &root.display().to_string(),
+        )
+        .expect("grant");
+        store
+            .update_settings(&json!({ "checkoutStrategy": strategy }))
+            .expect("strategy");
+        Fixture {
+            _temp: temp,
+            store,
+            project_id: project.id,
+            root,
+        }
+    }
+
+    fn expected_worktree(fixture: &Fixture, branch: &str) -> PathBuf {
+        fixture
+            .root
+            .parent()
+            .expect("parent")
+            .join(format!("repo-{}", branch.replace('/', "-")))
+    }
+
+    #[test]
+    fn worktree_create_adds_sibling_checkout() {
+        let fixture = fixture("worktree");
+        let outcome = execute_checkout(
+            &fixture.store,
+            &fixture.project_id,
+            &json!({ "operation": "create", "branch": "feature/one" }),
+        )
+        .expect("create");
+        assert_eq!(outcome.kind, "applied");
+        let path = expected_worktree(&fixture, "feature/one");
+        let path_text = path.to_str().expect("path");
+        assert_eq!(outcome.path.as_deref(), Some(path_text));
+        assert!(path.is_dir());
+        let catalog = checkout_catalog(&fixture.store, &fixture.project_id).expect("catalog");
+        assert_eq!(catalog.strategy, "worktree");
+        assert!(catalog.checkouts.iter().any(|entry| {
+            entry.branch.as_deref() == Some("feature/one")
+                && entry.path.as_deref() == Some(path_text)
+        }));
+    }
+
+    #[test]
+    fn worktree_switch_returns_catalog_path_without_touching_root() {
+        let fixture = fixture("worktree");
+        execute_checkout(
+            &fixture.store,
+            &fixture.project_id,
+            &json!({ "operation": "create", "branch": "feature/one" }),
+        )
+        .expect("create");
+        let outcome = execute_checkout(
+            &fixture.store,
+            &fixture.project_id,
+            &json!({ "operation": "switch", "branch": "feature/one" }),
+        )
+        .expect("switch");
+        assert_eq!(outcome.kind, "applied");
+        assert_eq!(
+            outcome.path.as_deref(),
+            expected_worktree(&fixture, "feature/one").to_str()
+        );
+        assert_eq!(current_branch(&fixture.root).as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn worktree_switch_refuses_unknown_branch() {
+        let fixture = fixture("worktree");
+        let outcome = execute_checkout(
+            &fixture.store,
+            &fixture.project_id,
+            &json!({ "operation": "switch", "branch": "missing" }),
+        )
+        .expect("switch");
+        assert_eq!(outcome.kind, "refused");
+        assert_eq!(outcome.code.as_deref(), Some("unknown-worktree"));
+        assert!(outcome.path.is_none());
+    }
+
+    #[test]
+    fn worktree_create_refuses_existing_path() {
+        let fixture = fixture("worktree");
+        fs::create_dir_all(expected_worktree(&fixture, "feature/one")).expect("existing");
+        let outcome = execute_checkout(
+            &fixture.store,
+            &fixture.project_id,
+            &json!({ "operation": "create", "branch": "feature/one" }),
+        )
+        .expect("create");
+        assert_eq!(outcome.kind, "refused");
+        assert_eq!(outcome.code.as_deref(), Some("worktree-exists"));
+    }
+
+    #[test]
+    fn branch_strategy_switches_in_place_and_refuses_dirty_tree() {
+        let fixture = fixture("branch");
+        let outcome = execute_checkout(
+            &fixture.store,
+            &fixture.project_id,
+            &json!({ "operation": "create", "branch": "topic" }),
+        )
+        .expect("create");
+        assert_eq!(outcome.kind, "applied");
+        assert!(outcome.path.is_none());
+        assert_eq!(current_branch(&fixture.root).as_deref(), Some("topic"));
+        fs::write(fixture.root.join("README.md"), "dirty\n").expect("dirty");
+        let outcome = execute_checkout(
+            &fixture.store,
+            &fixture.project_id,
+            &json!({ "operation": "switch", "branch": "main" }),
+        )
+        .expect("switch");
+        assert_eq!(outcome.kind, "refused");
+        assert_eq!(outcome.code.as_deref(), Some("dirty-worktree"));
+    }
+
+    #[test]
+    fn outcome_serializes_path_only_when_present() {
+        let value = serde_json::to_value(applied(Some("/tmp/wt".to_string()))).expect("json");
+        assert_eq!(value["path"], json!("/tmp/wt"));
+        let value = serde_json::to_value(refused("worktree-exists", "exists")).expect("json");
+        assert!(value.get("path").is_none());
+    }
 }

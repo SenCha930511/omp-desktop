@@ -1,4 +1,4 @@
-use chrono::{NaiveDateTime, SecondsFormat, TimeZone};
+use chrono::{DateTime, NaiveDateTime, SecondsFormat, TimeZone, Utc};
 use rrule::{RRule, RRuleSet, Tz, Unvalidated};
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
@@ -9,6 +9,39 @@ use crate::state::{
     AutomationScheduleRecord, ScheduleExecution, ScheduleTarget, ScheduleTiming, StateStore,
     now_iso, parse_schedule_execution,
 };
+
+fn parse_rrule_timing(timing: &Value) -> Result<(DateTime<Tz>, RRule)> {
+    let dtstart_local = timing
+        .get("dtstartLocal")
+        .and_then(Value::as_str)
+        .ok_or_else(|| CoreError::invalid("Schedule timing requires dtstartLocal"))?;
+    let time_zone = timing
+        .get("timeZone")
+        .and_then(Value::as_str)
+        .ok_or_else(|| CoreError::invalid("Schedule timing requires timeZone"))?;
+    let rrule_text = timing
+        .get("rrule")
+        .and_then(Value::as_str)
+        .ok_or_else(|| CoreError::invalid("Schedule timing requires rrule"))?;
+    let parsed_zone: chrono_tz::Tz = time_zone
+        .parse()
+        .map_err(|_| CoreError::invalid(format!("Unknown time zone: {time_zone}")))?;
+    let timezone: Tz = parsed_zone.into();
+    let naive = NaiveDateTime::parse_from_str(dtstart_local, "%Y-%m-%dT%H:%M:%S")
+        .or_else(|_| NaiveDateTime::parse_from_str(dtstart_local, "%Y-%m-%dT%H:%M"))
+        .map_err(|_| CoreError::invalid("Schedule dtstartLocal is invalid"))?;
+    let start = timezone
+        .from_local_datetime(&naive)
+        .single()
+        .ok_or_else(|| CoreError::invalid("Schedule dtstartLocal is ambiguous"))?;
+    let rule: RRule<Unvalidated> = rrule_text
+        .parse()
+        .map_err(|error| CoreError::invalid(format!("Schedule rrule is invalid: {error}")))?;
+    let rule = rule
+        .validate(start)
+        .map_err(|error| CoreError::invalid(format!("Schedule rrule is invalid: {error}")))?;
+    Ok((start, rule))
+}
 
 pub fn preview(timing: &Value, count: usize) -> Result<Vec<String>> {
     let kind = timing
@@ -25,41 +58,46 @@ pub fn preview(timing: &Value, count: usize) -> Result<Vec<String>> {
             Ok(vec![at.to_string()])
         }
         "rrule" => {
-            let dtstart_local = timing
-                .get("dtstartLocal")
-                .and_then(Value::as_str)
-                .ok_or_else(|| CoreError::invalid("Schedule timing requires dtstartLocal"))?;
-            let time_zone = timing
-                .get("timeZone")
-                .and_then(Value::as_str)
-                .ok_or_else(|| CoreError::invalid("Schedule timing requires timeZone"))?;
-            let rrule_text = timing
-                .get("rrule")
-                .and_then(Value::as_str)
-                .ok_or_else(|| CoreError::invalid("Schedule timing requires rrule"))?;
-            let parsed_zone: chrono_tz::Tz = time_zone
-                .parse()
-                .map_err(|_| CoreError::invalid(format!("Unknown time zone: {time_zone}")))?;
-            let timezone: Tz = parsed_zone.into();
-            let naive = NaiveDateTime::parse_from_str(dtstart_local, "%Y-%m-%dT%H:%M:%S")
-                .or_else(|_| NaiveDateTime::parse_from_str(dtstart_local, "%Y-%m-%dT%H:%M"))
-                .map_err(|_| CoreError::invalid("Schedule dtstartLocal is invalid"))?;
-            let start = timezone
-                .from_local_datetime(&naive)
-                .single()
-                .ok_or_else(|| CoreError::invalid("Schedule dtstartLocal is ambiguous"))?;
-            let rule: RRule<Unvalidated> = rrule_text.parse().map_err(|error| {
-                CoreError::invalid(format!("Schedule rrule is invalid: {error}"))
-            })?;
-            let rule = rule.validate(start).map_err(|error| {
-                CoreError::invalid(format!("Schedule rrule is invalid: {error}"))
-            })?;
+            let (start, rule) = parse_rrule_timing(timing)?;
             let result = RRuleSet::new(start).rrule(rule).all(limit as u16);
             Ok(result
                 .dates
                 .iter()
                 .map(|date| date.to_rfc3339_opts(SecondsFormat::Millis, true))
                 .collect())
+        }
+        _ => Err(CoreError::invalid(
+            "Schedule timing kind must be once or rrule",
+        )),
+    }
+}
+
+/// Returns the first occurrence strictly after `now`, formatted like [`preview`].
+pub fn next_occurrence_after(timing: &Value, now: DateTime<Utc>) -> Result<Option<String>> {
+    match timing
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+    {
+        "once" => {
+            let at = timing
+                .get("at")
+                .and_then(Value::as_str)
+                .ok_or_else(|| CoreError::invalid("Schedule timing requires at"))?;
+            let at = DateTime::parse_from_rfc3339(at)
+                .map_err(|_| CoreError::invalid("Schedule timing requires a valid at"))?
+                .with_timezone(&Utc);
+            Ok((at > now).then(|| at.to_rfc3339_opts(SecondsFormat::Millis, true)))
+        }
+        "rrule" => {
+            let (start, rule) = parse_rrule_timing(timing)?;
+            let zone = start.timezone();
+            let cursor = now.with_timezone(&zone);
+            let dates = RRuleSet::new(start).rrule(rule).after(cursor).all(2).dates;
+            Ok(dates
+                .iter()
+                .find(|date| **date > cursor)
+                .map(|date| date.to_rfc3339_opts(SecondsFormat::Millis, true)))
         }
         _ => Err(CoreError::invalid(
             "Schedule timing kind must be once or rrule",
@@ -376,4 +414,71 @@ pub fn broker_delete(store: &mut StateStore, project_id: &str, id: &str) -> Resu
 
 pub fn empty_patch() -> Map<String, Value> {
     Map::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn at(value: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(value)
+            .expect("timestamp")
+            .with_timezone(&Utc)
+    }
+
+    fn daily(rrule: &str) -> Value {
+        json!({
+            "kind": "rrule",
+            "dtstartLocal": "2030-01-01T09:00:00",
+            "timeZone": "Asia/Taipei",
+            "rrule": rrule
+        })
+    }
+
+    #[test]
+    fn next_occurrence_is_strictly_after_now() {
+        let timing = daily("FREQ=DAILY");
+        assert_eq!(
+            next_occurrence_after(&timing, at("2030-01-01T01:00:00.000Z"))
+                .expect("next")
+                .as_deref(),
+            Some("2030-01-02T09:00:00.000+08:00")
+        );
+        assert_eq!(
+            next_occurrence_after(&timing, at("2030-01-01T00:59:59.999Z"))
+                .expect("next")
+                .as_deref(),
+            Some("2030-01-01T09:00:00.000+08:00")
+        );
+    }
+
+    #[test]
+    fn next_occurrence_is_none_when_the_timing_is_exhausted() {
+        let exhausted = daily("FREQ=DAILY;COUNT=1");
+        assert!(
+            next_occurrence_after(&exhausted, at("2030-01-01T01:00:00.000Z"))
+                .expect("next")
+                .is_none()
+        );
+        let once = json!({ "kind": "once", "at": "2030-01-01T09:00:00.000Z" });
+        assert!(
+            next_occurrence_after(&once, at("2030-01-01T09:00:00.000Z"))
+                .expect("next")
+                .is_none()
+        );
+        assert_eq!(
+            next_occurrence_after(&once, at("2030-01-01T08:00:00.000Z"))
+                .expect("next")
+                .as_deref(),
+            Some("2030-01-01T09:00:00.000Z")
+        );
+    }
+
+    #[test]
+    fn next_occurrence_rejects_unknown_timing_kinds() {
+        assert!(
+            next_occurrence_after(&json!({ "kind": "cron" }), at("2030-01-01T00:00:00.000Z"))
+                .is_err()
+        );
+    }
 }

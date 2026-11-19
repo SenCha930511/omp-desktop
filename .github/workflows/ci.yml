@@ -411,3 +411,51 @@ jobs:
           name: rust-packaged-smoke
           path: ${{ runner.temp }}/rust-smoke.json
           if-no-files-found: error
+
+  rust-package-smoke-linux:
+    name: Rust packaged smoke (Linux deb)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install Linux GUI and headless rendering dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev libfontconfig1-dev libfreetype-dev libgl1-mesa-dev \
+            libwayland-dev libx11-xcb-dev libxcb1-dev libxcb-render0-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev pkg-config xauth xvfb \
+            libegl1 libgl1-mesa-dri libvulkan1 mesa-vulkan-drivers \
+            fonts-dejavu-core xkb-data
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install 1.100.0 --profile minimal
+      - run: rustup default 1.100.0
+      - name: Install cargo-packager
+        run: cargo install cargo-packager --locked --version 0.11.8
+      - name: Build the native application
+        run: cargo build -p omp-desktop --locked
+        working-directory: rust
+      - name: Package the Linux deb
+        run: cargo packager --formats deb
+        working-directory: rust/crates/omp-desktop
+      - name: Launch the packaged application under Xvfb and wait for the first frame
+        shell: bash
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          set -euo pipefail
+          deb="$(ls rust/dist/omp-desktop_*_amd64.deb)"
+          dpkg-deb -x "$deb" "$RUNNER_TEMP/rust-deb"
+          rm -f "$RUNNER_TEMP/rust-smoke.json"
+          timeout --signal=KILL 180 xvfb-run -a -s "-screen 0 1920x1080x24" \
+            "$RUNNER_TEMP/rust-deb/usr/bin/omp-desktop" \
+            --packaged-smoke="$RUNNER_TEMP/rust-smoke.json" \
+            --user-data-dir="$RUNNER_TEMP/rust-user-data"
+          test -s "$RUNNER_TEMP/rust-smoke.json"
+          node -e "const m=require(process.env.RUNNER_TEMP + '/rust-smoke.json'); if (m.event !== 'gooeypi-packaged-smoke-ready') process.exit(1)"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rust-packaged-smoke-linux
+          path: |
+            ${{ runner.temp }}/rust-smoke.json
+            rust/dist/omp-desktop_*_amd64.deb
+          if-no-files-found: error

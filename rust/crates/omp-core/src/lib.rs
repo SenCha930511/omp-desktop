@@ -8,6 +8,7 @@ pub mod models;
 pub mod paths;
 pub mod plugins;
 pub mod projects;
+pub mod scheduler;
 pub mod schedules;
 pub mod sessions;
 pub mod settings;

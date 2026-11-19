@@ -62,6 +62,8 @@ cat /tmp/layout.json
 
 ## Packaging
 
+macOS:
+
 ```bash
 cd rust
 cargo build -p omp-desktop --locked
@@ -71,7 +73,21 @@ cargo packager --formats app
   --packaged-smoke=/tmp/smoke.json --user-data-dir=/tmp/omp-rust-packaged
 ```
 
-The packaged binary writes the same first-frame marker as the development build. The CI `Rust packaged smoke` job repeats this on macOS.
+Linux:
+
+```bash
+cd rust
+cargo build -p omp-desktop --locked
+cd crates/omp-desktop
+cargo packager --formats deb
+dpkg-deb -x ../../dist/omp-desktop_2.0.0_amd64.deb /tmp/omp-rust-deb
+xvfb-run -a /tmp/omp-rust-deb/usr/bin/omp-desktop \
+  --packaged-smoke=/tmp/smoke.json --user-data-dir=/tmp/omp-rust-packaged
+```
+
+`Packager.toml` lists both formats: `app` is macOS-only and `deb` is Linux-only, and cargo-packager skips formats that do not apply to the host, so a bare `cargo packager` produces the native package. The deb uses `assets/icon.png` for the hicolor icon and `assets/icon.icns` stays the macOS bundle icon.
+
+The packaged binary writes the same first-frame marker as the development build. CI repeats this on macOS (`Rust packaged smoke`) and on Ubuntu under Xvfb (`Rust packaged smoke (Linux deb)`).
 
 ## Remaining work
 

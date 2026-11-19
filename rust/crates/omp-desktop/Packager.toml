@@ -7,5 +7,24 @@ authors = ["OMP Desktop contributors"]
 binaries = [{ path = "omp-desktop", main = true }]
 binariesDir = "../../target/debug"
 outDir = "../../dist"
-icons = ["../../../assets/icon.icns"]
-formats = ["app"]
+icons = ["../../../assets/icon.icns", "../../../assets/icon.png"]
+formats = ["app", "deb"]
+
+# `app` is macOS-only and `deb` is Linux-only. cargo-packager ignores formats
+# that do not apply to the current host, so a bare `cargo packager` produces the
+# native package on either platform.
+[deb]
+section = "devel"
+depends = [
+  "libc6",
+  "libegl1",
+  "libfontconfig1",
+  "libfreetype6",
+  "libgl1",
+  "libvulkan1",
+  "libwayland-client0",
+  "libx11-6",
+  "libxcb1",
+  "libxkbcommon-x11-0",
+  "libxkbcommon0",
+]

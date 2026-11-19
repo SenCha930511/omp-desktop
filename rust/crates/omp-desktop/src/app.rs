@@ -2,6 +2,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use chrono::Utc;
+
 use gpui_kit::InteractiveElement as _;
 use gpui_kit::StatefulInteractiveElement as _;
 use gpui_kit::assets::IconName;
@@ -15,6 +17,8 @@ use omp_core::git::{self, GitStatus};
 use omp_core::models::CliContext;
 use omp_core::plugins::{self, PluginCatalog};
 use omp_core::projects::{self, ProjectRecord};
+use omp_core::scheduler;
+use omp_core::schedules;
 use omp_core::sessions::{self, SessionRecord, TranscriptMessage, TranscriptPart};
 use omp_core::settings::AppSettings;
 use omp_core::state::{
@@ -28,6 +32,7 @@ pub enum AppView {
     Workspace,
     Settings,
     Plugins,
+    Schedules,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,6 +68,7 @@ pub struct Workspace {
     runtime_id: Option<String>,
     streaming_index: Option<usize>,
     drain_task: Option<Task<()>>,
+    scheduler_task: Option<Task<()>>,
     layout: ResolvedLayout,
     settings: AppSettings,
     projects: Vec<ProjectRecord>,
@@ -77,6 +83,7 @@ pub struct Workspace {
     view: AppView,
     plugin_catalog: Option<PluginCatalog>,
     plugin_error: Option<String>,
+    schedules: Vec<Value>,
     right_pane: RightPane,
     overview_open: bool,
     menu_open: bool,
@@ -116,7 +123,7 @@ impl Workspace {
             omp_core::settings::Theme::System => ThemeMode::from(window.appearance()),
         };
         Theme::change(theme_mode, Some(window), cx);
-        Self {
+        let mut workspace = Self {
             geometry: data.geometry,
             geometry_path: data.geometry_path,
             home_dir: data.home_dir,
@@ -127,6 +134,7 @@ impl Workspace {
             runtime_id: None,
             streaming_index: None,
             drain_task: None,
+            scheduler_task: None,
             layout,
             settings: data.settings,
             projects: data.projects,
@@ -141,6 +149,7 @@ impl Workspace {
             view: AppView::Workspace,
             plugin_catalog: None,
             plugin_error: None,
+            schedules: Vec::new(),
             right_pane: RightPane::Launcher,
             overview_open: false,
             menu_open: false,
@@ -150,7 +159,9 @@ impl Workspace {
             review_error: None,
             last_bounds: None,
             save_task: None,
-        }
+        };
+        workspace.start_scheduler(cx);
+        workspace
     }
 
     pub fn layout(&self) -> &ResolvedLayout {
@@ -323,6 +334,30 @@ impl Workspace {
                                     .child(session.project_path.clone()),
                             )
                     })),
+            )
+            .child(
+                div().border_t_1().border_color(colors.border).p_2().child(
+                    div()
+                        .id("schedules-nav")
+                        .aria_label("Schedules")
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .px_2()
+                        .py_1()
+                        .rounded(px(6.0))
+                        .text_sm()
+                        .text_color(colors.foreground)
+                        .when(self.view == AppView::Schedules, |element| {
+                            element.bg(colors.accent)
+                        })
+                        .hover(|style| style.bg(colors.accent))
+                        .child(IconName::Clock)
+                        .child("Schedules")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.set_view(AppView::Schedules, cx);
+                        })),
+                ),
             )
     }
 
@@ -937,7 +972,210 @@ impl Workspace {
 
     pub fn set_view(&mut self, view: AppView, cx: &mut Context<Self>) {
         self.view = view;
+        if view == AppView::Schedules {
+            self.refresh_schedules();
+        }
         cx.notify();
+    }
+
+    pub fn refresh_schedules(&mut self) {
+        self.schedules = match self.store.as_ref() {
+            Some(store) => {
+                let store = store.lock().expect("state lock");
+                schedules::list(&store)
+            }
+            None => Vec::new(),
+        };
+    }
+
+    pub fn schedules(&self) -> &[Value] {
+        &self.schedules
+    }
+
+    pub fn set_schedule_status(&mut self, id: &str, status: &str, cx: &mut Context<Self>) {
+        if let Some(store) = self.store.clone() {
+            let mut store = store.lock().expect("state lock");
+            let _ = schedules::set_status(&mut store, id, status);
+        }
+        self.refresh_schedules();
+        cx.notify();
+    }
+
+    pub fn delete_schedule(&mut self, id: &str, cx: &mut Context<Self>) {
+        if let Some(store) = self.store.clone() {
+            let mut store = store.lock().expect("state lock");
+            let _ = schedules::delete(&mut store, id);
+        }
+        self.refresh_schedules();
+        cx.notify();
+    }
+
+    fn start_scheduler(&mut self, cx: &mut Context<Self>) {
+        if self.scheduler_task.is_some() {
+            return;
+        }
+        self.scheduler_task = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_secs(30))
+                    .await;
+                if this
+                    .update(cx, |this, cx| {
+                        this.run_due_schedules(cx);
+                        cx.notify();
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }));
+    }
+
+    fn run_due_schedules(&mut self, cx: &mut Context<Self>) {
+        let Some(store) = self.store.clone() else {
+            return;
+        };
+        let now = Utc::now();
+        let due = {
+            let store = store.lock().expect("state lock");
+            scheduler::due(&store, now)
+        };
+        if due.is_empty() {
+            return;
+        }
+        let context = CliContext {
+            executable: self.omp_executable.clone(),
+            home_dir: self.home_dir.clone(),
+            root_dir: self.user_data_dir.clone(),
+            extra_env: Vec::new(),
+        };
+        for schedule in due.into_iter().take(2) {
+            let scheduled_for = schedule.next_run_at.clone().unwrap_or_default();
+            let Some(project) = self
+                .projects
+                .iter()
+                .find(|project| project.id == schedule.target.project_id)
+                .cloned()
+            else {
+                self.record_schedule_outcome(
+                    &store,
+                    &schedule.id,
+                    &scheduled_for,
+                    "failed",
+                    None,
+                    Some("Schedule target project is not loaded".to_string()),
+                );
+                continue;
+            };
+            let session = schedule
+                .target
+                .session_id
+                .as_ref()
+                .and_then(|id| self.sessions.iter().find(|session| session.id == *id))
+                .cloned();
+            let cwd = session
+                .as_ref()
+                .map(|session| session.project_path.clone())
+                .unwrap_or_else(|| project.primary_folder.clone());
+            let mut params = json!({ "cwd": cwd });
+            if let Some(session) = &session {
+                params["sessionPath"] = json!(session.file_path);
+            }
+            if !schedule.execution.model.is_empty() {
+                params["model"] = json!(schedule.execution.model);
+            }
+            if !schedule.execution.thinking.is_empty() {
+                params["thinking"] = json!(schedule.execution.thinking);
+            }
+            let started = {
+                let store = store.lock().expect("state lock");
+                self.agents
+                    .start(&store, Platform::current(), &context, &params)
+            };
+            match started {
+                Ok(info) => {
+                    let runtime_id = info
+                        .get("runtimeId")
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
+                    let command = runtime_id.as_deref().map(|runtime_id| {
+                        self.agents.command(
+                            runtime_id,
+                            &json!({ "type": "prompt", "message": schedule.prompt }),
+                        )
+                    });
+                    let (status, error) = match command {
+                        Some(Ok(response))
+                            if response.get("success").and_then(Value::as_bool) == Some(true) =>
+                        {
+                            ("running".to_string(), None)
+                        }
+                        Some(Ok(response)) => (
+                            "failed".to_string(),
+                            Some(
+                                response
+                                    .pointer("/error/message")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("OMP rejected the scheduled prompt")
+                                    .to_string(),
+                            ),
+                        ),
+                        Some(Err(error)) => ("failed".to_string(), Some(error.message)),
+                        None => (
+                            "failed".to_string(),
+                            Some("The scheduled runtime did not return an id".to_string()),
+                        ),
+                    };
+                    if status == "failed"
+                        && let Some(runtime_id) = runtime_id.as_deref()
+                    {
+                        self.agents.stop(runtime_id);
+                    }
+                    self.record_schedule_outcome(
+                        &store,
+                        &schedule.id,
+                        &scheduled_for,
+                        &status,
+                        runtime_id,
+                        error,
+                    );
+                }
+                Err(error) => {
+                    self.record_schedule_outcome(
+                        &store,
+                        &schedule.id,
+                        &scheduled_for,
+                        "failed",
+                        None,
+                        Some(error.message),
+                    );
+                }
+            }
+        }
+        if self.view == AppView::Schedules {
+            self.refresh_schedules();
+        }
+        cx.notify();
+    }
+
+    fn record_schedule_outcome(
+        &self,
+        store: &Arc<Mutex<StateStore>>,
+        id: &str,
+        scheduled_for: &str,
+        status: &str,
+        session_id: Option<String>,
+        error: Option<String>,
+    ) {
+        let now = Utc::now();
+        let outcome = scheduler::ScheduleRunOutcome {
+            status: status.to_string(),
+            session_id,
+            error,
+        };
+        let mut store = store.lock().expect("state lock");
+        let _ = scheduler::record(&mut store, id, scheduled_for, &outcome, now);
     }
 
     pub fn update_setting(&mut self, patch: Value, cx: &mut Context<Self>) {
@@ -981,6 +1219,230 @@ impl Workspace {
                     .child(value),
             )
             .on_click(cx.listener(move |this, _, window, cx| on_click(this, window, cx)))
+    }
+
+    fn schedules_page(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = cx.theme().colors;
+        self.refresh_schedules();
+        let store_available = self.store.is_some();
+        let rows = self
+            .schedules
+            .iter()
+            .map(|schedule| {
+                let id = schedule
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let title = schedule
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Untitled schedule")
+                    .to_string();
+                let project = schedule
+                    .pointer("/target/projectId")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let next_run = schedule
+                    .get("nextRunAt")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                let status = schedule
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown")
+                    .to_string();
+                let last_run = schedule
+                    .get("runs")
+                    .and_then(Value::as_array)
+                    .and_then(|runs| runs.last())
+                    .map(|run| {
+                        let status = run
+                            .get("status")
+                            .and_then(Value::as_str)
+                            .unwrap_or("unknown");
+                        match run.get("error").and_then(Value::as_str) {
+                            Some(error) => format!("Last run: {status} · {error}"),
+                            None => format!("Last run: {status}"),
+                        }
+                    });
+                (id, title, project, next_run, status, last_run)
+            })
+            .collect::<Vec<_>>();
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .h_full()
+            .p_6()
+            .gap_3()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .id("schedules-back")
+                            .aria_label("Back to workspace")
+                            .px_2()
+                            .py_1()
+                            .rounded(px(6.0))
+                            .border_1()
+                            .border_color(colors.border)
+                            .text_xs()
+                            .text_color(colors.muted_foreground)
+                            .child("‹ Workspace")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.view = AppView::Workspace;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child("Schedules"),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .id("schedules-refresh")
+                            .aria_label("Refresh schedules")
+                            .px_2()
+                            .py_1()
+                            .rounded(px(6.0))
+                            .border_1()
+                            .border_color(colors.border)
+                            .text_xs()
+                            .child("Refresh")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.refresh_schedules();
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .when(!store_available, |element| {
+                element.child(
+                    div()
+                        .text_sm()
+                        .text_color(colors.muted_foreground)
+                        .child("The desktop state store is unavailable."),
+                )
+            })
+            .when(store_available && rows.is_empty(), |element| {
+                element.child(
+                    div()
+                        .text_sm()
+                        .text_color(colors.muted_foreground)
+                        .child("No scheduled work yet."),
+                )
+            })
+            .children(
+                rows.into_iter()
+                    .map(|(id, title, project, next_run, status, last_run)| {
+                        let active = status == "active";
+                        let status_color = match status.as_str() {
+                            "active" => colors.success,
+                            "blocked" => colors.danger,
+                            _ => colors.muted_foreground,
+                        };
+                        let toggle_label = if active { "Pause" } else { "Resume" };
+                        let toggle_status = if active { "paused" } else { "active" };
+                        let toggle_id = format!("schedule-toggle-{id}");
+                        let delete_id = format!("schedule-delete-{id}");
+                        let toggle_schedule = id.clone();
+                        let delete_schedule = id.clone();
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .px_3()
+                            .py_2()
+                            .rounded(px(8.0))
+                            .border_1()
+                            .border_color(colors.border)
+                            .text_sm()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .font_weight(gpui::FontWeight::MEDIUM)
+                                            .text_color(colors.foreground)
+                                            .child(title),
+                                    )
+                                    .child(div().flex_1())
+                                    .child(div().text_xs().text_color(status_color).child(status)),
+                            )
+                            .child(div().text_xs().text_color(colors.muted_foreground).child(
+                                if project.is_empty() {
+                                    "Project —".to_string()
+                                } else {
+                                    format!("Project {project}")
+                                },
+                            ))
+                            .child(div().text_xs().text_color(colors.muted_foreground).child(
+                                match next_run {
+                                    Some(at) => format!("Next run {at}"),
+                                    None => "Next run —".to_string(),
+                                },
+                            ))
+                            .children(last_run.map(|last_run| {
+                                div()
+                                    .text_xs()
+                                    .text_color(colors.muted_foreground)
+                                    .child(last_run)
+                            }))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .id(toggle_id)
+                                            .aria_label(toggle_label)
+                                            .px_2()
+                                            .py_1()
+                                            .rounded(px(6.0))
+                                            .border_1()
+                                            .border_color(colors.border)
+                                            .text_xs()
+                                            .text_color(colors.foreground)
+                                            .hover(|style| style.bg(colors.accent))
+                                            .child(toggle_label)
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.set_schedule_status(
+                                                    &toggle_schedule,
+                                                    toggle_status,
+                                                    cx,
+                                                );
+                                            })),
+                                    )
+                                    .child(
+                                        div()
+                                            .id(delete_id)
+                                            .aria_label("Delete")
+                                            .px_2()
+                                            .py_1()
+                                            .rounded(px(6.0))
+                                            .border_1()
+                                            .border_color(colors.border)
+                                            .text_xs()
+                                            .text_color(colors.danger)
+                                            .hover(|style| style.bg(colors.accent))
+                                            .child("Delete")
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.delete_schedule(&delete_schedule, cx);
+                                            })),
+                                    ),
+                            )
+                    }),
+            )
     }
 
     pub fn refresh_plugins(&mut self) {
@@ -1841,6 +2303,16 @@ impl Render for Workspace {
                 .text_color(colors.foreground)
                 .when(show_sidebar, |element| element.child(self.sidebar(cx)))
                 .child(self.plugins_page(cx));
+        }
+        if self.view == AppView::Schedules {
+            return div()
+                .flex()
+                .flex_row()
+                .size_full()
+                .bg(colors.background)
+                .text_color(colors.foreground)
+                .when(show_sidebar, |element| element.child(self.sidebar(cx)))
+                .child(self.schedules_page(cx));
         }
         div()
             .relative()
