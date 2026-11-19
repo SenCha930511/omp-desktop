@@ -23,7 +23,7 @@ variants of the same Electron scenario, so the distinct-scenario count is about
 | Terminal | `terminal.rs` PTY helpers, tabs, per-session restore, panel render test |
 | Live voice | `app.rs` live-event helper tests, pane render test; dictation is not implemented |
 | Updater feed | `prepare-rust-update-feed.mjs` validation tests; release.yml is not wired |
-| Parity harness | `tests/e2e_parity.rs`, 68 tests mapping to about 64 distinct scenarios |
+| Parity harness | `tests/e2e_parity.rs`, 68 tests mapping to about 65 distinct scenarios |
 | Updater | `updates.rs` state tests, Settings row render test |
 | Packaging | macOS `.app`, Linux `.deb`, Windows NSIS packaged-smoke CI jobs |
 | Conformance | 10 files, 20 tests against the Rust adapter on macOS, Linux, and Windows |
@@ -31,7 +31,7 @@ variants of the same Electron scenario, so the distinct-scenario count is about
 ## Groups that remain unclosed
 
 - Wiring the updater feed and signatures into `release.yml`.
-- The remaining 24 Playwright scenarios, including ask_user,
+- The remaining 23 Playwright scenarios, including ask_user,
   notification capture, terminal selection context, and the responsive workspace.
 - The final Electron cutover gate.
 
