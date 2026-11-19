@@ -94,6 +94,36 @@ pub fn normalize_screen_text(contents: &str) -> String {
     lines.join("\n")
 }
 
+/// The label one tab shows: the shell it started and the directory it is in.
+pub fn tab_label(shell: &str, cwd: Option<&Path>) -> String {
+    format!(
+        "{shell} · {}",
+        cwd.map(|path| path.display().to_string())
+            .unwrap_or_else(|| "home".to_string())
+    )
+}
+
+/// The tab that becomes active after `closing` leaves `len` tabs.
+///
+/// Closing the active tab selects the one that slides into its place, or the
+/// one before it when the last tab was active. Closing another tab keeps the
+/// active one, shifted down when an earlier tab went away. `None` means no tab
+/// is left and the panel should close.
+pub fn tab_after_close(active: usize, closing: usize, len: usize) -> Option<usize> {
+    if len <= 1 {
+        return None;
+    }
+    let remaining = len - 1;
+    let next = if closing < active {
+        active - 1
+    } else if closing == active {
+        active.min(remaining - 1)
+    } else {
+        active
+    };
+    Some(next.min(remaining - 1))
+}
+
 /// Parser state shared between the reader thread and the UI thread.
 struct TerminalState {
     parser: Parser,
