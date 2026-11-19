@@ -18,7 +18,7 @@ use gpui_kit::*;
 use omp_core::agent::AgentManager;
 use omp_core::geometry::{ResolvedLayout, UiGeometry};
 use omp_core::git::{self, GitStatus};
-use omp_core::models::CliContext;
+use omp_core::models::{self, CliContext, ModelCatalog, ModelDescriptor};
 use omp_core::plugins::{self, PluginCatalog};
 use omp_core::projects::{self, ProjectRecord};
 use omp_core::scheduler;
@@ -260,6 +260,69 @@ fn context_usage_label(usage: &ContextUsage) -> String {
     )
 }
 
+/// How many catalog models the Settings picker lists at once.
+///
+/// The catalog is the harness's whole provider list, which can run to
+/// hundreds of entries; the picker is a shortcut to the handful the user
+/// switches between, not a catalog browser.
+const MODEL_PICKER_LIMIT: usize = 12;
+
+/// The `lastSelectedModels` key for one catalog model: `provider/id`.
+///
+/// The provider is everything before the first `/`, so a model id may itself
+/// contain slashes (`openrouter/anthropic/claude-…` stays one selection).
+fn model_key(provider: &str, id: &str) -> String {
+    format!("{provider}/{id}")
+}
+
+/// Splits a persisted `provider/id` selection back into its halves.
+///
+/// An empty key (the harness default), or one with an empty half on either
+/// side of the first `/`, is not a selection.
+fn parse_model_key(key: &str) -> Option<(&str, &str)> {
+    let (provider, id) = key.split_once('/')?;
+    if provider.is_empty() || id.is_empty() {
+        return None;
+    }
+    Some((provider, id))
+}
+
+/// The composer footer's model label. An empty selection is the harness
+/// default, which the app cannot name without a catalog.
+fn composer_model_label(model: &str) -> String {
+    if model.is_empty() {
+        "Model: auto".to_string()
+    } else {
+        format!("Model: {model}")
+    }
+}
+
+/// The catalog rows the Settings picker lists: at most [`MODEL_PICKER_LIMIT`],
+/// with the current selection kept even when it falls past the cap.
+///
+/// A selection the catalog does not carry stays out of the list; the picker's
+/// current-model row is what shows it.
+fn visible_models<'a>(models: &'a [ModelDescriptor], selected: &str) -> Vec<&'a ModelDescriptor> {
+    let mut visible: Vec<&ModelDescriptor> = models.iter().take(MODEL_PICKER_LIMIT).collect();
+    if selected.is_empty()
+        || visible
+            .iter()
+            .any(|model| model_key(&model.provider, &model.id) == selected)
+    {
+        return visible;
+    }
+    if let Some(current) = models
+        .iter()
+        .find(|model| model_key(&model.provider, &model.id) == selected)
+    {
+        if visible.len() == MODEL_PICKER_LIMIT {
+            visible.pop();
+        }
+        visible.push(current);
+    }
+    visible
+}
+
 /// Draws the toolbar's context dial: the window's fill as a percent, ringed in
 /// the warning colour as it nears the window's limit.
 ///
@@ -361,6 +424,14 @@ pub struct Workspace {
     view: AppView,
     plugin_catalog: Option<PluginCatalog>,
     plugin_error: Option<String>,
+    // The Settings picker's model list. It is loaded once from the harness
+    // when Settings opens and cached here, so switching views never spawns
+    // `omp models` again.
+    model_catalog: Option<ModelCatalog>,
+    model_load_task: Option<Task<()>>,
+    // Why the last `set_model` was refused. The persisted default still
+    // applies to the next runtime, so this is a notice, not a failure state.
+    model_status: Option<String>,
     schedules: Vec<Value>,
     // The in-app activity list mirrors the persisted notifications: the state
     // file is the source of truth, so clearing here goes through `store.update`.
@@ -563,6 +634,9 @@ impl Workspace {
             view: AppView::Workspace,
             plugin_catalog: None,
             plugin_error: None,
+            model_catalog: None,
+            model_load_task: None,
+            model_status: None,
             schedules: Vec::new(),
             notifications: Vec::new(),
             right_pane: RightPane::Launcher,
@@ -879,6 +953,20 @@ impl Workspace {
                 })
             })
             .collect();
+        // The Settings picker's view of the catalog: the bounded list the page
+        // draws, the persisted selection the composer footer reads, and why
+        // the list is empty when it is.
+        let selected_model = self.settings.last_selected_model();
+        let available_models: Vec<String> = self
+            .model_catalog
+            .as_ref()
+            .map(|catalog| {
+                visible_models(&catalog.models, &selected_model)
+                    .into_iter()
+                    .map(|model| model_key(&model.provider, &model.id))
+                    .collect()
+            })
+            .unwrap_or_default();
         json!({
             "view": self.view.name(),
             "rightPane": self.right_pane.name(),
@@ -923,6 +1011,17 @@ impl Workspace {
             "settings": {
                 "theme": self.settings.theme,
                 "density": self.settings.conversation_density,
+                // The persisted model selection the composer footer reads.
+                "selectedModel": selected_model,
+            },
+            // The Settings picker: the bounded catalog list, the selection it
+            // highlights, and a load failure (the current model still works).
+            "models": {
+                "selected": selected_model,
+                "available": available_models,
+                "error": self.model_catalog_error(),
+                "loading": self.model_load_task.is_some(),
+                "status": self.model_status,
             },
             "composer": { "text": self.composer.read(cx).value().to_string() },
             "files": {
@@ -3433,14 +3532,7 @@ impl Workspace {
                         "Enter to send · Ctrl+Enter to follow up"
                     })
                     .child(div().flex_1())
-                    .child({
-                        let model = self.settings.last_selected_model();
-                        if model.is_empty() {
-                            "Model: auto".to_string()
-                        } else {
-                            format!("Model: {model}")
-                        }
-                    }),
+                    .child(self.model_footer()),
             )
     }
 
@@ -3448,6 +3540,11 @@ impl Workspace {
         self.view = view;
         if view == AppView::Schedules {
             self.refresh_schedules();
+        }
+        if view == AppView::Settings {
+            // Opening Settings is what needs the picker's list; the load is
+            // cached, so every later visit reuses it.
+            self.ensure_models(cx);
         }
         self.apply_overview_pin();
         cx.notify();
@@ -3821,6 +3918,99 @@ impl Workspace {
         cx.notify();
     }
 
+    /// The composer footer's model label, kept in sync with the selection.
+    pub fn model_footer(&self) -> String {
+        composer_model_label(&self.settings.last_selected_model())
+    }
+
+    /// Loads the harness model catalog once and caches it in the workspace.
+    ///
+    /// `omp models --json` spawns the harness, so it runs on the background
+    /// executor: the Settings page draws the current model immediately and the
+    /// list arrives on a later frame. A cached catalog, or one already in
+    /// flight, is reused instead of spawning the harness again.
+    fn ensure_models(&mut self, cx: &mut Context<Self>) {
+        if self.model_catalog.is_some() || self.model_load_task.is_some() {
+            return;
+        }
+        let context = CliContext {
+            executable: self.omp_executable.clone(),
+            home_dir: self.home_dir.clone(),
+            root_dir: self.user_data_dir.clone(),
+            extra_env: Vec::new(),
+        };
+        self.model_load_task = Some(cx.spawn(async move |this, cx| {
+            let catalog = cx
+                .background_executor()
+                .spawn(async move { models::load_catalog(&context) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.model_load_task = None;
+                this.apply_model_catalog(catalog);
+                cx.notify();
+            });
+        }));
+    }
+
+    /// Replaces the cached catalog the Settings picker lists.
+    ///
+    /// `load_catalog` reports a harness that could not answer as an empty
+    /// catalog with a warning, so a load failure is visible through
+    /// [`Self::model_catalog_error`] instead of leaving the picker blank.
+    pub fn apply_model_catalog(&mut self, catalog: ModelCatalog) {
+        self.model_catalog = Some(catalog);
+    }
+
+    /// Why the picker has no catalog models, if it has none. The current
+    /// selection stays selectable either way, so this is inline text rather
+    /// than a failure state.
+    fn model_catalog_error(&self) -> Option<String> {
+        let catalog = self.model_catalog.as_ref()?;
+        if !catalog.models.is_empty() {
+            return None;
+        }
+        Some(
+            catalog
+                .warning
+                .clone()
+                .unwrap_or_else(|| "OMP returned an empty model catalog.".to_string()),
+        )
+    }
+
+    /// Selects a catalog model by its `provider/id` key: the choice becomes the
+    /// persisted harness default, the composer footer follows it, and a live
+    /// runtime is switched with `set_model`.
+    ///
+    /// A rejected `set_model` is reported in Settings; the persisted default
+    /// still applies to the next runtime, so it is not rolled back.
+    pub fn select_model(&mut self, key: &str, cx: &mut Context<Self>) {
+        let Some((provider, id)) = parse_model_key(key) else {
+            return;
+        };
+        self.update_setting(json!({ "lastSelectedModels": { "omp": key } }), cx);
+        self.model_status = None;
+        if let Some(runtime_id) = self.runtime_id.clone() {
+            match self.agents.command(
+                &runtime_id,
+                &json!({ "type": "set_model", "provider": provider, "modelId": id }),
+            ) {
+                Ok(response) if response.get("success").and_then(Value::as_bool) == Some(true) => {}
+                Ok(response) => {
+                    let message = response
+                        .pointer("/error/message")
+                        .and_then(Value::as_str)
+                        .unwrap_or("OMP rejected the model switch");
+                    self.model_status = Some(format!("OMP could not switch the model: {message}"));
+                }
+                Err(error) => {
+                    self.model_status =
+                        Some(format!("OMP could not switch the model: {}", error.message));
+                }
+            }
+        }
+        cx.notify();
+    }
+
     /// Check the release feed off the UI thread and reflect the outcome in the
     /// Settings row. This only reads the feed; it never downloads or installs.
     fn start_update_check(&mut self, cx: &mut Context<Self>) {
@@ -3882,6 +4072,83 @@ impl Workspace {
                     .child(value),
             )
             .on_click(cx.listener(move |this, _, window, cx| on_click(this, window, cx)))
+    }
+
+    /// One selectable catalog model in the Settings picker. The row's id and
+    /// aria label are its `provider/id` key, so the choice is addressable and
+    /// the highlighted row is the persisted selection.
+    fn model_row(
+        key: String,
+        name: String,
+        selected: bool,
+        colors: ThemeColor,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let detail = if selected {
+            format!("{key} · selected")
+        } else {
+            key.clone()
+        };
+        div()
+            .id(SharedString::from(key.clone()))
+            .aria_label(key.clone())
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_3()
+            .py_2()
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(if selected {
+                colors.primary
+            } else {
+                colors.border
+            })
+            .text_sm()
+            .text_color(colors.foreground)
+            .hover(|style| style.bg(colors.accent))
+            .child(name)
+            .child(div().flex_1())
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(colors.muted_foreground)
+                    .child(detail),
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.select_model(&key, cx);
+            }))
+            .into_any_element()
+    }
+
+    /// The picker's current selection. It is drawn even when the catalog
+    /// cannot list it, because the persisted default is usable on its own.
+    fn current_model_row(model: &str, colors: ThemeColor) -> AnyElement {
+        let value = if model.is_empty() {
+            "auto".to_string()
+        } else {
+            model.to_string()
+        };
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_3()
+            .py_2()
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(colors.primary)
+            .text_sm()
+            .text_color(colors.foreground)
+            .child("Current model")
+            .child(div().flex_1())
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(colors.muted_foreground)
+                    .child(value),
+            )
+            .into_any_element()
     }
 
     fn schedules_page(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -4337,13 +4604,42 @@ impl Workspace {
             omp_core::settings::MessageEnterAction::Steer => "steer",
             omp_core::settings::MessageEnterAction::Queue => "queue",
         };
+        // The picker's list is the cached catalog, bounded and kept in sync
+        // with the persisted selection; its failure is inline text, not a
+        // reason to hide the current model.
+        let selected_model = self.settings.last_selected_model();
+        let model_error = self.model_catalog_error();
+        let model_loading = self.model_load_task.is_some();
+        let model_status = self.model_status.clone();
+        let model_rows: Vec<(String, String, bool)> = self
+            .model_catalog
+            .as_ref()
+            .map(|catalog| {
+                visible_models(&catalog.models, &selected_model)
+                    .into_iter()
+                    .map(|model| {
+                        let key = model_key(&model.provider, &model.id);
+                        let selected = key == selected_model;
+                        (key, model.name.clone(), selected)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let model_elements: Vec<AnyElement> = model_rows
+            .into_iter()
+            .map(|(key, name, selected)| Self::model_row(key, name, selected, colors, cx))
+            .collect();
         div()
+            .id("settings-page")
             .flex()
             .flex_col()
             .flex_1()
             .h_full()
             .p_6()
             .gap_4()
+            // The picker can add up to `MODEL_PICKER_LIMIT` rows, so the page
+            // scrolls instead of clipping its last section.
+            .overflow_y_scroll()
             .child(
                 div()
                     .flex()
@@ -4417,6 +4713,42 @@ impl Workspace {
                 };
                 this.update_setting(json!({ "idleSessionMinutes": next }), cx);
             }))
+            .child(div().text_xs().text_color(colors.muted_foreground).child("MODELS"))
+            .child(Self::current_model_row(&selected_model, colors))
+            .when_some(model_error, |element, error| {
+                element.child(
+                    div()
+                        .px_3()
+                        .py_2()
+                        .rounded(px(8.0))
+                        .border_1()
+                        .border_color(colors.danger)
+                        .text_xs()
+                        .text_color(colors.danger)
+                        .child(format!("Model catalog unavailable: {error}")),
+                )
+            })
+            .when(model_loading, |element| {
+                element.child(
+                    div()
+                        .px_3()
+                        .py_2()
+                        .text_xs()
+                        .text_color(colors.muted_foreground)
+                        .child("Loading models…"),
+                )
+            })
+            .when_some(model_status, |element, status| {
+                element.child(
+                    div()
+                        .px_3()
+                        .py_2()
+                        .text_xs()
+                        .text_color(colors.danger)
+                        .child(status),
+                )
+            })
+            .children(model_elements)
             .child(div().text_xs().text_color(colors.muted_foreground).child("VOICE"))
             .child(
                 div()
@@ -6277,6 +6609,11 @@ impl Render for Workspace {
             let _ = self.browser.take_navigate_request();
         }
         if self.view == AppView::Settings {
+            // The view can also be set without `set_view` (startup restore,
+            // tests), so the first Settings frame is the other place the
+            // catalog is needed; `ensure_models` caches, so this is a no-op
+            // once a load is in flight or cached.
+            self.ensure_models(cx);
             return div()
                 .relative()
                 .flex()
@@ -6784,12 +7121,47 @@ mod tests {
         TerminalMenuAction, TerminalTabSpec, TerminalTabSpecs, UpdateCheckState, Workspace,
         WorkspaceData, append_clipboard_text, append_dictation_text, append_side_answer,
         apply_dictation_frame, apply_live_voice_event, ask_answers_ready, ask_cancel_payload,
-        ask_submit_payload, capture_path, close_confirmation, context_percent, context_usage_label,
-        group_digits, parse_ask_questions, parse_context_usage, should_confirm_close,
-        side_answer_delta, terminal_menu, terminal_menu_action, terminal_tab_bar,
-        transcript_is_at_bottom, updates, write_capture,
+        ask_submit_payload, capture_path, close_confirmation, composer_model_label,
+        context_percent, context_usage_label, group_digits, model_key, parse_ask_questions,
+        parse_context_usage, parse_model_key, should_confirm_close, side_answer_delta,
+        terminal_menu, terminal_menu_action, terminal_tab_bar, transcript_is_at_bottom, updates,
+        write_capture,
     };
     use omp_core::sessions::{TranscriptMessage, TranscriptPart};
+
+    /// A model selection is `provider/id`: the key the settings file stores,
+    /// the footer prints and `set_model` splits back apart.
+    #[test]
+    fn model_keys_round_trip_and_format_for_the_footer() {
+        assert_eq!(
+            model_key("anthropic", "claude-fixture"),
+            "anthropic/claude-fixture"
+        );
+        // A provider whose ids carry slashes keeps the first `/` as the split.
+        assert_eq!(
+            model_key("openrouter", "anthropic/claude-3.5"),
+            "openrouter/anthropic/claude-3.5"
+        );
+        assert_eq!(
+            parse_model_key("anthropic/claude-fixture"),
+            Some(("anthropic", "claude-fixture"))
+        );
+        assert_eq!(
+            parse_model_key("openrouter/anthropic/claude-3.5"),
+            Some(("openrouter", "anthropic/claude-3.5"))
+        );
+        // The harness default is the empty key, not a malformed selection.
+        assert_eq!(parse_model_key(""), None);
+        assert_eq!(parse_model_key("anthropic"), None);
+        assert_eq!(parse_model_key("/claude-fixture"), None);
+        assert_eq!(parse_model_key("anthropic/"), None);
+
+        assert_eq!(composer_model_label(""), "Model: auto");
+        assert_eq!(
+            composer_model_label("anthropic/claude-fixture"),
+            "Model: anthropic/claude-fixture"
+        );
+    }
 
     /// A capture is stamped in UTC under `<user_data_dir>/captures`, and the PNG
     /// that name points at decodes back to the frame that was written.
