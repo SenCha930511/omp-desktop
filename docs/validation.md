@@ -12,7 +12,7 @@ The required checks are exactly the seventeen normal pull-request gates:
 - `quality`
 - `hermetic-e2e`
 - `windows-state-migration`
-- `conformance (macos-14)`
+- `conformance (macos-15)`
 - `conformance (ubuntu-22.04)`
 - `conformance (windows-2022)`
 - `Rust workspace (macos-15)`
@@ -22,7 +22,7 @@ The required checks are exactly the seventeen normal pull-request gates:
 - `Rust conformance (ubuntu-22.04)`
 - `Rust conformance (windows-2022)`
 - `Rust packaged smoke`
-- `packaging-smoke (macos-14, mac, arm64, --config.mac.identity=null)`
+- `packaging-smoke (macos-15, mac, arm64, --config.mac.identity=null)`
 - `packaging-smoke (ubuntu-22.04, linux, x64)`
 - `packaging-smoke (windows-2022, win, x64)`
 
@@ -85,7 +85,7 @@ The [CI workflow](../.github/workflows/ci.yml) runs on pull requests, pushes to 
 | `quality` | Pull request, `main`, manual dispatch | TypeScript checks; configured lint and format checks; the coverage suite and thresholds; production bundle creation; bundle-size budgets; coverage artifact upload. |
 | `hermetic-e2e` | Pull request, `main`, manual dispatch | The built application passes the Playwright Electron suite on the pinned macOS runner without relying on developer state. Failure artifacts are uploaded when available. |
 | `windows-state-migration` | Pull request, `main`, manual dispatch | The state migration suite passes on a real `windows-2022` runner, including the production-platform fresh-install, migration, restart, and update path. Simulating `platform: 'win32'` on another OS is useful unit coverage but is not a substitute for this job. |
-| `conformance` | Pull request, `main`, manual dispatch | The language-agnostic conformance suite passes on `macos-14`, `ubuntu-22.04`, and `windows-2022` against the reference Node adapter or a configured `OMP_CONFORMANCE_ADAPTER_CMD`. |
+| `conformance` | Pull request, `main`, manual dispatch | The language-agnostic conformance suite passes on `macos-15`, `ubuntu-22.04`, and `windows-2022` against the reference Node adapter or a configured `OMP_CONFORMANCE_ADAPTER_CMD`. |
 | `rust` | Pull request, `main`, manual dispatch | `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test --workspace --locked`, and the conformance adapter build pass on all three desktop platforms. |
 | `rust-conformance` | Pull request, `main`, manual dispatch | The cross-language conformance suite passes against the Rust adapter with the required-capability gate active, and the adapter capability and test-count summary is uploaded as an artifact. |
 | `rust-package-smoke` | Pull request, `main`, manual dispatch | `cargo-packager` builds the macOS `.app`, the packaged binary draws a real GPUI first frame, and its smoke marker is uploaded. |

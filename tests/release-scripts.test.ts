@@ -677,7 +677,7 @@ else if (JSON.stringify(args) === ${JSON.stringify(JSON.stringify(expectedInstal
     const ciWorkflow = readFileSync('.github/workflows/ci.yml', 'utf8')
     expect(ciWorkflow).toMatch(/on:\n {2}push:\n {4}branches:\n {6}- main/)
     expect(ciWorkflow).toMatch(/packaging-smoke:\n {4}if: github\.event_name == 'pull_request'/)
-    for (const runner of ['macos-14', 'ubuntu-22.04', 'windows-2022']) expect(ciWorkflow).toContain(`runner: ${runner}`)
+    for (const runner of ['macos-15', 'ubuntu-22.04', 'windows-2022']) expect(ciWorkflow).toContain(`runner: ${runner}`)
     expect(ciWorkflow).toContain('node node_modules/electron-builder/cli.js --dir')
     expect(ciWorkflow).toContain('--publish=never')
     expect(ciWorkflow).not.toContain('--publish never')
@@ -690,7 +690,7 @@ else if (JSON.stringify(args) === ${JSON.stringify(JSON.stringify(expectedInstal
     }
     const ci = load(readFileSync('.github/workflows/ci.yml', 'utf8')) as Workflow
     const conformanceRunners = (ci.jobs.conformance?.strategy?.matrix?.include ?? []).map((entry) => entry.runner).sort()
-    expect(conformanceRunners).toEqual(['macos-14', 'ubuntu-22.04', 'windows-2022'])
+    expect(conformanceRunners).toEqual(['macos-15', 'ubuntu-22.04', 'windows-2022'])
     expect(ci.jobs.conformance?.steps?.some((step) => step.run === 'npm run test:conformance')).toBe(true)
 
     const smokeLaunchStep = ci.jobs['packaging-smoke']?.steps?.find((step) => step.name === 'Launch the packaged application')
