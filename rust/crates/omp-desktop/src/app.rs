@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -8,7 +9,7 @@ use gpui_kit::InteractiveElement as _;
 use gpui_kit::StatefulInteractiveElement as _;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::{ActiveTheme, Theme, ThemeMode};
+use gpui_kit::component::{ActiveTheme, Theme, ThemeColor, ThemeMode};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use omp_core::agent::AgentManager;
@@ -173,13 +174,18 @@ pub struct Workspace {
     dictation_pending_text: Option<String>,
     dictation_counter: u64,
     browser: BrowserPane,
-    terminal: Option<TerminalSession>,
+    // Each tab owns its own shell; `active_terminal` indexes the one the panel
+    // draws and sends input to, and stays in range while any tab is open.
+    terminals: Vec<TerminalSession>,
+    active_terminal: usize,
     terminal_open: bool,
     terminal_input: Entity<InputState>,
     _terminal_input_subscription: Subscription,
     terminal_submit_requested: bool,
     terminal_error: Option<String>,
-    terminal_task: Option<Task<()>>,
+    // One watcher per tab, woken by its session's output. A tab's watcher ends
+    // when its channel closes, so this only grows while the panel stays open.
+    terminal_tasks: Vec<Task<()>>,
     files: Vec<omp_core::projects::ProjectFileEntry>,
     files_skipped: u64,
     files_error: Option<String>,
@@ -298,13 +304,14 @@ impl Workspace {
             dictation_pending_text: None,
             dictation_counter: 0,
             browser,
-            terminal: None,
+            terminals: Vec::new(),
+            active_terminal: 0,
             terminal_open: false,
             terminal_input,
             _terminal_input_subscription: terminal_input_subscription,
             terminal_submit_requested: false,
             terminal_error: None,
-            terminal_task: None,
+            terminal_tasks: Vec::new(),
             files: Vec::new(),
             files_skipped: 0,
             files_error: None,
@@ -450,9 +457,14 @@ impl Workspace {
             },
             "terminal": {
                 "open": self.terminal_open,
-                "session": self.terminal.is_some(),
-                "running": self.terminal.as_ref().is_some_and(TerminalSession::is_running),
+                "session": !self.terminals.is_empty(),
+                "running": self
+                    .terminals
+                    .get(self.active_terminal)
+                    .is_some_and(TerminalSession::is_running),
                 "error": self.terminal_error,
+                "tabs": self.terminals.len(),
+                "activeTab": self.active_terminal,
             },
             "browser": {
                 "webviewPending": self.browser.needs_webview(),
@@ -793,10 +805,25 @@ impl Workspace {
     /// A PTY or spawn failure is shown inside the panel instead of panicking.
     fn start_terminal(&mut self, cx: &mut Context<Self>) {
         self.terminal_open = true;
-        if self.terminal.is_some() {
-            cx.notify();
-            return;
+        if self.terminals.is_empty() {
+            self.open_terminal_tab(cx);
         }
+        cx.notify();
+    }
+
+    /// Opens a tab in the selected project's directory and makes it active,
+    /// opening the panel first.
+    fn new_terminal_tab(&mut self, cx: &mut Context<Self>) {
+        self.terminal_open = true;
+        self.open_terminal_tab(cx);
+        cx.notify();
+    }
+
+    /// Starts one shell for a new tab and watches its output.
+    ///
+    /// A spawn failure is recorded instead of panicking; the panel stays open
+    /// so the message is visible and `+` can retry.
+    fn open_terminal_tab(&mut self, cx: &mut Context<Self>) {
         let cwd = self
             .project_cwd()
             .map(PathBuf::from)
@@ -805,16 +832,17 @@ impl Workspace {
         match TerminalSession::spawn(cwd.as_deref(), rows, cols) {
             Ok(session) => {
                 let notifications = session.notifications();
-                self.terminal = Some(session);
+                self.terminals.push(session);
+                self.active_terminal = self.terminals.len() - 1;
                 self.terminal_error = None;
                 // Wake on output bursts rather than polling; the channel closes
-                // when the session is dropped, which ends this task.
-                self.terminal_task = Some(cx.spawn(async move |this, cx| {
+                // when this tab's session is dropped, which ends this task.
+                self.terminal_tasks.push(cx.spawn(async move |this, cx| {
                     while notifications.recv().await.is_ok() {
                         let still_open = this
                             .update(cx, |this, cx| {
                                 cx.notify();
-                                this.terminal.is_some()
+                                !this.terminals.is_empty()
                             })
                             .unwrap_or(false);
                         if !still_open {
@@ -825,35 +853,59 @@ impl Workspace {
             }
             Err(error) => self.terminal_error = Some(error),
         }
-        cx.notify();
     }
 
-    /// Closes the panel; dropping the session kills the shell.
+    /// Makes `index` the tab the panel draws and sends input to.
+    fn select_terminal_tab(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index < self.terminals.len() {
+            self.active_terminal = index;
+            cx.notify();
+        }
+    }
+
+    /// Closes one tab, selecting the nearest remaining one; closing the last
+    /// tab closes the panel. Dropping the session kills its shell.
+    fn close_terminal_tab(&mut self, index: usize, cx: &mut Context<Self>) {
+        let len = self.terminals.len();
+        if index >= len {
+            return;
+        }
+        self.terminals.remove(index);
+        match terminal::tab_after_close(self.active_terminal, index, len) {
+            Some(next) => {
+                self.active_terminal = next;
+                cx.notify();
+            }
+            None => self.close_terminal(cx),
+        }
+    }
+
+    /// Closes the panel and every tab; dropping the sessions kills the shells.
     fn close_terminal(&mut self, cx: &mut Context<Self>) {
-        self.terminal = None;
-        self.terminal_task = None;
+        self.terminals.clear();
+        self.terminal_tasks.clear();
+        self.active_terminal = 0;
         self.terminal_open = false;
         self.terminal_error = None;
         cx.notify();
     }
 
-    /// Keeps the shell's column count in step with the center column.
+    /// Keeps every shell's column count in step with the center column.
     fn resize_terminal(&mut self) {
         let (rows, cols) = terminal::size_for_width(self.layout.center_width);
-        let Some(session) = self.terminal.as_mut() else {
-            return;
-        };
-        if let Err(error) = session.resize(rows, cols) {
-            self.terminal_error = Some(error);
+        for session in &mut self.terminals {
+            if let Err(error) = session.resize(rows, cols) {
+                self.terminal_error = Some(error);
+            }
         }
     }
 
-    /// Sends the input line to the shell and clears it.
+    /// Sends the input line to the active tab's shell and clears it.
     fn send_terminal_line(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let line = self.terminal_input.read(cx).value().to_string();
         self.terminal_input
             .update(cx, |input, cx| input.set_value("", window, cx));
-        if let Some(session) = self.terminal.as_mut()
+        if let Some(session) = self.terminals.get_mut(self.active_terminal)
             && let Err(error) = session.send_line(&line)
         {
             self.terminal_error = Some(error);
@@ -863,25 +915,40 @@ impl Workspace {
 
     fn terminal_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.theme().colors;
-        let (screen, running, location) = match self.terminal.as_ref() {
+        let active = self.terminals.get(self.active_terminal);
+        let (screen, running, location) = match active {
             Some(session) => (
                 session.screen_text(),
                 session.is_running(),
-                format!(
-                    "{} · {}",
-                    session.shell(),
-                    session
-                        .cwd()
-                        .map(|path| path.display().to_string())
-                        .unwrap_or_else(|| "home".to_string())
-                ),
+                terminal::tab_label(session.shell(), session.cwd()),
             ),
             None => (String::new(), false, "not started".to_string()),
         };
         let error = self
             .terminal_error
             .clone()
-            .or_else(|| self.terminal.as_ref().and_then(TerminalSession::error));
+            .or_else(|| active.and_then(TerminalSession::error));
+        let labels: Vec<String> = self
+            .terminals
+            .iter()
+            .map(|session| terminal::tab_label(session.shell(), session.cwd()))
+            .collect();
+        let entity = cx.entity();
+        let select = {
+            let entity = entity.clone();
+            move |index: usize, _: &mut Window, cx: &mut App| {
+                entity.update(cx, |this, cx| this.select_terminal_tab(index, cx));
+            }
+        };
+        let close_tab = {
+            let entity = entity.clone();
+            move |index: usize, _: &mut Window, cx: &mut App| {
+                entity.update(cx, |this, cx| this.close_terminal_tab(index, cx));
+            }
+        };
+        let new_tab = move |_: &mut Window, cx: &mut App| {
+            entity.update(cx, |this, cx| this.new_terminal_tab(cx));
+        };
         div()
             .flex()
             .flex_col()
@@ -914,6 +981,14 @@ impl Workspace {
                             .on_click(cx.listener(|this, _, _, cx| this.close_terminal(cx))),
                     ),
             )
+            .child(terminal_tab_bar(
+                &labels,
+                self.active_terminal,
+                colors,
+                select,
+                close_tab,
+                new_tab,
+            ))
             .child(
                 div()
                     .id("terminal-screen")
@@ -3852,6 +3927,76 @@ impl Workspace {
     }
 }
 
+/// Draws the terminal panel's tab bar: one tab per shell, then a `+` button.
+///
+/// Labels and callbacks are all it reads, so a test can render it without a
+/// live shell: selecting, closing and opening tabs are the caller's jobs.
+fn terminal_tab_bar(
+    labels: &[String],
+    active: usize,
+    colors: ThemeColor,
+    on_select: impl Fn(usize, &mut Window, &mut App) + 'static,
+    on_close: impl Fn(usize, &mut Window, &mut App) + 'static,
+    on_new: impl Fn(&mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let on_select: Rc<dyn Fn(usize, &mut Window, &mut App)> = Rc::new(on_select);
+    let on_close: Rc<dyn Fn(usize, &mut Window, &mut App)> = Rc::new(on_close);
+    let on_new: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(on_new);
+    div()
+        .id("terminal-tabs")
+        .flex()
+        .items_center()
+        .gap_1()
+        .px_3()
+        .pb_1()
+        .children(labels.iter().enumerate().map(|(index, label)| {
+            let is_active = index == active;
+            let select = Rc::clone(&on_select);
+            let close = Rc::clone(&on_close);
+            div()
+                .id(("terminal-tab", index))
+                .aria_label("Terminal tab")
+                .flex()
+                .items_center()
+                .gap_1()
+                .px_2()
+                .py_1()
+                .rounded(px(6.0))
+                .text_xs()
+                .text_color(if is_active {
+                    colors.foreground
+                } else {
+                    colors.muted_foreground
+                })
+                .when(is_active, |style| style.bg(colors.accent))
+                .hover(|style| style.bg(colors.accent))
+                .child(label.clone())
+                .child(
+                    div()
+                        .id(("terminal-tab-close", index))
+                        .aria_label("Close tab")
+                        .rounded(px(4.0))
+                        .hover(|style| style.bg(colors.background))
+                        .child(IconName::X)
+                        .on_click(move |event, window, cx| close(index, window, cx)),
+                )
+                .on_click(move |event, window, cx| select(index, window, cx))
+        }))
+        .child(
+            div()
+                .id("terminal-new-tab")
+                .aria_label("New terminal tab")
+                .px_2()
+                .py_1()
+                .rounded(px(6.0))
+                .text_xs()
+                .text_color(colors.muted_foreground)
+                .hover(|style| style.bg(colors.accent))
+                .child("+")
+                .on_click(move |event, window, cx| on_new(event, window, cx)),
+        )
+}
+
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(follow_up) = self.submit_requested.take() {
@@ -4355,19 +4500,19 @@ mod tests {
             })
             .expect("draw terminal frame");
         });
-        let (transcript, open, started) = handle
+        let (transcript, open, tabs) = handle
             .update(&mut cx, |workspace, _, _| {
                 (
                     workspace.transcript.len(),
                     workspace.terminal_open,
-                    workspace.terminal.is_some(),
+                    workspace.terminals.len(),
                 )
             })
             .expect("workspace window");
         cx.quit();
         assert_eq!(transcript, 0);
         assert!(open);
-        assert!(!started);
+        assert_eq!(tabs, 0);
     }
 
     /// Side-question deltas accumulate in order; thinking deltas are skipped.

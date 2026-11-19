@@ -357,7 +357,12 @@ fn read_loop(
 
 #[cfg(test)]
 mod tests {
-    use super::{clamp_dimension, encode_input, normalize_screen_text, size_for_width};
+    use std::path::Path;
+
+    use super::{
+        clamp_dimension, encode_input, normalize_screen_text, size_for_width, tab_after_close,
+        tab_label,
+    };
 
     #[test]
     fn input_lines_end_in_a_carriage_return() {
@@ -385,5 +390,30 @@ mod tests {
     fn dimensions_never_reach_zero() {
         assert_eq!(clamp_dimension(0, 14), 14);
         assert_eq!(clamp_dimension(1, 14), 1);
+    }
+
+    #[test]
+    fn closing_a_tab_selects_its_neighbour() {
+        // The active middle tab gives way to the one that slides into place.
+        assert_eq!(tab_after_close(1, 1, 3), Some(1));
+        // Closing the active last tab falls back to the one before it.
+        assert_eq!(tab_after_close(2, 2, 3), Some(1));
+        // Closing an earlier tab shifts the active index down with it.
+        assert_eq!(tab_after_close(2, 0, 3), Some(1));
+        // Closing a later tab leaves the active index alone.
+        assert_eq!(tab_after_close(0, 2, 3), Some(0));
+        assert_eq!(tab_after_close(0, 1, 2), Some(0));
+        // The last tab closes the panel.
+        assert_eq!(tab_after_close(0, 0, 1), None);
+        assert_eq!(tab_after_close(0, 0, 0), None);
+    }
+
+    #[test]
+    fn tab_labels_name_the_shell_and_its_directory() {
+        assert_eq!(tab_label("/bin/zsh", None), "/bin/zsh · home");
+        assert_eq!(
+            tab_label("/bin/zsh", Some(Path::new("/tmp/project"))),
+            "/bin/zsh · /tmp/project"
+        );
     }
 }

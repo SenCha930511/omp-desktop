@@ -301,5 +301,7 @@ describe('conformance: models & OMP RPC v2', () => {
     expect(wireCommands.some((c) => c.type === 'dictation_start' && c.captureId === 'conf-dictation-1')).toBe(true)
     expect(wireCommands.some((c) => c.type === 'dictation_stop')).toBe(true)
     await client.call('agent.stop', { runtimeId: runtime.runtimeId })
+    // Windows keeps the fixture's files open briefly after the child is killed.
+    await new Promise((resolve) => setTimeout(resolve, 750))
   })
 })
