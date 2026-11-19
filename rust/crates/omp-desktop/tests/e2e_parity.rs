@@ -16,6 +16,7 @@
 
 use gpui_kit::AppContext as _;
 use gpui_kit::Context;
+use gpui_kit::Focusable as _;
 use gpui_kit::MouseButton;
 use gpui_kit::TestAppContext;
 use gpui_kit::point;
@@ -25,9 +26,12 @@ use gpui_kit::test::TestEventExt as _;
 use omp_core::geometry::{CENTER_MIN_WIDTH, UiGeometry};
 use omp_core::settings::{AppSettings, ConversationDensity, MessageEnterAction, Theme};
 use omp_core::state::{CURRENT_DESKTOP_STATE_FILENAME, Platform, StateStore};
+use omp_core::turn_changes::{TurnBaseline, compute_turn_changes};
 use omp_desktop::app::{AppView, Workspace, WorkspaceData};
+use omp_desktop::ime::{CompositionGuard, IME_POST_COMPOSITION_GUARD_MS};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 fn test_data(root: &Path) -> WorkspaceData {
     WorkspaceData {
@@ -1309,4 +1313,501 @@ fn schedules_pane_reports_an_empty_list_after_delete(cx: &mut TestAppContext) {
 
     let store = open_store(root);
     assert!(omp_core::schedules::list(&store).is_empty());
+}
+
+/// The Review pane reports a clean tree, then a modified file as unstaged,
+/// staged, unstaged again, and clean once the working tree is restored.
+#[gpui_kit::test]
+fn review_pane_stages_and_unstages_a_file_through_the_snapshot(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let repo = seed_repo(root);
+
+    let mut data = test_data(root);
+    data.home_dir = root.join("home");
+    std::fs::create_dir_all(&data.home_dir).expect("home");
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.grant_project(&repo, cx);
+            workspace.set_right_pane("review", cx);
+
+            let clean = snapshot(workspace, cx);
+            assert_eq!(clean["rightPane"], "review");
+            assert_eq!(clean["review"]["error"], json!(null));
+            assert_eq!(clean["review"]["status"]["files"], json!([]));
+
+            std::fs::write(repo.join("a.txt"), "line1\nline2\n").expect("edit");
+            workspace.refresh_review();
+            let dirty = snapshot(workspace, cx);
+            assert!(
+                dirty["review"]["status"]["files"]
+                    .as_array()
+                    .expect("files")
+                    .iter()
+                    .any(|file| file["path"] == "a.txt" && file["staged"] == json!(false))
+            );
+
+            workspace.stage_path("a.txt", true, cx);
+            let staged = snapshot(workspace, cx);
+            assert!(
+                staged["review"]["status"]["files"]
+                    .as_array()
+                    .expect("files")
+                    .iter()
+                    .any(|file| file["path"] == "a.txt" && file["staged"] == json!(true))
+            );
+            assert!(
+                workspace
+                    .review_status()
+                    .expect("staged status")
+                    .files
+                    .iter()
+                    .any(|file| file.path == "a.txt" && file.staged)
+            );
+
+            workspace.stage_path("a.txt", false, cx);
+            let unstaged = snapshot(workspace, cx);
+            assert!(
+                unstaged["review"]["status"]["files"]
+                    .as_array()
+                    .expect("files")
+                    .iter()
+                    .any(|file| file["path"] == "a.txt" && file["staged"] == json!(false))
+            );
+
+            git(&repo, &["checkout", "--", "a.txt"]);
+            workspace.refresh_review();
+            let clean_again = snapshot(workspace, cx);
+            assert_eq!(clean_again["review"]["status"]["files"], json!([]));
+        })
+        .expect("workspace window");
+}
+
+/// The Browser pane keeps reporting the empty annotation defaults after a
+/// switch to another pane and back; no capture is ever left behind.
+#[gpui_kit::test]
+fn browser_annotation_defaults_survive_a_pane_switch(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, test_data(root)));
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.set_right_pane("browser", cx);
+            let first = snapshot(workspace, cx);
+            assert_eq!(first["rightPane"], "browser");
+            assert_eq!(
+                first["browser"]["annotation"],
+                json!({ "error": null, "preview": null })
+            );
+
+            workspace.set_right_pane("files", cx);
+            workspace.set_right_pane("browser", cx);
+            let second = snapshot(workspace, cx);
+            assert_eq!(second["rightPane"], "browser");
+            assert_eq!(
+                second["browser"]["annotation"],
+                json!({ "error": null, "preview": null })
+            );
+            assert_eq!(second["composer"]["text"], "");
+        })
+        .expect("workspace window");
+}
+
+/// The updater Settings row starts on the unconfigured state of a build with
+/// no feed key, and drawing the page twice leaves the row's state alone.
+///
+/// The label is private `updates` state and the row does not opt into gpui-kit
+/// observation. `debug_snapshot` has no `updater` key yet; once it does, this
+/// case should assert `updater.label`. Until then it asserts the public half:
+/// the build really is unconfigured, the Settings view and its settings are
+/// stable across frames, and the row renders without changing the snapshot.
+#[gpui_kit::test]
+fn settings_update_row_starts_unconfigured_and_stays_stable(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let handle = cx.open_window(size(px(1280.0), px(1200.0)), |window, cx| {
+        Workspace::new(window, cx, test_data(root))
+    });
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.set_view(AppView::Settings, cx)
+        })
+        .expect("settings view");
+
+    let configured = option_env!("OMP_UPDATER_PUBKEY").is_some_and(|key| !key.trim().is_empty());
+    assert!(
+        !configured,
+        "the parity build has no updater feed key, so the row starts unconfigured"
+    );
+
+    let before = handle
+        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
+        .expect("settings snapshot");
+    assert_eq!(before["view"], "settings");
+    assert_eq!(before["settings"]["theme"], "system");
+
+    for _ in 0..2 {
+        cx.update(|cx| {
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.draw(cx).clear(cx);
+            })
+            .expect("draw settings frame");
+        });
+    }
+
+    let after = handle
+        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
+        .expect("settings snapshot");
+    assert_eq!(after["view"], "settings");
+    assert_eq!(after["settings"], before["settings"]);
+}
+
+/// A composing Enter never reaches the composer: the guard blocks the commit
+/// while the preedit is marked and through the 50ms settle window, and the
+/// marked text stays in the composer untouched.
+#[gpui_kit::test]
+fn ime_composition_guard_keeps_a_composing_key_out_of_the_composer(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let handle = cx.open_window(size(px(1280.0), px(800.0)), |window, cx| {
+        Workspace::new(window, cx, test_data(root))
+    });
+    let composer = handle
+        .update(cx, |workspace, _, _| workspace.composer_entity().clone())
+        .expect("composer");
+
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            use gpui_kit::test::{TestInput, TestWindowExt as _};
+
+            window.render_frame(cx);
+            let focus = composer.read(cx).focus_handle(cx);
+            window.focus(&focus, cx);
+            let bounds = gpui_kit::Bounds::new(point(px(0.0), px(0.0)), size(px(0.0), px(0.0)));
+            {
+                let mut input = TestInput::new(
+                    gpui_kit::ElementInputHandler::new(bounds, composer.clone()),
+                    window,
+                );
+                input.compose_text(None, "にほん", Some(3..3), cx);
+                assert_eq!(input.marked_text_range(cx), Some(0..3));
+            }
+            assert_eq!(composer.read(cx).value().to_string(), "にほん");
+
+            let started = Instant::now();
+            let mut guard = CompositionGuard::default();
+            guard.composition_started();
+            assert!(guard.is_composing());
+            assert!(guard.blocks_commit_key(started));
+
+            // The composing key must not reach the send/clear path: the marked
+            // text is still the whole draft and nothing was submitted.
+            window.press("enter", cx);
+            assert_eq!(composer.read(cx).value().to_string(), "にほん");
+
+            {
+                let mut input = TestInput::new(
+                    gpui_kit::ElementInputHandler::new(bounds, composer.clone()),
+                    window,
+                );
+                input.unmark_text(cx);
+                assert_eq!(input.marked_text_range(cx), None);
+            }
+            assert_eq!(composer.read(cx).value().to_string(), "にほん");
+
+            let ended = Instant::now();
+            guard.composition_ended(ended);
+            assert!(!guard.is_composing());
+            assert!(guard.blocks_commit_key(
+                ended + Duration::from_millis(IME_POST_COMPOSITION_GUARD_MS - 1)
+            ));
+            assert!(
+                !guard.blocks_commit_key(
+                    ended + Duration::from_millis(IME_POST_COMPOSITION_GUARD_MS)
+                )
+            );
+        })
+        .expect("composer frame");
+    });
+
+    let state = handle
+        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
+        .expect("composer snapshot");
+    assert_eq!(state["composer"]["text"], "にほん");
+    assert_eq!(state["transcript"], json!([]));
+}
+
+/// The turn diff is empty against a clean baseline and reports the seeded edit
+/// once the working tree changes; both sides are the serialized snapshot the
+/// workspace's turn card renders.
+#[gpui_kit::test]
+fn turn_diff_is_empty_before_a_turn_and_reports_a_seeded_change(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let repo = seed_repo(root);
+    let home = root.join("home");
+    std::fs::create_dir_all(&home).expect("home");
+    let mut store = open_store(root);
+    omp_core::projects::grant_project(
+        &mut store,
+        &home,
+        Platform::current(),
+        repo.to_str().expect("repo path"),
+    )
+    .expect("grant");
+
+    let cwd = repo.to_str().expect("repo path");
+    let baseline = TurnBaseline::capture(omp_core::git::snapshot_files(
+        &store,
+        Platform::current(),
+        cwd,
+    ));
+    assert!(baseline.is_empty(), "a clean repo has no baseline entries");
+    let before = compute_turn_changes(
+        &baseline,
+        omp_core::git::snapshot_files(&store, Platform::current(), cwd),
+    );
+    assert!(before.is_empty());
+    assert_eq!(
+        serde_json::to_value(&before).expect("turn diff json"),
+        json!({ "files": [], "additions": 0, "deletions": 0 })
+    );
+
+    std::fs::write(repo.join("a.txt"), "line1\nline2\n").expect("edit");
+    let after = compute_turn_changes(
+        &baseline,
+        omp_core::git::snapshot_files(&store, Platform::current(), cwd),
+    );
+    assert!(!after.is_empty());
+    let snapshot = serde_json::to_value(&after).expect("turn diff json");
+    assert_eq!(snapshot["files"][0]["path"], "a.txt");
+    assert_eq!(snapshot["files"][0]["additions"], 1);
+    assert_eq!(snapshot["additions"], 1);
+    assert_eq!(snapshot["deletions"], 0);
+}
+
+/// The session menu's Pin action toggles back off and never reorders the
+/// catalog: `Older` keeps its index and the state file agrees at both ends.
+#[gpui_kit::test]
+fn session_menu_pin_toggles_off_without_reordering(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let (home, _older, _newer) = seed_two_sessions(root);
+
+    let store = open_store(root);
+    let catalog = omp_core::sessions::list_sessions(&store, &home, false, None);
+    drop(store);
+    let mut data = test_data(root);
+    data.home_dir = home.clone();
+    data.sessions = catalog;
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.select_session(1, cx);
+            workspace.session_menu_action("Pin", cx);
+            let pinned = snapshot(workspace, cx);
+            assert_eq!(pinned["sessions"][0]["title"], "Newer");
+            assert_eq!(pinned["sessions"][1]["title"], "Older");
+            assert_eq!(pinned["sessions"][1]["pinned"], json!(true));
+            assert_eq!(pinned["selectedSession"], json!(1));
+
+            workspace.session_menu_action("Pin", cx);
+            let unpinned = snapshot(workspace, cx);
+            assert_eq!(unpinned["sessions"][0]["title"], "Newer");
+            assert_eq!(unpinned["sessions"][1]["title"], "Older");
+            assert_eq!(unpinned["sessions"][1]["pinned"], json!(false));
+            assert_eq!(unpinned["sessions"][0]["pinned"], json!(false));
+            assert_eq!(unpinned["selectedSession"], json!(1));
+            assert_eq!(transcript_text(workspace), ["older prompt", "older reply"]);
+        })
+        .expect("workspace window");
+
+    let store = open_store(root);
+    let records = omp_core::sessions::list_sessions(&store, &home, false, None);
+    let titles: Vec<&str> = records.iter().map(|record| record.title.as_str()).collect();
+    assert_eq!(titles, ["Newer", "Older"]);
+    assert!(records.iter().all(|record| !record.pinned));
+}
+
+/// Sending without a runtime keeps the draft and adds nothing to the
+/// transcript; the no-runtime branch records the error in the composer banner
+/// instead of consuming the prompt. `debug_snapshot` has no `runtimeError` key
+/// yet; once it does, this case should assert the banner text here.
+#[gpui_kit::test]
+fn composer_send_without_a_runtime_keeps_the_draft(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, test_data(root)));
+    handle
+        .update(cx, |workspace, window, cx| {
+            let composer = workspace.composer_entity().clone();
+            composer.update(cx, |state, cx| state.set_value("unsent prompt", window, cx));
+
+            workspace.send_prompt(window, cx);
+            let kept = snapshot(workspace, cx);
+            assert_eq!(kept["composer"]["text"], "unsent prompt");
+            assert_eq!(kept["transcript"], json!([]));
+            assert!(workspace.transcript_messages().is_empty());
+
+            // An empty draft is a no-op on the same path.
+            composer.update(cx, |state, cx| state.set_value("", window, cx));
+            workspace.send_prompt(window, cx);
+            assert_eq!(snapshot(workspace, cx)["composer"]["text"], "");
+            assert!(workspace.transcript_messages().is_empty());
+        })
+        .expect("workspace window");
+}
+
+/// Leaving Settings with `set_view` returns to the workspace with the selected
+/// session and its transcript intact.
+#[gpui_kit::test]
+fn settings_exit_returns_to_the_workspace_with_the_selected_session(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let (home, _older, _newer) = seed_two_sessions(root);
+
+    let store = open_store(root);
+    let catalog = omp_core::sessions::list_sessions(&store, &home, false, None);
+    drop(store);
+    let mut data = test_data(root);
+    data.home_dir = home;
+    data.sessions = catalog;
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.select_session(0, cx);
+            assert_eq!(transcript_text(workspace), ["newer prompt", "newer reply"]);
+
+            workspace.set_view(AppView::Settings, cx);
+            assert_eq!(snapshot(workspace, cx)["view"], "settings");
+            assert_eq!(snapshot(workspace, cx)["selectedSession"], json!(0));
+
+            workspace.set_view(AppView::Workspace, cx);
+            let restored = snapshot(workspace, cx);
+            assert_eq!(restored["view"], "workspace");
+            assert_eq!(restored["selectedSession"], json!(0));
+            assert_eq!(transcript_text(workspace), ["newer prompt", "newer reply"]);
+        })
+        .expect("workspace window");
+}
+
+/// A pane round-trip refreshes the Files listing to the same entries.
+#[gpui_kit::test]
+fn files_refresh_reports_the_same_entries_after_a_pane_round_trip(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let project = seed_project(root);
+
+    let mut data = test_data(root);
+    data.home_dir = root.join("home");
+    std::fs::create_dir_all(&data.home_dir).expect("home");
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.grant_project(&project, cx);
+            workspace.set_right_pane("files", cx);
+            let first = snapshot(workspace, cx);
+            assert_eq!(first["rightPane"], "files");
+            let entries = first["files"]["entries"].clone();
+            assert_eq!(
+                entries.as_array().expect("entries").len(),
+                3,
+                "directory first, then the two files"
+            );
+
+            workspace.set_right_pane("review", cx);
+            workspace.set_right_pane("files", cx);
+            workspace.refresh_files();
+            let second = snapshot(workspace, cx);
+            assert_eq!(second["rightPane"], "files");
+            assert_eq!(second["files"]["entries"], entries);
+            assert_eq!(second["files"]["error"], json!(null));
+        })
+        .expect("workspace window");
+}
+
+/// Pausing then resuming a schedule persists each state in turn.
+#[gpui_kit::test]
+fn schedules_pause_and_resume_persist_both_states(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let home = root.join("home");
+    let project = root.join("project");
+    std::fs::create_dir_all(&project).expect("project");
+
+    let mut store = open_store(root);
+    omp_core::projects::grant_project(
+        &mut store,
+        &home,
+        Platform::current(),
+        project.to_str().expect("project path"),
+    )
+    .expect("grant");
+    let project_id = omp_core::projects::list_projects(&store)
+        .first()
+        .expect("granted project")
+        .id
+        .clone();
+    let schedule = omp_core::schedules::create(
+        &mut store,
+        &json!({
+            "title": "Pause and resume",
+            "prompt": "Report status",
+            "target": { "kind": "project", "projectId": project_id },
+            "timing": { "kind": "once", "at": "2030-01-01T00:00:00.000Z" },
+            "execution": { "model": "anthropic/claude", "thinking": "medium", "speed": "normal" },
+        }),
+        "user",
+    )
+    .expect("create schedule");
+    let schedule_id = schedule["id"].as_str().expect("schedule id").to_string();
+    drop(store);
+
+    let mut data = test_data(root);
+    data.home_dir = home;
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.refresh_schedules();
+            assert_eq!(workspace.schedules()[0]["status"], "active");
+
+            workspace.set_schedule_status(&schedule_id, "paused", cx);
+            assert_eq!(workspace.schedules()[0]["status"], "paused");
+            assert_eq!(snapshot(workspace, cx)["schedules"][0]["status"], "paused");
+        })
+        .expect("workspace window");
+
+    let store = open_store(root);
+    assert_eq!(
+        omp_core::schedules::list(&store)[0]["status"],
+        "paused",
+        "the paused state is on disk"
+    );
+    drop(store);
+
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.set_schedule_status(&schedule_id, "active", cx);
+            assert_eq!(workspace.schedules()[0]["status"], "active");
+            assert_eq!(snapshot(workspace, cx)["schedules"][0]["status"], "active");
+        })
+        .expect("workspace window");
+
+    let store = open_store(root);
+    assert_eq!(
+        omp_core::schedules::list(&store)[0]["status"],
+        "active",
+        "the resumed state is on disk"
+    );
 }
