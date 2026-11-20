@@ -32,6 +32,8 @@ afterEach(async () => {
 interface FakeOmpOptions {
   /** JavaScript statements the fake runs after acknowledging a prompt. */
   promptScript?: string
+  /** JavaScript statements the fake runs after answering an abort. */
+  abortScript?: string
   /** When false the fake rejects negotiate_protocol like an unsupported version. */
   acceptNegotiate?: boolean
   sessionActions?: Record<string, unknown>
@@ -144,6 +146,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     send({ id: command.id, type: 'response', command: command.type, success: true, data: { accepted: true } })
   } else if (command.type === 'abort') {
     send({ id: command.id, type: 'response', command: 'abort', success: true })
+    ${options.abortScript ?? ''}
   }
 })
 `)
@@ -981,6 +984,122 @@ describe('OMP RPC event normalization', () => {
     const ends = events.filter((event) => event.type === 'agent_end')
     expect(ends).toHaveLength(1)
     expect(ends[0].isTerminal).toBe(true)
+  })
+})
+
+describe('scheduled completion waiters', () => {
+  it('completes on a prompt_result keyed by the prompt request id', async () => {
+    const fake = fakeOmpAgent({ promptScript: `
+    streaming = true
+    send({ type: 'agent_start' })
+    setTimeout(() => send({ type: 'prompt_result', id: command.id, agentInvoked: true, status: 'completed', sessionSettled: true }), 20)` })
+    const manager = ompManager(fake.executable)
+    const runtime = await manager.start({ cwd: fake.cwd })
+
+    const startedAt = Date.now()
+    const completed = await manager.runPromptToCompletion(runtime.runtimeId, 'continue')
+
+    // get_state keeps reporting streaming, so only the prompt_result can have
+    // settled this before the 2s fallback probe.
+    expect(Date.now() - startedAt).toBeLessThan(1_500)
+    expect(completed.sessionId).toBe('omp-session')
+  })
+
+  it('resolves when the prompt_result arrives before the waiter is installed', async () => {
+    const fake = fakeOmpAgent({ promptScript: `
+    streaming = true
+    send({ type: 'agent_start' })
+    send({ type: 'prompt_result', id: command.id, agentInvoked: true, status: 'completed', sessionSettled: true })` })
+    const manager = ompManager(fake.executable)
+    const runtime = await manager.start({ cwd: fake.cwd })
+
+    const startedAt = Date.now()
+    await expect(manager.runPromptToCompletion(runtime.runtimeId, 'continue')).resolves.toMatchObject({ sessionId: 'omp-session' })
+    expect(Date.now() - startedAt).toBeLessThan(1_500)
+  })
+
+  it('accepts an id-less prompt_result from a harness that does not echo request ids', async () => {
+    const fake = fakeOmpAgent({ promptScript: `
+    streaming = true
+    send({ type: 'agent_start' })
+    setTimeout(() => send({ type: 'prompt_result', agentInvoked: true, status: 'completed', sessionSettled: true }), 20)` })
+    const manager = ompManager(fake.executable)
+    const runtime = await manager.start({ cwd: fake.cwd })
+
+    const startedAt = Date.now()
+    await expect(manager.runPromptToCompletion(runtime.runtimeId, 'continue')).resolves.toMatchObject({ sessionId: 'omp-session' })
+    expect(Date.now() - startedAt).toBeLessThan(1_500)
+  })
+
+  it('rejects when the runtime exits before the prompt completes', async () => {
+    const fake = fakeOmpAgent({ promptScript: `
+    streaming = true
+    send({ type: 'agent_start' })
+    setTimeout(() => process.exit(1), 30)` })
+    const manager = ompManager(fake.executable)
+    const runtime = await manager.start({ cwd: fake.cwd })
+
+    await expect(manager.runPromptToCompletion(runtime.runtimeId, 'continue'))
+      .rejects.toThrow('Scheduled runtime exited before the prompt completed')
+  })
+
+  it('aborts and rejects after the timeout without leaving a waiter behind', async () => {
+    const fake = fakeOmpAgent({
+      promptScript: `
+    streaming = true
+    send({ type: 'agent_start' })`,
+      abortScript: `send({ type: 'fake_abort' })`,
+    })
+    const manager = ompManager(fake.executable)
+    const events: Array<Record<string, unknown>> = []
+    manager.setEventSink(({ event }) => events.push(event))
+    const runtime = await manager.start({ cwd: fake.cwd })
+
+    await expect(manager.runPromptToCompletion(runtime.runtimeId, 'continue', 1_000))
+      .rejects.toThrow('Scheduled run timed out')
+    await waitUntil(() => events.some((event) => event.type === 'fake_abort'))
+  })
+
+  it('falls back to a slow get_state probe for harnesses without prompt_result', async () => {
+    const fake = fakeOmpAgent({ promptScript: `
+    streaming = true
+    send({ type: 'agent_start' })
+    setTimeout(() => { streaming = false; send({ type: 'agent_end', isTerminal: true }) }, 30)` })
+    const manager = ompManager(fake.executable)
+    const runtime = await manager.start({ cwd: fake.cwd })
+
+    const startedAt = Date.now()
+    await expect(manager.runPromptToCompletion(runtime.runtimeId, 'continue')).resolves.toMatchObject({ sessionId: 'omp-session' })
+    // The fallback is deliberately slow; a 200ms poll would have returned by now.
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(1_500)
+  })
+
+  it('resolves an idle wait from agent_end while get_state still reports streaming', async () => {
+    const fake = fakeOmpAgent({ promptScript: `
+    streaming = true
+    send({ type: 'agent_start' })
+    setTimeout(() => send({ type: 'agent_end', isTerminal: true }), 300)` })
+    const manager = ompManager(fake.executable)
+    const runtime = await manager.start({ cwd: fake.cwd })
+
+    await manager.command(runtime.runtimeId, { type: 'prompt', message: 'continue' })
+    await waitUntil(() => manager.list()[0]?.isStreaming === true)
+    const startedAt = Date.now()
+    await manager.waitUntilIdle(runtime.runtimeId)
+    expect(Date.now() - startedAt).toBeLessThan(1_500)
+  })
+
+  it('returns from an idle wait when the runtime exits', async () => {
+    const fake = fakeOmpAgent({ promptScript: `
+    streaming = true
+    send({ type: 'agent_start' })
+    setTimeout(() => process.exit(1), 300)` })
+    const manager = ompManager(fake.executable)
+    const runtime = await manager.start({ cwd: fake.cwd })
+
+    await manager.command(runtime.runtimeId, { type: 'prompt', message: 'continue' })
+    await waitUntil(() => manager.list()[0]?.isStreaming === true)
+    await expect(manager.waitUntilIdle(runtime.runtimeId)).resolves.toBeUndefined()
   })
 })
 
