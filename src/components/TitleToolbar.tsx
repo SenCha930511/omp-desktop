@@ -1,5 +1,5 @@
 import { GitBranch, ListTree, PanelLeft, PanelRight, PanelRightClose, Terminal } from 'lucide-react'
-import type { MouseEvent } from 'react'
+import { memo, type MouseEvent } from 'react'
 import { type MessageKey, useI18n } from '@/lib/i18n'
 import { shortcutLabel } from '@/lib/platform-shortcuts'
 import type { ApplicationMenuName, ProjectRecord, WorkspaceView } from '@/types/api'
@@ -27,7 +27,7 @@ function openApplicationMenu(menu: ApplicationMenuName, event: MouseEvent<HTMLBu
   void window.desktop?.app.popupMenu?.(menu, rect.left, rect.bottom).catch(() => undefined)
 }
 
-interface TitleToolbarProps {
+export interface TitleToolbarProps {
   project?: ProjectRecord
   gitBranch?: string
   /** Active session name; the session view's title takes it over the project name. */
@@ -51,7 +51,7 @@ interface TitleToolbarProps {
   platform?: NodeJS.Platform
 }
 
-export function TitleToolbar({
+function TitleToolbarView({
   project,
   gitBranch,
   sessionTitle,
@@ -129,3 +129,7 @@ export function TitleToolbar({
     </header>
   )
 }
+
+// Every prop takes part in the default shallow compare: the toolbar only
+// re-renders when its own chrome state, titles, or handlers actually change.
+export const TitleToolbar = memo(TitleToolbarView)

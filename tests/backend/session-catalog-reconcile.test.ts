@@ -135,6 +135,7 @@ function deferred<T>() {
 }
 
 afterEach(() => {
+  vi.useRealTimers()
   vi.restoreAllMocks()
   for (const directory of realDirectories.splice(0)) rmSync(directory, { recursive: true, force: true })
 })
@@ -540,5 +541,63 @@ describe('SessionMetadataCatalog known-file reconciliation', () => {
     await expect(second).resolves.toEqual({ kind: 'full-scan' })
     await expect(current).resolves.toMatchObject([{ id: 'session-00000-v2' }])
     expect(entries).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('SessionMetadataCatalog prepared snapshot reuse', () => {
+  it('reuses the prepared snapshot across unchanged all() calls instead of rescanning', async () => {
+    const { catalog, entries, canonicalize, inspect, readMetadata } = fixture(5_000)
+    const first = await catalog.all()
+    expect(entries).toHaveBeenCalledOnce()
+    const scans = {
+      canonicalize: canonicalize.mock.calls.length,
+      inspect: inspect.mock.calls.length,
+      readMetadata: readMetadata.mock.calls.length,
+    }
+
+    const second = await catalog.all()
+
+    // A list call without a revision change must not enumerate buckets, restat
+    // every candidate, or re-read metadata.
+    expect(entries).toHaveBeenCalledOnce()
+    expect(canonicalize).toHaveBeenCalledTimes(scans.canonicalize)
+    expect(inspect).toHaveBeenCalledTimes(scans.inspect)
+    expect(readMetadata).toHaveBeenCalledTimes(scans.readMetadata)
+    expect(second.map(({ id }) => id)).toEqual(first.map(({ id }) => id))
+  })
+
+  it('serves the reconciled snapshot to repeated all() calls without a second enumeration', async () => {
+    const { catalog, files, entries, readMetadata } = fixture(4)
+    await catalog.all()
+    Object.assign(files.get(sessionName(2))!, { mtimeMs: 50, size: 120, version: 1 })
+    await expect(catalog.reconcileKnownChanges([sessionName(2)])).resolves.toMatchObject({ kind: 'reconciled' })
+    const readsAfterReconcile = readMetadata.mock.calls.length
+
+    expect((await catalog.all())[0]?.id).toBe('session-00002-v1')
+    expect((await catalog.all())[0]?.id).toBe('session-00002-v1')
+
+    expect(entries).toHaveBeenCalledOnce()
+    expect(readMetadata).toHaveBeenCalledTimes(readsAfterReconcile)
+  })
+
+  it('still rescans once the prepared snapshot outlives its reuse window', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
+      const { catalog, entries } = fixture(2)
+      await catalog.all()
+
+      vi.setSystemTime(new Date('2026-01-01T00:00:02.000Z'))
+      await catalog.all()
+      expect(entries).toHaveBeenCalledOnce()
+
+      // A dropped watcher event (for example a bucket outside the watch cap)
+      // must self-heal instead of serving a snapshot forever.
+      vi.setSystemTime(new Date('2026-01-01T00:00:30.000Z'))
+      await catalog.all()
+      expect(entries).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

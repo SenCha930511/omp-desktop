@@ -5,12 +5,15 @@ import { act, useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '../../src/App'
+import { WorkspaceInspector } from '../../src/components/WorkspaceInspector'
 import { useBrowserAnnotations, type BrowserAnnotationsApi } from '../../src/hooks/useBrowserAnnotations'
 import type { InspectorProps } from '../../src/components/Inspector'
+import type { TranscriptStore } from '../../src/app/transcript-store'
+import type { TranscriptMessage } from '../../src/types/api'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
-const observed = vi.hoisted(() => ({ inspectorProps: [] as unknown[], changesPanelRenders: 0 }))
+const observed = vi.hoisted(() => ({ inspectorProps: [] as unknown[], changesPanelRenders: 0, summaryPanelRenders: 0 }))
 
 // Wraps the memoized Inspector, so every App render is observed even when the
 // memo (correctly) skips the inspector subtree.
@@ -38,12 +41,26 @@ vi.mock('../../src/components/inspector/ChangesPanel', async (importOriginal) =>
   }
 })
 
+// Rendered inside the memo, so its render count is exactly the number of summary
+// snapshots the Summary tab let through.
+vi.mock('../../src/components/inspector/SummaryPanel', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/components/inspector/SummaryPanel')>()
+  return {
+    ...actual,
+    SummaryPanel(props: Parameters<typeof actual.SummaryPanel>[0]) {
+      observed.summaryPanelRenders += 1
+      return <actual.SummaryPanel {...props} />
+    },
+  }
+})
+
 let container: HTMLDivElement
 let root: Root
 
 beforeEach(() => {
   observed.inspectorProps = []
   observed.changesPanelRenders = 0
+  observed.summaryPanelRenders = 0
   Object.defineProperty(window, 'matchMedia', {
     configurable: true,
     value: () => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() }),
@@ -96,20 +113,20 @@ describe('inspector re-render containment', () => {
     expect(observed.changesPanelRenders).toBe(rendersAfterTabChange)
   })
 
-  it('hands the inspector stable messages, git and annotation identities while the changes tab is active', async () => {
+  it('hands the inspector the store summary and stable git and annotation identities while the changes tab is active', async () => {
     await renderApp()
     const props = observed.inspectorProps as InspectorProps[]
-    // The summary tab is the default and does consume the transcript.
-    expect(props[props.length - 1].messages.length).toBeGreaterThan(0)
+    // The summary tab is the default and does consume the transcript summary.
+    expect(props[props.length - 1]!.summary.count).toBeGreaterThan(0)
 
     await openChangesTab()
-    const first = props[props.length - 1]
+    const first = props[props.length - 1]!
     await toggleSidebar()
-    const last = props[props.length - 1]
+    const last = props[props.length - 1]!
     expect(last).not.toBe(first)
-    // Off the summary tab nothing reads the transcript, so it never reaches the memo boundary.
-    expect(last.messages).toHaveLength(0)
-    expect(last.messages).toBe(first.messages)
+    // Off the summary tab nothing reads the transcript, so only the empty summary reaches the memo boundary.
+    expect(last.summary.count).toBe(0)
+    expect(last.summary).toBe(first.summary)
     expect(last.git).toBe(first.git)
     expect(last.browserAnnotations).toBe(first.browserAnnotations)
     expect(last.automations).toBe(first.automations)
@@ -119,6 +136,71 @@ describe('inspector re-render containment', () => {
     expect(last.onGrantProject).toBe(first.onGrantProject)
     expect(last.onOpenAutomation).toBe(first.onOpenAutomation)
     expect(last.onShowBrowserPreview).toBe(first.onShowBrowserPreview)
+  })
+})
+
+describe('summary tab data flow', () => {
+  const liveMessages = (text: string): TranscriptMessage[] => [
+    { id: 'user', role: 'user', timestamp: 1, parts: [{ type: 'text', text: 'ask' }] },
+    { id: 'live', role: 'assistant', timestamp: 2, streaming: true, parts: [{ type: 'toolCall', id: 'tool', name: 'Read' }, { type: 'text', text }] },
+  ]
+
+  function Harness({ transcript }: { transcript: TranscriptStore }) {
+    return (
+      <WorkspaceInspector
+        transcript={transcript}
+        activeTab="summary"
+        onTabChange={() => undefined}
+        onClose={() => undefined}
+        git={{ isRepo: false, files: [] }}
+        automations={[]}
+        onOpenAutomation={() => undefined}
+        browserHome="about:blank"
+        browserAnnotations={useBrowserAnnotations()}
+        agentBrowserTabs={[]}
+        activeAgentTabId={null}
+        agentPreviewSelected={false}
+        onSelectAgentTab={() => undefined}
+        onCloseAgentTab={() => undefined}
+        onShowBrowserPreview={() => undefined}
+        onAgentSlotRect={() => undefined}
+        onPreviewContext={() => undefined}
+        previewPointerEvent={null}
+        onNavigateAgentTab={() => undefined}
+        onRefreshGit={() => undefined}
+        onOpenExternal={() => undefined}
+        onRevealPath={() => undefined}
+        onGrantProject={() => undefined}
+      />
+    )
+  }
+
+  it('renders the summary snapshot and never subscribes to or rescans the message list', async () => {
+    const { createTranscriptStore } = await import('../../src/app/transcript-store')
+    const store = createTranscriptStore(liveMessages('Answer:'))
+    const subscribe = vi.spyOn(store, 'subscribe')
+    const getSnapshot = vi.spyOn(store, 'getSnapshot')
+    await act(async () => { root.render(<Harness transcript={store} />) })
+
+    expect(observed.inspectorProps.length).toBeGreaterThan(0)
+    expect(observed.inspectorProps.at(-1)).not.toHaveProperty('messages')
+    expect((observed.inspectorProps.at(-1) as InspectorProps).summary).toMatchObject({ count: 2, toolCount: 1, lastText: 'Answer:', streaming: true })
+
+    // A streamed token republishes the summary snapshot; the tab re-renders from it, never from messages.
+    const rendersBeforeToken = observed.summaryPanelRenders
+    await act(async () => { store.update(liveMessages('Answer: streaming')) })
+    expect(observed.summaryPanelRenders).toBeGreaterThan(rendersBeforeToken)
+    expect((observed.inspectorProps.at(-1) as InspectorProps).summary.lastText).toBe('Answer: streaming')
+
+    // A frame the summary ignores keeps its identity, so the memoized panel does no work at all.
+    const summary = store.getSummary()
+    const rendersAfterToken = observed.summaryPanelRenders
+    await act(async () => { store.update((current) => [{ ...current[0]!, parts: [{ type: 'text', text: 'ask again' }] }, current[1]!]) })
+    expect(store.getSummary()).toBe(summary)
+    expect(observed.summaryPanelRenders).toBe(rendersAfterToken)
+
+    expect(subscribe).not.toHaveBeenCalled()
+    expect(getSnapshot).not.toHaveBeenCalled()
   })
 })
 

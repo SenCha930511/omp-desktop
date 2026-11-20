@@ -1,4 +1,4 @@
-import type { GitFileChange, GitStatus, ProjectRecord, RuntimeInfo, SessionRecord } from '@/types/api'
+import type { GitFileChange, GitStatus, ProjectRecord, RuntimeInfo, SessionRecord, TranscriptMessage } from '@/types/api'
 
 
 export interface OwnedGitStatus {
@@ -11,6 +11,15 @@ export const EMPTY_GIT_STATUS: GitStatus = Object.freeze({ isRepo: false, files:
 
 export function gitStatusForWorkspace(snapshot: OwnedGitStatus, cwd?: string): GitStatus {
   return cwd && snapshot.cwd === cwd ? snapshot.status : EMPTY_GIT_STATUS
+}
+
+/** Newest assistant row, walked from the tail: copying the transcript to reverse it would allocate on every streaming frame. */
+export function lastAssistantMessage(messages: readonly TranscriptMessage[]): TranscriptMessage | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    if (message?.role === 'assistant') return message
+  }
+  return undefined
 }
 
 /** Changed files since turn start. Counts describe their current Git diff,

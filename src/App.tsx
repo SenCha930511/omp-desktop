@@ -50,7 +50,7 @@ import { isBackgroundedSlashCommand, type SlashCommand } from '@/lib/slash-comma
 import { I18nProvider, useI18n } from '@/lib/i18n'
 import { detectRendererPlatform } from '@/lib/platform-shortcuts'
 import { activeProjectScriptKind, ProjectScriptBusyError, setupNeedsRun } from '@/lib/project-scripts'
-import { createSingleFlightAdmission, findProjectForSession, shouldRefreshGitOnSessionTransition, turnFileDeltas, workspaceCwd } from '@/lib/workspace'
+import { createSingleFlightAdmission, findProjectForSession, lastAssistantMessage, shouldRefreshGitOnSessionTransition, turnFileDeltas, workspaceCwd } from '@/lib/workspace'
 import {
   type AutomationScheduleRecord,
   type CheckoutAction,
@@ -59,7 +59,9 @@ import {
   HARNESS_IDS,
   type HarnessId,
   type MessagePart,
+  type OmpApprovalMode,
   type PrimeModelDescriptor,
+  type PrimeModelPresetRecord,
   type PrimeProviderDescriptor,
   type ProjectRecord,
   type PromptDeliveryIntent,
@@ -176,6 +178,7 @@ export default function App() {
   const reportError = useCallback((error: unknown) => {
     setToast(errorMessage(error), 'error')
   }, [])
+  const openSessionTree = useCallback(() => setSessionTreeOpen(true), [])
   // The shell handlers answer with false instead of rejecting, so the refusal
   // reaches the user as a toast rather than disappearing into a dropped result.
   const openExternal = useCallback(
@@ -207,12 +210,14 @@ export default function App() {
       setHarnessUpdatePromptOpen(true)
     }
   }, [harnessUpdates.state.phase])
+  // Depends on `install` alone: the memoized result object changes with every
+  // observed update state, which would rebuild this callback for no reason.
   const runHarnessUpdate = useCallback(() => {
     setHarnessUpdatePromptOpen(false)
     void harnessUpdates.install().then((state) => {
       if (state?.phase === 'installed') setToast(t('sidebar.harnessUpdate.installedToast', { version: state.availableVersion ?? '' }))
     })
-  }, [harnessUpdates, setToast, t])
+  }, [harnessUpdates.install, setToast, t])
   const openHarnessUpdatePrompt = useCallback(() => {
     // The error row retries directly: omp re-checks before installing anyway.
     if (harnessUpdates.state.phase === 'error') runHarnessUpdate()
@@ -540,7 +545,7 @@ export default function App() {
     } finally {
       if (checkoutRequestRef.current === requestId) setCheckoutsLoading(false)
     }
-  }, [activeProject, bridge, reportError, settingsState.settings.checkoutStrategy])
+  }, [activeProject, bridge, reportError, settingsState.checkoutStrategyRevision, settingsState.settings.checkoutStrategy])
   useEffect(() => {
     void refreshCheckouts()
     return () => {
@@ -562,12 +567,19 @@ export default function App() {
   const [agentSlotRect, setAgentSlotRect] = useState<AgentSlotRect | null>(null)
   const activeRuntimeSessionFile = workspace.runtime?.sessionFile
   const activeSessionFilePath = activeSession?.filePath
+  // Both identities name the session the user is looking at (a path-only move
+  // changes the file before the runtime rebinds). The layer keeps those tabs'
+  // guests loaded and releases only background sessions' idle ones.
+  const activeAgentSessionFiles = useMemo(() => {
+    const keys: string[] = []
+    if (activeRuntimeSessionFile) keys.push(activeRuntimeSessionFile)
+    if (activeSessionFilePath && activeSessionFilePath !== activeRuntimeSessionFile) keys.push(activeSessionFilePath)
+    return keys
+  }, [activeRuntimeSessionFile, activeSessionFilePath])
   const activeAgentTabs = useMemo(() => {
-    const keys = new Set<string>()
-    if (activeRuntimeSessionFile) keys.add(activeRuntimeSessionFile)
-    if (activeSessionFilePath) keys.add(activeSessionFilePath)
+    const keys = new Set(activeAgentSessionFiles)
     return agentBrowser.tabs.filter((tab) => keys.has(tab.sessionFile))
-  }, [agentBrowser.tabs, activeRuntimeSessionFile, activeSessionFilePath])
+  }, [agentBrowser.tabs, activeAgentSessionFiles])
   const activeAgentTabId = activeAgentTabs.find((tab) => tab.active)?.tabId ?? activeAgentTabs[0]?.tabId ?? null
   // Every agent browser action in the active thread surfaces the Browser
   // panel: open the inspector, select the Browser tab, and show the tab being
@@ -664,8 +676,6 @@ export default function App() {
     selectProject,
     selectSession,
     newSession,
-    openDraftSession,
-    discardDraftSession,
     navigate,
     renameSession,
     deleteSession,
@@ -721,7 +731,7 @@ export default function App() {
     },
     onCommandStart: commandOutputBegin,
     onCommandFinish: commandOutputFinish,
-    openSessionTree: () => setSessionTreeOpen(true),
+    openSessionTree,
     refreshSchedules,
     resetBrowserView: () => setBrowserGeneration((value) => value + 1),
     closeTerminalForSession: (sessionPath) => {
@@ -986,6 +996,46 @@ export default function App() {
   const clearTerminalSelection = useStableCallback(() => {
     if (activeTerminalSession) terminalDrawerRefs.current.get(activeTerminalSession.id)?.clearSelection()
   })
+  // Prop callbacks for the memoized Composer, Transcript, and toolbar. Each
+  // keeps one identity (useStableCallback reads the latest render's closures)
+  // so an App re-render that changes nothing else never reaches those trees.
+  const retryTurn = useStableCallback(async () => {
+    await sendPrompt('/retry')
+  })
+  const restoreTranscriptPrompt = useStableCallback((text: string) => {
+    setRestorePrompt({ owner: workspace.workspaceGeneration, id: Date.now(), text })
+  })
+  const suggestPrompt = useStableCallback((prompt: string) => {
+    void sendPrompt(prompt).catch(() => undefined)
+  })
+  const dismissChangesCard = useCallback(() => setChangesCardDismissed(true), [])
+  const openSessionReference = useStableCallback((sessionId: string, harness: HarnessId) => {
+    const session = sessions.find((candidate) => candidate.id === sessionId && candidate.harness === harness && !candidate.archived && candidate.depth === 0)
+    if (session) void selectSession(session)
+    else setToast('That referenced session is archived or no longer available.')
+  })
+  const switchModelPreset = useStableCallback((preset: PrimeModelPresetRecord) => {
+    void sendPrompt(`/modelpreset switch ${preset.name}`).catch(reportError)
+  })
+  const saveModelPreset = useCallback((name: string) => void sendPrompt(`/modelpreset save ${name}`), [sendPrompt])
+  const changeApprovalMode = useCallback(
+    (mode: OmpApprovalMode) => {
+      void settingsState.updateSettings({ ompApprovalMode: mode })
+    },
+    [settingsState.updateSettings],
+  )
+  const selectComposerProject = useStableCallback((project: ProjectRecord) => {
+    if (project.id === activeProject?.id) return
+    // An empty workspace keeps its fresh-session state in the picked folder;
+    // an active session navigates like the sidebar.
+    if (workspace.activeSessionId) void selectProject(project)
+    else newSession(project)
+  })
+  const addProjectFolder = useCallback(() => {
+    void addProject()
+  }, [addProject])
+  const editQueuedMessage = useStableCallback((message: QueuedPrompt) => workspace.editQueuedPrompt(message.id, message.text))
+  const dismissRestoreRequest = useCallback(() => setRestorePrompt(undefined), [])
   const startProjectScript = useCallback(
     async (kind: ProjectScriptKind) => {
       if (!bridge || !activeProject || !activeCwd) throw new Error('Project scripts are available in the desktop app for an active project.')
@@ -1181,12 +1231,7 @@ export default function App() {
   // cancelled assistant row: the composer's send slot becomes a retry button
   // until a new draft arrives (mirroring how the stop button owns the slot
   // while the model streams).
-  const stoppedTurnRetryAvailable =
-    !busy &&
-    (() => {
-      const lastAssistant = [...workspace.messages].reverse().find((message) => message.role === 'assistant')
-      return lastAssistant?.outcome === 'cancelled'
-    })()
+  const stoppedTurnRetryAvailable = !busy && lastAssistantMessage(workspace.messages)?.outcome === 'cancelled'
   const execution = conversationExecution({
     runtime: workspace.runtime,
     messages: workspace.messages,
@@ -1376,8 +1421,6 @@ export default function App() {
               onHarnessUpdateAction={openHarnessUpdatePrompt}
               projectSortMode={settingsState.settings.projectSortMode}
               {...sidebarActions}
-              onSelectDraftSession={openDraftSession}
-              onDiscardDraftSession={discardDraftSession}
               overlay={layout.compactLayout}
               platform={platform}
             />
@@ -1414,7 +1457,7 @@ export default function App() {
               onToggleInspector={toggleInspectorPanel}
               onToggleTerminal={toggleTerminal}
               onOpenBrowser={openBrowser}
-              onOpenSessionTree={view === 'session' ? () => setSessionTreeOpen(true) : undefined}
+              onOpenSessionTree={view === 'session' ? openSessionTree : undefined}
               platform={platform}
             />
             <div className="workbench__content">
@@ -1448,25 +1491,17 @@ export default function App() {
                             loading={workspace.loadingSession}
                             active={busy || activeSession?.status === 'running'}
                             visible={!subagents.selectedId}
-                            onRetry={async () => {
-                              await sendPrompt('/retry')
-                            }}
-                            onRestorePrompt={(text) => setRestorePrompt({ owner: workspace.workspaceGeneration, id: Date.now(), text })}
+                            onRetry={retryTurn}
+                            onRestorePrompt={restoreTranscriptPrompt}
                             showReasoning={settingsState.settings.showReasoningSummaries}
                             showTools={settingsState.settings.showToolCalls}
                             onOpenChanges={openChanges}
-                            onSuggestion={(prompt) => {
-                              void sendPrompt(prompt).catch(() => undefined)
-                            }}
+                            onSuggestion={suggestPrompt}
                             suggestionsDisabled={!activeProject || workspace.loadingSession || submitting}
                             showChangesCard={Boolean(turnChanges?.length && settingsState.settings.showFileChangesPopup && !changesCardDismissed)}
-                            onDismissChanges={() => setChangesCardDismissed(true)}
+                            onDismissChanges={dismissChangesCard}
                             queuedMessageCount={queuedMessages.length + harnessQueuedMessageCount}
-                            onOpenSessionReference={(sessionId, harness) => {
-                              const session = sessions.find((candidate) => candidate.id === sessionId && candidate.harness === harness && !candidate.archived && candidate.depth === 0)
-                              if (session) void selectSession(session)
-                              else setToast('That referenced session is archived or no longer available.')
-                            }}
+                            onOpenSessionReference={openSessionReference}
                           />
                         </Suspense>
                         {btwHint ? (
@@ -1537,35 +1572,23 @@ export default function App() {
                               resolvedAutoEffort={provider.resolvedAutoEffort}
                               providers={provider.catalog?.providers ?? EMPTY_PROVIDERS}
                               presets={provider.catalog?.presets}
-                              onSwitchPreset={(preset) => {
-                                void sendPrompt(`/modelpreset switch ${preset.name}`).catch(reportError)
-                              }}
-                              onSavePreset={(name) => void sendPrompt(`/modelpreset save ${name}`)}
+                              onSwitchPreset={switchModelPreset}
+                              onSavePreset={saveModelPreset}
                               reasoningLevels={provider.reasoningLevels}
                               fast={provider.fast}
                               fastSupported={provider.selectedModel?.fastModeSupported ?? false}
                               fastAvailable={workspace.runtime?.fastModeAvailable !== false}
                               usageLimit={provider.usageLimit}
                               approvalMode={settingsState.settings.ompApprovalMode}
-                              onApprovalModeChange={(mode) => {
-                                void settingsState.updateSettings({ ompApprovalMode: mode })
-                              }}
+                              onApprovalModeChange={changeApprovalMode}
                               checkoutCatalog={checkoutCatalog}
                               checkoutLabel={git.branch ?? activeProject?.gitBranch ?? activeProject?.name}
                               checkoutsLoading={checkoutsLoading}
                               onExecuteCheckout={bridge && activeProject && !activeProject.inferred && checkoutCatalog ? executeCheckout : undefined}
                               projects={projects}
                               activeProjectId={activeProject?.id}
-                              onSelectProject={(project) => {
-                                if (project.id === activeProject?.id) return
-                                // An empty workspace keeps its fresh-session state in the
-                                // picked folder; an active session navigates like the sidebar.
-                                if (workspace.activeSessionId) void selectProject(project)
-                                else newSession(project)
-                              }}
-                              onAddProjectFolder={() => {
-                                void addProject()
-                              }}
+                              onSelectProject={selectComposerProject}
+                              onAddProjectFolder={addProjectFolder}
                               agentName={HARNESS_AGENT_NAMES[activeHarness]}
                               shortName={HARNESS_SHORT_NAMES[activeHarness]}
                               imageInputSupported={Boolean(provider.selectedModel?.input.includes('image') || provider.catalog?.visionDelegation)}
@@ -1588,19 +1611,17 @@ export default function App() {
                               onReclaimHarnessQueuedMessage={reclaimHarnessQueuedMessage}
                               onDeleteQueuedMessage={removeQueuedMessage}
                               onSendQueuedMessage={sendQueuedMessage}
-                              onEditQueuedMessage={(message) => workspace.editQueuedPrompt(message.id, message.text)}
+                              onEditQueuedMessage={editQueuedMessage}
                               sendSignal={browserAnnotations.sendSignal}
                               restoreRequest={restorePrompt?.owner === workspace.workspaceGeneration ? restorePrompt : undefined}
-                              onRestoreHandled={() => setRestorePrompt(undefined)}
+                              onRestoreHandled={dismissRestoreRequest}
                               onModelChange={provider.changeModel}
                               onEffortChange={provider.changeEffort}
                               onFastChange={provider.changeFast}
                               onSend={sendVisiblePrompt}
                               onStop={stopRuntime}
                               retryStoppedTurn={stoppedTurnRetryAvailable}
-                              onRetryStoppedTurn={() => {
-                                void sendPrompt('/retry')
-                              }}
+                              onRetryStoppedTurn={retryTurn}
                               onRemoveAnnotation={browserAnnotations.remove}
                               onClearAnnotations={browserAnnotations.clear}
                               onClearTerminalSelection={clearTerminalSelection}
@@ -1792,6 +1813,8 @@ export default function App() {
               rect={agentTabVisible ? agentSlotRect : null}
               pointerEvent={agentBrowser.pointerEvent}
               onAttach={agentBrowser.attach}
+              activeSessionFiles={activeAgentSessionFiles}
+              activityByTab={agentBrowser.activityByTab}
             />
           ) : null}
         </div>

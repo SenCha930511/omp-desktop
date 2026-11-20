@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { MAX_SYNTAX_HIGHLIGHTS, tokenizeSyntax } from '../../src/components/transcript/syntax'
+import { MAX_SYNTAX_HIGHLIGHTS, SYNTAX_LINE_CACHE_LIMIT, tokenizeSyntax, tokenizeSyntaxLine } from '../../src/components/transcript/syntax'
 
 describe('transcript syntax tokenizer', () => {
   it('classifies repeated text from its current position', () => {
@@ -30,5 +30,20 @@ describe('transcript syntax tokenizer', () => {
     } finally {
       indexOf.mockRestore()
     }
+  })
+})
+
+describe('per-line syntax cache', () => {
+  it('reuses the tokens of a repeated line and evicts the least recently used one', () => {
+    const line = '{"cachedLineProbe": true}'
+    const first = tokenizeSyntaxLine(line)
+    expect(first).toEqual(tokenizeSyntax(line))
+    expect(tokenizeSyntaxLine(line)).toBe(first)
+
+    for (let index = 0; index < SYNTAX_LINE_CACHE_LIMIT + 1; index += 1) tokenizeSyntaxLine(`{"filler": ${index}}`)
+
+    const retokenized = tokenizeSyntaxLine(line)
+    expect(retokenized).not.toBe(first)
+    expect(retokenized).toEqual(first)
   })
 })

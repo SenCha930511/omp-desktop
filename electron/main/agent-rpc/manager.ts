@@ -386,6 +386,9 @@ export class AgentRpcManager {
     if (Array.isArray(command.images) && command.images.length > 0 && runtime.snapshot().imageInputSupported === false) {
       throw new Error('The active model does not accept images. Choose a vision model and try again.')
     }
+    if (command.type === 'bash' && command.excludeFromContext === true && runtime.snapshot().bashExcludeFromContext !== true) {
+      throw new Error('This OMP version does not support excluding shell output from the model context. Update OMP and try again.')
+    }
     if (this.sessionMutations.has(runtime.runtimeId)) throw new Error('Session identity is being changed')
     // 診斷用 leaf 查詢是唯讀 get_tree；失敗/逾時降級為未知，不阻擋 compact
     if (command.type === 'compact') recordSessionDiagnostic('compact-requested', runtime.snapshot(), undefined, await runtime.readLeafId())
@@ -432,6 +435,10 @@ export class AgentRpcManager {
       }
       const sessionFile = runtime.snapshot().sessionFile
       if (sessionFile) {
+        // OMP 19 already streamed the manual lifecycle events, but its
+        // CompactionResult carries no tokensAfter. Read the record back so the
+        // divider can show the full token delta; the renderer folds this into
+        // the divider the native end opened instead of appending a second one.
         const record = await this.manualCompactionReader(sessionFile).catch(() => undefined)
         if (record) {
           this.eventSink({
@@ -470,26 +477,51 @@ export class AgentRpcManager {
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 60 * 60_000) throw new TypeError('Invalid scheduled run timeout')
     const runtime = this.requireRuntime(id)
     const startedAt = Date.now()
-    let observedBusy = runtime.snapshot().isStreaming
-    await this.command(id, {
+    const response = await this.command(id, {
       type: 'prompt',
       message,
       streamingBehavior: streamingBehaviorForIntent('queue'),
     })
-    while (Date.now() - startedAt < timeoutMs) {
-      await new Promise<void>((resolveDelay) => {
-        const timer = setTimeout(resolveDelay, 200)
-        timer.unref()
-      })
-      this.requireOpen()
-      if (!this.runtimes.has(id)) throw new Error('Scheduled runtime exited before the prompt completed')
-      try { await runtime.command({ type: 'get_state' }) } catch { /* the event snapshot may still be authoritative */ }
-      const snapshot = runtime.snapshot()
-      if (snapshot.isStreaming || snapshot.isCompacting) observedBusy = true
-      if (!snapshot.isStreaming && !snapshot.isCompacting && (observedBusy || Date.now() - startedAt >= 750)) return snapshot
+    // OMP acknowledges the prompt and completes it with a prompt_result keyed
+    // by the same request id. A local-only slash command answers with
+    // agentInvoked: false and no prompt_result follows, so it is already done.
+    const requestId = typeof response.id === 'string' ? response.id : undefined
+    const agentInvoked = !(isRecord(response.data) && response.data.agentInvoked === false)
+    const remaining = timeoutMs - (Date.now() - startedAt)
+    if (remaining <= 0) {
+      await this.abortTimedOutRun(runtime)
+      throw new Error('Scheduled run timed out')
     }
+    const outcome = agentInvoked
+      ? await runtime.waitForPromptCompletion(requestId, remaining)
+      : await runtime.waitForIdle(remaining)
+    this.requireOpen()
+    if (outcome === 'exit' || !this.runtimes.has(id)) throw new Error('Scheduled runtime exited before the prompt completed')
+    if (outcome === 'timeout') {
+      await this.abortTimedOutRun(runtime)
+      throw new Error('Scheduled run timed out')
+    }
+    // The terminal event does not refresh identity; read the authoritative
+    // state once so the caller sees the session file the turn wrote to.
+    try { await runtime.command({ type: 'get_state' }) } catch { /* the event snapshot may still be authoritative */ }
+    return runtime.snapshot()
+  }
+
+  private async abortTimedOutRun(runtime: RpcRuntime): Promise<void> {
     try { await runtime.command({ type: 'abort' }) } catch { /* timeout remains authoritative */ }
-    throw new Error('Scheduled run timed out')
+  }
+
+  /**
+   * Wait for an existing runtime to stop streaming/compacting before a
+   * scheduled run reuses its session. A vanished runtime means there is
+   * nothing left to wait for.
+   */
+  async waitUntilIdle(runtimeId: unknown): Promise<void> {
+    const id = requireId(runtimeId, 'runtimeId')
+    const runtime = this.runtimes.get(id)
+    if (!runtime || this.retiringRuntimes.has(id) || this.quarantinedRuntimes.has(id)) return
+    const outcome = await runtime.waitForIdle(15 * 60_000)
+    if (outcome === 'timeout') throw new Error('The scheduled thread remained busy for 15 minutes')
   }
 
   async stop(runtimeId: unknown): Promise<boolean> {

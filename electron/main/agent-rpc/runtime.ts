@@ -25,16 +25,23 @@ interface PendingRequest {
 }
 
 export interface CompactionWatchdogTimings {
-  /** How often to poll get_state for the compacting flag while the runtime is active. */
+  /** How often to poll get_state while a turn is in flight: settles a lost agent_end and repairs a silently delivered queue. */
   pollIntervalMs: number
+  /**
+   * How often to poll when no turn is in flight. Native compaction events drive
+   * the divider, so this cadence only backs up a harness path that buffers or
+   * drops the lifecycle frames.
+   */
+  idlePollIntervalMs: number
   /** How long to wait for the agent's own compaction_end after a poll reports the compaction over. */
   endGraceMs: number
   /** How long after the last agent activity polling keeps running on an idle runtime. */
   idleWindowMs: number
 }
 
-const DEFAULT_COMPACTION_WATCHDOG_TIMINGS: CompactionWatchdogTimings = {
+export const DEFAULT_COMPACTION_WATCHDOG_TIMINGS: CompactionWatchdogTimings = {
   pollIntervalMs: 2_000,
+  idlePollIntervalMs: 10_000,
   endGraceMs: 4_000,
   idleWindowMs: 30_000,
 }
@@ -57,6 +64,21 @@ export interface RpcChunkAssemblyTiming {
   schedule(callback: () => void, delayMs: number): RpcChunkAssemblyTimer
   cancel(timer: RpcChunkAssemblyTimer): void
 }
+
+export type RuntimeWaitOutcome = 'completed' | 'idle' | 'exit' | 'timeout'
+
+interface RuntimeWaiter {
+  disposed: boolean
+  timeoutTimer: NodeJS.Timeout | null
+  probing: boolean
+  fallbackTimer: NodeJS.Timeout | null
+  resolve(outcome: RuntimeWaitOutcome): void
+}
+
+/** Slow reconciliation for harnesses that never emit `prompt_result`: the
+ * waiter probes get_state instead of the caller busy-polling the runtime. */
+const DEFAULT_WAITER_FALLBACK_MS = 2_000
+const MAX_SETTLED_PROMPT_IDS = 64
 
 interface ContextUsageRefreshRequest {
   generation: number
@@ -98,6 +120,18 @@ const isSessionQueueMode = (value: unknown): value is SessionQueueMode => value 
 const isSessionInterruptMode = (value: unknown): value is SessionInterruptMode => value === 'immediate' || value === 'wait'
 const isSessionCacheWarmingMode = (value: unknown): value is SessionCacheWarmingMode => value === 'off' || value === 'streaming' || value === 'idle'
 
+/**
+ * A JSONL frame from the agent is its own `JSON.stringify` output, so its text
+ * bounds the reserialized event. Exponent-form numbers are the one divergence
+ * (`1e9` reserializes as `1000000000`), so a frame containing one gets no hint
+ * and pays exact envelope accounting instead.
+ */
+const EXPONENT_FORM_NUMBER = /(?:^|[:,\s\[])-?\d+(?:\.\d+)?[eE][+-]?\d/
+
+function frameByteHint(line: string, bytes: number = Buffer.byteLength(line, 'utf8')): number | undefined {
+  return EXPONENT_FORM_NUMBER.test(line) ? undefined : bytes
+}
+
 export class RpcRuntime {
   readonly runtimeId = randomUUID()
   private readonly pending = new Map<string, PendingRequest>()
@@ -127,12 +161,14 @@ export class RpcRuntime {
   // outside info so get_state refreshes (which report isStreaming false
   // during the backoff) cannot clear it.
   private retryPending = false
-  // Compaction watchdog: some OMP agent event paths buffer compaction_start
-  // until the surrounding RPC command settles, so the desktop would learn
-  // about a compaction only after it finished. get_state responses are never
-  // buffered, so polling the compacting flag while the runtime is active lets
-  // the desktop expose running/unknown state; only authoritative completion
-  // events can establish a result. Real events take precedence.
+  // Compaction watchdog: OMP 19 emits auto_compaction_* and manual_compaction_*
+  // events on the same session-event path, so the divider normally follows the
+  // native lifecycle. A harness path that buffers or drops those frames would
+  // leave the desktop blind, so get_state (never buffered) is still polled as a
+  // fallback — promptly while a turn is in flight, where the same probe also
+  // settles a lost agent_end and repairs a silently delivered queue, and at a
+  // slow idle cadence otherwise. Only authoritative completion events can
+  // establish a result; real events take precedence.
   private readonly watchdogTimings: CompactionWatchdogTimings
   private compactionEpisode: 'none' | 'real' | 'synthetic' = 'none'
   private compactionEndFallback: NodeJS.Timeout | null = null
@@ -157,6 +193,14 @@ export class RpcRuntime {
   private readonly pendingExtensionDialogs = new Set<string>()
   private settlement: 'unknown' | 'settled' | 'unsettled' = 'unknown'
   private settlementEpoch = 0
+  // Completion/idle waiters are event-driven: prompt_result settles the
+  // scheduled prompt and state events settle idle waiters. A slow get_state
+  // probe (DEFAULT_WAITER_FALLBACK_MS) covers older harnesses that never emit
+  // prompt_result; every waiter clears its timers on settle, timeout, or exit.
+  private readonly promptWaiters = new Map<string, Set<RuntimeWaiter>>()
+  private readonly idleWaiters = new Set<RuntimeWaiter>()
+  private readonly settledPromptIds = new Map<string, true>()
+  private exited = false
 
   constructor(
     executable: string,
@@ -169,7 +213,15 @@ export class RpcRuntime {
     private readonly adapter: HarnessRpcAdapter = OMP_RPC_ADAPTER,
     private readonly chunkAssemblyTiming: RpcChunkAssemblyTiming = DEFAULT_RPC_CHUNK_ASSEMBLY_TIMING,
   ) {
-    this.watchdogTimings = { ...DEFAULT_COMPACTION_WATCHDOG_TIMINGS, ...watchdogTimings }
+    this.watchdogTimings = {
+      ...DEFAULT_COMPACTION_WATCHDOG_TIMINGS,
+      ...watchdogTimings,
+      // A caller that names only a fast cadence (tests and probes) means both
+      // cadences; otherwise the idle fallback stays slow.
+      idlePollIntervalMs: watchdogTimings.idlePollIntervalMs
+        ?? watchdogTimings.pollIntervalMs
+        ?? DEFAULT_COMPACTION_WATCHDOG_TIMINGS.idlePollIntervalMs,
+    }
     this.info = { runtimeId: this.runtimeId, harness: this.adapter.id, cwd, isStreaming: false, isCompacting: false, sessionActions: emptySessionActionSnapshot() }
     if (args.indexOf('--thinking') >= 0 && args[args.indexOf('--thinking') + 1] === 'auto') this.info.configuredThinkingLevel = 'auto'
     this.resumedSession = args.indexOf('--resume') >= 0
@@ -402,6 +454,144 @@ export class RpcRuntime {
     return snapshot
   }
 
+  /**
+   * Resolve when OMP reports the terminal `prompt_result` for the prompt
+   * request `requestId` (OMP keys it by the request id), or when the runtime
+   * exits. Harnesses that never emit `prompt_result` are reconciled by a slow
+   * get_state probe rather than a caller-side busy poll.
+   */
+  waitForPromptCompletion(requestId: string | undefined, timeoutMs: number, fallbackIntervalMs = DEFAULT_WAITER_FALLBACK_MS): Promise<RuntimeWaitOutcome> {
+    const key = typeof requestId === 'string' && requestId.length > 0 ? requestId : ''
+    // The frame may already have been processed while the caller was still
+    // awaiting the prompt acknowledgement; remember it so the waiter resolves
+    // immediately instead of waiting for the slow fallback.
+    if (key && this.settledPromptIds.delete(key)) return Promise.resolve('completed')
+    if (this.exited) return Promise.resolve('exit')
+    return this.createWaiter(
+      timeoutMs,
+      fallbackIntervalMs,
+      (waiter) => {
+        const waiters = this.promptWaiters.get(key) ?? new Set<RuntimeWaiter>()
+        waiters.add(waiter)
+        this.promptWaiters.set(key, waiters)
+      },
+      (waiter) => {
+        const waiters = this.promptWaiters.get(key)
+        if (!waiters) return
+        waiters.delete(waiter)
+        if (waiters.size === 0) this.promptWaiters.delete(key)
+      },
+      (waiter) => { void this.probeIdle(waiter, 'completed') },
+    )
+  }
+
+  /** Resolve when the runtime reports neither streaming nor compacting work. */
+  waitForIdle(timeoutMs: number, fallbackIntervalMs = DEFAULT_WAITER_FALLBACK_MS): Promise<RuntimeWaitOutcome> {
+    if (this.exited) return Promise.resolve('exit')
+    if (!this.isBusy()) return Promise.resolve('idle')
+    return this.createWaiter(
+      timeoutMs,
+      fallbackIntervalMs,
+      (waiter) => { this.idleWaiters.add(waiter) },
+      (waiter) => { this.idleWaiters.delete(waiter) },
+      (waiter) => { void this.probeIdle(waiter, 'idle') },
+    )
+  }
+
+  private isBusy(): boolean {
+    const state = this.snapshot()
+    return state.isStreaming === true || state.isCompacting === true
+  }
+
+  private createWaiter(
+    timeoutMs: number,
+    fallbackIntervalMs: number,
+    attach: (waiter: RuntimeWaiter) => void,
+    detach: (waiter: RuntimeWaiter) => void,
+    fallback: ((waiter: RuntimeWaiter) => void) | null,
+  ): Promise<RuntimeWaitOutcome> {
+    return new Promise((resolve) => {
+      const waiter: RuntimeWaiter = {
+        disposed: false,
+        probing: false,
+        timeoutTimer: null,
+        fallbackTimer: null,
+        resolve: (outcome) => {
+          if (waiter.disposed) return
+          waiter.disposed = true
+          if (waiter.timeoutTimer) clearTimeout(waiter.timeoutTimer)
+          if (waiter.fallbackTimer) clearTimeout(waiter.fallbackTimer)
+          waiter.timeoutTimer = null
+          waiter.fallbackTimer = null
+          detach(waiter)
+          resolve(outcome)
+        },
+      }
+      waiter.timeoutTimer = setTimeout(() => waiter.resolve('timeout'), timeoutMs)
+      waiter.timeoutTimer.unref()
+      if (fallback && fallbackIntervalMs > 0) {
+        const arm = (): void => {
+          waiter.fallbackTimer = setTimeout(() => {
+            waiter.fallbackTimer = null
+            if (waiter.disposed) return
+            fallback(waiter)
+            if (!waiter.disposed) arm()
+          }, fallbackIntervalMs)
+          waiter.fallbackTimer.unref()
+        }
+        arm()
+      }
+      attach(waiter)
+    })
+  }
+
+  private async probeIdle(waiter: RuntimeWaiter, outcome: RuntimeWaitOutcome): Promise<void> {
+    if (waiter.disposed || waiter.probing || this.exited || !this.transport.writable()) return
+    waiter.probing = true
+    const stateEpoch = this.settlementEpoch
+    try {
+      const response = await this.request({ type: 'get_state' }, 15_000)
+      if (waiter.disposed) return
+      if (response.success === true && isRecord(response.data)) {
+        this.updateFromState(response.data, stateEpoch)
+        this.emit({ type: 'runtime_state', state: this.snapshot() })
+      }
+      if (!this.isBusy()) waiter.resolve(outcome)
+    } catch { /* the waiter timeout remains authoritative */ }
+    finally { waiter.probing = false }
+  }
+
+  private settleIdleWaiters(): void {
+    if (this.idleWaiters.size === 0 || this.isBusy()) return
+    for (const waiter of [...this.idleWaiters]) waiter.resolve('idle')
+  }
+
+  /** A frame without an id cannot be correlated; the scheduled path keeps at
+   * most one prompt in flight, so it settles the outstanding waiter. */
+  private settlePromptWaiters(value: RpcObject): void {
+    const id = typeof value.id === 'string' && value.id.length > 0 ? value.id : undefined
+    if (id) this.rememberSettledPrompt(id)
+    for (const [key, waiters] of [...this.promptWaiters]) {
+      if (id && key && key !== id) continue
+      this.promptWaiters.delete(key)
+      for (const waiter of [...waiters]) waiter.resolve('completed')
+    }
+  }
+
+  private rememberSettledPrompt(id: string): void {
+    this.settledPromptIds.set(id, true)
+    if (this.settledPromptIds.size <= MAX_SETTLED_PROMPT_IDS) return
+    const oldest = this.settledPromptIds.keys().next().value
+    if (oldest !== undefined) this.settledPromptIds.delete(oldest)
+  }
+
+  private settleAllWaiters(outcome: RuntimeWaitOutcome): void {
+    const waiters = [...this.promptWaiters.values()].flatMap((set) => [...set])
+    this.promptWaiters.clear()
+    waiters.push(...this.idleWaiters)
+    this.idleWaiters.clear()
+    for (const waiter of waiters) waiter.resolve(outcome)
+  }
 
   stop(): Promise<boolean> {
     if (!this.stopPromise) {
@@ -409,6 +599,8 @@ export class RpcRuntime {
       // may keep writing while that request is in flight.
       this.acceptingChunkFrames = false
       this.disposeChunkAssemblies()
+      this.exited = true
+      this.settleAllWaiters('exit')
       this.stopPromise = this.performStop()
     }
     return this.stopPromise
@@ -462,8 +654,22 @@ export class RpcRuntime {
     this.compactionPollTimer = setTimeout(() => {
       this.compactionPollTimer = null
       void this.pollCompactionState().finally(() => this.scheduleCompactionPoll())
-    }, this.watchdogTimings.pollIntervalMs)
+    }, this.compactionPollIntervalMs())
     this.compactionPollTimer.unref()
+  }
+
+  /**
+   * A turn in flight needs the prompt probe (a lost agent_end would otherwise
+   * spin the pill), and so does a queue the desktop still shows as held: omp
+   * can deliver a follow-up without pushing an update, so the tray only
+   * self-heals on a probe. With neither, the native compaction events carry the
+   * lifecycle and the poll is only a slow fallback.
+   */
+  private compactionPollIntervalMs(): number {
+    const held = this.info.sessionActions?.queuedCount ?? 0
+    return this.info.isStreaming || this.retryPending || this.continuationPending || held > 0
+      ? this.watchdogTimings.pollIntervalMs
+      : this.watchdogTimings.idlePollIntervalMs
   }
 
   private async pollCompactionState(): Promise<void> {
@@ -631,12 +837,13 @@ export class RpcRuntime {
       this.emit({ type: 'transport_error', error: `${this.adapter.agentName} emitted malformed JSON` })
       return
     }
-    this.handleFrame(value)
+    this.handleFrame(value, frameByteHint(line))
   }
 
-  private handleFrame(raw: unknown): void {
+  private handleFrame(raw: unknown, eventBytesHint?: number): void {
     if (!isRecord(raw) || typeof raw.type !== 'string') return
     this.receivedFrame = true
+    if (raw.type === 'ready') this.info.bashExcludeFromContext = raw.supportsBashExcludeFromContext === true
     if (raw.type !== 'response') { this.lastActivityAt = Date.now(); this.scheduleCompactionPoll() }
     if (raw.type === 'response' && typeof raw.id === 'string') {
       const pending = this.pending.get(raw.id)
@@ -750,7 +957,10 @@ export class RpcRuntime {
     } else if (value.type === 'auto_retry_start') this.retryPending = true
     else if (value.type === 'auto_retry_end') this.retryPending = false
     else if (value.type === 'session_action_update') this.lastSessionActionEventAt = Date.now()
-    this.emit(value)
+    if (value.type === 'prompt_result') this.settlePromptWaiters(value)
+    // Only an identity normalization leaves the event text equal to the frame,
+    // which is what makes the frame's byte count a safe upper bound.
+    this.emit(value, value === raw ? eventBytesHint : undefined)
     if (liveUsageUpdate.changed || liveUsageUpdate.reset) this.publishLiveContextUsage(value.type === 'message_end')
     if (value.type === 'message_end'
       || value.type === 'tool_execution_end'
@@ -824,13 +1034,14 @@ export class RpcRuntime {
     }
     this.chunkAssemblies.delete(chunkId)
     this.rescheduleChunkAssemblySweep()
+    const text = Buffer.concat(current.parts).toString('utf8')
     let value: unknown
-    try { value = JSON.parse(Buffer.concat(current.parts).toString('utf8')) } catch {
+    try { value = JSON.parse(text) } catch {
       this.disposeChunkAssemblies()
       this.emit({ type: 'transport_error', error: `${this.adapter.agentName} emitted a malformed chunked frame` })
       return
     }
-    this.handleFrame(value)
+    this.handleFrame(value, frameByteHint(text, current.bytes))
   }
 
   /** A broken reassembly is dropped without killing the runtime: the agent is still running, so the renderer reconciles from disk. */
@@ -1118,7 +1329,10 @@ export class RpcRuntime {
     this.settlement = 'unsettled'
   }
 
-  private emit(event: RpcObject): void { this.eventForwarder.emit(event) }
+  private emit(event: RpcObject, eventBytesHint?: number): void {
+    this.eventForwarder.emit(event, eventBytesHint)
+    this.settleIdleWaiters()
+  }
 
   private rememberUncertainDelivery(id: string): void {
     this.uncertainDeliveries.add(id)
@@ -1129,6 +1343,8 @@ export class RpcRuntime {
 
   private fail(error: Error): void {
     this.acceptingChunkFrames = false
+    this.exited = true
+    this.settleAllWaiters('exit')
     this.disposeChunkAssemblies()
     for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(error) }
     this.pending.clear()

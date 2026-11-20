@@ -17,6 +17,7 @@ import {
   PackageOpen,
   PanelLeftClose,
   Pin,
+  Plus,
   Search,
   Settings,
   Trash2,
@@ -24,6 +25,7 @@ import {
 import { memo, useEffect, useMemo, useState } from 'react'
 import { sessionAttentionSignature, signatureCleared } from '@/app/session-attention'
 import { HARNESS_PRODUCT_NAMES } from '@/lib/harness'
+import { formatCompactRelative } from '@/lib/data'
 import { type MessageKey, useI18n } from '@/lib/i18n'
 import { shortcutLabel } from '@/lib/platform-shortcuts'
 import { sortProjects } from '@/lib/project-order'
@@ -48,10 +50,6 @@ export interface SidebarProps {
   onSelectSession(session: SessionRecord): void
   onNavigate(view: WorkspaceView): void
   onNewSession(project?: ProjectRecord): void
-  /** Selects the draft-session placeholder row without clearing the composer draft. */
-  onSelectDraftSession?(project: ProjectRecord): void
-  /** Discards the draft placeholder; no confirmation, no backend call. */
-  onDiscardDraftSession?(project: ProjectRecord): void | Promise<void>
   onAddProject(): void
   onRemoveProject(project: ProjectRecord): void
   projectSortMode?: ProjectSortMode
@@ -157,6 +155,19 @@ export function indexSidebarSessions(
 
 export function boundedSidebarSessions(sessions: SessionRecord[]): SessionRecord[] {
   return sessions.slice(0, SIDEBAR_SESSION_LIMIT)
+}
+
+export const SIDEBAR_RECENT_LIMIT = 8
+
+export function sessionModifiedAt(session: SessionRecord): number {
+  return Date.parse(session.updatedAt || session.lastUserMessageAt || session.createdAt) || 0
+}
+
+/** Cross-project recency list: newest file modification first, pinned rows included. */
+export function recentSidebarSessions(sessions: SessionRecord[], limit = SIDEBAR_RECENT_LIMIT): SessionRecord[] {
+  return [...sessions]
+    .sort((left, right) => sessionModifiedAt(right) - sessionModifiedAt(left) || right.createdAt.localeCompare(left.createdAt) || left.filePath.localeCompare(right.filePath))
+    .slice(0, limit)
 }
 
 type Translator = (key: MessageKey, values?: Record<string, string | number>) => string
@@ -266,8 +277,6 @@ function SidebarView({
   onSelectSession,
   onNavigate,
   onNewSession,
-  onSelectDraftSession = () => undefined,
-  onDiscardDraftSession = () => undefined,
   onAddProject,
   onRemoveProject,
   projectSortMode = 'recent',
@@ -310,9 +319,6 @@ function SidebarView({
     () => indexSidebarSessions(projects, sessions, undefined, recentSessionOpens),
     [projects, sessions, recentSessionOpens],
   )
-  // Draft state: a project is active but no session has been created yet. The
-  // placeholder row stands in until the first prompt adopts a real session.
-  const draftProjectId = activeProjectId && !activeSessionId ? activeProjectId : undefined
   const needsAttention = (session: SessionRecord) => {
     const signature = sessionAttentionSignature(session)
     return Boolean(signature && !signatureCleared(signature, clearedAttention[session.id], session.unread))
@@ -375,6 +381,53 @@ function SidebarView({
     if (action === 'pin') onTogglePinProject(project)
     else if (action === 'remove') setRemoveTarget(project)
   }
+  const renderSessionRow = (session: SessionRecord) => (
+    <div
+      key={session.id}
+      className={`session-row-wrap session-row-wrap--${session.status} ${needsAttention(session) ? 'has-attention' : ''} ${activeSessionId === session.id && activeView === 'session' ? 'is-selected' : ''}`}
+    >
+      <button
+        type="button"
+        title={session.title}
+        className="session-row"
+        onClick={() => {
+          onSelectSession(session)
+        }}
+        onContextMenu={(event) => {
+          event.preventDefault()
+          void openSessionMenu(session)
+        }}
+      >
+        <span className="session-row__text">
+          <span className="session-row__title">{session.title}</span>
+        </span>
+        <span className="session-row__meta">
+          <span className="session-row__time">{formatCompactRelative(session.updatedAt || session.lastUserMessageAt, { nowLabel: t('sidebar.time.now') })}</span>
+          {session.pinned ? <span className="session-row__pin" title={t('sidebar.sessionPinnedAria')}><Pin size={10} fill="currentColor" /></span> : null}
+          {session.status === 'running' ? <span className="session-row__spinner" title={t('sidebar.sessionWorking')}><LoaderCircle className="spin" size={13} /></span> : null}
+        </span>
+      </button>
+      <IconButton
+        size="small"
+        className={`session-row__archive ${archiveTarget?.id === session.id ? 'is-confirming' : ''}`}
+        label={t('sessions.deleteNamed', { name: session.title })}
+        data-archive-confirming={archiveTarget?.id === session.id}
+        onClick={() => {
+          setArchiveTarget(session)
+        }}
+      >
+        <Trash2 size={13} />
+      </IconButton>
+      <IconButton
+        size="small"
+        className="session-row__more"
+        label={t('sidebar.sessionOptions', { name: session.title })}
+        onClick={() => void openSessionMenu(session)}
+      >
+        <MoreHorizontal size={13} />
+      </IconButton>
+    </div>
+  )
   const normalized = query.trim().toLowerCase()
   const visibleProjects = useMemo(
     () =>
@@ -389,6 +442,12 @@ function SidebarView({
       ),
     [projects, sessionsByProject, normalized, projectSortMode],
   )
+  const recentSessions = useMemo(() => {
+    const claimed = new Set<string>()
+    for (const projectSessions of sessionsByProject.values()) for (const session of projectSessions) claimed.add(session.id)
+    const matching = activeSessions.filter((session) => claimed.has(session.id) && (!normalized || `${session.title} ${session.preview ?? ''}`.toLowerCase().includes(normalized)))
+    return recentSidebarSessions(matching)
+  }, [activeSessions, normalized, sessionsByProject])
 
   return (
     <aside ref={sidebarRef} className="sidebar" aria-label={t('sidebar.aria')} tabIndex={overlay ? -1 : undefined}>
@@ -512,7 +571,7 @@ function SidebarView({
               <div
                 // Selection belongs to the session row while the project is
                 // expanded; a collapsed project row carries it for both.
-                className={`project-row ${activeProjectId === project.id && activeView === 'session' && draftProjectId !== project.id && isCollapsed ? 'is-selected' : ''}`}
+                className={`project-row ${activeProjectId === project.id && activeView === 'session' && (isCollapsed || !activeSessionId) ? 'is-selected' : ''}`}
                 onContextMenu={(event) => {
                   event.preventDefault()
                   void openProjectMenu(project)
@@ -562,76 +621,7 @@ function SidebarView({
               </div>
               {!isCollapsed ? (
                 <div className="session-list">
-                  {draftProjectId === project.id ? (
-                    <div className={`session-row-wrap is-placeholder ${activeView === 'session' ? 'is-selected' : ''}`}>
-                      <button
-                        type="button"
-                        title={t('sidebar.untitledSession')}
-                        className="session-row"
-                        onClick={() => {
-                          onSelectDraftSession(project)
-                        }}
-                      >
-                        <span className="session-row__text">
-                          <span className="session-row__title">{t('sidebar.untitledSession')}</span>
-                        </span>
-                      </button>
-                      <IconButton
-                        size="small"
-                        className="session-row__archive"
-                        label={t('sessions.deleteNamed', { name: t('sidebar.untitledSession') })}
-                        onClick={() => {
-                          void onDiscardDraftSession(project)
-                        }}
-                      >
-                        <Trash2 size={13} />
-                      </IconButton>
-                    </div>
-                  ) : null}
-                  {sessionRows.map((session) => (
-                    <div
-                      key={session.id}
-                      className={`session-row-wrap session-row-wrap--${session.status} ${needsAttention(session) ? 'has-attention' : ''} ${activeSessionId === session.id && activeView === 'session' ? 'is-selected' : ''}`}
-                    >
-                      <button
-                        type="button"
-                        title={session.title}
-                        className="session-row"
-                        onClick={() => {
-                          onSelectSession(session)
-                        }}
-                        onContextMenu={(event) => {
-                          event.preventDefault()
-                          void openSessionMenu(session)
-                        }}
-                      >
-                        <span className="session-row__text">
-                          <span className="session-row__title">{session.title}</span>
-                        </span>
-                        {session.pinned ? <span className="session-row__pin" title={t('sidebar.sessionPinnedAria')}><Pin size={10} fill="currentColor" /></span> : null}
-                        {session.status === 'running' ? <span className="session-row__spinner" title={t('sidebar.sessionWorking')}><LoaderCircle className="spin" size={13} /></span> : null}
-                      </button>
-                      <IconButton
-                        size="small"
-                        className={`session-row__archive ${archiveTarget?.id === session.id ? 'is-confirming' : ''}`}
-                        label={t('sessions.deleteNamed', { name: session.title })}
-                        data-archive-confirming={archiveTarget?.id === session.id}
-                        onClick={() => {
-                          setArchiveTarget(session)
-                        }}
-                      >
-                        <Trash2 size={13} />
-                      </IconButton>
-                      <IconButton
-                        size="small"
-                        className="session-row__more"
-                        label={t('sidebar.sessionOptions', { name: session.title })}
-                        onClick={() => void openSessionMenu(session)}
-                      >
-                        <MoreHorizontal size={13} />
-                      </IconButton>
-                    </div>
-                  ))}
+                  {sessionRows.map(renderSessionRow)}
                   {projectSessions.length > SIDEBAR_SESSION_LIMIT && !normalized ? (
                     <button
                       type="button"
@@ -655,7 +645,7 @@ function SidebarView({
                       {expandedProjects.has(project.id) ? t('sidebar.showLessSessions') : t('sidebar.showAllSessions', { count: projectSessions.length })}
                     </button>
                   ) : null}
-                  {projectSessions.length === 0 && draftProjectId !== project.id ? (
+                  {projectSessions.length === 0 ? (
                     <button
                       type="button"
                       title={t('sidebar.newSessionIn', { name: project.name })}
@@ -672,6 +662,19 @@ function SidebarView({
             </div>
           )
         })}
+        {recentSessions.length ? (
+          <section className="sidebar-recent" aria-label={t('sidebar.recent.aria')}>
+            <div className="sidebar__section-heading">
+              <span>{t('sidebar.recent.heading')}</span>
+              <span className="sidebar__section-heading-actions">
+                <IconButton size="small" label={t('sidebar.newSession')} onClick={() => onNewSession()}>
+                  <Plus size={13} />
+                </IconButton>
+              </span>
+            </div>
+            <div className="session-list">{recentSessions.map(renderSessionRow)}</div>
+          </section>
+        ) : null}
       </div>
 
       <div className="sidebar__footer">
@@ -867,8 +870,6 @@ export function areSidebarPropsEqual(previous: SidebarProps, next: SidebarProps)
     previous.onSelectSession === next.onSelectSession &&
     previous.onNavigate === next.onNavigate &&
     previous.onNewSession === next.onNewSession &&
-    previous.onSelectDraftSession === next.onSelectDraftSession &&
-    previous.onDiscardDraftSession === next.onDiscardDraftSession &&
     previous.onAddProject === next.onAddProject &&
     previous.onRemoveProject === next.onRemoveProject &&
     previous.projectSortMode === next.projectSortMode &&

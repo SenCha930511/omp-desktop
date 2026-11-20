@@ -44,6 +44,26 @@ describe('streaming Markdown rendering', () => {
     expect(container.querySelectorAll('.prose > p')).toHaveLength(1)
   })
 
+  it('keeps the committed snapshot when only a newline arrives inside the interval', () => {
+    const render = (text: string) => act(() => root.render(createElement(MarkdownText, { text, streaming: true })))
+
+    // The first delta after mount parses immediately and starts the cadence.
+    render('Answer one')
+    render('Answer one\n')
+    expect(container.querySelector('.prose')?.textContent).toBe('Answer one')
+
+    // A bullet arrives with a newline in the unparsed tail: still no parse.
+    render('Answer one\n- item one')
+    expect(container.querySelector('.prose > ul')).toBeNull()
+    expect(container.querySelector('.prose')?.textContent).toBe('Answer one')
+
+    act(() => vi.advanceTimersByTime(STREAMING_PARSE_INTERVAL_MS - 1))
+    expect(container.querySelector('.prose > ul')).toBeNull()
+
+    act(() => vi.advanceTimersByTime(1))
+    expect(container.querySelector('.prose > ul')?.textContent?.trim()).toBe('item one')
+  })
+
   it.each([false, true])('throttles the actual assistant path with activity=%s and flushes its final answer', (withActivity) => {
     vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
     const render = (text: string, streaming = true) => {

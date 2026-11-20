@@ -163,12 +163,13 @@ export function formatQueuedItemsForRestore(items: readonly string[]): string {
 
 // 對齊上游 TUI input-controller(input-controller.ts submit 路徑):
 // `! cmd` 直接執行 shell(結果進 context);`!! cmd` 執行但排除出 context。
-// RPC wire 的 bash 參數只有 command(wire/commands.ts BashParams),沒有
-// excludeFromContext——`!!` 的「排除」語意無法透過 RPC 表達,因此 GUI 層
-// 必須明確拒絕 `!!` 而不是靜默降級成 `!`(會污染模型 context,不可逆)。
+// OMP 19 advertises the capability in ready.supportsBashExcludeFromContext.
+// Callers must check RuntimeInfo.bashExcludeFromContext before sending `!!`
+// and reject rather than silently downgrade to `!` (which would pollute the
+// model context).
 export interface BashShorthandParse {
   command: string
-  /** true = 上游 `!!` 的 excludeFromContext;RPC 無法表達,呼叫端應拒絕。 */
+  /** true = 上游 `!!` 的 excludeFromContext;只送到有回報支援的 runtime。 */
   excludeFromContext: boolean
 }
 

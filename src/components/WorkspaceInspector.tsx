@@ -1,14 +1,13 @@
 import { useSyncExternalStore } from 'react'
-import type { TranscriptStore } from '@/app/transcript-store'
-import type { TranscriptMessage } from '@/types/api'
+import { EMPTY_TRANSCRIPT_SUMMARY, type TranscriptStore } from '@/app/transcript-store'
 import { Inspector, type InspectorProps } from './Inspector'
 
-const EMPTY_MESSAGES: TranscriptMessage[] = []
-const emptySnapshot = () => EMPTY_MESSAGES
+const emptySummary = () => EMPTY_TRANSCRIPT_SUMMARY
 const noSubscription = () => () => undefined
 
-export function WorkspaceInspector({ transcript, ...props }: Omit<InspectorProps, 'messages'> & { transcript: TranscriptStore }) {
+/** The Summary tab reads the store's summary snapshot; no other tab touches the transcript at all. */
+export function WorkspaceInspector({ transcript, ...props }: Omit<InspectorProps, 'summary'> & { transcript: TranscriptStore }) {
   const live = props.activeTab === 'summary'
-  const messages = useSyncExternalStore(live ? transcript.subscribe : noSubscription, live ? transcript.getSnapshot : emptySnapshot)
-  return <Inspector {...props} messages={messages} />
+  const summary = useSyncExternalStore(live ? transcript.subscribeSummary : noSubscription, live ? transcript.getSummary : emptySummary)
+  return <Inspector {...props} summary={summary} />
 }

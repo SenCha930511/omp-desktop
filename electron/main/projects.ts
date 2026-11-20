@@ -60,6 +60,11 @@ interface FolderIdentityRefresh {
   current: FolderIdentity
 }
 
+/**
+ * Project records here are store-owned readonly snapshots (see
+ * `JsonStateStore.projectsReadonly`); copy a field before it escapes into a
+ * renderer-facing record.
+ */
 interface PersistedAuthorizationContext {
   project: PersistedProject
   folders: Set<string>
@@ -263,7 +268,7 @@ export class ProjectService {
   }
 
   private async migrateLegacyFolderIdentities(): Promise<void> {
-    const legacyProjects = this.ownProjects(this.store.getProjects()).filter((project) => project.folderIdentities === undefined)
+    const legacyProjects = this.ownProjects(this.store.projectsReadonly()).filter((project) => project.folderIdentities === undefined)
     if (!legacyProjects.length) return
 
     const captured = new Map<string, Record<string, FolderIdentity>>()
@@ -359,7 +364,7 @@ export class ProjectService {
    * repository it belongs to instead of as a sibling project.
    */
   private async absorbLinkedWorktreeProjects(): Promise<void> {
-    const own = this.ownProjects(this.store.getProjects())
+    const own = this.ownProjects(this.store.projectsReadonly())
     if (own.length < 2) return
     const ownerByFolder = new Map<string, string>()
     for (const project of own) {
@@ -411,7 +416,7 @@ export class ProjectService {
     const persisted: PersistedAuthorizationContext[] = []
     const represented = new Set<string>()
 
-    for (const project of this.ownProjects(this.store.getProjects())) {
+    for (const project of this.ownProjects(this.store.projectsReadonly())) {
       const folderSet = new Set<string>()
       let primaryGranted = false
       for (const folder of project.folders) {
@@ -435,8 +440,7 @@ export class ProjectService {
       persisted.push({ project, folders: folderSet, primaryGranted })
     }
 
-    const snapshot = this.store.getProjectAuthorizationState()
-    const dismissed = await this.resolveDismissedProjectPaths(snapshot.dismissedProjectPaths)
+    const dismissed = await this.resolveDismissedProjectPaths(this.store.dismissedProjectPathsReadonly())
     const sessions = await this.sessionProvider()
     const canonicalSessionPaths = await this.canonicalizeSessionPaths(sessions)
     const discoveredSessionRoots = await this.discoverValidSessionRoots(sessions, dismissed, represented, authorizationRevision)
@@ -490,7 +494,7 @@ export class ProjectService {
       let sessionCount = 0
       for (const folder of folders) sessionCount += sessionStats.get(folder)?.count ?? 0
       const record: ProjectRecord = {
-        id: project.id, harness: project.harness, name: project.name, path: project.path, folders: project.folders, primaryFolder: project.primaryFolder,
+        id: project.id, harness: project.harness, name: project.name, path: project.path, folders: [...project.folders], primaryFolder: project.primaryFolder,
         pinned: project.pinned, createdAt: project.createdAt, lastOpenedAt: project.lastOpenedAt, scripts: project.scripts ? { ...project.scripts } : undefined,
         sessionCount,
         gitBranch: undefined,
@@ -621,7 +625,7 @@ export class ProjectService {
     this.removalRoots.delete(path)
     const now = new Date().toISOString()
     let parentId: string | undefined
-    for (const item of this.ownProjects(this.store.getProjects())) {
+    for (const item of this.ownProjects(this.store.projectsReadonly())) {
       for (const candidate of new Set([item.path, ...item.folders])) {
         try {
           if (await requireExistingDirectory(candidate, 'project folder') === parentCwd) {
@@ -750,7 +754,7 @@ export class ProjectService {
     try {
       this.pendingRemovalIds.add(id)
 
-      const persisted = this.ownProjects(this.store.getProjects()).find((project) => project.id === id)
+      const persisted = this.ownProjects(this.store.projectsReadonly()).find((project) => project.id === id)
       const persistedPaths: string[] = []
       if (persisted) {
         for (const folder of persisted.folders) {
@@ -957,9 +961,8 @@ export class ProjectService {
       refreshedAuthorization = true
     }
     const authorizationRevision = this.authorizationRevision
-    const snapshot = this.store.getProjectAuthorizationState()
-    const dismissed = await this.resolveDismissedProjectPaths(snapshot.dismissedProjectPaths)
-    const ownPersistedFolders = new Set(this.ownProjects(snapshot.projects).flatMap((p) => p.folders.map((f) => resolve(f))))
+    const dismissed = await this.resolveDismissedProjectPaths(this.store.dismissedProjectPathsReadonly())
+    const ownPersistedFolders = new Set(this.ownProjects(this.store.projectsReadonly()).flatMap((p) => p.folders.map((f) => resolve(f))))
 
     const checkRoots = async (map: Map<string, FolderIdentity>, isReadOnlyMap: boolean): Promise<string | undefined> => {
       const roots: string[] = []

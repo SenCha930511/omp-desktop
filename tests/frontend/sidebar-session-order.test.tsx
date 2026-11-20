@@ -67,7 +67,7 @@ describe('sidebar session ordering', () => {
         />,
       )
     })
-    const rowTitles = () => [...container.querySelectorAll<HTMLElement>('.session-row__title')].map((row) => row.textContent)
+    const rowTitles = () => [...container.querySelectorAll<HTMLElement>('.project-group .session-row-wrap .session-row__title')].map((row) => row.textContent)
 
     await renderSidebar()
     expect(rowTitles()).toEqual(['newer', 'older', 'in-use'])

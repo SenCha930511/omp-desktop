@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
@@ -402,6 +402,61 @@ describe('OMP discovery candidates', () => {
       join(versions, 'v22.12.0', 'bin', 'omp'),
       join(versions, 'v20.1.0', 'bin', 'omp'),
     ])
+  })
+})
+
+describe('version manager runtime directories', () => {
+  const fixedMtime = new Date('2026-01-01T00:00:00Z')
+  const runtimePath = (home: string): string => executableChildEnvironment(
+    '/opt/tool/omp',
+    { PATH: '/usr/bin', NVM_DIR: join(home, '.nvm') },
+    'linux',
+  ).PATH ?? ''
+
+  it('serves the cached scan while the versions directory is unchanged', () => {
+    const home = temp()
+    const versionsRoot = join(home, '.nvm', 'versions', 'node')
+    mkdirSync(join(versionsRoot, 'v20.1.0'), { recursive: true })
+    utimesSync(versionsRoot, fixedMtime, fixedMtime)
+    expect(runtimePath(home)).toContain(join(versionsRoot, 'v20.1.0', 'bin'))
+    // A new version behind a restored mtime stays invisible: the cached scan
+    // answers, so a spawn does not re-enumerate the directory.
+    mkdirSync(join(versionsRoot, 'v22.12.0'))
+    utimesSync(versionsRoot, fixedMtime, fixedMtime)
+    const cached = runtimePath(home)
+    expect(cached).toContain(join(versionsRoot, 'v20.1.0', 'bin'))
+    expect(cached).not.toContain(join(versionsRoot, 'v22.12.0', 'bin'))
+  })
+
+  it('rescans once the versions directory mtime changes', () => {
+    const home = temp()
+    const versionsRoot = join(home, '.nvm', 'versions', 'node')
+    mkdirSync(join(versionsRoot, 'v20.1.0'), { recursive: true })
+    utimesSync(versionsRoot, fixedMtime, fixedMtime)
+    expect(runtimePath(home)).toContain(join(versionsRoot, 'v20.1.0', 'bin'))
+    mkdirSync(join(versionsRoot, 'v22.12.0'))
+    expect(runtimePath(home)).toContain(join(versionsRoot, 'v22.12.0', 'bin'))
+  })
+
+  it('does not cache a missing versions directory', () => {
+    const home = temp()
+    const versionsRoot = join(home, '.nvm', 'versions', 'node')
+    expect(runtimePath(home)).not.toContain(join(versionsRoot, 'v20.1.0', 'bin'))
+    mkdirSync(join(versionsRoot, 'v20.1.0'), { recursive: true })
+    expect(runtimePath(home)).toContain(join(versionsRoot, 'v20.1.0', 'bin'))
+  })
+
+  it('keeps one entry per nvm root', () => {
+    const firstHome = temp()
+    const secondHome = temp()
+    const firstRoot = join(firstHome, '.nvm', 'versions', 'node')
+    const secondRoot = join(secondHome, '.nvm', 'versions', 'node')
+    mkdirSync(join(firstRoot, 'v20.1.0'), { recursive: true })
+    mkdirSync(join(secondRoot, 'v22.12.0'), { recursive: true })
+    expect(runtimePath(firstHome)).toContain(join(firstRoot, 'v20.1.0', 'bin'))
+    expect(runtimePath(secondHome)).toContain(join(secondRoot, 'v22.12.0', 'bin'))
+    expect(runtimePath(firstHome)).toContain(join(firstRoot, 'v20.1.0', 'bin'))
+    expect(runtimePath(firstHome)).not.toContain(join(secondRoot, 'v22.12.0', 'bin'))
   })
 })
 

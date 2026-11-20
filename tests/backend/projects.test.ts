@@ -1155,3 +1155,37 @@ describe('ProjectService scripts', () => {
     await expect(service.updateScripts('missing', { setup: '', run: 'bad\0command' })).rejects.toThrow(/NUL/)
   })
 })
+
+describe('ProjectService readonly store reads', () => {
+  it('lists and authorizes from the committed state without cloning it', async () => {
+    const { root, service, store } = setup()
+    const now = new Date().toISOString()
+    await store.update((state) => {
+      state.projects.push({
+        id: 'project', harness: 'omp', name: 'Project', path: root, folders: [root], primaryFolder: root,
+        pinned: false, createdAt: now, lastOpenedAt: now, folderIdentities: identities(root),
+      })
+      state.dismissedProjectPaths.push(root)
+    })
+    service.bindProviders({ sessions: async () => [], branch: async () => undefined })
+    const projects = store.projectsReadonly()
+    const dismissed = store.dismissedProjectPathsReadonly()
+    const getProjects = vi.spyOn(store, 'getProjects')
+    const getAuthorizationState = vi.spyOn(store, 'getProjectAuthorizationState')
+
+    const [record] = await service.list()
+    expect(await service.authorizeCwd(root)).toBe(realpathSync(root))
+
+    // Authorization and listing read the committed state directly, never a clone.
+    expect(getProjects).not.toHaveBeenCalled()
+    expect(getAuthorizationState).not.toHaveBeenCalled()
+    expect(store.projectsReadonly()).toBe(projects)
+    expect(store.dismissedProjectPathsReadonly()).toBe(dismissed)
+
+    // The renderer-facing record still owns its mutable arrays.
+    expect(record.folders).toEqual([root])
+    expect(record.folders).not.toBe(store.projectsReadonly()[0].folders)
+    record.folders.push('/injected')
+    expect(store.projectsReadonly()[0].folders).toEqual([root])
+  })
+})

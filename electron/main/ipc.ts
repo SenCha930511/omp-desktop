@@ -126,6 +126,26 @@ export function isTrustedRendererUrl(url: string, expectedRendererUrl: string): 
   } catch { return false }
 }
 
+/**
+ * Caches the trust verdict for one exact (top-level URL, main-frame URL) pair.
+ * The forwarding sinks re-check trust on every event while the renderer stays
+ * put, so the last pair is reused without parsing two URLs per call. Any change
+ * to either string is a cache miss and revalidates, so the cache can never
+ * widen trust beyond what `isTrustedRendererUrl` allows.
+ */
+export function createTrustedRendererUrlCache(expectedRendererUrl: string): (url: string, frameUrl: string) => boolean {
+  let cachedUrl: string | undefined
+  let cachedFrameUrl: string | undefined
+  let cachedTrusted = false
+  return (url, frameUrl) => {
+    if (url === cachedUrl && frameUrl === cachedFrameUrl) return cachedTrusted
+    cachedUrl = url
+    cachedFrameUrl = frameUrl
+    cachedTrusted = isTrustedRendererUrl(url, expectedRendererUrl) && isTrustedRendererUrl(frameUrl, expectedRendererUrl)
+    return cachedTrusted
+  }
+}
+
 export interface IpcRegistration {
   authorize(webContents: WebContents): void
   revoke(webContentsId: number): void

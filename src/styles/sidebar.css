@@ -23,6 +23,7 @@
 .sidebar__sort-menu button:hover, .sidebar__sort-menu button:focus-visible, .sidebar__sort-menu button.is-active { color: var(--text); background: var(--surface-hover); }
 .sidebar__sort-menu button svg { margin-left: auto; color: var(--prime); }
 .sidebar__empty { margin: 12px 8px; color: var(--text-tertiary); font-size: 12px; }
+.sidebar-recent { margin-top: 10px; padding-top: 6px; border-top: var(--border-hairline, 1px) solid var(--border); }
 .project-group { margin-bottom: 5px; }
 .project-row { position: relative; height: 34px; display: flex; align-items: center; padding: 0 3px; border-radius: 7px; color: var(--text-secondary); }
 .project-row:hover { background: var(--surface-hover); }
@@ -62,21 +63,11 @@
    button excludes the collapse chevron and row padding. */
 .project-row__main:focus-visible { outline: none; }
 .project-row:has(.project-row__main:focus-visible)::after { content: ''; position: absolute; inset: 0; z-index: -1; border-radius: 7px; box-shadow: 0 0 0 2px var(--focus); }
-/* The draft placeholder has no session behind it: keep it visually tentative
-   (italic, muted until selected) with a single discard action. */
-.session-row-wrap.is-placeholder > .session-row { align-items: center; }
-.session-row-wrap.is-placeholder .session-row__title { font-style: italic; }
-.session-row-wrap.is-placeholder:not(.is-selected) .session-row__title { color: var(--text-tertiary); }
-.session-row-wrap.is-placeholder .session-row__archive { right: 3px; }
-.session-row-wrap.is-placeholder:hover > .session-row, .session-row-wrap.is-placeholder:focus-within > .session-row { padding-right: 32px; }
 
-.session-row-wrap > .session-row { padding-right: 8px; transition: padding-right 140ms var(--ease-out); }
-.session-row-wrap:hover > .session-row, .session-row-wrap:focus-within > .session-row, .session-row-wrap:has(.session-row__more[aria-expanded="true"], .session-row__archive.is-confirming) > .session-row { padding-right: 61px; }
-/* A running row parks its spinner where the hover actions appear; reserve
-   the action zone at rest so the spinner never sits under the invisible
-   buttons (a click there would open the menu instead of selecting the
-   session) and hover does not shift the spinner sideways. */
-.session-row-wrap--running > .session-row { padding-right: 61px; }
+/* Every row reserves the hover-action zone at rest so the timestamp and
+   spinner never sit under the invisible buttons; hovering does not shift
+   the row content sideways. */
+.session-row-wrap > .session-row { padding-right: 61px; }
 .session-row__archive, .session-row__more { position: absolute; top: 6px; opacity: 0; transition: opacity 130ms var(--ease-out), color 130ms var(--ease-out), background 130ms var(--ease-out); }
 .session-row-wrap:hover .session-row__archive, .session-row-wrap:focus-within .session-row__archive, .session-row__archive.is-confirming, .session-row-wrap:hover .session-row__more, .session-row-wrap:focus-within .session-row__more, .session-row__more[aria-expanded="true"] { opacity: 1; }
 .session-row__archive { right: 32px; color: var(--text-tertiary); }
@@ -90,17 +81,25 @@
 .session-row-wrap:not(.is-selected) > .session-row:hover { background: var(--surface-hover); }
 .session-row__text { min-width: 0; flex: 1; display: flex; flex-direction: column; }
 .session-row__title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); font-size: 13px; }
-.session-row__spinner { display: inline-flex; align-items: center; align-self: center; margin-left: auto; flex: 0 0 auto; color: var(--text-tertiary); }
+.session-row__meta { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+.session-row__time { color: var(--text-tertiary); font-size: 11px; font-variant-numeric: tabular-nums; }
+.session-row__spinner { display: inline-flex; align-items: center; align-self: center; flex: 0 0 auto; color: var(--text-tertiary); }
 .session-row--empty { min-height: 30px; align-items: center; color: var(--text-tertiary); font-size: 11.5px; }
 /* Show-all toggle: a quiet affordance that stays out of the row hover pad. */
 .session-row--expand { min-height: 30px; align-items: center; gap: 5px; color: var(--text-tertiary); font-size: 11.5px; }
 .session-row--expand:hover { color: var(--text-secondary); }
 .session-row--expand svg { flex: 0 0 auto; transition: transform 140ms var(--ease-out); }
 .session-row--expand svg.is-expanded { transform: rotate(180deg); }
-.project-working { width: 16px; height: 16px; display: inline-grid; place-items: center; flex: 0 0 auto; border-radius: 50%; color: var(--prime); background: color-mix(in srgb, var(--prime) 13%, transparent); animation: status-halo-breathe 2.4s ease-in-out infinite; }
+/* Working halo: a scaled pseudo ring instead of an animated box-shadow.
+   Shadow animation repaints the badge every frame; transform + opacity stay
+   on the compositor. The ring sits behind the spinner (negative z-index in
+   the badge's own stacking context) and peaks at ~3px past the 16px badge,
+   matching the old 0 → 3px spread. */
+.project-working { position: relative; isolation: isolate; width: 16px; height: 16px; display: inline-grid; place-items: center; flex: 0 0 auto; border-radius: 50%; color: var(--prime); background: color-mix(in srgb, var(--prime) 13%, transparent); }
+.project-working::before { position: absolute; z-index: -1; inset: 0; border-radius: 50%; background: color-mix(in srgb, var(--prime) 24%, transparent); content: ''; animation: status-halo-breathe 2.4s ease-in-out infinite; }
 @keyframes status-halo-breathe {
-  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--prime) 24%, transparent); }
-  50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--prime) 14%, transparent); }
+  0%, 100% { transform: scale(1); opacity: 0; }
+  50% { transform: scale(1.375); opacity: .58; }
 }
 .sidebar__footer { flex: 0 0 auto; padding: 7px 8px 9px; border-top: var(--border-hairline, 1px) solid var(--border); }
 .sidebar__footer > .sidebar-update { opacity: 1; }

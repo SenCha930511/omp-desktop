@@ -26,7 +26,8 @@ OMP Desktop is a derivative of [GooeyPi](https://github.com/am-will/gooey-pi) by
 - See the active approval mode at a glance next to the composer.
 - Paste or drop PNG, JPEG, GIF, and WebP images into a prompt when the model supports vision.
 - Type in Chinese, Japanese, or Korean without Enter or Escape leaking through mid-composition.
-- Resume, rename, search, archive, or permanently delete persistent sessions. A new session appears as a draft placeholder in the sidebar until its first prompt adopts it.
+- Resume, rename, search, archive, or permanently delete persistent sessions. A new session stays out of the sidebar until its first prompt starts it.
+- Browse a cross-project Conversations list sorted by last file modification, with compact relative timestamps.
 - See running, finished, failed, and waiting-for-input work in one Activity view, then clear items you have handled. Work that finishes in the background can raise a notification.
 
 ### Keep projects organized

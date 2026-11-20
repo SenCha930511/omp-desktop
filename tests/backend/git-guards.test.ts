@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -113,5 +113,80 @@ describe('withRepositoryGuards spawn dedupe', () => {
     const service = new GitService(async () => cwd)
 
     await expect(service.stage(cwd, ['asset.bin'])).rejects.toThrow(/clean\/smudge filters cannot run safely/i)
+  })
+})
+
+describe('repository metadata caches', () => {
+  it('reuses configuration, toplevel, and branch lookups while the repository is unchanged', async () => {
+    const cwd = repository()
+    const service = new GitService(async () => cwd)
+    writeFileSync(join(cwd, 'file.txt'), 'base\nchanged\n')
+
+    await service.status(cwd)
+    await service.status(cwd)
+    const branch = await service.branch(cwd)
+    expect(branch).toBeTruthy()
+    expect(await service.branch(cwd)).toBe(branch)
+
+    const calls = spawnedGitArgs()
+    expect(calls.filter((args) => args[0] === 'rev-parse' && args.includes('--show-toplevel'))).toHaveLength(1)
+    expect(calls.filter((args) => args[0] === 'config' && args.includes('--list'))).toHaveLength(1)
+    expect(calls.filter((args) => args[0] === 'symbolic-ref')).toHaveLength(1)
+  })
+
+  it('re-reads configuration after .git/config changes', async () => {
+    const cwd = repository()
+    const service = new GitService(async () => cwd)
+    writeFileSync(join(cwd, 'file.txt'), 'base\nchanged\n')
+    await service.status(cwd)
+    expect((await service.status(cwd)).isRepo).toBe(true)
+
+    git(cwd, 'config', 'filter.late.clean', 'cat')
+    git(cwd, 'config', 'filter.late.required', 'true')
+    writeFileSync(join(cwd, '.gitattributes'), '*.bin filter=late\n')
+    writeFileSync(join(cwd, 'asset.bin'), 'bytes\n')
+
+    await expect(service.stage(cwd, ['asset.bin'])).rejects.toThrow(/clean\/smudge filters cannot run safely/i)
+  })
+
+  it('re-reads the branch after HEAD moves', async () => {
+    const cwd = repository()
+    const service = new GitService(async () => cwd)
+    const initial = await service.branch(cwd)
+    expect(initial).toBeTruthy()
+
+    git(cwd, 'checkout', '-q', '-b', 'feature/head-move')
+
+    expect(await service.branch(cwd)).toBe('feature/head-move')
+    expect(initial).not.toBe('feature/head-move')
+  })
+
+  it('invalidates cached metadata after an explicit mutation', async () => {
+    const cwd = repository()
+    const service = new GitService(async () => cwd)
+    writeFileSync(join(cwd, 'file.txt'), 'base\nchanged\n')
+    await service.status(cwd)
+    await service.stage(cwd, ['file.txt'])
+    ;(runProcess as unknown as Mock).mockClear()
+
+    expect((await service.status(cwd)).isRepo).toBe(true)
+    expect(spawnedGitArgs().filter((args) => args[0] === 'config' && args.includes('--list'))).toHaveLength(1)
+  })
+
+  it('does not cache a failed configuration read', async () => {
+    const cwd = repository()
+    const service = new GitService(async () => cwd)
+    writeFileSync(join(cwd, 'file.txt'), 'base\nchanged\n')
+    const configPath = join(cwd, '.git', 'config')
+    const original = readFileSync(configPath)
+
+    writeFileSync(configPath, '[broken\n')
+    expect((await service.status(cwd)).error).toBeTruthy()
+
+    writeFileSync(configPath, original)
+    const recovered = await service.status(cwd)
+    expect(recovered.error).toBeUndefined()
+    expect(recovered.isRepo).toBe(true)
+    expect(recovered.files.some((file) => file.path === 'file.txt')).toBe(true)
   })
 })

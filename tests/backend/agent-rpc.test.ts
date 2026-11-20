@@ -37,6 +37,34 @@ describe('OMP RPC adapter event normalization', () => {
     })
   })
 
+  it('normalizes the native manual compaction lifecycle into manual compaction events', () => {
+    expect(OMP_RPC_ADAPTER.normalizeEvent({ type: 'manual_compaction_start', mode: 'handoff' }))
+      .toEqual({ type: 'compaction_start', reason: 'manual', mode: 'handoff' })
+    expect(OMP_RPC_ADAPTER.normalizeEvent({
+      type: 'manual_compaction_end',
+      aborted: false,
+      result: { summary: 'Summarized.', firstKeptEntryId: 'kept-1', tokensBefore: 95_000 },
+    })).toEqual({
+      type: 'compaction_end',
+      reason: 'manual',
+      willRetry: false,
+      aborted: false,
+      result: { summary: 'Summarized.', firstKeptEntryId: 'kept-1', tokensBefore: 95_000 },
+    })
+  })
+
+  it('marks a skipped manual compaction as a warning instead of a failure', () => {
+    expect(OMP_RPC_ADAPTER.normalizeEvent({ type: 'manual_compaction_end', aborted: false, skipped: true, errorMessage: 'Nothing to compact' }))
+      .toEqual({
+        type: 'compaction_end',
+        reason: 'manual',
+        willRetry: false,
+        aborted: false,
+        errorMessage: 'Nothing to compact',
+        errorSeverity: 'warning',
+      })
+  })
+
   it('passes other command output and failed compactions through untouched', () => {
     expect(OMP_RPC_ADAPTER.normalizeEvent({ type: 'command_output', text: 'Compaction failed: Nothing to compact (session too small or already rolled over)' }))
       .toEqual({ type: 'command_output', text: 'Compaction failed: Nothing to compact (session too small or already rolled over)' })
@@ -1562,6 +1590,53 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
       expect(ends).toHaveLength(1)
       expect(ends[0].synthetic).toBeUndefined()
       expect(runtime.snapshot().isCompacting).toBe(false)
+    } finally {
+      await runtime.stop()
+    }
+  })
+
+  it('leaves the native manual lifecycle alone instead of synthesizing one', async () => {
+    const fake = watchdogAgent('manual-live-compaction', `
+    compacting = true
+    send({ type: 'manual_compaction_start' })
+    setTimeout(() => {
+      compacting = false
+      send({ type: 'manual_compaction_end', aborted: false, result: { summary: 'Compacted manually', firstKeptEntryId: 'kept-1', tokensBefore: 70000 } })
+    }, 400)`)
+    const events: Record<string, unknown>[] = []
+    const runtime = await startWatchdogRuntime(fake, events)
+    try {
+      await runtime.command({ type: 'prompt', message: 'continue' })
+      await waitUntil(() => events.some((event) => event.type === 'compaction_start'))
+      expect(events.find((event) => event.type === 'compaction_start')).toMatchObject({ reason: 'manual' })
+      await waitUntil(() => events.some((event) => event.type === 'compaction_end'))
+      await new Promise((resolveWait) => setTimeout(resolveWait, 300))
+      const starts = events.filter((event) => event.type === 'compaction_start')
+      expect(starts).toHaveLength(1)
+      expect(starts[0].synthetic).toBeUndefined()
+      const ends = events.filter((event) => event.type === 'compaction_end')
+      expect(ends).toHaveLength(1)
+      expect(ends[0]).toMatchObject({ reason: 'manual', aborted: false })
+      expect(events.some((event) => event.type === 'compaction_sync_pending')).toBe(false)
+      expect(runtime.snapshot().isCompacting).toBe(false)
+    } finally {
+      await runtime.stop()
+    }
+  })
+
+  it('falls back to the slow idle probe when no turn is in flight', async () => {
+    const fake = watchdogAgent('slow-idle-compaction', `
+    compacting = true`)
+    const events: Record<string, unknown>[] = []
+    const constructedAt = Date.now()
+    const runtime = new RpcRuntime(fake.executable, [], fake.cwd, ({ event }) => events.push(event), () => undefined, {}, { pollIntervalMs: 40, idlePollIntervalMs: 400 })
+    await runtime.handshake()
+    try {
+      await runtime.command({ type: 'prompt', message: 'continue' })
+      await waitUntil(() => events.some((event) => event.type === 'compaction_start' && event.synthetic === true))
+      // Idle runtimes probe at the slow cadence, not the active 40ms one.
+      expect(Date.now() - constructedAt).toBeGreaterThanOrEqual(350)
+      expect(events.filter((event) => event.type === 'compaction_start')).toHaveLength(1)
     } finally {
       await runtime.stop()
     }

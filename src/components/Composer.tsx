@@ -1,4 +1,4 @@
-import { ArrowUp, AtSign, Check, ChevronDown, Clock3, Command, Edit3, Hourglass, ImageIcon, LoaderCircle, MessageCirclePlus, Mic, Paperclip, Plus, RotateCcw, Shield, ShieldAlert, ShieldCheck, ShieldQuestionMark, Square, SquareTerminal, Trash2, X, Zap } from 'lucide-react'
+import { ArrowUp, AtSign, Check, ChevronDown, Clock3, Command, Edit3, Hourglass, ImageIcon, LoaderCircle, MessageCirclePlus, Mic, Paperclip, Plus, RotateCcw, Shield, ShieldAlert, ShieldCheck, ShieldQuestionMark, Square, SquareTerminal, Trash2, WandSparkles, X, Zap } from 'lucide-react'
 import type { CSSProperties } from 'react'
 import { Fragment, memo, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useComposerImages } from '@/hooks/useComposerImages'
@@ -735,6 +735,20 @@ export const Composer = memo(function Composer({
                   fileInputRef.current?.click()
                 },
               },
+              ...(commandCatalog.some((command) => command.source === 'skill' && command.name.toLowerCase().startsWith('skill:'))
+                ? [{
+                    key: 'skills',
+                    label: t('composer.skills'),
+                    detail: t('composer.skillsDetail'),
+                    source: undefined,
+                    icon: <WandSparkles size={14} />,
+                    choose: () => {
+                      setValue('/skill:')
+                      setMenu('command')
+                      textareaRef.current?.focus()
+                    },
+                  }]
+                : []),
               { key: 'commands', label: t('slash.menu.label'), detail: t('slash.menu.detail'), source: undefined, icon: <Command size={14} />, choose: () => { if (!value) setValue('/'); setMenu('command'); textareaRef.current?.focus() } },
             ]
           : []

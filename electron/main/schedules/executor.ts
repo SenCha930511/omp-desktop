@@ -112,7 +112,7 @@ export class ScheduledRunExecutor {
   private async runInSession(task: AutomationScheduleRecord, cwd: string, sessionPath: string): Promise<ScheduleRunResult> {
     const existing = this.agents.getForSession(sessionPath)
     if (!existing) return this.runWithResumedSession(task, cwd, sessionPath)
-    await this.waitUntilIdle(existing.runtimeId)
+    await this.agents.waitUntilIdle(existing.runtimeId)
     await this.agents.stop(existing.runtimeId)
     return this.runWithResumedSession(task, cwd, sessionPath)
   }
@@ -132,20 +132,6 @@ export class ScheduledRunExecutor {
     } finally {
       if (runtime) await this.agents.stop(runtime.runtimeId)
     }
-  }
-
-  private async waitUntilIdle(runtimeId: string): Promise<void> {
-    const deadline = Date.now() + 15 * 60_000
-    while (Date.now() < deadline) {
-      const runtime = this.agents.list().find((candidate) => candidate.runtimeId === runtimeId)
-      if (!runtime) return
-      if (!runtime.isStreaming && !runtime.isCompacting) return
-      await new Promise<void>((resolveDelay) => {
-        const timer = setTimeout(resolveDelay, 500)
-        timer.unref()
-      })
-    }
-    throw new Error('The scheduled thread remained busy for 15 minutes')
   }
 
   private requireStrictExecution(runtime: RuntimeInfo, execution: ScheduleExecution): void {

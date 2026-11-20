@@ -26,6 +26,11 @@ export function useAppSettings({ bridge, reportError }: UseAppSettingsOptions) {
   const settingsQueueRef = useRef<Promise<void>>(Promise.resolve())
   const transientPanelKeysRef = useRef<Set<PanelSettingKey>>(new Set())
   const inspectorTabTouchedRef = useRef(false)
+  // The checkout catalog is served by the main process, which reads the
+  // confirmed settings. The optimistic renderer value can refresh before that
+  // write lands, so a confirmed strategy change bumps this revision and the
+  // catalog effect runs again.
+  const [checkoutStrategyRevision, setCheckoutStrategyRevision] = useState(0)
 
   const setSidebarOpen = useCallback((value: boolean) => {
     transientPanelKeysRef.current.add('sidebarOpen')
@@ -66,8 +71,10 @@ export function useAppSettings({ bridge, reportError }: UseAppSettingsOptions) {
     }
     const operation = settingsQueueRef.current.catch(() => undefined).then(async () => {
       const saved = await bridge.settings.update(patch)
+      const previousStrategy = confirmedSettingsRef.current.checkoutStrategy
       confirmedSettingsRef.current = saved
       if (settingsMutationRef.current === mutation) applySettings(saved, takeConfirmedPanelPatch(saved))
+      if (saved.checkoutStrategy !== previousStrategy) setCheckoutStrategyRevision((revision) => revision + 1)
     })
     settingsQueueRef.current = operation.catch(() => undefined)
     try {
@@ -87,7 +94,9 @@ export function useAppSettings({ bridge, reportError }: UseAppSettingsOptions) {
     const revision = settingsMutationRef.current
     const result = await operation()
     if (!result) return null
+    const previousStrategy = confirmedSettingsRef.current.checkoutStrategy
     confirmedSettingsRef.current = result.settings
+    if (result.settings.checkoutStrategy !== previousStrategy) setCheckoutStrategyRevision((revision) => revision + 1)
     // A new optimistic mutation started while the external operation ran.
     // Keep it visible; its queued result will become the next authority.
     if (settingsMutationRef.current === revision) {
@@ -140,6 +149,7 @@ export function useAppSettings({ bridge, reportError }: UseAppSettingsOptions) {
   return {
     settings,
     initialized,
+    checkoutStrategyRevision,
     sidebarOpen,
     setSidebarOpen,
     inspectorOpen,

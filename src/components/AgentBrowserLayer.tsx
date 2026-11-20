@@ -1,4 +1,4 @@
-import { createElement, memo, useEffect, useRef } from 'react'
+import { createElement, memo, useEffect, useMemo, useRef, useState } from 'react'
 import type { StampedPointerEvent } from '@/hooks/useAgentBrowserTabs'
 import { type AgentBrowserTabRecord, BROWSER_PARTITION } from '@/types/api'
 
@@ -21,10 +21,24 @@ interface AgentBrowserLayerProps {
   rect: AgentSlotRect | null
   pointerEvent: StampedPointerEvent | null
   onAttach(tabId: string, webContentsId: number): void
+  /** Session keys the user is currently looking at; their guests are never released. */
+  activeSessionFiles?: readonly string[]
+  /** Per-tab activity sequence; every changed tab wakes and restarts its idle clock. */
+  activityByTab?: ReadonlyMap<string, number>
+  /** How long a background session's tab may sit idle before its guest is released. */
+  idleUnloadMs?: number
 }
 
 const CURSOR_EASING = 'cubic-bezier(.32,.72,.35,1)'
 const CURSOR_IDLE_MS = 3_500
+/** A background session's webview is torn down after this much agent inactivity. */
+export const DEFAULT_IDLE_UNLOAD_MS = 5 * 60_000
+
+interface ScheduledUnload {
+  timer: number
+  /** The activity timestamp this deadline was computed from. */
+  since: number
+}
 
 /**
  * Hosts one webview guest per agent browser tab, for every session. This
@@ -33,20 +47,117 @@ const CURSOR_IDLE_MS = 3_500
  * page. It is positioned over the Browser panel's slot when that panel shows
  * an agent tab, and kept laid out but invisible otherwise (display:none would
  * tear down the guest).
+ *
+ * Guests are expensive (renderer process, timers, media), so a tab that
+ * belongs to a session the user is not looking at — and that no agent has
+ * touched for the idle window — is released by unmounting its webview. The
+ * main process keeps the tab record and its last url/title, so returning to
+ * the session or the next agent action remounts the guest and the existing
+ * attach path reloads that url.
  */
-export function AgentBrowserLayer({ tabs, visibleTabId, rect, pointerEvent, onAttach }: AgentBrowserLayerProps) {
+export function AgentBrowserLayer({
+  tabs,
+  visibleTabId,
+  rect,
+  pointerEvent,
+  onAttach,
+  activeSessionFiles,
+  activityByTab,
+  idleUnloadMs = DEFAULT_IDLE_UNLOAD_MS,
+}: AgentBrowserLayerProps) {
   const style = rect ? { left: rect.left, top: rect.top, width: rect.width, height: rect.height } : undefined
+  const [unloaded, setUnloaded] = useState<ReadonlySet<string>>(() => new Set())
+  const activeSessions = useMemo(() => new Set(activeSessionFiles ?? []), [activeSessionFiles])
+  const lastActivityRef = useRef(new Map<string, number>())
+  const unloadTimersRef = useRef(new Map<string, ScheduledUnload>())
+  const lastActivitySeqRef = useRef(new Map<string, number>())
+
+  useEffect(() => {
+    const timers = unloadTimersRef.current
+    const activity = lastActivityRef.current
+    const now = Date.now()
+    let wake: string | null = null
+    if (activityByTab) {
+      for (const [tabId, seq] of activityByTab) {
+        if (lastActivitySeqRef.current.get(tabId) === seq) continue
+        lastActivitySeqRef.current.set(tabId, seq)
+        activity.set(tabId, now)
+        wake = tabId
+      }
+    }
+    const live = new Set(tabs.map((tab) => tab.tabId))
+    for (const [tabId, scheduled] of [...timers]) {
+      if (live.has(tabId)) continue
+      window.clearTimeout(scheduled.timer)
+      timers.delete(tabId)
+    }
+    for (const tabId of [...activity.keys()]) if (!live.has(tabId)) activity.delete(tabId)
+    const reattach: string[] = []
+    for (const tab of tabs) {
+      const keepLoaded = tab.tabId === visibleTabId || activeSessions.has(tab.sessionFile)
+      if (keepLoaded) {
+        // The clock only matters once the session stops being the active one.
+        activity.set(tab.tabId, now)
+        const scheduled = timers.get(tab.tabId)
+        if (scheduled) {
+          window.clearTimeout(scheduled.timer)
+          timers.delete(tab.tabId)
+        }
+        if (unloaded.has(tab.tabId)) reattach.push(tab.tabId)
+        continue
+      }
+      if (unloaded.has(tab.tabId)) {
+        if (tab.tabId === wake) reattach.push(tab.tabId)
+        continue
+      }
+      if (!activity.has(tab.tabId)) activity.set(tab.tabId, now)
+      const since = activity.get(tab.tabId) as number
+      const scheduled = timers.get(tab.tabId)
+      if (scheduled && scheduled.since === since) continue
+      if (scheduled) window.clearTimeout(scheduled.timer)
+      const tabId = tab.tabId
+      const timer = window.setTimeout(() => {
+        if (timers.get(tabId)?.timer !== timer) return
+        timers.delete(tabId)
+        setUnloaded((current) => {
+          if (current.has(tabId)) return current
+          const next = new Set(current)
+          next.add(tabId)
+          return next
+        })
+      }, Math.max(0, since + idleUnloadMs - now))
+      timers.set(tabId, { timer, since })
+    }
+    if (reattach.length) {
+      setUnloaded((current) => {
+        const next = new Set(current)
+        for (const tabId of reattach) next.delete(tabId)
+        return next
+      })
+    }
+  }, [tabs, visibleTabId, activeSessions, idleUnloadMs, unloaded, activityByTab])
+
+  useEffect(
+    () => () => {
+      for (const scheduled of unloadTimersRef.current.values()) window.clearTimeout(scheduled.timer)
+      unloadTimersRef.current.clear()
+    },
+    [],
+  )
+
   return (
     <div className={`agent-browser-layer ${rect ? 'is-visible' : ''}`} style={style} aria-hidden={rect ? undefined : true}>
-      {tabs.map((tab) => (
-        <AgentTabView
-          key={tab.tabId}
-          tabId={tab.tabId}
-          visible={rect !== null && tab.tabId === visibleTabId}
-          pointerEvent={pointerEvent?.tabId === tab.tabId ? pointerEvent : null}
-          onAttach={onAttach}
-        />
-      ))}
+      {tabs.map((tab) =>
+        unloaded.has(tab.tabId) ? null : (
+          <AgentTabView
+            key={tab.tabId}
+            tabId={tab.tabId}
+            visible={rect !== null && tab.tabId === visibleTabId}
+            pointerEvent={pointerEvent?.tabId === tab.tabId ? pointerEvent : null}
+            onAttach={onAttach}
+          />
+        ),
+      )}
     </div>
   )
 }
@@ -175,7 +286,7 @@ const AgentTabView = memo(function AgentTabView({ tabId, visible, pointerEvent, 
   // src stays about:blank permanently: the main process drives all navigation,
   // and rewriting src on re-render would reload the guest.
   return (
-    <div className={`agent-browser-tab ${visible ? 'is-visible' : ''}`}>
+    <div className={`agent-browser-tab ${visible ? 'is-visible' : ''}`} data-tab-id={tabId}>
       {createElement('webview' as never, {
         ref: (node: AgentWebviewElement | null) => {
           viewRef.current = node

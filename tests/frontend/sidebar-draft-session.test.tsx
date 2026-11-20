@@ -4,7 +4,7 @@ import './jsdom-storage'
 import { act, type ComponentProps } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { SIDEBAR_SESSION_LIMIT, Sidebar } from '../../src/components/Sidebar'
+import { Sidebar } from '../../src/components/Sidebar'
 import type { ProjectRecord, SessionRecord } from '../../src/types/api'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
@@ -82,82 +82,26 @@ async function renderSidebar(props: Partial<ComponentProps<typeof Sidebar>>) {
   })
 }
 
-describe('sidebar draft session placeholder', () => {
-  it('renders a selected placeholder ahead of the project sessions in draft state', async () => {
-    await renderSidebar({ sessions: [session('one')], activeProjectId: 'project' })
-
-    const placeholder = container.querySelector<HTMLElement>('.session-row-wrap.is-placeholder')
-    expect(placeholder).not.toBeNull()
-    expect(placeholder?.classList.contains('is-selected')).toBe(true)
-    expect(container.querySelectorAll('.session-row-wrap.is-placeholder')).toHaveLength(1)
-    expect(container.querySelector('.project-row')?.classList.contains('is-selected')).toBe(false)
-    expect(container.querySelector('.is-placeholder .session-row__title')?.textContent).toBe('Untitled session')
-    // The placeholder leads its project's list, ahead of every real row.
-    expect([...container.querySelectorAll<HTMLElement>('.session-row__title')].map((row) => row.textContent)).toEqual(['Untitled session', 'one'])
-  })
-
-  it('shows no placeholder once a real session is active, and the session row owns the selection', async () => {
-    await renderSidebar({ sessions: [session('one')], activeProjectId: 'project', activeSessionId: 'one' })
+describe('sidebar draft session', () => {
+  it('renders no placeholder row for a draft workspace before the first prompt', async () => {
+    await renderSidebar({ sessions: [session('one')], activeProjectId: 'project', activeView: 'session' })
 
     expect(container.querySelector('.session-row-wrap.is-placeholder')).toBeNull()
-    // The expanded project row stays plain; selection lives on its session row only.
+    expect([...container.querySelectorAll<HTMLElement>('.project-group .session-row__title')].map((row) => row.textContent)).toEqual(['one'])
+    expect(container.querySelector('.project-row')?.classList.contains('is-selected')).toBe(true)
+  })
+
+  it('keeps a real session row selected instead of the project row', async () => {
+    await renderSidebar({ sessions: [session('one')], activeProjectId: 'project', activeSessionId: 'one' })
+
     expect(container.querySelector('.project-row')?.classList.contains('is-selected')).toBe(false)
     expect(container.querySelector('.session-row-wrap.is-selected')?.querySelector('.session-row__title')?.textContent).toBe('one')
   })
 
-  it('keeps the placeholder visible but unselected outside the session view', async () => {
-    await renderSidebar({ sessions: [session('one')], activeProjectId: 'project', activeView: 'settings' })
-
-    const placeholder = container.querySelector<HTMLElement>('.session-row-wrap.is-placeholder')
-    expect(placeholder).not.toBeNull()
-    expect(placeholder?.classList.contains('is-selected')).toBe(false)
-    expect(container.querySelector('.project-row')?.classList.contains('is-selected')).toBe(false)
-  })
-
-  it('suppresses the empty-project new-session row for the draft project only', async () => {
+  it('offers the empty-project new-session row only when the project has no sessions', async () => {
     await renderSidebar({ projects: [project, other], sessions: [], activeProjectId: 'project' })
 
-    expect(container.querySelectorAll('.session-row-wrap.is-placeholder')).toHaveLength(1)
-    expect(container.querySelectorAll('.session-row--empty')).toHaveLength(1)
-    expect(container.querySelector('.session-row--empty')?.textContent).toContain('New session')
-  })
-
-  it('renders the placeholder on top of the capped session list', async () => {
-    const sessions = Array.from({ length: SIDEBAR_SESSION_LIMIT + 2 }, (_, index) => session(`s-${index}`))
-    await renderSidebar({ sessions, activeProjectId: 'project' })
-
-    expect(container.querySelectorAll('.session-row-wrap')).toHaveLength(SIDEBAR_SESSION_LIMIT + 1)
-    expect(container.querySelector('.is-placeholder .session-row__title')?.textContent).toBe('Untitled session')
-  })
-
-  it('activates the draft through its own callback when the row is clicked', async () => {
-    const onSelectDraftSession = vi.fn()
-    const onNewSession = vi.fn()
-    await renderSidebar({ sessions: [session('one')], activeProjectId: 'project', onSelectDraftSession, onNewSession })
-
-    await act(async () => {
-      container.querySelector<HTMLButtonElement>('.is-placeholder .session-row')?.click()
-    })
-
-    expect(onSelectDraftSession).toHaveBeenCalledWith(project)
-    expect(onNewSession).not.toHaveBeenCalled()
-  })
-
-  it('discards the draft without opening a confirmation dialog', async () => {
-    const onDiscardDraftSession = vi.fn()
-    await renderSidebar({ sessions: [session('one')], activeProjectId: 'project', onDiscardDraftSession })
-
-    await act(async () => {
-      container.querySelector<HTMLButtonElement>('.is-placeholder .session-row__archive')?.click()
-    })
-
-    expect(onDiscardDraftSession).toHaveBeenCalledWith(project)
-    expect(container.querySelector('[role="dialog"]')).toBeNull()
-  })
-
-  it('labels the discard action for assistive tech', async () => {
-    await renderSidebar({ sessions: [session('one')], activeProjectId: 'project' })
-
-    expect(container.querySelector('.is-placeholder button[aria-label="Delete Untitled session"]')).not.toBeNull()
+    expect(container.querySelector('.session-row-wrap')).toBeNull()
+    expect(container.querySelector('.session-row--empty')).not.toBeNull()
   })
 })
