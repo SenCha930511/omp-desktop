@@ -2138,7 +2138,7 @@ impl Workspace {
                         .child(text)
                         .with_animation(
                             "tool-result-body",
-                            Animation::new(Duration::from_millis(160)),
+                            interaction::motion_spec(interaction::Motion::Disclosure).animation(),
                             |element, delta| element.opacity(delta),
                         ),
                 )
@@ -2220,7 +2220,7 @@ impl Workspace {
                         .child(text)
                         .with_animation(
                             "thinking-body",
-                            Animation::new(Duration::from_millis(160)),
+                            interaction::motion_spec(interaction::Motion::Timeline).animation(),
                             |element, delta| element.opacity(delta),
                         ),
                 )
@@ -2654,8 +2654,10 @@ impl Workspace {
                                                 .bg(colors.primary.opacity(0.13))
                                                 .with_animation(
                                                     "project-working",
-                                                    Animation::new(Duration::from_millis(2400))
-                                                        .repeat(),
+                                                    interaction::motion_spec(
+                                                        interaction::Motion::ProjectPulse,
+                                                    )
+                                                    .animation(),
                                                     |element, delta| {
                                                         element.opacity(
                                                             0.45 + 0.55
@@ -5044,7 +5046,8 @@ impl Workspace {
                                     .bg(colors.primary)
                                     .with_animation(
                                         "todo-pulse",
-                                        Animation::new(Duration::from_millis(1200)).repeat(),
+                                        interaction::motion_spec(interaction::Motion::TodoPulse)
+                                            .animation(),
                                         |element, delta| {
                                             element.opacity(
                                                 0.35 + 0.65 * (1.0 - (2.0 * delta - 1.0).abs()),
@@ -5243,7 +5246,27 @@ impl Workspace {
                             .when(!is_assistant, |element| element.justify_end())
                             .when_some(copy, |element, copy| element.child(copy))
                             .when_some(fork, |element, fork| element.child(fork));
-                        let row = div()
+                        let body = if index >= self.transcript_animation_floor {
+                            let (motion, distance) = if is_user {
+                                (interaction::Motion::UserEnter, 6.0)
+                            } else {
+                                (interaction::Motion::AssistantEnter, 10.0)
+                            };
+                            body.with_animation(
+                                format!("message-enter-{}", message.id),
+                                interaction::motion_spec(motion).animation(),
+                                move |element, delta| {
+                                    element
+                                        .opacity(delta.clamp(0.0, 1.0))
+                                        .relative()
+                                        .top(px(distance * (1.0 - delta)))
+                                },
+                            )
+                            .into_any_element()
+                        } else {
+                            body.into_any_element()
+                        };
+                        div()
                             .flex()
                             .flex_col()
                             .gap_1()
@@ -5251,22 +5274,8 @@ impl Workspace {
                             .pb(px(if is_toolish { 10.0 } else { 32.0 }))
                             .group(message_group)
                             .child(body)
-                            .child(actions);
-                        if index >= self.transcript_animation_floor {
-                            row.with_animation(
-                                format!("message-enter-{}", message.id),
-                                Animation::new(Duration::from_millis(420)),
-                                |element, delta| {
-                                    element
-                                        .opacity(delta)
-                                        .relative()
-                                        .top(px(8.0 * (1.0 - delta)))
-                                },
-                            )
+                            .child(actions)
                             .into_any_element()
-                        } else {
-                            row.into_any_element()
-                        }
                     })),
             );
         // The rows and the `Jump to latest` control share one box, so the
@@ -5304,7 +5313,8 @@ impl Workspace {
                                 }))
                                 .with_animation(
                                     "jump-latest",
-                                    Animation::new(Duration::from_millis(130)),
+                                    interaction::motion_spec(interaction::Motion::JumpLatest)
+                                        .animation(),
                                     |element, delta| element.opacity(delta),
                                 ),
                         ),
@@ -5339,9 +5349,8 @@ impl Workspace {
                                     .bg(colors.primary)
                                     .with_animation(
                                         "transcript-streaming-pulse",
-                                        Animation::new(Duration::from_millis(2200))
-                                            .repeat_synced()
-                                            .with_easing(ease_in_out),
+                                        interaction::motion_spec(interaction::Motion::StreamPulse)
+                                            .animation(),
                                         |element, delta| element.opacity(0.45 + 0.55 * delta),
                                     ),
                             )
@@ -5659,9 +5668,21 @@ impl Workspace {
             .when_some(self.pending_image.clone(), |element, image| {
                 element.child(
                     div()
+                        .id("composer-attachment")
                         .flex()
                         .items_center()
                         .gap_2()
+                        .test_support()
+                        .with_animation(
+                            "composer-attachment",
+                            interaction::motion_spec(interaction::Motion::Attachment).animation(),
+                            |element, delta| {
+                                element
+                                    .opacity(delta.clamp(0.0, 1.0))
+                                    .relative()
+                                    .top(px(4.0 * (1.0 - delta)))
+                            },
+                        )
                         .child(
                             div()
                                 .id("pending-image")
@@ -8280,8 +8301,13 @@ impl Workspace {
             .test_support()
             .with_animation(
                 format!("right-pane-{}", self.right_pane.name()),
-                Animation::new(Duration::from_millis(160)),
-                |element, delta| element.opacity(delta),
+                interaction::motion_spec(interaction::Motion::RightPane).animation(),
+                |element, delta| {
+                    element
+                        .opacity(delta)
+                        .relative()
+                        .left(px(8.0 * (1.0 - delta)))
+                },
             )
     }
 
@@ -8302,8 +8328,13 @@ impl Workspace {
             .child(self.right_pane(cx))
             .with_animation(
                 "details-overlay",
-                Animation::new(Duration::from_millis(160)),
-                |element, delta| element.opacity(delta),
+                interaction::motion_spec(interaction::Motion::DetailsOverlay).animation(),
+                |element, delta| {
+                    element
+                        .opacity(delta)
+                        .relative()
+                        .left(px(8.0 * (1.0 - delta)))
+                },
             )
     }
 
@@ -9492,8 +9523,13 @@ impl Workspace {
             )
             .with_animation(
                 "overview-popover",
-                Animation::new(Duration::from_millis(140)),
-                |element, delta| element.opacity(delta),
+                interaction::motion_spec(interaction::Motion::OverviewPopover).animation(),
+                |element, delta| {
+                    element
+                        .opacity(delta)
+                        .relative()
+                        .top(px(-5.0 * (1.0 - delta)))
+                },
             )
     }
 
@@ -9576,8 +9612,13 @@ impl Workspace {
             )
             .with_animation(
                 "session-menu",
-                Animation::new(Duration::from_millis(140)),
-                |element, delta| element.opacity(delta),
+                interaction::motion_spec(interaction::Motion::SessionMenu).animation(),
+                |element, delta| {
+                    element
+                        .opacity(delta)
+                        .relative()
+                        .top(px(-5.0 * (1.0 - delta)))
+                },
             )
     }
 
@@ -9652,9 +9693,10 @@ fn close_confirmation(
         // A modal: the backdrop takes the clicks that miss the card, so the
         // view underneath cannot be driven while the question is open.
         .on_click(|_, _, _| {})
+        .test_support()
         .with_animation(
-            "close-confirmation",
-            Animation::new(Duration::from_millis(160)),
+            "close-confirmation-backdrop",
+            interaction::motion_spec(interaction::Motion::ModalBackdrop).animation(),
             |element, delta| element.opacity(delta),
         )
         .child(
@@ -9668,6 +9710,18 @@ fn close_confirmation(
                 .flex()
                 .flex_col()
                 .gap_3()
+                .id("close-confirmation-card")
+                .test_support()
+                .with_animation(
+                    "close-confirmation-card",
+                    interaction::motion_spec(interaction::Motion::ModalCard).animation(),
+                    |element, delta| {
+                        element
+                            .opacity(delta)
+                            .relative()
+                            .top(px(5.0 * (1.0 - delta)))
+                    },
+                )
                 .child(div().text_base().child(CLOSE_CONFIRM_TITLE))
                 .child(
                     div()

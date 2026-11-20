@@ -4773,6 +4773,58 @@ fn capture_workspace_reports_the_saved_path_or_the_render_error(cx: &mut TestApp
         .expect("workspace window");
 }
 
+#[cfg(unix)]
+#[gpui_kit::test]
+fn running_close_prompt_mounts_and_dismisses_animated_card(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let guard = CloseGuard::new();
+    cx.update(|cx| cx.set_global(guard.clone()));
+    let (home, _, _) = seed_two_sessions(root);
+    let project = root.join("project");
+    std::fs::create_dir_all(&project).expect("project dir");
+    let mut store = open_store(root);
+    omp_core::projects::grant_project(
+        &mut store,
+        &home,
+        Platform::current(),
+        project.to_str().expect("project path"),
+    )
+    .expect("grant project");
+    let catalog = omp_core::sessions::list_sessions(&store, &home, false, None);
+    drop(store);
+    let mut data = test_data(root);
+    data.home_dir = home;
+    data.omp_executable = install_fixture_omp(root);
+    data.sessions = catalog;
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.select_session(0, cx);
+            assert!(workspace.agent_active());
+            assert!(!workspace.request_close(CloseIntent::Window, cx));
+            assert_eq!(snapshot(workspace, cx)["closePrompt"], json!("window"));
+        })
+        .expect("running close prompt");
+    draw_frame(cx, handle.into());
+    handle
+        .update(cx, |_, window, _| {
+            assert!(window.try_find("close-confirmation").is_some());
+            assert!(window.try_find("close-confirmation-card").is_some());
+        })
+        .expect("animated modal");
+    handle
+        .update(cx, |workspace, _, cx| workspace.cancel_close(cx))
+        .expect("cancel close");
+    draw_frame(cx, handle.into());
+    handle
+        .update(cx, |_, window, _| {
+            assert!(window.try_find("close-confirmation").is_none());
+        })
+        .expect("dismissed modal");
+}
+
 /// Closing with no agent run is immediate: the close is allowed, no overlay is
 /// raised, and the guard stays idle. The pure helper is the rule both entry
 /// points share.
@@ -5206,8 +5258,12 @@ fn composer_attachment_rides_with_prompt_and_follow_up(cx: &mut TestAppContext) 
         })
         .expect("workspace window");
 
-    // The chip draws while the image waits for the next send.
     draw_frame(cx, window);
+    handle
+        .update(cx, |_, window, _| {
+            assert!(window.try_find("composer-attachment").is_some());
+        })
+        .expect("animated attachment chip");
 
     handle
         .update(cx, |workspace, window, cx| {
@@ -5224,6 +5280,11 @@ fn composer_attachment_rides_with_prompt_and_follow_up(cx: &mut TestAppContext) 
         .expect("workspace window");
 
     draw_frame(cx, window);
+    handle
+        .update(cx, |_, window, _| {
+            assert!(window.try_find("composer-attachment").is_none());
+        })
+        .expect("attachment removed with accepted prompt");
 
     handle
         .update(cx, |workspace, window, cx| {
