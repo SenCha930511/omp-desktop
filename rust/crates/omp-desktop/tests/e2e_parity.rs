@@ -199,6 +199,53 @@ fn click_element(
 }
 
 #[gpui_kit::test]
+fn reduce_motion_setting_controls_gpui_and_reacts_to_changes(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let mut data = test_data(root);
+    data.settings.reduce_motion = true;
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    cx.update(|cx| assert!(cx.reduce_motion()));
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.update_setting(json!({ "reduceMotion": false }), cx);
+        })
+        .expect("allow motion");
+    cx.update(|cx| assert!(!cx.reduce_motion()));
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.update_setting(json!({ "reduceMotion": true }), cx);
+            workspace.update_setting(json!({ "reduceMotion": true }), cx);
+        })
+        .expect("reduce motion twice");
+    cx.update(|cx| assert!(cx.reduce_motion()));
+}
+
+#[gpui_kit::test]
+fn width_1000_keeps_the_right_pane_docked(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let data = test_data(root);
+    let handle = cx.open_window(size(px(1000.0), px(800.0)), |window, cx| {
+        Workspace::new(window, cx, data)
+    });
+    let window: gpui_kit::AnyWindowHandle = handle.into();
+    draw_frame(cx, window);
+    handle
+        .update(cx, |workspace, window, cx| {
+            let layout = snapshot(workspace, cx);
+            assert_eq!(layout["layout"]["rightPaneDocked"], json!(true));
+            assert!(
+                window.try_find("right-pane").is_some(),
+                "the report docks the right pane above 980px"
+            );
+        })
+        .expect("1000px window");
+}
+
+#[gpui_kit::test]
 fn catalog_order_drives_session_selection(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let dir = tempfile::TempDir::new().expect("temp dir");
@@ -5062,6 +5109,15 @@ fn composer_send_while_running_queues_a_follow_up(cx: &mut TestAppContext) {
             assert_eq!(drained["running"], json!(true));
         })
         .expect("workspace window");
+    draw_frame(cx, handle.into());
+    handle
+        .update(cx, |_, window, _| {
+            assert!(
+                window.try_find("transcript-streaming-cue").is_some(),
+                "a live turn needs visible streaming feedback"
+            );
+        })
+        .expect("streaming cue");
 
     // A fresh runtime for the same session is idle again.
     handle
@@ -5113,6 +5169,12 @@ fn composer_send_while_running_queues_a_follow_up(cx: &mut TestAppContext) {
     };
     assert_eq!(echoed["running"], json!(false));
     assert_eq!(echoed["queuedFollowUps"], json!([]));
+    draw_frame(cx, handle.into());
+    handle
+        .update(cx, |_, window, _| {
+            assert!(window.try_find("transcript-streaming-cue").is_none());
+        })
+        .expect("idle after streaming");
 }
 
 /// A real one-pixel PNG: its magic is what the composer trusts, and its bytes
