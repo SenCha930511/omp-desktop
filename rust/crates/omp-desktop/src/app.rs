@@ -9382,7 +9382,9 @@ fn transcript_part_element(part: &TranscriptPart, role: &str, colors: ThemeColor
             }
             let size = if role == "user" { 13.0 } else { 14.0 };
             if role == "assistant" {
-                return markdown::render_markdown(&text, colors);
+                return markdown::render_markdown(&text, colors, |text, _, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(text.to_string()));
+                });
             }
             let segments = math_segments(&text);
             if segments

@@ -10,6 +10,12 @@
 //! what it recognises.
 
 use gpui_kit::InteractiveElement as _;
+use std::rc::Rc;
+
+use gpui_kit::assets::IconName;
+
+/// Clipboard sink for a code block's Copy button.
+type CopyHandler = Rc<dyn Fn(&str, &mut Window, &mut App)>;
 use gpui_kit::component::ThemeColor;
 use gpui_kit::*;
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
@@ -462,13 +468,25 @@ fn normalize_code(mut text: String) -> String {
 /// The function is pure: it takes the text and the theme colors it should draw
 /// with, and returns an element tree. It never reads a window, the clipboard,
 /// or any app state, so the caller can rebuild it whenever the text changes.
-pub fn render_markdown(text: &str, colors: ThemeColor) -> AnyElement {
+pub fn render_markdown(
+    text: &str,
+    colors: ThemeColor,
+    on_copy: impl Fn(&str, &mut Window, &mut App) + 'static,
+) -> AnyElement {
     let blocks = parse_blocks(text);
     // Code blocks number themselves in document order: the scroll container
     // needs a stable id to keep its offset between frames, and the order is
     // what stays stable while a reply streams in.
     let mut code_blocks = 0;
-    render_blocks(&blocks, colors, colors.foreground, &mut code_blocks).into_any_element()
+    let on_copy: CopyHandler = Rc::new(on_copy);
+    render_blocks(
+        &blocks,
+        colors,
+        colors.foreground,
+        &mut code_blocks,
+        &on_copy,
+    )
+    .into_any_element()
 }
 
 fn render_blocks(
@@ -476,11 +494,12 @@ fn render_blocks(
     colors: ThemeColor,
     text_color: Hsla,
     code_blocks: &mut usize,
+    on_copy: &CopyHandler,
 ) -> Div {
     div().flex().flex_col().gap(px(BLOCK_GAP)).children(
         blocks
             .iter()
-            .map(|block| render_block(block, colors, text_color, code_blocks)),
+            .map(|block| render_block(block, colors, text_color, code_blocks, on_copy)),
     )
 }
 
@@ -489,6 +508,7 @@ fn render_block(
     colors: ThemeColor,
     text_color: Hsla,
     code_blocks: &mut usize,
+    on_copy: &CopyHandler,
 ) -> AnyElement {
     match block {
         Block::Paragraph(spans) => {
@@ -498,14 +518,22 @@ fn render_block(
         Block::Code { language, text } => {
             let index = *code_blocks;
             *code_blocks += 1;
-            code_block(index, language.as_deref(), text, colors)
+            code_block(index, language.as_deref(), text, colors, on_copy)
         }
         Block::List {
             ordered,
             start,
             items,
-        } => list(*ordered, *start, items, colors, text_color, code_blocks),
-        Block::Quote(blocks) => quote(blocks, colors, code_blocks),
+        } => list(
+            *ordered,
+            *start,
+            items,
+            colors,
+            text_color,
+            code_blocks,
+            on_copy,
+        ),
+        Block::Quote(blocks) => quote(blocks, colors, code_blocks, on_copy),
         Block::Rule => div()
             .w_full()
             .h(px(1.0))
@@ -606,7 +634,13 @@ fn highlight(style: InlineStyle, colors: ThemeColor) -> HighlightStyle {
 
 /// A fenced code block: a header naming the language, then the code itself,
 /// unwrapped so long lines scroll sideways instead of reflowing.
-fn code_block(index: usize, language: Option<&str>, code: &str, colors: ThemeColor) -> AnyElement {
+fn code_block(
+    index: usize,
+    language: Option<&str>,
+    code: &str,
+    colors: ThemeColor,
+    on_copy: &CopyHandler,
+) -> AnyElement {
     div()
         .flex()
         .flex_col()
@@ -626,7 +660,29 @@ fn code_block(index: usize, language: Option<&str>, code: &str, colors: ThemeCol
                 .border_color(colors.border)
                 .text_size(px(11.0))
                 .text_color(colors.muted_foreground)
-                .child(SharedString::from(code_label(language).to_string())),
+                .child(SharedString::from(code_label(language).to_string()))
+                .child(div().flex_1())
+                .child(
+                    div()
+                        .id(("markdown-code-copy", index))
+                        .aria_label("Copy code")
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .px_2()
+                        .py_1()
+                        .rounded(px(6.0))
+                        .text_size(px(10.5))
+                        .text_color(colors.muted_foreground)
+                        .hover(|style| style.bg(colors.accent))
+                        .child(IconName::Copy)
+                        .child("Copy")
+                        .on_click({
+                            let on_copy = on_copy.clone();
+                            let code = code.to_string();
+                            move |_, window, cx| on_copy(&code, window, cx)
+                        }),
+                ),
         )
         .child(
             div()
@@ -658,6 +714,7 @@ fn list(
     colors: ThemeColor,
     text_color: Hsla,
     code_blocks: &mut usize,
+    on_copy: &CopyHandler,
 ) -> AnyElement {
     div()
         .flex()
@@ -688,17 +745,20 @@ fn list(
                         .flex()
                         .flex_col()
                         .gap(px(INNER_GAP))
-                        .children(
-                            blocks
-                                .iter()
-                                .map(|block| render_block(block, colors, text_color, code_blocks)),
-                        ),
+                        .children(blocks.iter().map(|block| {
+                            render_block(block, colors, text_color, code_blocks, on_copy)
+                        })),
                 )
         }))
         .into_any_element()
 }
 
-fn quote(blocks: &[Block], colors: ThemeColor, code_blocks: &mut usize) -> AnyElement {
+fn quote(
+    blocks: &[Block],
+    colors: ThemeColor,
+    code_blocks: &mut usize,
+    on_copy: &CopyHandler,
+) -> AnyElement {
     div()
         .flex()
         .flex_col()
@@ -706,11 +766,9 @@ fn quote(blocks: &[Block], colors: ThemeColor, code_blocks: &mut usize) -> AnyEl
         .pl_3()
         .border_l(px(QUOTE_BORDER))
         .border_color(colors.border)
-        .children(
-            blocks
-                .iter()
-                .map(|block| render_block(block, colors, colors.muted_foreground, code_blocks)),
-        )
+        .children(blocks.iter().map(|block| {
+            render_block(block, colors, colors.muted_foreground, code_blocks, on_copy)
+        }))
         .into_any_element()
 }
 
@@ -1003,7 +1061,7 @@ mod tests {
         // Building elements needs no window; only laying them out would.
         let source = "# Title\n\nBody **bold** `code` [link](https://example.com)\n\n\
                       - one\n- two\n\n1. first\n\n> quote\n\n---\n\n```rust\nfn main() {}\n```\n";
-        let _element = render_markdown(source, ThemeColor::default());
-        let _empty = render_markdown("", ThemeColor::default());
+        let _element = render_markdown(source, ThemeColor::default(), |_, _, _| {});
+        let _empty = render_markdown("", ThemeColor::default(), |_, _, _| {});
     }
 }
