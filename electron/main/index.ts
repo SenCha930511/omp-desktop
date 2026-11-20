@@ -1,5 +1,5 @@
 import { IPC_CHANNELS } from '../../src/types/ipc'
-import { app, BrowserWindow, dialog, Menu, nativeTheme, protocol, safeStorage, session, webContents } from 'electron'
+import { app, BrowserWindow, dialog, Menu, nativeTheme, protocol, safeStorage, screen, session, webContents } from 'electron'
 import type { BrowserWindowConstructorOptions, Input, WebContents } from 'electron'
 import { extname, isAbsolute, join, relative, resolve, win32 as win32Path } from 'node:path'
 import { readFile, writeFile } from 'node:fs/promises'
@@ -41,6 +41,14 @@ import { VoiceService, voiceSecretStorageStatus } from './voice'
 import { isAllowedRendererAudioPermission } from './voice-permissions'
 import { createManualUpdateCheck, getAutoUpdater, isDeveloperIdSigned, UpdateService } from './updates'
 import { HarnessUpdateService } from './harness-update'
+import {
+  MIN_WINDOW_HEIGHT,
+  MIN_WINDOW_WIDTH,
+  resolveWindowBounds,
+  UI_GEOMETRY_FILENAME,
+  type WindowGeometry,
+  WindowGeometryStore,
+} from './window-geometry'
 
 // Development builds run the rebranded Electron bundle, whose product name
 // matches the packaged app, so both resolve to the same userData directory
@@ -71,6 +79,7 @@ let trustedRendererUrl = ''
 let packagedSmokeMarkerFile: string | null = null
 let windowCreation: Promise<BrowserWindow | null> | null = null
 let startInBackground = false
+let windowGeometryStore: WindowGeometryStore | null = null
 const keepTestWindowsHidden = process.env.OMP_DESKTOP_E2E_HIDE_WINDOWS === '1'
 
 installCrashGuards({
@@ -86,6 +95,12 @@ installCrashGuards({
 
 function appIconPath(): string {
   return app.isPackaged ? join(process.resourcesPath, 'icon.png') : join(app.getAppPath(), 'assets', 'icon.png')
+}
+
+/** userData is only resolved once the app is ready, so the store is created on first use. */
+function getWindowGeometryStore(): WindowGeometryStore {
+  windowGeometryStore ??= new WindowGeometryStore(join(app.getPath('userData'), UI_GEOMETRY_FILENAME))
+  return windowGeometryStore
 }
 
 // One policy for every surface that serves renderer content: the app protocol
@@ -378,11 +393,15 @@ export function setTitleBarTheme(sender: WebContents, theme: ResolvedTheme): boo
 
 async function createWindow(): Promise<BrowserWindow | null> {
   if (shutdownStarted) return null
+  const geometryStore = getWindowGeometryStore()
+  const savedGeometry = geometryStore.read().window
+  const primaryWorkArea = screen.getPrimaryDisplay().workArea
+  const workAreas = screen.getAllDisplays().map((display) => display.workArea)
+  const bounds = resolveWindowBounds(savedGeometry, workAreas, primaryWorkArea)
   const window = new BrowserWindow({
-    width: 1440,
-    height: 920,
-    minWidth: 960,
-    minHeight: 640,
+    ...bounds,
+    minWidth: MIN_WINDOW_WIDTH,
+    minHeight: MIN_WINDOW_HEIGHT,
     show: false,
     backgroundColor: '#f5f5f4',
     icon: appIconPath(),
@@ -400,6 +419,7 @@ async function createWindow(): Promise<BrowserWindow | null> {
     },
   })
   mainWindow = window
+  let restoreMaximized = savedGeometry.maximized
   const renderer = window.webContents
   const rendererId = renderer.id
   hardenRenderer(window)
@@ -421,11 +441,50 @@ async function createWindow(): Promise<BrowserWindow | null> {
   renderer.on('render-process-gone', () => ipc?.revoke(rendererId))
   let rendererLoaded = false
   let readyToShow = false
+  let geometrySaveTimer: ReturnType<typeof setTimeout> | null = null
+  const persistGeometry = (): void => {
+    if (window.isDestroyed()) return
+    const maximized = window.isMaximized()
+    const current = maximized ? window.getNormalBounds() : window.getBounds()
+    const geometry: WindowGeometry = { x: current.x, y: current.y, width: current.width, height: current.height, maximized }
+    void geometryStore.save(geometry).catch((error: unknown) => {
+      console.error(`Failed to save window geometry: ${boundedErrorMessage(error)}`)
+    })
+  }
+  const scheduleGeometrySave = (): void => {
+    if (geometrySaveTimer) clearTimeout(geometrySaveTimer)
+    geometrySaveTimer = setTimeout(() => {
+      geometrySaveTimer = null
+      persistGeometry()
+    }, 250)
+  }
+  const flushGeometry = (): void => {
+    if (geometrySaveTimer) {
+      clearTimeout(geometrySaveTimer)
+      geometrySaveTimer = null
+    }
+    persistGeometry()
+  }
+  window.on('resize', scheduleGeometrySave)
+  window.on('move', scheduleGeometrySave)
+  window.on('maximize', scheduleGeometrySave)
+  window.on('unmaximize', scheduleGeometrySave)
+  const maximizeOnce = (): boolean => {
+    if (!restoreMaximized) return false
+    restoreMaximized = false
+    window.maximize()
+    return true
+  }
+  const showWindow = (): void => {
+    if (!maximizeOnce()) window.show()
+  }
+  window.on('show', () => { maximizeOnce() })
   window.once('ready-to-show', () => {
     readyToShow = true
-    if (!keepTestWindowsHidden && !backgroundMode?.isBackgrounded() && rendererLoaded && !shutdownStarted && !window.isDestroyed() && mainWindow === window) window.show()
+    if (!keepTestWindowsHidden && !backgroundMode?.isBackgrounded() && rendererLoaded && !shutdownStarted && !window.isDestroyed() && mainWindow === window) showWindow()
   })
   window.on('close', (event) => {
+    flushGeometry()
     if (shutdownStarted || shutdownApproved) return
     if (backgroundMode?.handleWindowClose(window)) {
       event.preventDefault()
@@ -437,6 +496,8 @@ async function createWindow(): Promise<BrowserWindow | null> {
     if (!confirmingShutdown) requestShutdown(window, prompt)
   })
   window.on('closed', () => {
+    if (geometrySaveTimer) clearTimeout(geometrySaveTimer)
+    geometrySaveTimer = null
     ipc?.revoke(rendererId)
     if (mainWindow === window) mainWindow = null
   })
@@ -454,7 +515,7 @@ async function createWindow(): Promise<BrowserWindow | null> {
     return null
   }
   rendererLoaded = true
-  if (!keepTestWindowsHidden && !backgroundMode?.isBackgrounded() && readyToShow) window.show()
+  if (!keepTestWindowsHidden && !backgroundMode?.isBackgrounded() && readyToShow) showWindow()
   return window
 }
 
