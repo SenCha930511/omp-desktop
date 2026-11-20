@@ -514,16 +514,16 @@ describe('JsonStateStore', () => {
     writeFileSync(path, JSON.stringify({
       version: 2,
       projects: [{ id: 'p1', name: 'One', path: '/one', folders: ['/one'], primaryFolder: '/one' }],
-      settings: { ...defaultSettings(), terminalShell: '/bin/bash' },
+      settings: { ...defaultSettings(), browserHome: 'https://example.test/' },
       archivedSessions: ['/sessions/kept.jsonl'],
       dismissedProjectPaths: [],
     }))
     const store = new JsonStateStore(path)
 
     const settings = store.getSettings()
-    expect(settings.terminalShell).toBe('/bin/bash')
-    settings.terminalShell = '/bin/tampered'
-    expect(store.getSettings().terminalShell).toBe('/bin/bash')
+    expect(settings.browserHome).toBe('https://example.test/')
+    settings.browserHome = 'https://tampered.test/'
+    expect(store.getSettings().browserHome).toBe('https://example.test/')
 
     const projects = store.getProjects()
     expect(projects.map((project) => project.id)).toEqual(['p1'])

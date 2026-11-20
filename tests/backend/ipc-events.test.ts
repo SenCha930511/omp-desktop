@@ -41,7 +41,6 @@ describe('app:reveal-path authorization', () => {
       projects: overrides.projects ?? serviceStub(),
       sessions: { ...serviceStub(), onDidChange: vi.fn(() => vi.fn()), ...(overrides.sessions as object | undefined) },
       agents: serviceStub(),
-      terminals: serviceStub(),
       projectScripts: serviceStub(),
       git: serviceStub(),
       plugins: overrides.plugins ?? serviceStub(),
@@ -132,7 +131,6 @@ describe('session change IPC', () => {
       projects: serviceStub(),
       sessions,
       agents: serviceStub(),
-      terminals: serviceStub(),
       projectScripts: serviceStub(),
       git: serviceStub(),
       plugins: serviceStub(),
@@ -204,7 +202,6 @@ describe('shell-facing app handlers', () => {
       projects: serviceStub(),
       sessions: { ...serviceStub(), onDidChange: vi.fn(() => () => undefined) },
       agents: serviceStub(),
-      terminals: serviceStub(),
       projectScripts: serviceStub(),
       git: serviceStub(),
       plugins: serviceStub(),
@@ -322,7 +319,6 @@ describe('IPC registration lifecycle', () => {
       projects: serviceStub(),
       sessions: { ...serviceStub(), onDidChange: vi.fn(() => unsubscribe) },
       agents: serviceStub(),
-      terminals: serviceStub(),
       projectScripts: serviceStub(),
       git: serviceStub(),
       plugins: serviceStub(),
@@ -333,19 +329,6 @@ describe('IPC registration lifecycle', () => {
       pi: harnessStub(),
     }
   }
-
-  it('removes any prior listener before registering event channels', () => {
-    electronMocks.ipcMain.on.mockClear()
-    electronMocks.ipcMain.removeAllListeners.mockClear()
-    const registration = registerIpc(servicesWithUnsubscribe(vi.fn()) as never, 'omp-desktop://app/')
-
-    const eventChannels = electronMocks.ipcMain.on.mock.calls.map(([channel]) => channel)
-    expect(eventChannels.length).toBeGreaterThan(0)
-    const removed = electronMocks.ipcMain.removeAllListeners.mock.calls.map(([channel]) => channel)
-    for (const channel of eventChannels) expect(removed).toContain(channel)
-
-    registration.dispose()
-  })
 
   it('warns and disposes a previous registration when registerIpc is called again', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)

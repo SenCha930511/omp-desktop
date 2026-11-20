@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const electronMocks = vi.hoisted(() => ({
   api: undefined as unknown,
   contextBridge: { exposeInMainWorld: vi.fn((_name: string, api: unknown) => { electronMocks.api = api }) },
-  ipcRenderer: { invoke: vi.fn(), on: vi.fn(), removeListener: vi.fn(), send: vi.fn() },
+  ipcRenderer: { invoke: vi.fn(), on: vi.fn(), removeListener: vi.fn() },
 }))
 
 vi.mock('electron', () => ({ contextBridge: electronMocks.contextBridge, ipcRenderer: electronMocks.ipcRenderer }))
@@ -59,9 +59,6 @@ const INVOKE_CASES: Array<[domain: string, method: string, channel: string, args
   ['voice', 'createRealtimeCall', 'voice:create-realtime-call', [{ mode: 'transcription', sdp: 'sdp' }]],
   ['voice', 'transcribe', 'voice:transcribe', [{ provider: 'openai', audioBase64: 'audio' }]],
   ['voice', 'testSelfHosted', 'voice:test-self-hosted', [{ url: 'https://voice.example' }]],
-  ['terminal', 'create', 'terminal:create', [{ cwd: '/repo' }]],
-  ['terminal', 'bindSession', 'terminal:bind-session', ['terminal', '/session.jsonl']],
-  ['terminal', 'kill', 'terminal:kill', ['terminal']],
   ['projectScripts', 'start', 'project-scripts:start', [{ runId: 'run-1', projectId: 'project-id', kind: 'run', cwd: '/repo', command: 'npm run dev' }]],
   ['projectScripts', 'stop', 'project-scripts:stop', ['run-1']],
   ['git', 'status', 'git:status', ['/repo']],
@@ -102,8 +99,6 @@ const SUBSCRIPTION_CASES: Array<[domain: string, method: string, channel: string
   ['harnessUpdates', 'onChanged', 'harnessUpdates:changed'],
   ['sessions', 'onChanged', 'sessions:changed'],
   ['agent', 'onEvent', 'agent:event'],
-  ['terminal', 'onData', 'terminal:data'],
-  ['terminal', 'onExit', 'terminal:exit'],
   ['projectScripts', 'onOutput', 'project-scripts:output'],
   ['projectScripts', 'onExit', 'project-scripts:exit'],
   ['browser', 'onChanged', 'browser:changed'],
@@ -118,7 +113,6 @@ describe('preload bridge contract', () => {
     electronMocks.ipcRenderer.invoke.mockResolvedValue(undefined)
     electronMocks.ipcRenderer.on.mockReset()
     electronMocks.ipcRenderer.removeListener.mockReset()
-    electronMocks.ipcRenderer.send.mockReset()
   })
 
   it('exposes the main-process Settings signal with a removable listener', () => {
@@ -146,18 +140,6 @@ describe('preload bridge contract', () => {
     const api = electronMocks.api as BridgeApi
     await api[domain][method](...args)
     expect(electronMocks.ipcRenderer.invoke).toHaveBeenCalledWith(channel, ...args)
-  })
-
-  it.each([
-    ['input', 'terminal:input', ['terminal', 'text']],
-    ['acknowledge', 'terminal:acknowledge', ['terminal', 10]],
-    ['resize', 'terminal:resize', ['terminal', 120, 40]],
-    ['setActiveContext', 'terminal:set-active-context', ['terminal', { label: 'shell', content: 'output' }]],
-    ['clearActiveContext', 'terminal:clear-active-context', ['terminal']],
-  ] as const)('sends terminal.%s through fixed channel %s', (method, channel, args) => {
-    const api = electronMocks.api as BridgeApi
-    api.terminal[method](...args)
-    expect(electronMocks.ipcRenderer.send).toHaveBeenCalledWith(channel, ...args)
   })
 
   it.each(SUBSCRIPTION_CASES)('validates and filters %s.%s payloads', (domain, method, channel) => {

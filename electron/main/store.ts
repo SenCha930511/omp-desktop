@@ -103,9 +103,6 @@ function parseWindowsLegacyTombstone(value: unknown): WindowsLegacyTombstone | n
 }
 
 export function defaultSettings(): AppSettings {
-  const defaultShell = process.platform === 'win32'
-    ? (process.env.ComSpec && isAbsolute(process.env.ComSpec) ? process.env.ComSpec : 'C:\\Windows\\System32\\cmd.exe')
-    : (process.env.SHELL?.startsWith('/') ? process.env.SHELL : '/bin/zsh')
   return {
     theme: 'system',
     locale: 'system',
@@ -119,11 +116,9 @@ export function defaultSettings(): AppSettings {
     idleSessionMinutes: 5,
     keepRunningInBackground: false,
     launchAtLogin: false,
-    terminalOpen: false,
     defaultInspectorTab: 'summary',
     browserHome: 'https://www.google.com/',
     browserAskForDownloads: true,
-    terminalShell: defaultShell,
     reduceMotion: false,
     showReasoningSummaries: true,
     reasoningExpandedByDefault: false,
@@ -254,11 +249,9 @@ function parseSettings(value: unknown): AppSettings {
     idleSessionMinutes: IDLE_SESSION_MINUTES.includes(value.idleSessionMinutes as AppSettings['idleSessionMinutes']) ? value.idleSessionMinutes as AppSettings['idleSessionMinutes'] : defaults.idleSessionMinutes,
     keepRunningInBackground: typeof value.keepRunningInBackground === 'boolean' ? value.keepRunningInBackground : defaults.keepRunningInBackground,
     launchAtLogin: typeof value.launchAtLogin === 'boolean' ? value.launchAtLogin : defaults.launchAtLogin,
-    terminalOpen: typeof value.terminalOpen === 'boolean' ? value.terminalOpen : defaults.terminalOpen,
     defaultInspectorTab: value.defaultInspectorTab === 'changes' || value.defaultInspectorTab === 'browser' || value.defaultInspectorTab === 'files' || value.defaultInspectorTab === 'summary' ? value.defaultInspectorTab : defaults.defaultInspectorTab,
     browserHome: typeof value.browserHome === 'string' ? value.browserHome : defaults.browserHome,
     browserAskForDownloads: typeof value.browserAskForDownloads === 'boolean' ? value.browserAskForDownloads : defaults.browserAskForDownloads,
-    terminalShell: typeof value.terminalShell === 'string' ? value.terminalShell : defaults.terminalShell,
     reduceMotion: typeof value.reduceMotion === 'boolean' ? value.reduceMotion : defaults.reduceMotion,
     showReasoningSummaries: typeof value.showReasoningSummaries === 'boolean' ? value.showReasoningSummaries : defaults.showReasoningSummaries,
     reasoningExpandedByDefault: typeof value.reasoningExpandedByDefault === 'boolean' ? value.reasoningExpandedByDefault : defaults.reasoningExpandedByDefault,

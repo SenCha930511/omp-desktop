@@ -12,7 +12,6 @@ export interface ProjectSessionCleanupDeps {
   listSessions(): Promise<readonly ProjectSessionCandidate[]>
   deleteSession(filePath: string): Promise<unknown>
   closeBrowserView(filePath: string): unknown
-  killTerminal(filePath: string): Promise<unknown>
 }
 
 /**
@@ -48,7 +47,6 @@ export async function deleteProjectSessions(deps: ProjectSessionCleanupDeps, roo
   for (const record of doomed) {
     await deps.deleteSession(record.filePath)
     deps.closeBrowserView(record.filePath)
-    await deps.killTerminal(record.filePath)
   }
   return doomed.map((record) => record.filePath)
 }

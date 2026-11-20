@@ -34,14 +34,14 @@ describe('RepositoryUseGate', () => {
 
   it('names mixed workspace owners blocking branch checkout', async () => {
     const gate = new RepositoryUseGate()
-    const terminal = await gate.beginWorkspaceUse('/repo', { kind: 'terminal', terminalId: 'terminal-1' })
+    const script = await gate.beginWorkspaceUse('/repo', { kind: 'script', scriptId: 'run-1' })
     const first = await gate.beginWorkspaceUse('/repo', { kind: 'agent', harness: 'omp', runtimeId: 'first-runtime' })
     const second = await gate.beginWorkspaceUse('/repo', { kind: 'agent', harness: 'omp', runtimeId: 'second-runtime' })
 
     await expect(gate.runBranchCheckout('/repo', async () => 'changed')).rejects.toMatchObject({
-      message: 'Branch checkout is unavailable while 1 terminal and 2 agents (omp) are using this folder. Close the terminal or wait for the agent to finish.',
+      message: 'Branch checkout is unavailable while 1 project script and 2 agents (omp) are using this folder. Stop the project script or wait for the agent to finish.',
     })
-    terminal.release()
+    script.release()
     first.release()
     second.release()
   })
@@ -57,7 +57,7 @@ describe('RepositoryUseGate', () => {
     await checkoutStarted.promise
 
     let admitted = false
-    const leasePromise = gate.beginWorkspaceUse('/repo', { kind: 'terminal', terminalId: 'terminal-1' }).then((lease) => {
+    const leasePromise = gate.beginWorkspaceUse('/repo', { kind: 'script', scriptId: 'run-1' }).then((lease) => {
       admitted = true
       return lease
     })
@@ -81,7 +81,7 @@ describe('RepositoryUseGate', () => {
     })
     await checkoutStarted.promise
 
-    const lease = await gate.beginWorkspaceUse('/repo-b', { kind: 'terminal', terminalId: 'terminal-2' })
+    const lease = await gate.beginWorkspaceUse('/repo-b', { kind: 'script', scriptId: 'run-2' })
     lease.release()
     await expect(gate.runBranchCheckout('/repo-b', async () => 'other')).resolves.toBe('other')
     releaseCheckout.resolve()

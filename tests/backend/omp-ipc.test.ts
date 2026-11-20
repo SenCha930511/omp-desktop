@@ -36,7 +36,6 @@ interface TestServices {
   settings: { get: Mock; update: Mock }
   schedules: { list: Mock; create: Mock }
   browser: { closeForSession: Mock }
-  terminals: { killForSession: Mock }
   projectScripts: { killForSession: Mock }
   harnessUpdates: { getState: Mock; install: Mock }
 }
@@ -97,7 +96,6 @@ function buildServices() {
       stop: vi.fn(async () => true),
       list: vi.fn(() => [{ runtimeId: 'omp-runtime', harness: 'omp' }]),
     },
-    terminals: { ...serviceStub(), killForSession: vi.fn(async () => undefined) },
     projectScripts: { ...serviceStub(), killForSession: vi.fn(async () => undefined) },
     git: serviceStub(),
     plugins: { ...serviceStub(), list: vi.fn(async () => 'omp-plugins'), install: vi.fn(async () => undefined), installExtension: vi.fn(async () => undefined), connectMcp: vi.fn(async () => undefined), setMcpEnabled: vi.fn(async () => undefined), refresh: vi.fn(async () => 'omp-plugins') },
@@ -234,15 +232,12 @@ describe('harness-aware IPC routing', () => {
     await expect(harness.invoke('sessions:archive', OMP_SESSION, true)).resolves.toBe(true)
     expect(harness.services.sessions.archive).toHaveBeenCalledWith(OMP_SESSION, true)
     expect(harness.services.browser.closeForSession).toHaveBeenCalledWith(OMP_SESSION)
-    expect(harness.services.terminals.killForSession).toHaveBeenCalledWith(OMP_SESSION)
     expect(harness.services.projectScripts.killForSession).toHaveBeenCalledWith(OMP_SESSION)
 
     harness.services.browser.closeForSession.mockClear()
-    harness.services.terminals.killForSession.mockClear()
     harness.services.projectScripts.killForSession.mockClear()
     await expect(harness.invoke('sessions:archive', OMP_SESSION, false)).resolves.toBe(true)
     expect(harness.services.browser.closeForSession).not.toHaveBeenCalled()
-    expect(harness.services.terminals.killForSession).not.toHaveBeenCalled()
     expect(harness.services.projectScripts.killForSession).not.toHaveBeenCalled()
   })
 
