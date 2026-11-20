@@ -330,6 +330,14 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     send({ id: command.id, type: 'response', command: command.type, success: true, data: { contextUsage: { tokens: 12000, contextWindow: 100000, percent: 12 }, cost: 0.42, tokens: { input: 10000, output: 2000, cacheRead: 0, cacheWrite: 0, total: 12000 } } })
   } else if (command.type === 'get_session_lease') {
     send({ id: command.id, type: 'response', command: command.type, success: true, data: { held: [], unknown: [] } })
+  } else if (command.type === 'live_start') {
+    fs.writeFileSync(marker('live-args.json'), JSON.stringify(command))
+    send({ id: command.id, type: 'response', command: command.type, success: true, data: { voice: 'sol' } })
+    send({ type: 'live_phase', phase: 'listening' })
+    send({ type: 'live_levels', input: 0.5, output: 0.2 })
+  } else if (command.type === 'live_stop') {
+    fs.writeFileSync(marker('live-stop.json'), JSON.stringify(command))
+    send({ id: command.id, type: 'response', command: command.type, success: true, data: {} })
   } else if (command.type === 'set_host_tools') {
     send({ id: command.id, type: 'response', command: command.type, success: true, data: { toolNames: command.tools.map((tool) => tool.name) } })
   } else if (command.type === 'set_host_uri_schemes') {
@@ -1615,6 +1623,45 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(page.locator('.sidebar__brand')).toHaveCount(0)
     await expect(page.locator('.sidebar__footer .sidebar-update')).toHaveCount(0)
     await expect(page.locator('.sidebar__footer button[title="Settings"]')).toBeVisible()
+  })
+
+  test('runs host live voice from the toolbar More menu', async () => {
+    // A live session rides the workspace runtime, and the runtime starts on the
+    // first prompt. Making the test self-contained keeps it runnable on its own
+    // (`-g`) instead of inheriting a runtime from an earlier scenario. The
+    // renderer attaches the runtime before the prompt reaches the harness, so
+    // this marker is the point where the live-voice hook has a target.
+    await page.locator('.project-group .session-row__title').filter({ hasText: 'OMP hermetic fixture' }).click()
+    const composer = page.getByRole('combobox', { name: 'Message OMP' })
+    await composer.fill('live voice runtime probe')
+    await composer.press('Enter')
+    await expect.poll(() => {
+      try { return JSON.parse(readFileSync(join(fixtureRoot, 'prompt-args.json'), 'utf8')).message } catch { return '' }
+    }).toBe('live voice runtime probe')
+
+    await page.locator('.title-toolbar').getByRole('button', { name: 'More', exact: true }).click()
+    const more = page.getByRole('dialog', { name: 'More' })
+    const entry = more.getByRole('button', { name: 'Live voice', exact: true })
+    await expect(entry).toBeVisible()
+    await entry.click()
+
+    const dialog = page.getByRole('dialog', { name: 'Live voice' })
+    await expect(dialog).toBeVisible()
+    await expect(dialog.locator('.live-voice__phase')).toHaveText('Not started')
+
+    await dialog.getByRole('button', { name: 'Start live voice', exact: true }).click()
+    await expect(dialog.locator('.live-voice__phase')).toHaveText('Listening')
+    await expect(dialog.locator('[role="progressbar"][aria-label="Microphone level"]')).toHaveAttribute('aria-valuenow', '50')
+    await expect(dialog.locator('[role="progressbar"][aria-label="Speaker level"]')).toHaveAttribute('aria-valuenow', '20')
+    expect(JSON.parse(readFileSync(join(fixtureRoot, 'live-args.json'), 'utf8')).type).toBe('live_start')
+
+    await dialog.getByRole('button', { name: 'Stop live voice', exact: true }).click()
+    await expect(dialog.locator('.live-voice__phase')).toHaveText('Not started')
+    await expect(dialog.getByRole('button', { name: 'Start live voice', exact: true })).toBeVisible()
+    expect(JSON.parse(readFileSync(join(fixtureRoot, 'live-stop.json'), 'utf8')).type).toBe('live_stop')
+
+    await dialog.getByRole('button', { name: 'Close', exact: true }).click()
+    await expect(dialog).toHaveCount(0)
   })
 
   test('opens the title toolbar overview with workspace counts and a New session action', async () => {
