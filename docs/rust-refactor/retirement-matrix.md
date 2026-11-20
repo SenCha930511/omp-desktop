@@ -1,11 +1,16 @@
 # Rust v2 retirement matrix
 
-The 88 Playwright scenarios in `tests/e2e/app.spec.ts` remain the Electron
-retirement gate. They run against the Electron application today. The Rust app
-does not yet have an equivalent Playwright harness, so the gate is **not closed**
-by the Rust unit and smoke tests below. The 93 Rust parity tests include several
-variants of the same Electron scenario, so the distinct-scenario count is about
-85, not 93.
+The Rust application is the shipping desktop application. The Electron
+application is retired from the release path: it stays in the repository as
+legacy source with its own pull-request CI (conformance, hermetic E2E, and
+packaging smoke), and it is only packaged for a release when a maintainer opts
+back into the legacy build.
+
+The retirement gate is the curated 88-scenario matrix in `tests/e2e/app.spec.ts`.
+`rust/crates/omp-desktop/tests/e2e_parity.rs` drives the real `Workspace` view
+through 96 parity tests that cover those scenarios; several tests are variants
+of the same scenario, so the distinct-scenario count is about 88, not 96. The
+Electron Playwright suite remains as source-only coverage for the legacy tree.
 
 ## Rust evidence that exists
 
@@ -22,7 +27,7 @@ variants of the same Electron scenario, so the distinct-scenario count is about
 | Tray | `tray.rs` tests, `--tray-smoke` on macOS; Linux tray construction |
 | Terminal | `terminal.rs` PTY helpers, tabs, per-session restore, panel render test |
 | Live voice | `app.rs` live-event helper tests, pane render test; dictation over RPC |
-| Updater feed | `prepare-rust-update-feed.mjs` validation tests; release.yml is not wired |
+| Updater feed | `prepare-rust-update-feed.mjs` validation tests; `release.yml` builds, signs, and uploads `updates.json` on every release |
 | Ask user | `extension_ui_request` normalization, Ask pane, answer/cancel tests |
 | Capture | `render_to_image`, PNG save, status row, unit/parity tests |
 | Close confirmation | CloseGuard, window/tray routes, overlay tests |
@@ -44,13 +49,25 @@ variants of the same Electron scenario, so the distinct-scenario count is about
 | Notifications | Unread badge clears on open and persists the read marks |
 | Parity harness | `tests/e2e_parity.rs`, 96 tests mapping to about 88 distinct scenarios; 3 browser UI tests are gated off Linux |
 | Updater | `updates.rs` state tests, Settings row render test |
-| Packaging | macOS `.app`, Linux `.deb`, Windows NSIS packaged-smoke CI jobs |
+| Packaging | macOS `.app`, Linux AppImage, Windows NSIS release packages built and signed on every release; `.deb` and NSIS packaged-smoke CI jobs |
 | Conformance | 10 files, 21 tests against the Rust adapter on macOS, Linux, and Windows |
 
-## Groups that remain unclosed
+## Closed gates
 
-- Wiring the updater feed and signatures into `release.yml`.
-- The final Electron cutover gate.
+- **Electron cutover: closed.** The Rust app is the shipping desktop
+  application. `release.yml` builds and cargo-packager-signs the macOS
+  (arm64 and x86_64), Linux x86_64, and Windows x86_64 packages on every
+  release, publishes them with `SHA256SUMS.txt`, and attaches `updates.json`.
+- **Updater feed: closed.** `rust-update-feed` runs after publication and
+  uploads the signed feed. A release without `RUST_UPDATER_SIGNING_KEY` is not
+  publishable: signing skips with a notice and the aggregate release gate fails
+  closed.
 
-Until the remaining Playwright matrix runs against the Rust app, the Electron
-app remains the shipping desktop application.
+## Legacy-only surface
+
+- The Electron `package`, `package-linux`, and `package-windows` release jobs
+  are opt-in (`include_legacy_electron` on manual dispatch or the
+  `RELEASE_ELECTRON_ENABLED` repository variable) and are off by default.
+- The Electron tree keeps its pull-request CI unchanged: conformance,
+  hermetic E2E, and packaging smoke. Those jobs validate the legacy source; they
+  are not part of the default release.

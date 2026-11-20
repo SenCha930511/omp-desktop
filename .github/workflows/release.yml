@@ -11,22 +11,22 @@ on:
         required: true
         type: string
       include_mac_unsigned:
-        description: Build ad-hoc signed macOS packages for free beta distribution (skips Developer ID signing and notarization)
+        description: Legacy Electron only. Build ad-hoc signed macOS packages for free beta distribution (skips Developer ID signing and notarization)
         required: false
         default: false
         type: boolean
       include_windows:
-        description: Build signed Windows packages (requires Authenticode secrets)
+        description: Legacy Electron only. Build signed Windows packages (requires Authenticode secrets)
         required: false
         default: false
         type: boolean
       include_windows_unsigned:
-        description: Build unsigned Windows packages for beta distribution (skips Authenticode signing)
+        description: Legacy Electron only. Build unsigned Windows packages for beta distribution (skips Authenticode signing)
         required: false
         default: false
         type: boolean
-      include_rust:
-        description: Build and publish the Rust application packages and updater feed (requires the RUST_UPDATER_SIGNING_KEY secret)
+      include_legacy_electron:
+        description: Also build and publish the retired Electron application (legacy; the Rust application ships by default)
         required: false
         default: false
         type: boolean
@@ -40,6 +40,9 @@ concurrency:
 
 env:
   RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+  # The Rust application is the shipping desktop app. The Electron jobs below
+  # are a source-only legacy tree: they are skipped unless a maintainer opts in.
+  RELEASE_ELECTRON_LEGACY_ENABLED: ${{ (github.event_name == 'workflow_dispatch' && inputs.include_legacy_electron) || (github.event_name == 'push' && vars.RELEASE_ELECTRON_ENABLED == 'true') }}
   RELEASE_MAC_UNSIGNED_ENABLED: ${{ (github.event_name == 'workflow_dispatch' && inputs.include_mac_unsigned) || (github.event_name == 'push' && vars.RELEASE_MAC_UNSIGNED_ENABLED == 'true') }}
   RELEASE_WINDOWS_SIGNED_ENABLED: ${{ (github.event_name == 'workflow_dispatch' && inputs.include_windows) || (github.event_name == 'push' && vars.RELEASE_WINDOWS_ENABLED == 'true') }}
   RELEASE_WINDOWS_UNSIGNED_ENABLED: ${{ (github.event_name == 'workflow_dispatch' && inputs.include_windows_unsigned) || (github.event_name == 'push' && vars.RELEASE_WINDOWS_UNSIGNED_ENABLED == 'true') }}
@@ -167,6 +170,9 @@ jobs:
       - run: npm run test:e2e:hermetic
 
   package:
+    # Legacy Electron packaging. The Rust packages ship by default, so these
+    # jobs only run when a maintainer opts back into the Electron build.
+    if: (github.event_name == 'workflow_dispatch' && inputs.include_legacy_electron) || (github.event_name == 'push' && vars.RELEASE_ELECTRON_ENABLED == 'true')
     needs: [validate, production-audit, quality, conformance, hermetic-e2e]
     strategy:
       # Ship both mac architectures as separate DMG/ZIP builds. Each leg runs
@@ -246,6 +252,8 @@ jobs:
           if-no-files-found: error
 
   package-linux:
+    # Legacy Electron packaging; see the `package` job gate.
+    if: (github.event_name == 'workflow_dispatch' && inputs.include_legacy_electron) || (github.event_name == 'push' && vars.RELEASE_ELECTRON_ENABLED == 'true')
     needs: [validate, production-audit, quality, conformance, hermetic-e2e]
     strategy:
       # Ship both Linux architectures from native runners so npm install and
@@ -309,7 +317,11 @@ jobs:
           if-no-files-found: error
 
   package-windows:
-    if: (github.event_name == 'workflow_dispatch' && (inputs.include_windows || inputs.include_windows_unsigned)) || (github.event_name == 'push' && (vars.RELEASE_WINDOWS_ENABLED == 'true' || vars.RELEASE_WINDOWS_UNSIGNED_ENABLED == 'true'))
+    # Legacy Electron packaging; see the `package` job gate. The Windows
+    # signed/unsigned inputs only apply once the legacy Electron build is on.
+    if: >-
+      ((github.event_name == 'workflow_dispatch' && inputs.include_legacy_electron) || (github.event_name == 'push' && vars.RELEASE_ELECTRON_ENABLED == 'true')) &&
+      ((github.event_name == 'workflow_dispatch' && (inputs.include_windows || inputs.include_windows_unsigned)) || (github.event_name == 'push' && (vars.RELEASE_WINDOWS_ENABLED == 'true' || vars.RELEASE_WINDOWS_UNSIGNED_ENABLED == 'true')))
     needs: [validate, production-audit, quality, conformance, hermetic-e2e]
     runs-on: windows-2022
     steps:
@@ -362,10 +374,11 @@ jobs:
           if-no-files-found: error
 
   package-rust:
-    # The Rust app is not the shipping application yet, so its packages and
-    # updater feed stay opt-in; the Electron release path never depends on them.
+    # The Rust application is the shipping desktop app, so its signed packages
+    # are built on every release. Without RUST_UPDATER_SIGNING_KEY the signing
+    # step skips with a notice, and the release aggregate then fails closed
+    # instead of publishing a release with no Rust artifacts.
     name: Package the Rust application
-    if: (github.event_name == 'workflow_dispatch' && inputs.include_rust) || (github.event_name == 'push' && vars.RELEASE_RUST_ENABLED == 'true')
     needs: [validate, production-audit, quality, conformance, hermetic-e2e]
     strategy:
       # cargo-packager archives the host binary, so every leg runs on a native
@@ -453,10 +466,11 @@ jobs:
           if-no-files-found: error
 
   release-packages:
-    needs: [validate, production-audit, package, package-linux, package-windows]
+    needs: [validate, production-audit, package-rust, package, package-linux, package-windows]
     # Always run the aggregate gate. A skipped job can satisfy a required check,
     # so failures are asserted by an explicit first step rather than encoded in
-    # the job-level condition. Windows may legitimately be skipped.
+    # the job-level condition. The signed Rust packages are required; the
+    # legacy Electron legs may legitimately be skipped.
     if: always()
     runs-on: ubuntu-22.04
     permissions:
@@ -467,10 +481,12 @@ jobs:
       - name: Fail if a release prerequisite did not succeed
         if: >-
           always() && (needs.validate.result != 'success' || needs.production-audit.result != 'success' ||
-          needs.package.result != 'success' || needs.package-linux.result != 'success' ||
+          needs.package-rust.result != 'success' ||
+          (needs.package.result != 'success' && needs.package.result != 'skipped') ||
+          (needs.package-linux.result != 'success' && needs.package-linux.result != 'skipped') ||
           (needs.package-windows.result != 'success' && needs.package-windows.result != 'skipped'))
         run: |
-          echo "Release prerequisite results: validate=${{ needs.validate.result }}, production-audit=${{ needs.production-audit.result }}, package=${{ needs.package.result }}, package-linux=${{ needs.package-linux.result }}, package-windows=${{ needs.package-windows.result }}"
+          echo "Release prerequisite results: validate=${{ needs.validate.result }}, production-audit=${{ needs.production-audit.result }}, package-rust=${{ needs.package-rust.result }}, package=${{ needs.package.result }}, package-linux=${{ needs.package-linux.result }}, package-windows=${{ needs.package-windows.result }}"
           exit 1
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -486,15 +502,71 @@ jobs:
       - name: Install release script dependencies
         run: npm ci --omit=dev --ignore-scripts
       - run: npm run release:preflight:toolchain
+      # The legacy Electron assets are only collected when a maintainer opts
+      # back into the Electron build.
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        if: env.RELEASE_ELECTRON_LEGACY_ENABLED == 'true'
         with:
           pattern: omp-desktop-public-*
           path: downloaded-release-artifacts
-      - name: Select release assets and generate SHA-256 checksums
+      - name: Select the legacy Electron release assets and generate SHA-256 checksums
+        if: env.RELEASE_ELECTRON_LEGACY_ENABLED == 'true'
         run: |
           platforms='mac,linux'
           if [ "$RELEASE_WINDOWS_ENABLED" = 'true' ]; then platforms="$platforms,win"; fi
           node scripts/release/prepare-github-release.mjs --input downloaded-release-artifacts --output release-assets --tag "$RELEASE_TAG" --platforms "$platforms"
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          pattern: rust-package-*
+          path: rust-artifacts
+      # download-artifact extracts each artifact into a `rust-package-<os>-<arch>`
+      # directory; the updater feed and the release layout use `<os>-<arch>`.
+      - name: Lay the Rust packages out as <os>-<arch> platform directories
+        run: |
+          shopt -s nullglob
+          for directory in rust-artifacts/rust-package-*; do
+            mv "$directory" "rust-artifacts/${directory##*rust-package-}"
+          done
+      - name: Fail closed unless every signed Rust package was produced
+        run: |
+          shopt -s nullglob
+          for platform in macos-aarch64 macos-x86_64 linux-x86_64 windows-x86_64; do
+            signatures=(rust-artifacts/"$platform"/*.sig)
+            if [ "${#signatures[@]}" -eq 0 ]; then
+              echo "Missing the signed $platform Rust package. The updater rejects unsigned artifacts, so the release is not publishable without RUST_UPDATER_SIGNING_KEY."
+              exit 1
+            fi
+          done
+      - name: Add the signed Rust packages to the release assets
+        run: |
+          mkdir -p release-assets
+          shopt -s nullglob
+          paths=(rust-artifacts/*/*)
+          names=()
+          for path in "${paths[@]}"; do
+            if [ -f "$path" ]; then names+=("${path##*/}"); fi
+          done
+          duplicates=$(printf '%s\n' "${names[@]}" | LC_ALL=C sort | uniq -d)
+          if [ -n "$duplicates" ]; then
+            echo "Two Rust packages publish the same asset name: $duplicates"
+            exit 1
+          fi
+          for path in "${paths[@]}"; do
+            if [ -f "$path" ]; then cp "$path" release-assets/; fi
+          done
+      - name: Write SHA-256 checksums for every published asset
+        run: |
+          cd release-assets
+          rm -f SHA256SUMS.txt
+          shopt -s nullglob
+          LC_ALL=C
+          files=(*)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No release asset was prepared for publication."
+            exit 1
+          fi
+          sha256sum -- "${files[@]}" > SHA256SUMS.txt
+          cat SHA256SUMS.txt
       - name: Attest release assets
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
         with:
@@ -507,7 +579,9 @@ jobs:
             exit 1
           fi
           release_channel_args=(--latest)
-          if [ "$RELEASE_MAC_UNSIGNED_ENABLED" = 'true' ] || [ "$RELEASE_WINDOWS_UNSIGNED_ENABLED" = 'true' ]; then
+          # The unsigned beta channels belong to the legacy Electron build; a
+          # Rust-only release is signed and stays the latest release.
+          if [ "$RELEASE_ELECTRON_LEGACY_ENABLED" = 'true' ] && { [ "$RELEASE_MAC_UNSIGNED_ENABLED" = 'true' ] || [ "$RELEASE_WINDOWS_UNSIGNED_ENABLED" = 'true' ]; }; then
             release_channel_args=(--prerelease)
           fi
           existing=$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft 2>/dev/null || true)
@@ -544,8 +618,9 @@ jobs:
   rust-update-feed:
     name: Publish the Rust updater feed
     # The feed is attached to an existing release, so it runs after publication
-    # and only when every signed Rust package was produced. A skipped
-    # package-rust (Rust release not enabled) skips this job too.
+    # and only when every signed Rust package was produced. The release
+    # aggregate already fails when a package is missing, so this job never
+    # publishes a feed for an empty release.
     needs: [validate, release-packages, package-rust]
     if: >-
       always() && needs.release-packages.result == 'success' && needs.package-rust.result == 'success'

@@ -121,7 +121,7 @@ Use focused tests while developing, then choose the aggregate that matches the c
 | `npm run package:linux:local-qa` | On Linux, runs the package-verification aggregate, creates the configured Linux artifacts, and verifies their runtime layout in QA mode. |
 | `npm run package:win:local-qa` | On Windows, runs the package-verification aggregate, creates the configured Windows artifacts, and verifies their runtime layout in QA mode. |
 
-Packaging is native: run each platform command on its matching operating system and architecture. The public `package:mac`, `package:linux`, and `package:win` commands use distribution mode; macOS and Windows distribution checks require their external signing configuration. A successful local-QA command must not be described as a public trust check.
+Packaging is native: run each platform command on its matching operating system and architecture. The public `package:mac`, `package:linux`, and `package:win` commands use distribution mode; macOS and Windows distribution checks require their external signing configuration. A successful local-QA command must not be described as a public trust check. These commands build the legacy Electron application; the shipped Rust application is packaged with `cargo packager` as described in [the Rust workspace README](../rust/README.md).
 
 ## Dependency audit policy
 
@@ -148,19 +148,19 @@ The [release workflow](../.github/workflows/release.yml) runs for a semantic-ver
 | `production-audit` | Apply the exception-aware production dependency audit to that immutable SHA before any package job. |
 | `quality` | Run `release:verify:package` for that SHA. |
 | `conformance` | Run `npm run test:conformance` for that SHA across macOS, Linux, and Windows before any native package job. |
-| `hermetic-e2e` | Build and run the Electron E2E suite for that SHA. |
-| `package` | Build both native macOS architectures. Credential preflight is fail-closed; public verification checks the signing identity, required microphone entitlements on the app and every Electron helper, the notarization staple on each packaged app, Gatekeeper, artifact integrity, fuses, native layout/architecture, and package budgets. Both native macOS architectures must pass the packaged application launch smoke before their artifacts are uploaded. |
-| `package-linux` | Build the configured Linux architectures on native runners and apply the Linux package/runtime verification path. |
-| `package-windows` | When explicitly enabled, build either Authenticode-signed public packages or unsigned beta packages. Signed mode requires signing secrets and the configured signer subject and/or thumbprint. |
-| `package-rust` | When the Rust release is enabled, build and cargo-packager-sign the Rust application on native macOS (both architectures), Linux x86_64, and Windows runners. Unsigned artifacts are never uploaded: without `RUST_UPDATER_SIGNING_KEY` the packaging step skips with a notice. |
-| `release-packages` | Reject failed prerequisites, collect the enabled platform artifacts, generate checksums, attest provenance, and publish or resume the GitHub Release with write permission scoped to this final job. |
-| `rust-update-feed` | When every signed Rust package was produced, build `updates.json` from the downloaded artifacts and upload it to the already-published release. |
+| `hermetic-e2e` | Build and run the Electron E2E suite for that SHA, keeping the legacy Electron source verified even though it is not shipped by default. |
+| `package` | Legacy Electron build, opt-in only. Build both native macOS architectures. Credential preflight is fail-closed; public verification checks the signing identity, required microphone entitlements on the app and every Electron helper, the notarization staple on each packaged app, Gatekeeper, artifact integrity, fuses, native layout/architecture, and package budgets. Both native macOS architectures must pass the packaged application launch smoke before their artifacts are uploaded. |
+| `package-linux` | Legacy Electron build, opt-in only. Build the configured Linux architectures on native runners and apply the Linux package/runtime verification path. |
+| `package-windows` | Legacy Electron build, opt-in only, and additionally gated on the Windows inputs. Build either Authenticode-signed public packages or unsigned beta packages. Signed mode requires signing secrets and the configured signer subject and/or thumbprint. |
+| `package-rust` | Runs on every release. Build and cargo-packager-sign the Rust application on native macOS (both architectures), Linux x86_64, and Windows runners. Unsigned artifacts are never uploaded: without `RUST_UPDATER_SIGNING_KEY` the packaging step skips with a notice, and the release aggregate then fails instead of publishing a release with no Rust artifacts. |
+| `release-packages` | Reject failed prerequisites, require all four signed Rust packages, collect the enabled platform artifacts, generate `SHA256SUMS.txt` for every published asset, attest provenance, and create or resume the GitHub Release with write permission scoped to this final job. The legacy Electron assets join that release only when the Electron build is opted in. |
+| `rust-update-feed` | Build `updates.json` from the signed Rust packages and upload it to the already-published release. |
 
 Native release jobs pass `--skip-verify` only after the same immutable SHA has passed the upstream quality and E2E jobs. That flag skips a duplicate pre-package test aggregate; it does not skip bundle creation or the platform-specific post-package verification.
 
-Public macOS checks require external Developer ID and notarization credentials that are not present in ordinary PR CI. Signed Windows packaging is also conditional on repository configuration and secrets. If neither signed nor unsigned Windows release mode is enabled, `package-windows` is expected to be skipped and the aggregate release gate explicitly accepts that skip. Within an enabled Windows job, the signed and unsigned build steps are mutually exclusive, so one of them is normally skipped.
+The Rust application is the shipping desktop application. The Electron tree remains in the repository as legacy source: it keeps its own pull-request CI (conformance, hermetic E2E, and packaging smoke) and is only packaged for a release when a maintainer sets `include_legacy_electron` on a manual dispatch or the `RELEASE_ELECTRON_ENABLED` repository variable for a tag push. When the legacy build is off, `package`, `package-linux`, and `package-windows` are expected to be skipped; the aggregate release gate accepts those skips but still fails when `package-rust` or one of its signed artifacts is missing.
 
-An explicitly enabled unsigned Windows beta is not trust-ready and must be labelled as such. Ordinary PR smoke packages and manual local-QA artifacts do not replace any credentialed release check.
+The legacy Developer ID, notarization, and Authenticode checks require external credentials that are not present in ordinary PR CI, so a green PR packaging matrix does not prove them. An explicitly enabled unsigned Windows beta is not trust-ready and must be labelled as such. Ordinary PR smoke packages and manual local-QA artifacts do not replace any credentialed release check.
 
 ## Recording evidence
 
@@ -178,7 +178,7 @@ Use test counts only inside that commit-addressed evidence. The durable claim is
 
 ## Rust workspace
 
-The v2 workspace lives in `rust/`. It is pinned by `rust-toolchain.toml` and `rust/Cargo.lock`; CI installs Rust 1.100.0 with `rustfmt` and `clippy`.
+The v2 workspace lives in `rust/` and is the shipping desktop application; the Electron tree at the repository root is legacy source. The workspace is pinned by `rust-toolchain.toml` and `rust/Cargo.lock`; CI installs Rust 1.100.0 with `rustfmt` and `clippy`. See [the Rust workspace README](../rust/README.md).
 
 ```bash
 cd rust
@@ -241,4 +241,4 @@ cargo packager signer sign --private-key ~/.config/omp/updater.key path/to/artif
 
 The `.sig` file cargo-packager writes is already the base64 signature box the updater expects, so pass that file to the manifest. The generated `.pub` file is the exact `OMP_UPDATER_PUBKEY` value; build with `OMP_UPDATER_PUBKEY="$(cat ~/.config/omp/updater.key.pub)"`.
 
-The `rust-update-feed` release job builds this feed from the signed Rust packages with `--version-file rust/Cargo.toml` (the version compiled into the app, not the Electron release tag) and `--artifacts` (the downloaded `<os>-<arch>` package directories), then uploads `updates.json` to the published release; the client reads `https://github.com/SenCha930511/omp-desktop/releases/latest/download/updates.json`. The job is opt-in with the rest of the Rust packages (`include_rust` on manual dispatch or the `RELEASE_RUST_ENABLED` repository variable) and skips with a notice when `RUST_UPDATER_SIGNING_KEY` is not configured.
+The `rust-update-feed` release job builds this feed from the signed Rust packages with `--version-file rust/Cargo.toml` (the version compiled into the app, not the release tag) and `--artifacts` (the downloaded `<os>-<arch>` package directories), then uploads `updates.json` to the published release; the client reads `https://github.com/SenCha930511/omp-desktop/releases/latest/download/updates.json`. The feed job runs on every release. A release without `RUST_UPDATER_SIGNING_KEY` is not publishable: `package-rust` skips signing with a notice and `release-packages` fails closed rather than publishing artifacts the updater would reject.

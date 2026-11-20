@@ -731,7 +731,7 @@ else if (JSON.stringify(args) === ${JSON.stringify(JSON.stringify(expectedInstal
     for (const jobName of ['package', 'package-linux', 'package-windows']) {
       expect(release.jobs[jobName].needs, `${jobName} must wait for the pinned production audit`).toEqual(['validate', 'production-audit', 'quality', 'conformance', 'hermetic-e2e'])
     }
-    expect(release.jobs['release-packages'].needs).toEqual(['validate', 'production-audit', 'package', 'package-linux', 'package-windows'])
+    expect(release.jobs['release-packages'].needs).toEqual(['validate', 'production-audit', 'package-rust', 'package', 'package-linux', 'package-windows'])
     expect(release.jobs['release-packages'].steps?.find((step) => step.name === 'Fail if a release prerequisite did not succeed')?.if).toContain("needs.production-audit.result != 'success'")
   })
 
@@ -788,13 +788,14 @@ else if (JSON.stringify(args) === ${JSON.stringify(JSON.stringify(expectedInstal
       expect(workflow).toContain('actions/cache@')
     }
     // Release jobs skip the CI-duplicated verification suite and never upload
-    // an unpacked application directory; every platform publishes its update feed.
+    // an unpacked application directory. The legacy Electron legs keep their
+    // per-platform update feeds when they are explicitly enabled.
     expect(releaseWorkflow.match(/-- --skip-verify/g)).toHaveLength(2)
     expect(releaseWorkflow.match(/node scripts\/release\/package\.mjs --(?:public|qa) --platform win --skip-verify/g)).toHaveLength(2)
     expect(releaseWorkflow).toContain('release/mac/${{ matrix.arch }}/latest*.yml')
     expect(releaseWorkflow).toContain('release/linux/${{ matrix.arch }}/latest*.yml')
     expect(releaseWorkflow).toContain('release/win/**/latest*.yml')
-    expect(releaseWorkflow).toMatch(/needs: \[validate, production-audit, package, package-linux, package-windows\]/)
+    expect(releaseWorkflow).toMatch(/needs: \[validate, production-audit, package-rust, package, package-linux, package-windows\]/)
     expect(releaseWorkflow).toContain("needs.package-windows.result != 'skipped'")
     expect(releaseWorkflow).toContain('--platforms "$platforms"')
     expect(releaseWorkflow).toContain('release/linux/${{ matrix.arch }}/*.pacman')
@@ -823,7 +824,9 @@ else if (JSON.stringify(args) === ${JSON.stringify(JSON.stringify(expectedInstal
     expect(workflow).toContain('--generate-notes')
     // always() keeps the aggregate job from being skipped; the first step
     // fails explicitly when a prerequisite failed or was cancelled.
-    expect(workflow).toMatch(/release-packages:\n {4}needs: \[validate, production-audit, package, package-linux, package-windows\]\n(?: {4}#.*\n)* {4}if: always\(\)\n {4}runs-on: ubuntu-22\.04/)
+    expect(workflow).toMatch(
+      /release-packages:\n {4}needs: \[validate, production-audit, package-rust, package, package-linux, package-windows\]\n(?: {4}#.*\n)* {4}if: always\(\)\n {4}runs-on: ubuntu-22\.04/,
+    )
     expect(workflow).toContain('Fail if a release prerequisite did not succeed')
     expect(workflow).toContain("needs.validate.result != 'success'")
     expect(workflow).toContain('exit 1')
@@ -848,14 +851,16 @@ else if (JSON.stringify(args) === ${JSON.stringify(JSON.stringify(expectedInstal
     expect(publish?.env?.GH_TOKEN).toBe('${{ github.token }}')
   })
 
-  test('keeps signed releases latest and moves every unsigned beta mode to prerelease', () => {
+  test('keeps signed releases latest and confines unsigned beta channels to the legacy Electron build', () => {
     const parsed = load(readFileSync('.github/workflows/release.yml', 'utf8')) as {
       jobs: Record<string, { steps?: Array<{ name?: string; run?: string }> }>
     }
     const script = parsed.jobs['release-packages'].steps?.find((step) => step.name === 'Publish GitHub Release')?.run ?? ''
 
     expect(script).toContain('release_channel_args=(--latest)')
-    expect(script).toContain('if [ "$RELEASE_MAC_UNSIGNED_ENABLED" = \'true\' ] || [ "$RELEASE_WINDOWS_UNSIGNED_ENABLED" = \'true\' ]; then\n  release_channel_args=(--prerelease)\nfi')
+    expect(script).toContain(
+      'if [ "$RELEASE_ELECTRON_LEGACY_ENABLED" = \'true\' ] && { [ "$RELEASE_MAC_UNSIGNED_ENABLED" = \'true\' ] || [ "$RELEASE_WINDOWS_UNSIGNED_ENABLED" = \'true\' ]; }; then\n  release_channel_args=(--prerelease)\nfi',
+    )
     expect(script).toContain('gh release edit "$RELEASE_TAG" --verify-tag --draft=false "${release_channel_args[@]}"')
     expect(script).toMatch(/gh release create "\$RELEASE_TAG" release-assets\/\*[\s\S]*?"\$\{release_channel_args\[@\]\}"/)
     expect(script).not.toMatch(/gh release (?:create|edit)[^\n]*--latest/)
@@ -978,7 +983,7 @@ else if (JSON.stringify(args) === ${JSON.stringify(JSON.stringify(expectedInstal
 
   test('ships both Linux architectures as separately labeled native builds', () => {
     const releaseWorkflow = readFileSync('.github/workflows/release.yml', 'utf8')
-    expect(releaseWorkflow).toMatch(/package-linux:\n {4}needs: \[validate, production-audit, quality, conformance, hermetic-e2e\]\n {4}strategy:/)
+    expect(releaseWorkflow).toMatch(/package-linux:\n {4}#.*\n {4}if: .*include_legacy_electron.*\n {4}needs: \[validate, production-audit, quality, conformance, hermetic-e2e\]\n {4}strategy:/)
     expect(releaseWorkflow).toMatch(/- arch: arm64\n {12}runner: ubuntu-24\.04-arm/)
     expect(releaseWorkflow).toMatch(/- arch: x64\n {12}runner: ubuntu-22\.04/)
     expect(releaseWorkflow).toContain('runs-on: ${{ matrix.runner }}')
@@ -2292,6 +2297,50 @@ describe('Rust update feed', () => {
     }
   })
 
+  test('ships the signed Rust packages by default and gates the legacy Electron jobs off', () => {
+    type Step = { name?: string; id?: string; if?: string; uses?: string; run?: string; env?: Record<string, string>; with?: Record<string, unknown> }
+    type Job = { name?: string; needs?: string[]; if?: string; steps?: Step[] }
+    const source = readFileSync('.github/workflows/release.yml', 'utf8')
+    const workflow = load(source) as {
+      on: { workflow_dispatch: { inputs: Record<string, { default?: unknown; type?: string }> } }
+      env: Record<string, string>
+      jobs: Record<string, Job>
+    }
+
+    // The Rust release path has no opt-in gate left.
+    expect(source).not.toContain('include_rust')
+    expect(source).not.toContain('RELEASE_RUST_ENABLED')
+    expect(workflow.jobs['package-rust'].if).toBeUndefined()
+    expect(workflow.jobs['rust-update-feed'].if).not.toContain('include_')
+
+    // The retired Electron build is opt-in and off by default.
+    expect(workflow.on.workflow_dispatch.inputs.include_legacy_electron).toMatchObject({ default: false, type: 'boolean' })
+    expect(workflow.env.RELEASE_ELECTRON_LEGACY_ENABLED).toContain('vars.RELEASE_ELECTRON_ENABLED')
+    for (const jobName of ['package', 'package-linux']) {
+      const gate = workflow.jobs[jobName].if ?? ''
+      expect(gate, `${jobName} must be opt-in legacy`).toContain('inputs.include_legacy_electron')
+      expect(gate, `${jobName} must be opt-in legacy`).toContain('vars.RELEASE_ELECTRON_ENABLED')
+    }
+    const windowsGate = workflow.jobs['package-windows'].if ?? ''
+    expect(windowsGate).toContain('inputs.include_legacy_electron')
+    expect(windowsGate).toContain('inputs.include_windows')
+
+    // The release job still creates the release, but from the Rust artifacts.
+    const release = workflow.jobs['release-packages']
+    expect(release.needs).toContain('package-rust')
+    const steps = release.steps ?? []
+    const rustDownload = steps.find((step) => step.uses?.startsWith('actions/download-artifact@') && step.with?.pattern === 'rust-package-*')
+    expect(rustDownload).toBeDefined()
+    const electronDownload = steps.find((step) => step.uses?.startsWith('actions/download-artifact@') && step.with?.pattern === 'omp-desktop-public-*')
+    expect(electronDownload?.if).toBe("env.RELEASE_ELECTRON_LEGACY_ENABLED == 'true'")
+    const failClosed = steps.find((step) => step.name === 'Fail closed unless every signed Rust package was produced')
+    for (const platform of ['macos-aarch64', 'macos-x86_64', 'linux-x86_64', 'windows-x86_64']) expect(failClosed?.run).toContain(platform)
+    expect(steps.find((step) => step.name === 'Add the signed Rust packages to the release assets')?.run).toContain('release-assets')
+    expect(steps.find((step) => step.name === 'Write SHA-256 checksums for every published asset')?.run).toContain('SHA256SUMS.txt')
+    expect(source).toContain('gh release create "$RELEASE_TAG" release-assets/*')
+    expect(source).toContain('gh release upload "$RELEASE_TAG" release-assets/* --clobber')
+  })
+
   test('wires the feed job to the signed Rust packages and the published release', () => {
     type Step = { name?: string; id?: string; if?: string; uses?: string; run?: string; env?: Record<string, string>; with?: Record<string, unknown> }
     const workflow = load(readFileSync('.github/workflows/release.yml', 'utf8')) as {
@@ -2308,7 +2357,6 @@ describe('Rust update feed', () => {
     }
     const packageRust = workflow.jobs['package-rust']
     expect(packageRust.needs).toEqual(['validate', 'production-audit', 'quality', 'conformance', 'hermetic-e2e'])
-    expect(packageRust.if).toContain('inputs.include_rust')
     expect(packageRust.strategy?.matrix?.include?.map((leg) => `${leg.platform}:${leg.format}`)).toEqual(['macos-aarch64:app', 'macos-x86_64:app', 'linux-x86_64:appimage', 'windows-x86_64:nsis'])
     const sign = packageRust.steps?.find((step) => step.id === 'package')
     expect(sign?.env).toEqual({
@@ -2337,7 +2385,5 @@ describe('Rust update feed', () => {
     expect(generate?.run).toContain('--artifacts rust-artifacts')
     expect(generate?.run).toContain('gh release upload "$RELEASE_TAG" rust-update-feed/updates.json --clobber')
     expect(generate?.env?.GH_TOKEN).toBe('${{ github.token }}')
-    // The Electron publication path still depends on exactly the Electron jobs.
-    expect(workflow.jobs['release-packages'].needs).toEqual(['validate', 'production-audit', 'package', 'package-linux', 'package-windows'])
   })
 })

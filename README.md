@@ -90,9 +90,9 @@ Ask User and computer control are off by default. You can enable, disable, or re
 
 OMP Desktop checks common install locations automatically. If the harness is missing, open **Settings → Harness** to refresh detection or choose its executable.
 
-GitHub Releases provides a DMG and ZIP for macOS (Apple Silicon and Intel), common Linux package formats plus AppImage, and a Windows installer and ZIP. Each release page also lists `SHA256SUMS.txt` covering every asset.
+GitHub Releases ships the Rust application: a signed macOS `.app` archive for Apple Silicon and Intel, a signed Linux AppImage, and a signed Windows NSIS installer, plus `updates.json` for the in-app updater. Each release page also lists `SHA256SUMS.txt` covering every asset. The retired Electron build is only published when a maintainer opts into it; its source stays in the repository.
 
-Release builds are not code-signed or notarized, so the first launch needs one extra step:
+Release artifacts carry the updater's minisign signature but no operating-system code signature or notarization, so the first launch needs one extra step:
 
 - **macOS**: right-click the app in `/Applications` and choose **Open** (or clear it once in **System Settings → Privacy & Security**) to pass Gatekeeper.
 - **Windows**: SmartScreen shows "Windows protected your PC" — choose **More info → Run anyway**.
@@ -103,6 +103,8 @@ Harness provider credentials stay with the harness. Optional voice keys are encr
 Upgrading from GooeyPi? OMP Desktop migrates your projects, schedules, settings, voice keys, and agent-message signing key from the old application data directory on first run.
 
 ## Run from source
+
+The shipped desktop application is the Rust workspace in [`rust/`](rust/README.md); its build, verification, and packaging commands live in that README. The instructions below build the legacy Electron tree, which stays in the repository as source and keeps its own CI.
 
 You will need Node.js 24.15.0 or newer and npm 12.0.2 or newer. The repository pins Node.js 24.15.0 in `.nvmrc`; with [nvm](https://github.com/nvm-sh/nvm), you can select it with:
 
@@ -178,6 +180,8 @@ npm run build
 ```
 
 See the [validation guide](docs/validation.md) for the source-of-truth checks and reproducible commands.
+
+Those commands cover the legacy Electron tree. The shipped Rust application has its own format, lint, test, and conformance commands in [rust/README.md](rust/README.md).
 
 To make an installable local QA build, run the command for your operating system:
 

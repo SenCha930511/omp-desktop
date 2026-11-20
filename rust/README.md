@@ -1,6 +1,6 @@
 # OMP Desktop Rust workspace
 
-The v2 desktop application is moving from Electron/React to Rust. This workspace is the core of that move. It does not replace the Electron app yet; both trees live in the repository until the Phase 5 cutover gate passes.
+The v2 desktop application moved from Electron/React to Rust. This workspace is the shipping desktop application. The Electron tree at the repository root is legacy source: it keeps its pull-request CI but is retired from the release path.
 
 ## Crates
 
@@ -11,7 +11,7 @@ The v2 desktop application is moving from Electron/React to Rust. This workspace
 | `omp-conformance` | Conformance Protocol v1 adapter used by `tests/conformance/` |
 | `omp-desktop` | GPUI + `gpui-kit` native shell: first-frame geometry, three-pane workspace, toolbar, right-pane launcher, turn-only diff card, IME guard, packaged-smoke marker |
 
-The GPUI shell is intentionally narrow today. It proves the native window, persisted geometry, and first-frame paint while the full page set is ported.
+The GPUI shell carries the full page set. `tests/e2e_parity.rs` drives the real `Workspace` view through 96 parity tests covering the 88 curated Electron scenarios.
 
 ## Verification
 
@@ -104,10 +104,13 @@ cargo packager --formats nsis
 
 The packaged binary writes the same first-frame marker as the development build. CI repeats this on macOS (`Rust packaged smoke`), on Ubuntu under Xvfb (`Rust packaged smoke (Linux deb)`), and on `windows-2022` from the silently installed NSIS package (`Rust packaged smoke (Windows nsis)`).
 
-## Remaining work
+The release workflow runs these packaging steps on every release and uploads the signed artifacts plus `updates.json`; see [the validation guide](../docs/validation.md#rust-updater-feed) for the feed contract.
+
+## Release status
 
 - Terminal, live voice, dictation, and browser element annotations are present.
 - The workspace, Schedules, Browser, Files, Subagents, Side Question, Settings, Extensions, Review, and Summary are present.
 - The tray is present on macOS, Windows, and Linux; a Linux session without an AppIndicator host logs and continues.
-- The updater feed generator is wired into `release.yml`; signing requires `RUST_UPDATER_SIGNING_KEY` and the client reads `OMP_UPDATER_PUBKEY`.
-- 96 parity tests map to about 88 distinct UI retirement scenarios; the final Electron cutover gate remains.
+- The Electron cutover gate is closed: 96 parity tests map to about 88 distinct UI retirement scenarios, and this workspace is the shipping desktop application.
+- `release.yml` builds and cargo-packager-signs the macOS (arm64 and x86_64), Linux x86_64, and Windows x86_64 packages on every release, publishes them with `SHA256SUMS.txt`, and attaches `updates.json`. Signing requires `RUST_UPDATER_SIGNING_KEY`; the client reads `OMP_UPDATER_PUBKEY`.
+- The Electron tree at the repository root is legacy source. Its release jobs are opt-in (`include_legacy_electron` or `RELEASE_ELECTRON_ENABLED`) and off by default.
