@@ -313,13 +313,13 @@ describe('shutdown settlement', () => {
 
     await settleShutdown([
       Promise.resolve(),
-      Promise.reject(new Error('terminal cleanup failed')),
+      Promise.reject(new Error('project script cleanup failed')),
       new Promise<void>((resolve) => setTimeout(() => { finished = true; resolve() }, 20)),
     ], { log })
 
     expect(finished).toBe(true)
     expect(log).toHaveBeenCalledTimes(1)
-    expect(log).toHaveBeenCalledWith(expect.stringContaining('terminal cleanup failed'))
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('project script cleanup failed'))
   })
 
   it('gives up after the watchdog deadline when a step never settles', async () => {

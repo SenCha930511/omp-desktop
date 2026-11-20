@@ -14,8 +14,6 @@ export interface SettingsMetaSectionProps extends SettingsSectionProps {
   onRefreshHarnesses(): Promise<void>
 }
 
-// terminalOpen/terminalShell remain persisted settings for the Phase 2 backend;
-// the renderer exposes no surface for them, so the map omits them.
 export const SETTINGS_FIELD_SECTIONS = {
   theme: 'appearance',
   accentColor: 'appearance',
@@ -58,4 +56,4 @@ export const SETTINGS_FIELD_SECTIONS = {
   voiceSelfHostedModel: 'voice',
   voiceLocalWhisperExecutable: 'voice',
   voiceLocalWhisperModel: 'voice',
-} as const satisfies Record<Exclude<keyof AppSettings, 'terminalOpen' | 'terminalShell'>, SettingsSection>
+} as const satisfies Record<keyof AppSettings, SettingsSection>

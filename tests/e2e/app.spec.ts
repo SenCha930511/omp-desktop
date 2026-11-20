@@ -1546,7 +1546,7 @@ test.describe('OMP Desktop desktop smoke', () => {
       return { type: typeof bridge, groups: bridge ? Object.keys(bridge).sort() : [], voiceMethods: voice && typeof voice === 'object' ? Object.keys(voice).sort() : [] }
     })
     expect(bridge.type).toBe('object')
-      expect(bridge.groups).toEqual(['agent', 'app', 'browser', 'git', 'harnessUpdates', 'menu', 'plugins', 'projectScripts', 'projects', 'providers', 'schedules', 'sessions', 'settings', 'terminal', 'updates', 'voice'])
+      expect(bridge.groups).toEqual(['agent', 'app', 'browser', 'git', 'harnessUpdates', 'menu', 'plugins', 'projectScripts', 'projects', 'providers', 'schedules', 'sessions', 'settings', 'updates', 'voice'])
     expect(bridge.voiceMethods).toContain('testSelfHosted')
     const updateMenu = await app!.evaluate(({ Menu }) => {
       const parents = Menu.getApplicationMenu()?.items ?? []

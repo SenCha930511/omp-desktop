@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { basename } from 'node:path'
+import { basename, isAbsolute } from 'node:path'
 import type { WebContents } from 'electron'
 import { IPC_CHANNELS } from '../../src/types/ipc'
 import type { ProjectScriptExitEvent, ProjectScriptKind, ProjectScriptOutputEvent, ProjectScriptStartOptions } from '../../src/types/api'
@@ -15,6 +15,18 @@ import { isPathWithin, requireString } from './validation'
 export const PROJECT_SCRIPT_OUTPUT_LIMIT = 256 * 1024
 export const PROJECT_SCRIPT_TRUNCATION_NOTICE = '\n[OMP Desktop stopped forwarding project script output]\n'
 const MAX_CONCURRENT_PROJECT_SCRIPTS = 8
+
+/**
+ * Login shell for project scripts. GUI launches do not inherit the user's
+ * shell environment, so the platform default is resolved here instead of a
+ * persisted setting.
+ */
+export function defaultProjectShell(): string {
+  if (process.platform === 'win32') {
+    return process.env.ComSpec && isAbsolute(process.env.ComSpec) ? process.env.ComSpec : 'C:\\Windows\\System32\\cmd.exe'
+  }
+  return process.env.SHELL?.startsWith('/') ? process.env.SHELL : '/bin/zsh'
+}
 
 interface OwnedScriptRun {
   id: string

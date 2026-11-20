@@ -34,8 +34,7 @@ import { extensionInjection, resolveExtensionPath } from './extension-manifest'
 import { SessionService } from './sessions'
 import { ompSessionServiceOptions } from './sessions/omp'
 import { type JsonStateStore, openDesktopStateStore, StateCompatibilityError, StateMigrationError } from './store'
-import { TerminalService } from './terminal'
-import { ProjectScriptRunner } from './project-script-runner'
+import { defaultProjectShell, ProjectScriptRunner } from './project-script-runner'
 import { RepositoryUseGate } from './repository-use-gate'
 import { LEGACY_USER_DATA_DIR_NAME, migrateLegacyUserData } from './user-data-migration'
 import { VoiceService, voiceSecretStorageStatus } from './voice'
@@ -55,7 +54,6 @@ protocol.registerSchemesAsPrivileged([{ scheme: 'omp-desktop', privileges: { sta
 let mainWindow: BrowserWindow | null = null
 let ipc: IpcRegistration | null = null
 let agents: AgentRpcManager | null = null
-let terminals: TerminalService | null = null
 let projectScripts: ProjectScriptRunner | null = null
 let downloads: BrowserDownloadGuard | null = null
 let updateService: UpdateService | null = null
@@ -605,7 +603,7 @@ async function bootstrap(): Promise<void> {
   const projects = new ProjectService(stateStore, () => mainWindow)
   const repositoryUseGate = new RepositoryUseGate()
   const checkouts = new CheckoutService(() => stateStore.getSettings().checkoutStrategy, projects, repositoryUseGate)
-  // Git and terminals authorize against the OMP project grants.
+  // Git authorizes against the OMP project grants.
   const git = new GitService((cwd) => projects.authorizeCwd(cwd), (cwd) => projects.authorizeReadOnlyCwd(cwd))
   // This matches the renderer's startup query so both consumers share SessionService's coalesced catalog scan.
   const listCatalogSessions = (): ReturnType<SessionService['list']> => sessions.list(undefined, true)
@@ -640,17 +638,11 @@ async function bootstrap(): Promise<void> {
     rename: async (path, title) => agents?.renameForSession(path, title) ?? false,
   })
   sessions.setRuntimeForker((filePath, cwd) => ompManager.forkForSession(filePath, cwd))
-  terminals = new TerminalService(
-    (cwd) => projects.authorizeCwd(cwd),
-    () => stateStore.getSettings().terminalShell,
-    (path) => sessions.requireSessionPath(path),
-    (cwd, owner) => repositoryUseGate.beginWorkspaceUse(cwd, owner),
-  )
-  // Project setup/run scripts are headless: same authorization and repository
-  // gate as the terminal, but piped stdio and a bounded output surface.
+  // Project setup/run scripts are headless: they authorize against the OMP
+  // project grants, hold a repository-use lease, and stream bounded output.
   projectScripts = new ProjectScriptRunner(
     (cwd) => projects.authorizeCwd(cwd),
-    () => stateStore.getSettings().terminalShell,
+    defaultProjectShell,
     (path) => sessions.requireSessionPath(path),
     (cwd, owner) => repositoryUseGate.beginWorkspaceUse(cwd, owner),
   )
@@ -660,13 +652,12 @@ async function bootstrap(): Promise<void> {
     stopProjectProcesses: async (roots) => {
       plugins.evictProjects(roots)
       sessions.evictProjectPaths(roots)
-      await Promise.all([ompManager.stopForProjectRoots(roots), terminals!.killForProjectRoots(roots), projectScripts!.killForProjectRoots(roots)])
+      await Promise.all([ompManager.stopForProjectRoots(roots), projectScripts!.killForProjectRoots(roots)])
     },
   })
   downloads = new BrowserDownloadGuard(isAllowedBrowserUrl, app.getPath('downloads'))
   const settings = new SettingsService(
     stateStore,
-    (shell) => terminals!.validateShell(shell),
     () => downloads?.cancelAll(true),
     (previous, next) => backgroundMode?.applySettings(previous, next),
   )
@@ -769,7 +760,7 @@ async function bootstrap(): Promise<void> {
     },
   })
   agentBrowser = browserService
-  const browserBridge = new AgentBrowserBridge({ service: browserService, terminals, extensionPath: ompBrowserExtensionPath, skillPath: computerUseSkillPath })
+  const browserBridge = new AgentBrowserBridge({ service: browserService, extensionPath: ompBrowserExtensionPath, skillPath: computerUseSkillPath })
   const collaborationBridge = new AgentCollaborationBridge({
     extensionPath: collaborationExtensionPath,
     sessions: { omp: sessions },
@@ -852,7 +843,7 @@ async function bootstrap(): Promise<void> {
   // the trusted document the cached exact URL pair skips both URL parses.
   const isTrustedForwardTarget = createTrustedRendererUrlCache(trustedRendererUrl)
   ipc = registerIpc({
-    meta, refreshHarnesses, projects, checkouts, sessions, agents: ompManager, terminals, projectScripts, git, plugins, catalog, settings, updates, harnessUpdates, cuaDriver, schedules, browser: browserService, voice,
+    meta, refreshHarnesses, projects, checkouts, sessions, agents: ompManager, projectScripts, git, plugins, catalog, settings, updates, harnessUpdates, cuaDriver, schedules, browser: browserService, voice,
     popupApplicationMenu, setTitleBarTheme,
     applyInterfaceZoom,
   }, trustedRendererUrl)
@@ -1017,7 +1008,6 @@ app.on('before-quit', (event) => {
     agentBrowserBridge?.stop() ?? Promise.resolve(),
     agentCollaborationBridge?.stop() ?? Promise.resolve(),
     automation?.stop() ?? Promise.resolve(),
-    terminals?.killAll() ?? Promise.resolve(),
     projectScripts?.killAll() ?? Promise.resolve(),
     agents?.stopAll() ?? Promise.resolve(),
     stopChildProcesses(),

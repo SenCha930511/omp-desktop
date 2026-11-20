@@ -1,6 +1,6 @@
 import { IPC_CHANNELS, type IpcChannel } from '../../src/types/ipc'
 import { contextBridge, ipcRenderer } from 'electron'
-import type { AgentBrowserActivityEvent, AgentBrowserPointerEvent, AgentBrowserState, AppUpdateState, HarnessUpdateState, PrimeEventEnvelope, DesktopApi, ProjectScriptExitEvent, ProjectScriptOutputEvent, ScheduleChangeEvent, SessionChangeEvent, TerminalDataEvent, TerminalExitEvent } from '../../src/types/api'
+import type { AgentBrowserActivityEvent, AgentBrowserPointerEvent, AgentBrowserState, AppUpdateState, HarnessUpdateState, PrimeEventEnvelope, DesktopApi, ProjectScriptExitEvent, ProjectScriptOutputEvent, ScheduleChangeEvent, SessionChangeEvent } from '../../src/types/api'
 
 function subscribe<T>(channel: IpcChannel, callback: (payload: T) => void): () => void {
   if (typeof callback !== 'function') throw new TypeError('callback must be a function')
@@ -101,18 +101,6 @@ const api: DesktopApi = {
     createRealtimeCall: (request) => invoke(IPC_CHANNELS.voice.createRealtimeCall, request),
     transcribe: (request) => invoke(IPC_CHANNELS.voice.transcribe, request),
     testSelfHosted: (request) => invoke(IPC_CHANNELS.voice.testSelfHosted, request),
-  },
-  terminal: {
-    create: (options) => invoke(IPC_CHANNELS.terminal.create, options),
-    bindSession: (terminalId, sessionPath) => invoke(IPC_CHANNELS.terminal.bindSession, terminalId, sessionPath),
-    input: (terminalId, data) => { ipcRenderer.send(IPC_CHANNELS.terminal.input, terminalId, data) },
-    acknowledge: (terminalId, consumedChars) => { ipcRenderer.send(IPC_CHANNELS.terminal.acknowledge, terminalId, consumedChars) },
-    resize: (terminalId, cols, rows) => { ipcRenderer.send(IPC_CHANNELS.terminal.resize, terminalId, cols, rows) },
-    setActiveContext: (terminalId, context) => { ipcRenderer.send(IPC_CHANNELS.terminal.setActiveContext, terminalId, context) },
-    clearActiveContext: (terminalId) => { ipcRenderer.send(IPC_CHANNELS.terminal.clearActiveContext, terminalId) },
-    kill: (terminalId) => invoke(IPC_CHANNELS.terminal.kill, terminalId),
-    onData: (callback) => subscribe<TerminalDataEvent>(IPC_CHANNELS.terminal.onData, callback),
-    onExit: (callback) => subscribe<TerminalExitEvent>(IPC_CHANNELS.terminal.onExit, callback),
   },
   projectScripts: {
     start: (options) => invoke(IPC_CHANNELS.projectScripts.start, options),

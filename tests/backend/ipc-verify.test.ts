@@ -36,7 +36,6 @@ function services(): Record<string, unknown> {
     projects: serviceStub(),
     sessions: { ...serviceStub(), onDidChange: vi.fn(() => () => undefined) },
     agents: serviceStub(),
-    terminals: { ...serviceStub(), input: vi.fn(), killOwner: vi.fn(async () => undefined) },
     projectScripts: { ...serviceStub(), killOwner: vi.fn(async () => undefined), killForSession: vi.fn(async () => undefined) },
     git: serviceStub(),
     plugins: serviceStub(),
@@ -76,20 +75,14 @@ function fakeEvent(options: FakeSenderOptions = {}) {
 
 describe('registerIpc verify gate', () => {
   let handlers: Map<string, (event: unknown, ...args: unknown[]) => unknown>
-  let listeners: Map<string, (event: unknown, ...args: unknown[]) => void>
   let registration: IpcRegistration
   let stubs: Record<string, unknown>
 
   beforeEach(() => {
     handlers = new Map()
-    listeners = new Map()
     electronMocks.ipcMain.handle.mockReset()
-    electronMocks.ipcMain.on.mockReset()
     electronMocks.ipcMain.handle.mockImplementation((channel: string, listener: (event: unknown, ...args: unknown[]) => unknown) => {
       handlers.set(channel, listener)
-    })
-    electronMocks.ipcMain.on.mockImplementation((channel: string, listener: (event: unknown, ...args: unknown[]) => void) => {
-      listeners.set(channel, listener)
     })
     stubs = services()
     registration = registerIpc(stubs as never, EXPECTED_URL)
@@ -242,17 +235,6 @@ describe('registerIpc verify gate', () => {
     const mismatchedFrame = fakeEvent({ id: 2, frameUrl: 'https://attacker.example/' })
     registration.authorize(mismatchedFrame.sender as never)
     expect(() => handlers.get('app:get-meta')!(mismatchedFrame)).toThrow('IPC sender is not authorized')
-    registration.dispose()
-  })
-
-  it('drops unauthorized fire-and-forget events without invoking the service', () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
-    const input = (stubs.terminals as { input: ReturnType<typeof vi.fn> }).input
-    const event = fakeEvent({ id: 7 })
-    listeners.get('terminal:input')!(event, 'terminal-1', 'ls\r')
-    expect(input).not.toHaveBeenCalled()
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('terminal:input'), 'IPC sender is not authorized')
-    warn.mockRestore()
     registration.dispose()
   })
 })
