@@ -29,8 +29,8 @@ use omp_core::settings::{AppSettings, ConversationDensity, Locale, MessageEnterA
 use omp_core::state::{CURRENT_DESKTOP_STATE_FILENAME, NotificationRecord, Platform, StateStore};
 use omp_core::turn_changes::{TurnBaseline, compute_turn_changes};
 use omp_desktop::app::{
-    AppView, CloseGuard, CloseIntent, Workspace, WorkspaceData, bound_review_diff,
-    request_app_quit, should_confirm_close,
+    AppView, CloseGuard, CloseIntent, Workspace, WorkspaceData, request_app_quit,
+    should_confirm_close,
 };
 use omp_desktop::ime::{CompositionGuard, IME_POST_COMPOSITION_GUARD_MS};
 use serde_json::{Value, json};
@@ -157,69 +157,6 @@ fn seed_two_sessions(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
         &project,
     );
     (home, older, newer)
-}
-
-fn search_workspace_data(root: &Path) -> WorkspaceData {
-    let home = root.join("home");
-    let bucket = home.join(".omp/agent/sessions/-omp-project");
-    std::fs::create_dir_all(&bucket).expect("search session bucket");
-    let project = root.join("project");
-    let at = "2026-04-01T01:00:00.000Z";
-    let title = json!({ "type": "title", "v": 1, "title": "Search", "updatedAt": at });
-    let header = json!({
-        "type": "session", "version": 3, "id": "search", "timestamp": at,
-        "cwd": project.display().to_string(),
-    });
-    let padding = "tall transcript padding ".repeat(45);
-    let records = [
-        json!({ "type": "message", "id": "m0", "timestamp": at, "message": {
-            "role": "assistant", "content": [{"type": "text", "text": format!("intro {padding}")}]
-        }}),
-        json!({ "type": "message", "id": "m1", "timestamp": at, "message": {
-            "role": "assistant", "content": [{"type": "text", "text": format!("needle first {padding}")}]
-        }}),
-        json!({ "type": "message", "id": "m2", "timestamp": at, "message": {
-            "role": "assistant", "content": [{"type": "text", "text": format!("other {padding}")}]
-        }}),
-        json!({ "type": "message", "id": "m3", "timestamp": at, "message": {
-            "role": "assistant", "content": [{"type": "toolCall", "id": "call-3", "name": "needle-tool", "arguments": {"path": "/tmp/needle"}}]
-        }}),
-        json!({ "type": "message", "id": "m4", "timestamp": at, "message": {
-            "role": "assistant", "content": [{"type": "text", "text": format!("needle second {padding}")}]
-        }}),
-        json!({ "type": "message", "id": "m5", "timestamp": at, "message": {
-            "role": "assistant", "content": [{"type": "text", "text": format!("later {padding}")}]
-        }}),
-        json!({ "type": "message", "id": "m6", "timestamp": at, "message": {
-            "role": "assistant", "content": [
-                {"type": "text", "text": format!("concealed answer {padding}")},
-                {"type": "thinking", "thinking": "needle hidden reasoning"}
-            ]
-        }}),
-        json!({ "type": "message", "id": "m7", "timestamp": at, "message": {
-            "role": "toolResult", "toolName": "needle-tool", "content": [{"type": "text", "text": "needle tool output"}]
-        }}),
-        json!({ "type": "message", "id": "m8", "timestamp": at, "message": {
-            "role": "assistant", "content": [{"type": "text", "text": format!("tail {padding}")}]
-        }}),
-    ];
-    let body = records
-        .iter()
-        .map(Value::to_string)
-        .collect::<Vec<_>>()
-        .join("\n");
-    std::fs::write(
-        bucket.join("2026-04-01T00-00-00-000Z_019fdf24-cccc-7000-8000-000000000003.jsonl"),
-        format!("{title}\n{header}\n{body}\n"),
-    )
-    .expect("search session");
-    let store = open_store(root);
-    let sessions = omp_core::sessions::list_sessions(&store, &home, false, None);
-    drop(store);
-    let mut data = test_data(root);
-    data.home_dir = home;
-    data.sessions = sessions;
-    data
 }
 
 fn same_path(left: &str, right: &Path) -> bool {
@@ -583,12 +520,7 @@ fn locale_setting_relabels_live_inputs_and_survives_a_reload(cx: &mut TestAppCon
             assert_eq!(state["shell"]["rightPaneTitle"], "Ask");
             assert_eq!(state["shell"]["placeholders"]["composer"], "Ask OMP…");
             assert_eq!(
-                workspace
-                    .composer_entity()
-                    .read(cx)
-                    .presentation()
-                    .placeholder()
-                    .as_str(),
+                workspace.composer_entity().read(cx).placeholder().as_str(),
                 "Ask OMP…"
             );
             workspace.update_setting(json!({ "locale": "zh-TW" }), cx);
@@ -613,12 +545,7 @@ fn locale_setting_relabels_live_inputs_and_survives_a_reload(cx: &mut TestAppCon
                 })
             );
             assert_eq!(
-                workspace
-                    .composer_entity()
-                    .read(cx)
-                    .presentation()
-                    .placeholder()
-                    .as_str(),
+                workspace.composer_entity().read(cx).placeholder().as_str(),
                 "詢問 OMP 任何問題,@ 提及工作階段與技能,/ 使用命令"
             );
         })
@@ -631,9 +558,7 @@ fn locale_setting_relabels_live_inputs_and_survives_a_reload(cx: &mut TestAppCon
     drop(store);
     let reopened = cx.add_window(|window, cx| Workspace::new(window, cx, data));
     reopened
-        .update(cx, |workspace, _, cx| {
-            workspace.set_right_pane("live-voice", cx)
-        })
+        .update(cx, |workspace, _, cx| workspace.set_right_pane("live-voice", cx))
         .expect("open Live Voice");
     draw_frame(cx, reopened.into());
     reopened
@@ -646,12 +571,7 @@ fn locale_setting_relabels_live_inputs_and_survives_a_reload(cx: &mut TestAppCon
                 "搜尋或輸入網址"
             );
             assert_eq!(
-                workspace
-                    .plugin_source_entity()
-                    .read(cx)
-                    .presentation()
-                    .placeholder()
-                    .as_str(),
+                workspace.plugin_source_entity().read(cx).placeholder().as_str(),
                 "npm:package-name 或外掛路徑"
             );
             workspace.update_setting(json!({ "locale": "zh-CN" }), cx);
@@ -675,17 +595,6 @@ fn locale_setting_relabels_live_inputs_and_survives_a_reload(cx: &mut TestAppCon
         })
         .expect("Simplified Chinese live shell");
     assert_eq!(open_store(root).settings().locale, Locale::ZhCn);
-    reopened
-        .update(cx, |workspace, _, cx| {
-            workspace.update_setting(json!({ "locale": "system" }), cx);
-        })
-        .expect("return to system locale");
-    draw_frame(cx, reopened.into());
-    let state = reopened
-        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
-        .expect("system locale snapshot");
-    assert_eq!(state["settings"]["locale"], "system");
-    assert_eq!(open_store(root).settings().locale, Locale::System);
 }
 
 #[gpui_kit::test]
@@ -705,9 +614,9 @@ fn pinning_a_session_persists_without_reordering_the_catalog(cx: &mut TestAppCon
     data.sessions = catalog;
     let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
     handle
-        .update(cx, |workspace, window, cx| {
+        .update(cx, |workspace, _, cx| {
             workspace.select_session(1, cx);
-            workspace.session_menu_action("Pin", window, cx);
+            workspace.session_menu_action("Pin", cx);
             // Pinning must not clear the open transcript.
             assert_eq!(transcript_text(workspace), ["older prompt", "older reply"]);
             // The refreshed catalog keeps the pinned session at the same index.
@@ -742,9 +651,9 @@ fn archiving_a_session_persists_and_leaves_the_catalog(cx: &mut TestAppContext) 
     data.sessions = catalog;
     let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
     handle
-        .update(cx, |workspace, window, cx| {
+        .update(cx, |workspace, _, cx| {
             workspace.select_session(1, cx);
-            workspace.session_menu_action("Archive", window, cx);
+            workspace.session_menu_action("Archive", cx);
             // Archiving hides the session, so the catalog now starts with Newer.
             workspace.select_session(0, cx);
             assert_eq!(transcript_text(workspace), ["newer prompt", "newer reply"]);
@@ -765,431 +674,50 @@ fn archiving_a_session_persists_and_leaves_the_catalog(cx: &mut TestAppContext) 
     assert!(older.exists(), "archiving keeps the JSONL file");
 }
 
-#[cfg(unix)]
 #[gpui_kit::test]
 fn deleting_a_session_removes_the_file_and_clears_the_transcript(cx: &mut TestAppContext) {
-    use omp_core::projects;
-
     cx.update(gpui_kit::init);
     let dir = tempfile::TempDir::new().expect("temp dir");
     let root = dir.path();
     let home = root.join("home");
-    let project = root.join("project");
-    let fixture = install_fixture_omp(root);
-    for folder in [&home, &project, &root.join("user-data")] {
-        std::fs::create_dir_all(folder).expect("dir");
-    }
-    let project_file = project.join("keep.txt");
-    std::fs::write(&project_file, "project data survives").expect("project file");
-    let project = project.canonicalize().expect("project path");
-    let mut store = open_store(root);
-    projects::grant_project(
-        &mut store,
-        &home,
-        Platform::current(),
-        project.to_str().expect("project path"),
-    )
-    .expect("grant");
-    drop(store);
-
     let bucket = home.join(".omp/agent/sessions/-omp-project");
-    let doomed = write_session(
+    let session = write_session(
         &bucket,
         "2026-04-01T00-00-00-000Z_019fdf24-cccc-7000-8000-000000000003.jsonl",
         "Doomed",
         "2026-04-01T00:00:01.000Z",
         "doomed prompt",
         "doomed reply",
-        &project,
+        &root.join("project"),
     );
-    let survivor = write_session(
-        &bucket,
-        "2026-04-02T00-00-00-000Z_019fdf24-cccc-7000-8000-000000000004.jsonl",
-        "Survivor",
-        "2026-04-02T00:00:01.000Z",
-        "survivor prompt",
-        "survivor reply",
-        &project,
-    );
+
     let store = open_store(root);
     let catalog = omp_core::sessions::list_sessions(&store, &home, false, None);
-    drop(store);
-    assert_eq!(catalog.len(), 2);
-
-    let mut data = test_data(root);
-    data.home_dir = home.clone();
-    data.omp_executable = fixture;
-    data.sessions = catalog;
-    let doomed_index = data
-        .sessions
-        .iter()
-        .position(|session| session.title == "Doomed")
-        .expect("Doomed session index");
-    let survivor_index = data
-        .sessions
-        .iter()
-        .position(|session| session.title == "Survivor")
-        .expect("Survivor session index");
-    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
-    let before = handle
-        .update(cx, |workspace, window, cx| {
-            workspace.select_session(doomed_index, cx);
-            workspace.update_setting(json!({ "locale": "en" }), cx);
-            assert!(doomed.exists() && survivor.exists());
-            let before = snapshot(workspace, cx);
-            assert_eq!(before["liveVoice"]["runtime"], json!(true));
-            assert_eq!(before["sessionMenu"]["deleteConfirmation"], json!(null));
-
-            // The first Delete only arms a confirmation for the captured id.
-            workspace.session_menu_action("Delete", window, cx);
-            before
-        })
-        .expect("delete arming");
-    draw_frame(cx, handle.into());
-    handle
-        .update(cx, |_, window, _| {
-            assert!(window.try_find("delete-session-confirmation").is_some());
-        })
-        .expect("delete confirmation frame");
-    handle
-        .update(cx, |workspace, window, cx| {
-            let armed = snapshot(workspace, cx);
-            assert_eq!(armed["selectedSession"], before["selectedSession"]);
-            assert_eq!(armed["liveVoice"]["runtime"], json!(true));
-            assert_eq!(armed["transcript"], before["transcript"]);
-            assert_eq!(
-                armed["sessionMenu"]["deleteConfirmation"]["sessionId"],
-                "Doomed"
-            );
-            assert!(doomed.exists(), "arming Delete never removes the JSONL");
-
-            // Cancel dismisses only the question and leaves all session state live.
-            workspace.cancel_delete_session(cx);
-            let cancelled = snapshot(workspace, cx);
-            assert_eq!(cancelled["selectedSession"], before["selectedSession"]);
-            assert_eq!(cancelled["liveVoice"]["runtime"], json!(true));
-            assert_eq!(cancelled["transcript"], before["transcript"]);
-            assert_eq!(cancelled["sessionMenu"]["deleteConfirmation"], json!(null));
-            assert!(doomed.exists());
-
-            // Changing the selection invalidates the captured confirmation too.
-            workspace.session_menu_action("Delete", window, cx);
-            workspace.select_session(survivor_index, cx);
-            assert_eq!(
-                snapshot(workspace, cx)["sessionMenu"]["deleteConfirmation"],
-                json!(null)
-            );
-            workspace.confirm_delete_session(cx);
-            assert!(doomed.exists() && survivor.exists());
-            assert_eq!(
-                snapshot(workspace, cx)["selectedSession"],
-                json!(survivor_index)
-            );
-
-            // Confirming the recaptured id performs the only destructive step.
-            workspace.select_session(doomed_index, cx);
-            workspace.session_menu_action("Delete", window, cx);
-            workspace.confirm_delete_session(cx);
-            let deleted = snapshot(workspace, cx);
-            assert_eq!(deleted["selectedSession"], json!(null));
-            assert!(
-                deleted["transcript"]
-                    .as_array()
-                    .expect("transcript")
-                    .is_empty()
-            );
-            assert_eq!(deleted["liveVoice"]["runtime"], json!(false));
-            assert!(
-                deleted["subagents"]
-                    .as_array()
-                    .expect("runtimes")
-                    .is_empty()
-            );
-            assert_eq!(deleted["terminal"]["session"], json!(false));
-            assert_eq!(deleted["terminal"]["tabs"], json!(0));
-            assert_eq!(deleted["sessionActionStatus"], "Deleted session");
-            assert_eq!(deleted["sessions"].as_array().map(Vec::len), Some(1));
-            assert!(!doomed.exists(), "only the confirmed JSONL is removed");
-            assert!(
-                survivor.exists(),
-                "the next session is neither selected nor deleted"
-            );
-        })
-        .expect("workspace window");
-
-    assert!(
-        std::fs::read_to_string(project_file).expect("project file") == "project data survives"
-    );
-    let store = open_store(root);
-    let records = omp_core::sessions::list_sessions(&store, &home, true, None);
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0].title, "Survivor");
-}
-
-#[gpui_kit::test]
-fn delete_rejects_an_unauthorized_path_without_clearing_selection(cx: &mut TestAppContext) {
-    cx.update(gpui_kit::init);
-    let dir = tempfile::TempDir::new().expect("temp dir");
-    let root = dir.path();
-    let safe_home = root.join("safe-home");
-    let other_home = root.join("other-home");
-    let project = root.join("project");
-    std::fs::create_dir_all(safe_home.join(".omp/agent/sessions")).expect("safe root");
-    let outside = write_session(
-        &other_home.join(".omp/agent/sessions/-omp-project"),
-        "2026-04-03T00-00-00-000Z_019fdf24-cccc-7000-8000-000000000005.jsonl",
-        "Outside",
-        "2026-04-03T00:00:01.000Z",
-        "outside prompt",
-        "outside reply",
-        &project,
-    );
-    let store = open_store(root);
-    let catalog = omp_core::sessions::list_sessions(&store, &other_home, false, None);
     drop(store);
     assert_eq!(catalog.len(), 1);
 
     let mut data = test_data(root);
-    data.home_dir = safe_home;
-    data.sessions = catalog;
-    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
-    handle
-        .update(cx, |workspace, window, cx| {
-            workspace.select_session(0, cx);
-            workspace.update_setting(json!({ "locale": "en" }), cx);
-            workspace.session_menu_action("Delete", window, cx);
-            workspace.confirm_delete_session(cx);
-            let rejected = snapshot(workspace, cx);
-            let error = rejected["sessionMenu"]["deleteConfirmation"]["error"]
-                .as_str()
-                .expect("visible authorization failure");
-            assert!(error.contains("Could not delete the session"), "{error}");
-            assert!(
-                error.contains("outside the OMP session directory"),
-                "{error}"
-            );
-            assert_eq!(rejected["selectedSession"], json!(0));
-            assert_eq!(rejected["liveVoice"]["runtime"], json!(false));
-            assert!(outside.exists(), "a rejected target is never removed");
-
-            workspace.cancel_delete_session(cx);
-            assert!(outside.exists());
-            assert_eq!(snapshot(workspace, cx)["selectedSession"], json!(0));
-        })
-        .expect("workspace window");
-}
-
-#[cfg(unix)]
-#[gpui_kit::test]
-fn rename_validates_input_and_refreshes_after_live_runtime_response(cx: &mut TestAppContext) {
-    use omp_core::projects;
-
-    cx.update(gpui_kit::init);
-    let dir = tempfile::TempDir::new().expect("temp dir");
-    let root = dir.path();
-    let home = root.join("home");
-    let project = root.join("project");
-    let fixture = install_fixture_omp(root);
-    for folder in [&home, &project, &root.join("user-data")] {
-        std::fs::create_dir_all(folder).expect("dir");
-    }
-    let project = project.canonicalize().expect("project path");
-    let mut store = open_store(root);
-    projects::grant_project(
-        &mut store,
-        &home,
-        Platform::current(),
-        project.to_str().expect("project path"),
-    )
-    .expect("grant");
-    drop(store);
-
-    let session = write_session(
-        &home.join(".omp/agent/sessions/-omp-project"),
-        "2026-04-04T00-00-00-000Z_019fdf24-dddd-7000-8000-000000000006.jsonl",
-        "Original",
-        "2026-04-04T00:00:01.000Z",
-        "rename prompt",
-        "rename reply",
-        &project,
-    );
-    let store = open_store(root);
-    let catalog = omp_core::sessions::list_sessions(&store, &home, false, None);
-    drop(store);
-    let mut data = test_data(root);
     data.home_dir = home.clone();
-    data.omp_executable = fixture;
     data.sessions = catalog;
     let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
     handle
-        .update(cx, |workspace, window, cx| {
+        .update(cx, |workspace, _, cx| {
             workspace.select_session(0, cx);
-            workspace.update_setting(json!({ "locale": "en" }), cx);
-            workspace.session_menu_action("Rename", window, cx);
-        })
-        .expect("open rename editor");
-    draw_frame(cx, handle.into());
-    handle
-        .update(cx, |_, window, _| {
-            assert!(window.try_find("session-rename-editor").is_some());
-        })
-        .expect("rename editor frame");
-    handle
-        .update(cx, |workspace, window, cx| {
-            let input = workspace
-                .rename_session_entity()
-                .expect("inline rename input");
-            assert_eq!(input.read(cx).value(), "Original");
-            assert_eq!(
-                snapshot(workspace, cx)["sessionMenu"]["rename"]["sessionId"],
-                "Original"
-            );
-
-            // A redraw localizes the existing entity but does not reset typed text.
-            input.update(cx, |input, cx| input.set_value("   ", window, cx));
-        })
-        .expect("invalid rename draft");
-    draw_frame(cx, handle.into());
-    handle
-        .update(cx, |workspace, window, cx| {
-            let input = workspace
-                .rename_session_entity()
-                .expect("preserved inline rename input");
-            assert_eq!(input.read(cx).value(), "   ");
-            workspace.submit_rename_session(window, cx);
-            let invalid = snapshot(workspace, cx);
-            assert_eq!(
-                invalid["sessionMenu"]["rename"]["error"],
-                "Session name cannot be empty."
-            );
-            assert_eq!(invalid["sessionMenu"]["rename"]["name"], "   ");
-            assert!(
-                fixture_commands(root)
-                    .iter()
-                    .all(|command| command["type"] != "set_session_name")
-            );
-        })
-        .expect("empty-name validation");
-    draw_frame(cx, handle.into());
-    handle
-        .update(cx, |_, window, _| {
-            assert!(window.try_find("session-rename-error").is_some());
-        })
-        .expect("empty-name error frame");
-    handle
-        .update(cx, |workspace, window, cx| {
-            let input = workspace
-                .rename_session_entity()
-                .expect("rename input after an error");
-            input.update(cx, |input, cx| {
-                input.set_value("  Renamed safely  ", window, cx)
-            });
-        })
-        .expect("valid rename draft");
-    draw_frame(cx, handle.into());
-    handle
-        .update(cx, |workspace, window, cx| {
-            let input = workspace
-                .rename_session_entity()
-                .expect("preserved valid rename input");
-            assert_eq!(input.read(cx).value(), "  Renamed safely  ");
-            workspace.submit_rename_session(window, cx);
-
-            let renamed = snapshot(workspace, cx);
-            assert_eq!(renamed["sessionMenu"]["rename"], json!(null));
-            assert_eq!(renamed["sessionActionStatus"], "Renamed session");
-            assert_eq!(renamed["selectedSession"], json!(0));
-            assert_eq!(renamed["liveVoice"]["runtime"], json!(true));
-            assert_eq!(renamed["sessions"][0]["title"], "Renamed safely");
             assert_eq!(
                 transcript_text(workspace),
-                ["rename prompt", "rename reply"]
+                ["doomed prompt", "doomed reply"]
             );
-
-            let commands = fixture_commands(root);
-            let renames: Vec<&Value> = commands
-                .iter()
-                .filter(|command| command["type"] == "set_session_name")
-                .collect();
-            assert_eq!(renames.len(), 1, "whitespace never reaches the runtime");
-            assert_eq!(renames[0]["name"], "Renamed safely");
-            assert!(
-                std::fs::read_to_string(&session)
-                    .expect("renamed JSONL")
-                    .contains("\"title\":\"Renamed safely\"")
-            );
-
-            // Cancelling a later edit sends nothing and leaves the saved title alone.
-            workspace.session_menu_action("Rename", window, cx);
-            let input = workspace.rename_session_entity().expect("second editor");
-            input.update(cx, |input, cx| input.set_value("Unsaved", window, cx));
-            workspace.cancel_rename_session(window, cx);
-            assert!(workspace.rename_session_entity().is_none());
-            assert_eq!(
-                snapshot(workspace, cx)["sessions"][0]["title"],
-                "Renamed safely"
-            );
-            assert_eq!(
-                fixture_commands(root)
-                    .iter()
-                    .filter(|command| command["type"] == "set_session_name")
-                    .count(),
-                1
-            );
-        })
-        .expect("workspace window");
-
-    let store = open_store(root);
-    let records = omp_core::sessions::list_sessions(&store, &home, false, None);
-    assert_eq!(records[0].title, "Renamed safely");
-}
-
-#[gpui_kit::test]
-fn offline_rename_reports_live_runtime_requirement_without_editing_jsonl(cx: &mut TestAppContext) {
-    cx.update(gpui_kit::init);
-    let dir = tempfile::TempDir::new().expect("temp dir");
-    let root = dir.path();
-    let home = root.join("home");
-    let session = write_session(
-        &home.join(".omp/agent/sessions/-omp-project"),
-        "2026-04-05T00-00-00-000Z_019fdf24-dddd-7000-8000-000000000007.jsonl",
-        "Offline",
-        "2026-04-05T00:00:01.000Z",
-        "offline prompt",
-        "offline reply",
-        &root.join("project"),
-    );
-    let before = std::fs::read_to_string(&session).expect("original JSONL");
-    let store = open_store(root);
-    let catalog = omp_core::sessions::list_sessions(&store, &home, false, None);
-    drop(store);
-    let mut data = test_data(root);
-    data.home_dir = home;
-    data.sessions = catalog;
-    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
-    handle
-        .update(cx, |workspace, window, cx| {
+            workspace.session_menu_action("Delete", cx);
+            assert!(workspace.transcript_messages().is_empty());
+            // Nothing is left to select, so the transcript stays empty.
             workspace.select_session(0, cx);
-            workspace.update_setting(json!({ "locale": "en" }), cx);
-            assert_eq!(
-                snapshot(workspace, cx)["liveVoice"]["runtime"],
-                json!(false)
-            );
-            workspace.session_menu_action("Rename", window, cx);
-            let offline = snapshot(workspace, cx);
-            assert!(workspace.rename_session_entity().is_none());
-            assert_eq!(
-                offline["sessionActionStatus"],
-                "Open the session with a live OMP runtime before renaming it."
-            );
-            assert_eq!(offline["selectedSession"], json!(0));
-            assert_eq!(offline["sessions"][0]["title"], "Offline");
+            assert!(workspace.transcript_messages().is_empty());
         })
         .expect("workspace window");
-    assert_eq!(
-        std::fs::read_to_string(session).expect("offline JSONL"),
-        before
-    );
+
+    assert!(!session.exists(), "the JSONL file is removed");
+    let store = open_store(root);
+    assert!(omp_core::sessions::list_sessions(&store, &home, true, None).is_empty());
 }
 
 #[gpui_kit::test]
@@ -1298,242 +826,8 @@ fn review_panel_snapshots_stages_and_unstages_a_real_repo(cx: &mut TestAppContex
                     .iter()
                     .any(|file| file.path == "a.txt" && !file.staged)
             );
-
-            workspace.set_all_review_staged(true, cx);
-            assert!(
-                workspace
-                    .review_status()
-                    .expect("stage-all snapshot")
-                    .files
-                    .iter()
-                    .all(|file| file.staged)
-            );
-            workspace.set_all_review_staged(false, cx);
-            assert!(
-                workspace
-                    .review_status()
-                    .expect("unstage-all snapshot")
-                    .files
-                    .iter()
-                    .all(|file| !file.staged)
-            );
         })
         .expect("workspace window");
-}
-
-#[gpui_kit::test]
-fn review_mixed_status_distinguishes_untracked_and_counts_each_path_once(cx: &mut TestAppContext) {
-    cx.update(gpui_kit::init);
-    let dir = tempfile::TempDir::new().expect("temp dir");
-    let root = dir.path();
-    let repo = seed_repo(root);
-    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, test_data(root)));
-    handle
-        .update(cx, |workspace, _, cx| {
-            workspace.update_setting(json!({ "locale": "en" }), cx);
-            workspace.grant_project(&repo, cx);
-            std::fs::write(repo.join("a.txt"), "line1\nstaged\n").expect("staged edit");
-            std::fs::write(repo.join("b.txt"), "untracked\n").expect("untracked fixture");
-            workspace.stage_path("a.txt", true, cx);
-            std::fs::write(repo.join("a.txt"), "line1\nstaged\nworktree\n")
-                .expect("mixed worktree edit");
-            workspace.refresh_review();
-            let status = workspace.review_status().expect("mixed Git status");
-            assert_eq!(status.files.len(), 3);
-            assert!(
-                status
-                    .files
-                    .iter()
-                    .filter(|file| file.path == "a.txt")
-                    .all(|file| !file.untracked)
-            );
-            assert!(
-                status
-                    .files
-                    .iter()
-                    .any(|file| { file.path == "b.txt" && !file.staged && file.untracked })
-            );
-            let state = snapshot(workspace, cx);
-            assert_eq!(
-                state["summary"]["changedFiles"]
-                    .as_array()
-                    .expect("summary paths")
-                    .len(),
-                3
-            );
-            assert_eq!(state["overviewBadges"]["review"], 2);
-            assert_eq!(state["review"]["undoablePaths"], json!(["a.txt"]));
-            workspace.set_right_pane("review", cx);
-        })
-        .expect("mixed Git state");
-    draw_frame(cx, handle.into());
-    handle
-        .update(cx, |_, window, _| {
-            let count = window
-                .try_find("review-unstaged-count")
-                .and_then(|element| element.label().map(ToString::to_string));
-            assert_eq!(count.as_deref(), Some("Unstaged 2"));
-        })
-        .expect("mixed status UI");
-}
-
-#[gpui_kit::test]
-fn summary_renders_latest_reply_todos_and_changed_file_badges(cx: &mut TestAppContext) {
-    cx.update(gpui_kit::init);
-    let dir = tempfile::TempDir::new().expect("temp dir");
-    let root = dir.path();
-    let repo = seed_repo(root);
-    let home = root.join("home");
-    let bucket = home.join(".omp/agent/sessions/-repo");
-    let session = write_session(
-        &bucket,
-        "2026-04-02T00-00-00-000Z_019fdf24-dddd-7000-8000-000000000710.jsonl",
-        "Summary parity",
-        "2026-04-02T00:00:00.000Z",
-        "summarize the plan",
-        "latest useful reply",
-        &repo,
-    );
-    let todo = json!({
-        "type": "message",
-        "id": "todo-1",
-        "parentId": "a1",
-        "timestamp": "2026-04-02T00:01:00.000Z",
-        "message": {
-            "role": "toolResult",
-            "toolName": "todo",
-            "content": [{
-                "type": "text",
-                "text": "  Implement:\n    - [X] Load reply\n    - [ ] Show diff (in progress)\n"
-            }],
-        },
-    });
-    let mut source = std::fs::read_to_string(&session).expect("session source");
-    source.push_str(&serde_json::to_string(&todo).expect("todo json"));
-    source.push('\n');
-    std::fs::write(&session, source).expect("append todo");
-    std::fs::write(repo.join("a.txt"), "line1\nline2\n").expect("edit");
-
-    let store = open_store(root);
-    let sessions = omp_core::sessions::list_sessions(&store, &home, false, None);
-    drop(store);
-    let mut data = test_data(root);
-    data.home_dir = home;
-    data.sessions = sessions;
-    let handle = cx.open_window(size(px(1400.0), px(900.0)), |window, cx| {
-        Workspace::new(window, cx, data)
-    });
-    handle
-        .update(cx, |workspace, _, cx| {
-            workspace.grant_project(&repo, cx);
-            workspace.select_session(0, cx);
-            workspace.set_right_pane("summary", cx);
-            let state = snapshot(workspace, cx);
-            assert_eq!(state["summary"]["latestReply"], "latest useful reply");
-            assert_eq!(state["summary"]["todoPhases"][0]["name"], "Implement");
-            assert_eq!(
-                state["summary"]["todoPhases"][0]["tasks"][1]["status"],
-                "inProgress"
-            );
-            assert_eq!(state["summary"]["changedFiles"][0]["path"], "a.txt");
-            assert_eq!(state["overviewBadges"]["review"], 1);
-            assert_eq!(state["overviewBadges"]["subagents"], "0/0");
-        })
-        .expect("summary state");
-    draw_frame(cx, handle.into());
-    handle
-        .update(cx, |_, window, _| {
-            assert!(window.try_find("summary-latest-reply").is_some());
-            assert!(window.try_find("summary-todo-task").is_some());
-            assert!(window.try_find("summary-changed-files").is_some());
-        })
-        .expect("summary rendering");
-}
-
-#[gpui_kit::test]
-fn review_expansion_bounds_and_confirmed_undo_use_real_git_state(cx: &mut TestAppContext) {
-    cx.update(gpui_kit::init);
-    let dir = tempfile::TempDir::new().expect("temp dir");
-    let root = dir.path();
-    let repo = seed_repo(root);
-    let oversized = (0..5_000)
-        .map(|line| format!("line {line}\n"))
-        .collect::<String>();
-    std::fs::write(repo.join("a.txt"), &oversized).expect("large edit");
-
-    let mut data = test_data(root);
-    data.home_dir = root.join("home");
-    std::fs::create_dir_all(&data.home_dir).expect("home");
-    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
-    handle
-        .update(cx, |workspace, _, cx| {
-            workspace.grant_project(&repo, cx);
-            workspace.refresh_review();
-            workspace.toggle_review_diff("a.txt", false, cx);
-            let state = snapshot(workspace, cx);
-            assert_eq!(state["review"]["expanded"][0]["path"], "a.txt");
-            assert_eq!(state["review"]["undoablePaths"], json!(["a.txt"]));
-            assert_eq!(state["review"]["expanded"][0]["lines"], 4_000);
-            assert_eq!(
-                state["review"]["expanded"][0]["truncatedByLines"],
-                json!(true)
-            );
-            workspace.set_review_diff_mode("a.txt", false, "split", cx);
-            assert_eq!(
-                snapshot(workspace, cx)["review"]["expanded"][0]["mode"],
-                "split"
-            );
-
-            // Undo is armed first: cancelling leaves the worktree byte-exact.
-            workspace.request_review_undo("a.txt", cx);
-            assert_eq!(
-                snapshot(workspace, cx)["review"]["undoConfirmation"],
-                "a.txt"
-            );
-            assert_eq!(
-                std::fs::read_to_string(repo.join("a.txt")).expect("edit"),
-                oversized
-            );
-            workspace.cancel_review_undo(cx);
-            assert_eq!(
-                std::fs::read_to_string(repo.join("a.txt")).expect("edit"),
-                oversized
-            );
-            workspace.request_review_undo("a.txt", cx);
-            workspace.confirm_review_undo(cx);
-            assert_eq!(
-                std::fs::read_to_string(repo.join("a.txt")).expect("restored"),
-                "line1\n"
-            );
-
-            let untracked = repo.join("untracked.txt");
-            std::fs::write(&untracked, b"keep these exact bytes\n").expect("untracked edit");
-            workspace.refresh_review();
-            assert_eq!(
-                snapshot(workspace, cx)["review"]["undoablePaths"],
-                json!([])
-            );
-            workspace.request_review_undo("untracked.txt", cx);
-            assert_eq!(
-                snapshot(workspace, cx)["review"]["undoConfirmation"],
-                json!(null)
-            );
-            assert_eq!(
-                std::fs::read(&untracked).expect("untracked bytes"),
-                b"keep these exact bytes\n"
-            );
-        })
-        .expect("review diff and undo");
-
-    let lines = "x\n".repeat(4_100);
-    let bounded = bound_review_diff(&lines);
-    assert_eq!(bounded.lines, 4_000);
-    assert!(bounded.truncated_by_lines);
-    let bytes = "é".repeat(2 * 1024 * 1024);
-    let bounded = bound_review_diff(&bytes);
-    assert!(bounded.text.len() <= 2 * 1024 * 1024);
-    assert!(bounded.truncated_by_bytes);
-    assert!(std::str::from_utf8(bounded.text.as_bytes()).is_ok());
 }
 
 #[gpui_kit::test]
@@ -2147,8 +1441,9 @@ fn seed_project(root: &Path) -> PathBuf {
     project
 }
 
+/// The Files pane lists a granted project's entries, directories first.
 #[gpui_kit::test]
-fn open_file_launcher_destination_lists_a_granted_project(cx: &mut TestAppContext) {
+fn files_pane_lists_a_granted_project(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let dir = tempfile::TempDir::new().expect("temp dir");
     let root = dir.path();
@@ -2201,208 +1496,6 @@ fn subagents_pane_reports_an_empty_runtime_list(cx: &mut TestAppContext) {
             );
         })
         .expect("workspace window");
-}
-
-#[gpui_kit::test]
-fn runtime_resets_from_new_session_and_project_removal_clear_subagents(cx: &mut TestAppContext) {
-    cx.update(gpui_kit::init);
-    let dir = tempfile::TempDir::new().expect("temp dir");
-    let root = dir.path();
-    let (home, _, _) = seed_two_sessions(root);
-    let project = root.join("project");
-    std::fs::create_dir_all(&project).expect("project");
-    let store = open_store(root);
-    let sessions = omp_core::sessions::list_sessions(&store, &home, false, None);
-    drop(store);
-    let mut data = test_data(root);
-    data.home_dir = home;
-    data.sessions = sessions;
-    let handle = cx.open_window(size(px(1400.0), px(900.0)), |window, cx| {
-        Workspace::new(window, cx, data)
-    });
-    handle
-        .update(cx, |workspace, _, cx| {
-            workspace.grant_project(&project, cx);
-            workspace.select_session(0, cx);
-            workspace.set_right_pane("subagents", cx);
-            workspace.apply_subagents_response(&json!({
-                "success": true,
-                "data": { "subagents": [{ "id": "old", "status": "running" }] }
-            }));
-            workspace.select_subagent("old", cx);
-            assert_eq!(
-                snapshot(workspace, cx)["overviewBadges"]["subagents"],
-                "1/1"
-            );
-        })
-        .expect("stale roster fixture");
-    draw_frame(cx, handle.into());
-    click_element(cx, handle, "sidebar-new-session");
-    handle
-        .update(cx, |workspace, _, cx| {
-            let state = snapshot(workspace, cx);
-            assert_eq!(state["subagents"], json!([]));
-            assert_eq!(state["subagentPanel"]["loaded"], json!(true));
-            assert_eq!(state["subagentPanel"]["selected"], json!(null));
-            assert_eq!(state["subagentPanel"]["error"], json!(null));
-            assert_eq!(state["overviewBadges"]["subagents"], "0/0");
-
-            // Recreate stale state in a selected project session, then remove
-            // the grant that hides that session and stops its runtime.
-            workspace.select_session(0, cx);
-            workspace.apply_subagents_response(&json!({
-                "success": true,
-                "data": { "subagents": [{ "id": "removed", "status": "working" }] }
-            }));
-            workspace.select_subagent("removed", cx);
-            let project_id = workspace.projects()[0].id.clone();
-            workspace.remove_project(&project_id, cx);
-            let state = snapshot(workspace, cx);
-            assert_eq!(state["selectedSession"], json!(null));
-            assert_eq!(state["subagents"], json!([]));
-            assert_eq!(state["subagentPanel"]["loaded"], json!(true));
-            assert_eq!(state["subagentPanel"]["selected"], json!(null));
-            assert_eq!(state["subagentPanel"]["error"], json!(null));
-            assert_eq!(state["overviewBadges"]["subagents"], "0/0");
-        })
-        .expect("runtime replacement cleanup");
-}
-
-#[gpui_kit::test]
-fn subagents_filter_detail_badges_and_center_pin_follow_reported_state(cx: &mut TestAppContext) {
-    cx.update(gpui_kit::init);
-    let dir = tempfile::TempDir::new().expect("temp dir");
-    let root = dir.path();
-    let handle = cx.open_window(size(px(1400.0), px(900.0)), |window, cx| {
-        Workspace::new(window, cx, test_data(root))
-    });
-    handle
-        .update(cx, |workspace, _, cx| {
-            workspace.set_right_pane("subagents", cx);
-            workspace.apply_subagents_response(&json!({
-                "success": true,
-                "data": { "subagents": [
-                    { "id": "one", "name": "Researcher", "status": "running", "task": "inspect" },
-                    { "id": "two", "name": "Reviewer", "status": "completed" },
-                    { "id": "three", "name": "Writer", "status": "working" },
-                    { "id": "four", "name": "Failed worker", "status": "error" },
-                ] }
-            }));
-            let state = snapshot(workspace, cx);
-            assert_eq!(state["subagents"].as_array().expect("roster").len(), 4);
-            assert_eq!(state["overviewBadges"]["subagents"], "2/4");
-            assert_eq!(
-                state["subagentPanel"]["visible"]
-                    .as_array()
-                    .expect("all")
-                    .len(),
-                4
-            );
-
-            workspace.set_subagent_filter("running", cx);
-            let filtered = snapshot(workspace, cx);
-            assert_eq!(
-                filtered["subagentPanel"]["visible"]
-                    .as_array()
-                    .expect("running")
-                    .len(),
-                2
-            );
-            workspace.select_subagent("one", cx);
-            assert_eq!(snapshot(workspace, cx)["subagentPanel"]["selected"], "one");
-            assert_eq!(
-                snapshot(workspace, cx)["subagentPanel"]["capabilities"],
-                json!({ "messagePagination": false, "steer": false, "cancel": false })
-            );
-
-            workspace.toggle_subagents_pin(cx);
-            assert_eq!(
-                snapshot(workspace, cx)["subagentPanel"]["centerPinned"],
-                json!(true)
-            );
-            // Pinning has just refreshed the no-runtime roster to empty. A
-            // later reported roster populates this isolated UI fixture.
-            workspace.apply_subagents_response(&json!({
-                "success": true,
-                "data": { "subagents": [
-                    { "id": "one", "name": "Researcher", "status": "running", "task": "inspect" },
-                    { "id": "two", "name": "Reviewer", "status": "completed" },
-                    { "id": "three", "name": "Writer", "status": "working" },
-                    { "id": "four", "name": "Failed worker", "status": "error" },
-                ] }
-            }));
-            workspace.set_subagent_filter("running", cx);
-            workspace.select_subagent("one", cx);
-        })
-        .expect("subagent state");
-    draw_frame(cx, handle.into());
-    handle
-        .update(cx, |_, window, _| {
-            assert!(window.try_find("subagents-center-pane").is_some());
-            assert!(window.try_find("subagent-detail").is_some());
-            assert!(window.try_find("subagents-rpc-boundary").is_some());
-        })
-        .expect("subagent center split");
-    handle
-        .update(cx, |workspace, _, cx| {
-            workspace.toggle_subagents_pin(cx);
-            workspace.apply_subagents_response(&json!({
-                "success": false,
-                "error": { "message": "roster failed" }
-            }));
-            let state = snapshot(workspace, cx);
-            assert_eq!(state["subagentPanel"]["error"], "roster failed");
-            assert_eq!(state["overviewBadges"]["subagents"], "0/0");
-        })
-        .expect("subagent error banner");
-}
-
-#[gpui_kit::test]
-fn subagents_refresh_after_turn_and_for_a_pinned_session_switch(cx: &mut TestAppContext) {
-    cx.update(gpui_kit::init);
-    let dir = tempfile::TempDir::new().expect("temp dir");
-    let (_, mut data) = turn_workspace_data(dir.path());
-    data.omp_executable = install_fixture_omp(dir.path());
-    let handle = cx.open_window(size(px(1400.0), px(900.0)), |window, cx| {
-        Workspace::new(window, cx, data)
-    });
-    handle
-        .update(cx, |workspace, window, cx| {
-            workspace.select_session(0, cx);
-            assert_eq!(
-                snapshot(workspace, cx)["overviewBadges"]["subagents"],
-                "0/0"
-            );
-            workspace.set_right_pane("subagents", cx);
-            let initial = snapshot(workspace, cx);
-            assert_eq!(initial["subagents"], json!([]));
-            let composer = workspace.composer_entity().clone();
-            composer.update(cx, |input, cx| {
-                input.set_value("[subagents] lifecycle", window, cx)
-            });
-            workspace.send_prompt(window, cx);
-            workspace.drain_agent_events();
-            let completed = snapshot(workspace, cx);
-            assert_eq!(completed["subagents"][0]["status"], "completed");
-            assert_eq!(completed["overviewBadges"]["subagents"], "0/1");
-
-            workspace.set_right_pane("review", cx);
-            workspace.toggle_subagents_pin(cx);
-            workspace.select_session(1, cx);
-            let switched = snapshot(workspace, cx);
-            assert_eq!(switched["rightPane"], "review");
-            assert_eq!(switched["subagentPanel"]["loaded"], true);
-            assert_eq!(switched["subagentPanel"]["selected"], json!(null));
-            assert_eq!(switched["subagents"], json!([]));
-            assert_eq!(switched["overviewBadges"]["subagents"], "0/0");
-        })
-        .expect("live roster and pinned session switch");
-    draw_frame(cx, handle.into());
-    handle
-        .update(cx, |_, window, _| {
-            assert!(window.try_find("subagents-center-pane").is_some());
-        })
-        .expect("pinned pane next to Review");
 }
 
 /// Live Voice opens on its idle phase while no runtime can carry the audio.
@@ -3531,389 +2624,6 @@ fn escape_dismisses_one_layer_then_is_idempotent(cx: &mut TestAppContext) {
     assert_eq!(read(cx), idle);
 }
 
-#[gpui_kit::test]
-fn transcript_search_scopes_navigates_scrolls_and_reveals_real_rows(cx: &mut TestAppContext) {
-    cx.update(gpui_kit::init);
-    let dir = tempfile::TempDir::new().expect("temp dir");
-    let handle = cx.open_window(size(px(1100.0), px(500.0)), |window, cx| {
-        Workspace::new(window, cx, search_workspace_data(dir.path()))
-    });
-    handle
-        .update(cx, |workspace, _, cx| workspace.select_session(0, cx))
-        .expect("load tall transcript");
-    draw_frame(cx, handle.into());
-    handle
-        .update(cx, |_, window, _| {
-            assert!(window.try_find("thinking-body-m6:").is_none());
-        })
-        .expect("thinking starts collapsed");
-    let composer = handle
-        .update(cx, |workspace, _, _| workspace.composer_entity().clone())
-        .expect("composer");
-    cx.update(|cx| {
-        cx.update_window(handle.into(), |_, window, cx| {
-            let focus = composer.read(cx).focus_handle(cx);
-            window.focus(&focus, cx);
-            window.press("cmd-f", cx);
-            window.input("   ", cx);
-        })
-        .expect("open search with a blank query");
-    });
-    let state = handle
-        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
-        .expect("blank search");
-    assert_eq!(state["transcriptSearch"]["count"], 0);
-    assert_eq!(state["transcriptSearch"]["results"], json!([]));
-    assert_eq!(state["transcriptSearch"]["activeMatch"], Value::Null);
-
-    let search = handle
-        .update(cx, |workspace, _, _| workspace.transcript_search_entity())
-        .expect("search entity")
-        .expect("search open");
-    handle
-        .update(cx, |_, window, cx| {
-            search.update(cx, |input, cx| input.set_value("", window, cx))
-        })
-        .expect("clear blank query");
-    cx.update(|cx| {
-        cx.update_window(handle.into(), |_, window, cx| window.input("needle", cx))
-            .expect("type real query");
-    });
-    let state = handle
-        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
-        .expect("query search");
-    assert_eq!(state["transcriptSearch"]["count"], 5);
-    assert_eq!(
-        state["transcriptSearch"]["results"],
-        json!(["m1", "m3", "m4", "m6", "m7"])
-    );
-    assert_eq!(state["transcriptSearch"]["activeMatch"], "m1");
-
-    cx.update(|cx| {
-        cx.update_window(handle.into(), |_, window, cx| {
-            window.press("enter", cx);
-        })
-        .expect("advance result");
-    });
-    let state = handle
-        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
-        .expect("next");
-    assert_eq!(state["transcriptSearch"]["activeMatch"], "m3");
-    cx.update(|cx| {
-        cx.update_window(handle.into(), |_, window, cx| window.input(" ", cx))
-            .expect("change query after moving");
-    });
-    let state = handle
-        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
-        .expect("query reset");
-    assert_eq!(state["transcriptSearch"]["activeMatch"], "m1");
-    cx.update(|cx| {
-        cx.update_window(handle.into(), |_, window, cx| window.press("backspace", cx))
-            .expect("restore query spelling");
-    });
-    cx.update(|cx| {
-        cx.update_window(handle.into(), |_, window, cx| {
-            window.press("shift-enter", cx);
-            window.press("enter", cx);
-        })
-        .expect("wrap backward and forward");
-    });
-    let state = handle
-        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
-        .expect("wrap");
-    assert_eq!(state["transcriptSearch"]["activeMatch"], "m1");
-    click_element(cx, handle, "transcript-search-next");
-    let state = handle
-        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
-        .expect("button next");
-    assert_eq!(state["transcriptSearch"]["activeMatch"], "m3");
-    click_element(cx, handle, "transcript-search-previous");
-    let state = handle
-        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
-        .expect("button back");
-    assert_eq!(state["transcriptSearch"]["activeMatch"], "m1");
-
-    click_element(cx, handle, "transcript-search-scope-tools");
-    let state = handle
-        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
-        .expect("tools scope");
-    assert_eq!(state["transcriptSearch"]["results"], json!(["m3", "m7"]));
-    assert_eq!(state["transcriptSearch"]["index"], 0);
-    click_element(cx, handle, "transcript-search-next");
-    let state = handle
-        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
-        .expect("tools next");
-    assert_eq!(state["transcriptSearch"]["activeMatch"], "m7");
-
-    click_element(cx, handle, "transcript-search-scope-messages");
-    let before_stream = handle
-        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
-        .expect("messages scope");
-    assert_eq!(
-        before_stream["transcriptSearch"]["results"],
-        json!(["m1", "m4"])
-    );
-    assert_eq!(before_stream["transcriptSearch"]["index"], 0);
-    handle
-        .update(cx, |workspace, _, cx| {
-            workspace.apply_transcript_delta("text_delta", " needle streaming", cx);
-        })
-        .expect("stream new match");
-    let after_stream = handle
-        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
-        .expect("stream count");
-    assert_eq!(after_stream["transcriptSearch"]["count"], 3);
-    assert_eq!(after_stream["transcriptSearch"]["activeMatch"], "m1");
-    assert_eq!(after_stream["transcriptAtBottom"], false);
-
-    click_element(cx, handle, "transcript-search-scope-thinking");
-    draw_frame(cx, handle.into());
-    let state = handle
-        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
-        .expect("thinking reveal");
-    assert_eq!(state["transcriptSearch"]["results"], json!(["m6"]));
-    assert_eq!(state["transcriptSearch"]["scrollChildren"], 10);
-    assert_eq!(state["transcriptSearch"]["activeRow"], 6);
-    assert_eq!(state["transcriptSearch"]["manualThinking"], json!([]));
-    assert_eq!(state["transcriptSearch"]["manualToolResults"], json!([]));
-    assert_eq!(
-        state["transcriptSearch"]["revealedParts"],
-        json!(["m6:"]),
-        "{state}"
-    );
-    let bounds = state["transcriptSearch"]["activeBounds"]
-        .as_array()
-        .expect("active row bounds");
-    let viewport = state["transcriptSearch"]["viewport"]
-        .as_array()
-        .expect("viewport");
-    let scroll_offset_y = state["transcriptSearch"]["scrollOffset"]
-        .as_f64()
-        .expect("scroll offset");
-    // Scroll child bounds are content coordinates. Compare them after applying the current offset.
-    let row_top = bounds[1].as_f64().expect("row top") + scroll_offset_y;
-    let row_bottom = row_top + bounds[3].as_f64().expect("row height");
-    let viewport_top = viewport[1].as_f64().expect("viewport top");
-    let viewport_bottom = viewport_top + viewport[3].as_f64().expect("viewport height");
-    assert!(
-        row_bottom > viewport_top && row_top < viewport_bottom,
-        "later match was not revealed: {state}"
-    );
-    handle
-        .update(cx, |_, window, _| {
-            assert!(window.try_find("thinking-body-m6:").is_some());
-        })
-        .expect("hidden thinking body drawn");
-
-    cx.executor().advance_clock(Duration::from_millis(130));
-    draw_frame(cx, handle.into());
-    click_element(cx, handle, "transcript-jump-latest");
-    let state = handle
-        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
-        .expect("jump with an active search match");
-    assert_eq!(state["transcriptAtBottom"], true);
-    handle
-        .update(cx, |_, window, _| {
-            assert!(window.try_find("transcript-jump-latest").is_none());
-        })
-        .expect("jump stays dismissed under active search");
-
-    handle
-        .update(cx, |_, window, cx| {
-            search.update(cx, |input, cx| input.set_value(" ", window, cx))
-        })
-        .expect("blank active query");
-    draw_frame(cx, handle.into());
-    handle
-        .update(cx, |_, window, _| {
-            assert!(window.try_find("thinking-body-m6:").is_none());
-        })
-        .expect("blank query collapses transient reveal");
-    let state = handle
-        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
-        .expect("blank reveal state");
-    assert_eq!(state["transcriptSearch"]["count"], 0);
-    assert_eq!(state["transcriptSearch"]["manualThinking"], json!([]));
-
-    cx.update(|cx| {
-        cx.update_window(handle.into(), |_, window, cx| {
-            window.press("escape", cx);
-            assert_eq!(window.focused(cx), Some(composer.read(cx).focus_handle(cx)));
-        })
-        .expect("close search and restore composer");
-    });
-    let state = handle
-        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
-        .expect("closed search");
-    assert_eq!(state["transcriptSearch"], Value::Null);
-}
-
-#[gpui_kit::test]
-fn transcript_search_restores_workspace_focus_without_a_previous_element(cx: &mut TestAppContext) {
-    cx.update(gpui_kit::init);
-    let dir = tempfile::TempDir::new().expect("temp dir");
-    let handle = cx.add_window(|window, cx| {
-        let mut workspace = Workspace::new(window, cx, test_data(dir.path()));
-        assert!(window.focused(cx).is_none());
-        workspace.open_transcript_search(window, cx);
-        workspace
-    });
-    let search = handle
-        .update(cx, |workspace, _, _| workspace.transcript_search_entity())
-        .expect("initial search entity")
-        .expect("search is open");
-    handle
-        .update(cx, |workspace, window, cx| {
-            let focused = search.read(cx).focus_handle(cx);
-            assert_eq!(window.focused(cx), Some(focused));
-            workspace.close_transcript_search(window, cx);
-            assert!(window.focused(cx).is_some());
-            assert_ne!(window.focused(cx), Some(search.read(cx).focus_handle(cx)));
-        })
-        .expect("workspace fallback focus");
-}
-
-#[gpui_kit::test]
-fn transcript_search_resets_on_view_and_new_session(cx: &mut TestAppContext) {
-    cx.update(gpui_kit::init);
-    let dir = tempfile::TempDir::new().expect("temp dir");
-    let (_, data) = turn_workspace_data(dir.path());
-    let handle = cx.open_window(size(px(1100.0), px(700.0)), |window, cx| {
-        Workspace::new(window, cx, data)
-    });
-    handle
-        .update(cx, |workspace, window, cx| {
-            workspace.open_transcript_search(window, cx);
-            assert!(workspace.transcript_search_entity().is_some());
-            workspace.set_view(AppView::Settings, cx);
-            assert!(workspace.transcript_search_entity().is_none());
-            workspace.set_view(AppView::Workspace, cx);
-            workspace.open_transcript_search(window, cx);
-            assert!(workspace.transcript_search_entity().is_some());
-        })
-        .expect("reset on Settings navigation");
-    cx.update(|cx| {
-        cx.update_window(handle.into(), |_, window, cx| {
-            window.press(
-                if cfg!(target_os = "macos") {
-                    "cmd-n"
-                } else {
-                    "ctrl-n"
-                },
-                cx,
-            );
-        })
-        .expect("open a new session");
-    });
-    handle
-        .update(cx, |workspace, _, cx| {
-            assert!(workspace.transcript_search_entity().is_none());
-            assert_eq!(snapshot(workspace, cx)["transcript"], json!([]));
-        })
-        .expect("reset on new session");
-}
-
-/// This drives the input protocol, not a native OS IME.
-#[gpui_kit::test]
-fn transcript_search_ime_guard_blocks_enter_and_escape(cx: &mut TestAppContext) {
-    cx.update(gpui_kit::init);
-    let dir = tempfile::TempDir::new().expect("temp dir");
-    let handle = cx.open_window(size(px(1100.0), px(500.0)), |window, cx| {
-        Workspace::new(window, cx, search_workspace_data(dir.path()))
-    });
-    handle
-        .update(cx, |workspace, _, cx| workspace.select_session(0, cx))
-        .expect("transcript");
-    draw_frame(cx, handle.into());
-    cx.update(|cx| {
-        cx.update_window(handle.into(), |_, window, cx| window.press("ctrl-f", cx))
-            .expect("open search");
-    });
-    let search = handle
-        .update(cx, |workspace, _, _| workspace.transcript_search_entity())
-        .expect("entity")
-        .expect("open");
-    cx.update(|cx| {
-        cx.update_window(handle.into(), |_, window, cx| {
-            let bounds = gpui_kit::Bounds::new(point(px(0.0), px(0.0)), size(px(0.0), px(0.0)));
-            let mut input = gpui_kit::test::TestInput::new(
-                gpui_kit::ElementInputHandler::new(bounds, search.clone()),
-                window,
-            );
-            input.compose_text(None, "needle", Some(6..6), cx);
-            assert!(input.marked_text_range(cx).is_some());
-            window.press("enter", cx);
-            window.press("escape", cx);
-        })
-        .expect("composition keys");
-    });
-    let state = handle
-        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
-        .expect("guarded");
-    assert_eq!(state["transcriptSearch"]["activeMatch"], "m1");
-    assert_ne!(state["transcriptSearch"], Value::Null);
-
-    cx.update(|cx| {
-        cx.update_window(handle.into(), |_, window, cx| {
-            let bounds = gpui_kit::Bounds::new(point(px(0.0), px(0.0)), size(px(0.0), px(0.0)));
-            let mut input = gpui_kit::test::TestInput::new(
-                gpui_kit::ElementInputHandler::new(bounds, search.clone()),
-                window,
-            );
-            input.unmark_text(cx);
-            window.press("enter", cx);
-        })
-        .expect("settle-window Enter");
-    });
-    let state = handle
-        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
-        .expect("settle guarded");
-    assert_eq!(state["transcriptSearch"]["activeMatch"], "m1");
-    std::thread::sleep(Duration::from_millis(IME_POST_COMPOSITION_GUARD_MS));
-    cx.update(|cx| {
-        cx.update_window(handle.into(), |_, window, cx| window.press("enter", cx))
-            .expect("post-guard Enter");
-    });
-    let state = handle
-        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
-        .expect("post guard");
-    assert_eq!(state["transcriptSearch"]["activeMatch"], "m3");
-}
-
-#[gpui_kit::test]
-fn transcript_search_suppresses_the_native_browser_until_it_closes(cx: &mut TestAppContext) {
-    cx.update(gpui_kit::init);
-    let dir = tempfile::TempDir::new().expect("temp dir");
-    let handle = cx.open_window(size(px(1200.0), px(800.0)), |window, cx| {
-        Workspace::new(window, cx, test_data(dir.path()))
-    });
-    handle
-        .update(cx, |workspace, _, cx| {
-            workspace.set_right_pane("browser", cx)
-        })
-        .expect("browser");
-    draw_frame(cx, handle.into());
-    let before = handle
-        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
-        .expect("browser before");
-    assert_eq!(before["browser"]["visible"], true);
-    click_element(cx, handle, "transcript-search-open");
-    draw_frame(cx, handle.into());
-    let during = handle
-        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
-        .expect("browser during");
-    assert_eq!(during["browser"]["visible"], false);
-    cx.update(|cx| {
-        cx.update_window(handle.into(), |_, window, cx| window.press("escape", cx))
-            .expect("close search");
-    });
-    draw_frame(cx, handle.into());
-    let after = handle
-        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
-        .expect("browser after");
-    assert_eq!(after["browser"]["visible"], true);
-}
-
 /// This is not native-IME proof.
 #[gpui_kit::test]
 fn palette_ime_guard_blocks_commit_keys_through_the_settle_boundary(cx: &mut TestAppContext) {
@@ -4105,390 +2815,6 @@ fn turn_diff_is_empty_before_a_turn_and_reports_a_seeded_change(cx: &mut TestApp
     assert_eq!(snapshot["deletions"], 0);
 }
 
-/// A granted repository and two real session records for turn-card scenarios.
-/// Every test edits only this temporary repository and drives the production
-/// baseline capture/finish path around its writes.
-fn turn_workspace_data(root: &Path) -> (PathBuf, WorkspaceData) {
-    let repo = seed_repo(root);
-    let home = root.join("home");
-    let bucket = home.join(".omp/agent/sessions/-repo");
-    write_session(
-        &bucket,
-        "2026-04-01T00-00-00-000Z_019fdf24-eeee-7000-8000-000000000001.jsonl",
-        "Turn Card",
-        "2026-04-01T02:00:00.000Z",
-        "turn prompt",
-        "turn reply",
-        &repo,
-    );
-    write_session(
-        &bucket,
-        "2026-04-01T00-00-00-000Z_019fdf24-eeee-7000-8000-000000000002.jsonl",
-        "Other Session",
-        "2026-04-01T01:00:00.000Z",
-        "other prompt",
-        "other reply",
-        &repo,
-    );
-    let mut store = open_store(root);
-    omp_core::projects::grant_project(
-        &mut store,
-        &home,
-        Platform::current(),
-        repo.to_str().expect("repo path"),
-    )
-    .expect("grant");
-    let mut data = test_data(root);
-    data.home_dir = home.clone();
-    data.projects = omp_core::projects::list_projects(&store);
-    data.sessions = omp_core::sessions::list_sessions(&store, &home, false, None);
-    drop(store);
-    (repo, data)
-}
-
-#[gpui_kit::test]
-fn turn_card_expands_navigates_dismisses_and_obeys_settings(cx: &mut TestAppContext) {
-    cx.update(gpui_kit::init);
-    let dir = tempfile::TempDir::new().expect("temp dir");
-    let (repo, data) = turn_workspace_data(dir.path());
-    let handle = cx.open_window(size(px(1280.0), px(800.0)), |window, cx| {
-        Workspace::new(window, cx, data)
-    });
-    handle
-        .update(cx, |workspace, _, cx| {
-            workspace.select_session(0, cx);
-            workspace.begin_turn();
-            assert_eq!(
-                snapshot(workspace, cx)["turnCard"]["baselinePending"],
-                json!(true)
-            );
-            std::fs::write(repo.join("a.txt"), "line1\nturn edit\n").expect("turn edit");
-            workspace.finish_turn();
-            let state = snapshot(workspace, cx);
-            assert_eq!(state["turnCard"]["state"], "collapsed");
-            assert_eq!(state["turnCard"]["visible"], true);
-            assert_eq!(state["turnCard"]["baselinePending"], false);
-            assert_eq!(state["turnCard"]["changes"]["files"][0]["kind"], "tracked");
-            assert_eq!(state["turnCard"]["changes"]["files"][0]["additions"], 1);
-        })
-        .expect("finish seeded turn");
-
-    click_element(cx, handle, "turn-card-toggle");
-    handle
-        .update(cx, |workspace, _, cx| {
-            assert_eq!(snapshot(workspace, cx)["turnCard"]["state"], "expanded");
-        })
-        .expect("expanded card");
-    click_element(cx, handle, "turn-file-0");
-    handle
-        .update(cx, |workspace, _, cx| {
-            let state = snapshot(workspace, cx);
-            assert_eq!(state["rightPane"], "review");
-            assert_eq!(state["review"]["selectedPath"], "a.txt");
-            workspace.update_setting(json!({ "showFileChangesPopup": false }), cx);
-            let hidden = snapshot(workspace, cx);
-            assert_eq!(hidden["turnCard"]["visible"], false);
-            assert_eq!(hidden["turnCard"]["state"], "expanded");
-            assert_eq!(
-                hidden["turnCard"]["changes"]["files"]
-                    .as_array()
-                    .map(Vec::len),
-                Some(1)
-            );
-            workspace.update_setting(json!({ "showFileChangesPopup": true }), cx);
-            let restored = snapshot(workspace, cx);
-            assert_eq!(restored["turnCard"]["visible"], true);
-            assert_eq!(restored["turnCard"]["state"], "expanded");
-        })
-        .expect("settings suppression preserves card data");
-
-    click_element(cx, handle, "turn-dismiss");
-    handle
-        .update(cx, |workspace, _, cx| {
-            workspace.refresh_review();
-            workspace.toggle_turn_card(cx);
-            let dismissed = snapshot(workspace, cx);
-            assert_eq!(dismissed["turnCard"]["state"], "dismissed");
-            assert_eq!(dismissed["turnCard"]["visible"], false);
-            assert_eq!(
-                dismissed["turnCard"]["changes"]["files"]
-                    .as_array()
-                    .map(Vec::len),
-                Some(1)
-            );
-            workspace.begin_turn();
-            let next = snapshot(workspace, cx);
-            assert_eq!(next["turnCard"]["state"], "collapsed");
-            assert_eq!(next["turnCard"]["visible"], false);
-            assert_eq!(next["turnCard"]["baselinePending"], true);
-            assert_eq!(next["turnCard"]["changes"]["files"], json!([]));
-        })
-        .expect("dismissal and next-turn reset");
-}
-
-#[gpui_kit::test]
-fn turn_card_confirmed_undo_restores_tracked_and_removes_created_untracked(
-    cx: &mut TestAppContext,
-) {
-    cx.update(gpui_kit::init);
-    let dir = tempfile::TempDir::new().expect("temp dir");
-    let (repo, data) = turn_workspace_data(dir.path());
-    let handle = cx.open_window(size(px(1280.0), px(800.0)), |window, cx| {
-        Workspace::new(window, cx, data)
-    });
-    handle
-        .update(cx, |workspace, _, cx| {
-            workspace.select_session(0, cx);
-            std::fs::write(repo.join("a.txt"), "line1\npre-turn dirty\n").expect("dirty file");
-            workspace.begin_turn();
-            std::fs::write(repo.join("a.txt"), "line1\npre-turn dirty\nturn tracked\n")
-                .expect("tracked edit");
-            std::fs::write(repo.join("b.txt"), "created during turn\n").expect("new file");
-            workspace.finish_turn();
-            let state = snapshot(workspace, cx);
-            assert_eq!(state["turnCard"]["changes"]["files"][0]["kind"], "tracked");
-            assert_eq!(
-                state["turnCard"]["changes"]["files"][1]["kind"],
-                "createdUntracked"
-            );
-        })
-        .expect("tracked and untracked turn changes");
-    click_element(cx, handle, "turn-card-toggle");
-    click_element(cx, handle, "turn-file-undo-0");
-    handle
-        .update(cx, |workspace, _, cx| {
-            let pending = snapshot(workspace, cx);
-            assert_eq!(pending["turnCard"]["state"], "confirmingUndo");
-            assert_eq!(pending["turnCard"]["undoTarget"]["path"], "a.txt");
-        })
-        .expect("per-file confirmation");
-    click_element(cx, handle, "turn-undo-cancel");
-    assert_eq!(
-        std::fs::read_to_string(repo.join("a.txt")).expect("tracked after cancel"),
-        "line1\npre-turn dirty\nturn tracked\n"
-    );
-    assert_eq!(
-        std::fs::read_to_string(repo.join("b.txt")).expect("untracked after cancel"),
-        "created during turn\n"
-    );
-
-    click_element(cx, handle, "turn-file-undo-0");
-    click_element(cx, handle, "turn-undo-confirm");
-    handle
-        .update(cx, |workspace, _, cx| {
-            assert_eq!(
-                std::fs::read_to_string(repo.join("a.txt")).expect("restored tracked"),
-                "line1\n"
-            );
-            assert_eq!(
-                std::fs::read_to_string(repo.join("b.txt")).expect("other file survives"),
-                "created during turn\n"
-            );
-            let state = snapshot(workspace, cx);
-            assert_eq!(
-                state["turnCard"]["changes"]["files"]
-                    .as_array()
-                    .map(Vec::len),
-                Some(1)
-            );
-            assert_eq!(state["turnCard"]["changes"]["files"][0]["path"], "b.txt");
-        })
-        .expect("confirmed per-file undo");
-    click_element(cx, handle, "turn-undo");
-    click_element(cx, handle, "turn-undo-confirm");
-    handle
-        .update(cx, |workspace, _, cx| {
-            assert!(!repo.join("b.txt").exists());
-            assert_eq!(
-                std::fs::read_to_string(repo.join("a.txt")).expect("tracked stays restored"),
-                "line1\n"
-            );
-            let state = snapshot(workspace, cx);
-            assert_eq!(state["turnCard"]["changes"]["files"], json!([]));
-            assert_eq!(state["turnCard"]["visible"], false);
-        })
-        .expect("confirmed whole-turn undo");
-}
-
-#[cfg(unix)]
-#[gpui_kit::test]
-fn turn_card_idle_follow_up_gets_a_fresh_baseline(cx: &mut TestAppContext) {
-    cx.update(gpui_kit::init);
-    let dir = tempfile::TempDir::new().expect("temp dir");
-    let (repo, mut data) = turn_workspace_data(dir.path());
-    data.omp_executable = install_fixture_omp(dir.path());
-    let handle = cx.open_window(size(px(1280.0), px(800.0)), |window, cx| {
-        Workspace::new(window, cx, data)
-    });
-    handle
-        .update(cx, |workspace, window, cx| {
-            workspace.select_session(0, cx);
-            let composer = workspace.composer_entity().clone();
-            composer.update(cx, |state, cx| state.set_value("initial turn", window, cx));
-            workspace.send_prompt(window, cx);
-            std::fs::write(repo.join("a.txt"), "line1\nfirst turn\n").expect("first-turn edit");
-        })
-        .expect("send initial turn");
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        std::thread::sleep(Duration::from_millis(20));
-        let running = handle
-            .update(cx, |workspace, _, cx| {
-                workspace.drain_agent_events();
-                snapshot(workspace, cx)["running"].as_bool().unwrap_or(true)
-            })
-            .expect("drain initial turn");
-        if !running {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "initial fixture turn did not finish"
-        );
-    }
-    let composer = handle
-        .update(cx, |workspace, window, cx| {
-            let initial = snapshot(workspace, cx);
-            assert_eq!(initial["turnCard"]["baselinePending"], json!(false));
-            assert_eq!(initial["turnCard"]["changes"]["files"][0]["additions"], 1);
-            std::fs::write(repo.join("a.txt"), "line1\nfirst turn\nfollow-up turn\n")
-                .expect("follow-up edit");
-            let composer = workspace.composer_entity().clone();
-            composer.update(cx, |state, cx| {
-                state.set_value("idle follow-up", window, cx)
-            });
-            composer
-        })
-        .expect("draft idle follow-up");
-    cx.update(|cx| {
-        cx.update_window(handle.into(), |_, window, cx| {
-            let focus = composer.read(cx).focus_handle(cx);
-            window.focus(&focus, cx);
-            window.press(
-                if cfg!(target_os = "macos") {
-                    "cmd-enter"
-                } else {
-                    "ctrl-enter"
-                },
-                cx,
-            );
-        })
-        .expect("queue idle follow-up");
-    });
-    handle
-        .update(cx, |workspace, _, cx| {
-            let queued = snapshot(workspace, cx);
-            assert_eq!(queued["turnCard"]["baselinePending"], json!(true));
-            assert_eq!(queued["turnCard"]["changes"]["files"], json!([]));
-            assert_eq!(queued["turnCard"]["state"], "collapsed");
-
-            std::fs::write(
-                repo.join("a.txt"),
-                "line1\nfirst turn\nfollow-up turn\nagent output\n",
-            )
-            .expect("post-baseline agent edit");
-            workspace.finish_turn();
-            let finished = snapshot(workspace, cx);
-            assert_eq!(finished["turnCard"]["baselinePending"], json!(false));
-            assert_eq!(
-                finished["turnCard"]["changes"]["files"][0]["additions"], 1,
-                "{finished}"
-            );
-            assert_eq!(
-                finished["turnCard"]["changes"]["additions"], 1,
-                "{finished}"
-            );
-        })
-        .expect("fresh follow-up baseline");
-}
-
-#[gpui_kit::test]
-fn turn_card_uses_dirty_deltas_and_preserves_preexisting_untracked(cx: &mut TestAppContext) {
-    cx.update(gpui_kit::init);
-    let dir = tempfile::TempDir::new().expect("temp dir");
-    let (repo, data) = turn_workspace_data(dir.path());
-    let handle = cx.open_window(size(px(1280.0), px(800.0)), |window, cx| {
-        Workspace::new(window, cx, data)
-    });
-    handle
-        .update(cx, |workspace, _, cx| {
-            workspace.select_session(0, cx);
-            std::fs::write(repo.join("a.txt"), "line1\npre-turn\n").expect("dirty baseline");
-            std::fs::write(repo.join("p.txt"), "pre-existing\n").expect("pre-existing file");
-            workspace.begin_turn();
-            std::fs::write(repo.join("a.txt"), "line1\npre-turn\nturn one\nturn two\n")
-                .expect("turn growth");
-            std::fs::write(repo.join("p.txt"), "pre-existing\nturn append\n")
-                .expect("pre-existing append");
-            workspace.finish_turn();
-            let state = snapshot(workspace, cx);
-            assert_eq!(state["turnCard"]["changes"]["files"][0]["path"], "a.txt");
-            assert_eq!(state["turnCard"]["changes"]["files"][0]["additions"], 2);
-            assert_eq!(
-                state["turnCard"]["changes"]["files"][1]["kind"],
-                "preexistingUntracked"
-            );
-
-            workspace.request_turn_undo(Some("p.txt"), cx);
-            let blocked = snapshot(workspace, cx);
-            assert_eq!(blocked["turnCard"]["undoTarget"], json!(null));
-            assert_ne!(blocked["turnCard"]["error"], json!(null));
-            assert_eq!(
-                std::fs::read_to_string(repo.join("p.txt")).expect("pre-existing survives"),
-                "pre-existing\nturn append\n"
-            );
-
-            workspace.request_turn_undo(None, cx);
-            let whole_blocked = snapshot(workspace, cx);
-            assert_eq!(whole_blocked["turnCard"]["undoTarget"], json!(null));
-            assert_eq!(
-                std::fs::read_to_string(repo.join("a.txt")).expect("whole undo did not run"),
-                "line1\npre-turn\nturn one\nturn two\n"
-            );
-            assert_eq!(
-                std::fs::read_to_string(repo.join("p.txt")).expect("whole undo leaves file"),
-                "pre-existing\nturn append\n"
-            );
-        })
-        .expect("pre-existing untracked non-destructive guard");
-}
-
-#[gpui_kit::test]
-fn turn_card_clears_on_session_switch_and_ignores_finish_without_baseline(cx: &mut TestAppContext) {
-    cx.update(gpui_kit::init);
-    let dir = tempfile::TempDir::new().expect("temp dir");
-    let (repo, data) = turn_workspace_data(dir.path());
-    let handle = cx.open_window(size(px(1280.0), px(800.0)), |window, cx| {
-        Workspace::new(window, cx, data)
-    });
-    handle
-        .update(cx, |workspace, _, cx| {
-            workspace.select_session(0, cx);
-            workspace.begin_turn();
-            std::fs::write(repo.join("a.txt"), "line1\nfirst session\n").expect("first edit");
-            workspace.finish_turn();
-            workspace.dismiss_turn_card(cx);
-            assert_eq!(snapshot(workspace, cx)["turnCard"]["state"], "dismissed");
-
-            workspace.select_session(1, cx);
-            let switched = snapshot(workspace, cx);
-            assert_eq!(switched["turnCard"]["state"], "collapsed");
-            assert_eq!(switched["turnCard"]["baselinePending"], false);
-            assert_eq!(switched["turnCard"]["changes"]["files"], json!([]));
-
-            std::fs::write(repo.join("a.txt"), "line1\nno baseline\n").expect("mid-turn edit");
-            workspace.finish_turn();
-            let pending = snapshot(workspace, cx);
-            assert_eq!(pending["turnCard"]["visible"], false);
-            assert_eq!(pending["turnCard"]["changes"]["files"], json!([]));
-            assert_eq!(
-                std::fs::read_to_string(repo.join("a.txt")).expect("no destructive fallback"),
-                "line1\nno baseline\n"
-            );
-        })
-        .expect("session reset and pending-baseline behavior");
-}
-
 /// The session menu's Pin action toggles back off and never reorders the
 /// catalog: `Older` keeps its index and the state file agrees at both ends.
 #[gpui_kit::test]
@@ -4506,16 +2832,16 @@ fn session_menu_pin_toggles_off_without_reordering(cx: &mut TestAppContext) {
     data.sessions = catalog;
     let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
     handle
-        .update(cx, |workspace, window, cx| {
+        .update(cx, |workspace, _, cx| {
             workspace.select_session(1, cx);
-            workspace.session_menu_action("Pin", window, cx);
+            workspace.session_menu_action("Pin", cx);
             let pinned = snapshot(workspace, cx);
             assert_eq!(pinned["sessions"][0]["title"], "Newer");
             assert_eq!(pinned["sessions"][1]["title"], "Older");
             assert_eq!(pinned["sessions"][1]["pinned"], json!(true));
             assert_eq!(pinned["selectedSession"], json!(1));
 
-            workspace.session_menu_action("Pin", window, cx);
+            workspace.session_menu_action("Pin", cx);
             let unpinned = snapshot(workspace, cx);
             assert_eq!(unpinned["sessions"][0]["title"], "Newer");
             assert_eq!(unpinned["sessions"][1]["title"], "Older");
@@ -4970,36 +3296,6 @@ fn copy_transcript_writes_the_visible_text_and_no_ops_when_empty(cx: &mut TestAp
     );
 }
 
-#[gpui_kit::test]
-fn copy_session_uuid_writes_the_selected_record_id_to_the_native_clipboard(
-    cx: &mut TestAppContext,
-) {
-    cx.update(gpui_kit::init);
-    let dir = tempfile::TempDir::new().expect("temp dir");
-    let root = dir.path();
-    let (home, _older, _newer) = seed_two_sessions(root);
-    let store = open_store(root);
-    let catalog = omp_core::sessions::list_sessions(&store, &home, false, None);
-    drop(store);
-    assert_eq!(catalog[1].id, "Older");
-    let mut data = test_data(root);
-    data.home_dir = home;
-    data.sessions = catalog;
-    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
-    handle
-        .update(cx, |workspace, _, cx| {
-            workspace.select_session(1, cx);
-            workspace.copy_session_uuid(cx);
-        })
-        .expect("workspace window");
-    assert_eq!(
-        cx.read_from_clipboard()
-            .and_then(|item| item.text())
-            .as_deref(),
-        Some("Older")
-    );
-}
-
 /// A message carrying `$x^2$` and `$$y$$` draws as its prose plus math spans,
 /// and the frame builds with them: the snapshot counts the two math runs, and
 /// the copied text is still the message as written, delimiters included.
@@ -5418,11 +3714,11 @@ fn archiving_hides_a_session_from_the_snapshot_catalog(cx: &mut TestAppContext) 
     data.sessions = catalog;
     let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
     handle
-        .update(cx, |workspace, window, cx| {
+        .update(cx, |workspace, _, cx| {
             workspace.select_session(1, cx);
             assert_eq!(transcript_text(workspace), ["older prompt", "older reply"]);
 
-            workspace.session_menu_action("Archive", window, cx);
+            workspace.session_menu_action("Archive", cx);
             let state = snapshot(workspace, cx);
             let sessions = state["sessions"].as_array().expect("sessions");
             assert_eq!(sessions.len(), 1);
@@ -5469,7 +3765,7 @@ fn catalog_order_is_stable_when_a_non_selected_session_updates(cx: &mut TestAppC
     data.sessions = catalog;
     let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
     handle
-        .update(cx, |workspace, window, cx| {
+        .update(cx, |workspace, _, cx| {
             workspace.select_session(0, cx);
             assert_eq!(transcript_text(workspace), ["newer prompt", "newer reply"]);
 
@@ -5486,7 +3782,7 @@ fn catalog_order_is_stable_when_a_non_selected_session_updates(cx: &mut TestAppC
             std::fs::write(&older, body).expect("append reply");
 
             // Pin re-lists the catalog from disk, so the refresh is observable.
-            workspace.session_menu_action("Pin", window, cx);
+            workspace.session_menu_action("Pin", cx);
             let refreshed = snapshot(workspace, cx);
             assert_eq!(refreshed["selectedSession"], json!(0));
             let sessions = refreshed["sessions"].as_array().expect("sessions");
@@ -5498,7 +3794,7 @@ fn catalog_order_is_stable_when_a_non_selected_session_updates(cx: &mut TestAppC
             assert_eq!(sessions[0]["pinned"], json!(true));
             assert_eq!(transcript_text(workspace), ["newer prompt", "newer reply"]);
 
-            workspace.session_menu_action("Pin", window, cx);
+            workspace.session_menu_action("Pin", cx);
             let unpinned = snapshot(workspace, cx);
             let titles: Vec<&str> = unpinned["sessions"]
                 .as_array()
@@ -8504,7 +6800,14 @@ fn session_menu_fork_sends_one_command_and_follows_the_refresh(cx: &mut TestAppC
             let menu = snapshot(workspace, cx)["sessionMenu"].clone();
             assert_eq!(
                 menu["actions"],
-                json!(["Rename", "Pin", "Archive", "Delete", "Fork session",])
+                json!([
+                    "Rename",
+                    "Pin",
+                    "Archive",
+                    "Delete",
+                    "Fork session",
+                    "Remote Control",
+                ])
             );
 
             // A draft is the composer's, not the session's: a fork keeps it.
@@ -8513,7 +6816,7 @@ fn session_menu_fork_sends_one_command_and_follows_the_refresh(cx: &mut TestAppC
                 state.set_value("draft after fork", window, cx);
             });
 
-            workspace.session_menu_action("Fork session", window, cx);
+            workspace.session_menu_action("Fork session", cx);
             let forked = snapshot(workspace, cx);
             assert_eq!(forked["forkStatus"], "Forked session");
             // The fixture wrote no file, so the catalog did not change and the
@@ -8548,7 +6851,7 @@ fn session_menu_fork_sends_one_command_and_follows_the_refresh(cx: &mut TestAppC
             );
             assert!(fork_file.exists(), "the out-of-band fork file");
 
-            workspace.session_menu_action("Fork session", window, cx);
+            workspace.session_menu_action("Fork session", cx);
             let continued = snapshot(workspace, cx);
             assert_eq!(continued["forkStatus"], "Forked session");
             assert_eq!(continued["sessions"][0]["title"], "Fork");
@@ -8628,7 +6931,7 @@ fn cancelled_fork_changes_nothing(cx: &mut TestAppContext) {
             });
             let before = snapshot(workspace, cx);
 
-            workspace.session_menu_action("Fork session", window, cx);
+            workspace.session_menu_action("Fork session", cx);
             let after = snapshot(workspace, cx);
             assert_eq!(after["forkStatus"], json!(null), "a cancel claims nothing");
             assert_eq!(after["selectedSession"], before["selectedSession"]);

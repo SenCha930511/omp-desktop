@@ -2671,12 +2671,12 @@ impl Workspace {
         snapshot["shell"] = json!({
             "rightPaneTitle": self.right_pane_title(),
             "placeholders": {
-                "composer": self.composer.read(cx).presentation().placeholder().to_string(),
-                "rightPaneSearch": self.right_pane_search.read(cx).presentation().placeholder().to_string(),
-                "sideQuestion": self.side_input.read(cx).presentation().placeholder().to_string(),
-                "terminal": self.terminal_input.read(cx).presentation().placeholder().to_string(),
-                "pluginSource": self.plugin_source.read(cx).presentation().placeholder().to_string(),
-                "sidebar": self.sidebar_filter.read(cx).presentation().placeholder().to_string(),
+                "composer": self.composer.read(cx).placeholder().to_string(),
+                "rightPaneSearch": self.right_pane_search.read(cx).placeholder().to_string(),
+                "sideQuestion": self.side_input.read(cx).placeholder().to_string(),
+                "terminal": self.terminal_input.read(cx).placeholder().to_string(),
+                "pluginSource": self.plugin_source.read(cx).placeholder().to_string(),
+                "sidebar": self.sidebar_filter.read(cx).placeholder().to_string(),
             },
         });
         // The render's breakpoint decision and whether the compact layout is
@@ -3798,7 +3798,7 @@ impl Workspace {
         ];
         for (input, key) in inputs {
             let placeholder = i18n::t(language, key);
-            if input.read(cx).presentation().placeholder().as_str() == placeholder {
+            if input.read(cx).placeholder().as_str() == placeholder {
                 continue;
             }
             input.update(cx, |state, cx| {
@@ -3808,7 +3808,7 @@ impl Workspace {
 
         let placeholder = i18n::t(language, "ask.answerPlaceholder");
         for input in self.ask_inputs.values().cloned().collect::<Vec<_>>() {
-            if input.read(cx).presentation().placeholder().as_str() == placeholder {
+            if input.read(cx).placeholder().as_str() == placeholder {
                 continue;
             }
             input.update(cx, |state, cx| {

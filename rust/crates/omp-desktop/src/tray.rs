@@ -183,10 +183,7 @@ fn build_menu(language: Language) -> Result<Menu, TrayError> {
 }
 
 fn menu_labels(language: Language) -> (&'static str, &'static str) {
-    (
-        i18n::t(language, "tray.open"),
-        i18n::t(language, "tray.quit"),
-    )
+    (i18n::t(language, "tray.open"), i18n::t(language, "tray.quit"))
 }
 
 /// Installs the process-wide menu handler once. Later calls are no-ops (`muda` keeps
@@ -296,8 +293,14 @@ mod tests {
     #[test]
     fn menu_labels_use_the_saved_shell_language() {
         assert_eq!(menu_labels(Language::En), ("Open OMP Desktop", "Quit"));
-        assert_eq!(menu_labels(Language::ZhTw), ("開啟 OMP Desktop", "結束"));
-        assert_eq!(menu_labels(Language::ZhCn), ("打开 OMP Desktop", "退出"));
+        assert_eq!(
+            menu_labels(Language::ZhTw),
+            ("開啟 OMP Desktop", "結束")
+        );
+        assert_eq!(
+            menu_labels(Language::ZhCn),
+            ("打开 OMP Desktop", "退出")
+        );
     }
 
     #[test]
