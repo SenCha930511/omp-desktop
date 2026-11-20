@@ -6,7 +6,7 @@ import type { RpcObject } from './types'
 const SIMPLE_COMMANDS = new Set([
   'abort', 'abort_and_restore_queue', 'new_session', 'get_state', 'cycle_model', 'get_available_models', 'cycle_thinking_level',
   'abort_retry', 'get_session_stats', 'get_branch_messages', 'get_tree', 'get_last_assistant_text',
-  'get_messages', 'get_available_commands', 'get_subagents',
+  'get_messages', 'get_available_commands', 'get_subagents', 'dictation_stop', 'live_stop',
   // abort_bash takes no parameters (upstream wire/commands.ts); it cancels the
   // shell command the user launched through the `bash` command below.
   'abort_bash',
@@ -305,6 +305,50 @@ export async function validateRpcCommand(raw: unknown, validateSessionPath: (pat
       return result
     })
     return { type, schemes }
+  }
+  if (type === 'predict_word') {
+    rejectUnknownKeys(command, ['type', 'text', 'cursor'], 'command')
+    const text = requireString(command.text, 'text', { max: 1024 * 1024 })
+    if (typeof command.cursor !== 'number' || !Number.isSafeInteger(command.cursor) || command.cursor < 0 || command.cursor > text.length) throw new TypeError('cursor must be an integer within the text')
+    return { type, text, cursor: command.cursor }
+  }
+  if (type === 'predict_word_feedback') {
+    rejectUnknownKeys(command, ['type', 'text', 'cursor', 'suggestion', 'accepted'], 'command')
+    const text = requireString(command.text, 'text', { max: 1024 * 1024 })
+    if (typeof command.cursor !== 'number' || !Number.isSafeInteger(command.cursor) || command.cursor < 0 || command.cursor > text.length) throw new TypeError('cursor must be an integer within the text')
+    return {
+      type,
+      text,
+      cursor: command.cursor,
+      suggestion: requireString(command.suggestion, 'suggestion', { max: 1024 * 1024 }),
+      accepted: requireBoolean(command.accepted, 'accepted'),
+    }
+  }
+  if (type === 'dictation_start') {
+    rejectUnknownKeys(command, ['type', 'captureId'], 'command')
+    const captureId = requireString(command.captureId, 'captureId', { min: 1, max: 128 })
+    if (!captureId.trim()) throw new TypeError('captureId must not be blank')
+    return { type, captureId }
+  }
+  if (type === 'live_start') {
+    rejectUnknownKeys(command, ['type', 'voice', 'instructions'], 'command')
+    const result: RpcObject = { type }
+    if (command.voice !== undefined) result.voice = requireString(command.voice, 'voice', { max: 128 })
+    if (command.instructions !== undefined) result.instructions = requireString(command.instructions, 'instructions', { max: 32_000 })
+    return result
+  }
+  if (type === 'live_connect') {
+    rejectUnknownKeys(command, ['type', 'sdpOffer', 'voice', 'instructions'], 'command')
+    const result: RpcObject = { type, sdpOffer: requireString(command.sdpOffer, 'sdpOffer', { min: 1, max: 1024 * 1024 }) }
+    if (command.voice !== undefined) result.voice = requireString(command.voice, 'voice', { max: 128 })
+    if (command.instructions !== undefined) result.instructions = requireString(command.instructions, 'instructions', { max: 32_000 })
+    return result
+  }
+  if (type === 'live_mute') {
+    rejectUnknownKeys(command, ['type', 'muted'], 'command')
+    const result: RpcObject = { type }
+    if (command.muted !== undefined) result.muted = requireBoolean(command.muted, 'muted')
+    return result
   }
   if (type === 'extension_ui_response') {
     const id = requireId(command.id, 'id')
