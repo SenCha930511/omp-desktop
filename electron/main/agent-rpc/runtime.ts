@@ -212,6 +212,8 @@ export class RpcRuntime {
     watchdogTimings: Partial<CompactionWatchdogTimings> = {},
     private readonly adapter: HarnessRpcAdapter = OMP_RPC_ADAPTER,
     private readonly chunkAssemblyTiming: RpcChunkAssemblyTiming = DEFAULT_RPC_CHUNK_ASSEMBLY_TIMING,
+    /** Host-originated traffic (tools and URI reads) stays off the session event stream and is answered through `respond`. */
+    private readonly onHostRequest?: (frame: RpcObject, respond: (result: RpcObject) => void) => void,
   ) {
     this.watchdogTimings = {
       ...DEFAULT_COMPACTION_WATCHDOG_TIMINGS,
@@ -437,6 +439,15 @@ export class RpcRuntime {
       void this.refreshState().then(() => this.refreshContextUsage()).catch(() => undefined)
     }
     return response
+  }
+
+  /**
+   * Writes one unsolicited JSONL frame to the child (host tool results and URI
+   * replies). Resolves once the line is flushed, so a caller that awaits it
+   * knows the child has the bytes.
+   */
+  sendFrame(frame: RpcObject): Promise<void> {
+    return this.transport.enqueue(`${JSON.stringify(frame)}\n`).done
   }
 
   /** Publish OMP's authoritative identity and execution state. Compaction
@@ -873,6 +884,14 @@ export class RpcRuntime {
     if (this.adapter.chunkedFrames && raw.type === 'rpc_chunk') {
       if (!this.acceptingChunkFrames) return
       this.handleChunkFrame(raw)
+      return
+    }
+    if (raw.type === 'host_tool_call' || raw.type === 'host_tool_cancel' || raw.type === 'host_uri_request' || raw.type === 'host_uri_cancel') {
+      // Host-originated traffic is a request/response channel owned by the
+      // manager: it never enters the session event stream, and a reply that
+      // cannot be written (child gone) is dropped rather than surfaced as an
+      // orphan event.
+      this.onHostRequest?.(raw, (result) => { void this.sendFrame(result).catch(() => undefined) })
       return
     }
     const value = this.adapter.normalizeEvent(raw)
