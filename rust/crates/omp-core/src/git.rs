@@ -308,6 +308,32 @@ pub fn restore(
     Ok(run_git(&cwd, &args)?.ok)
 }
 
+pub fn remove_untracked(
+    store: &StateStore,
+    platform: Platform,
+    cwd: &str,
+    path: &str,
+) -> Result<bool> {
+    let relative = Path::new(path);
+    if path.is_empty()
+        || relative.is_absolute()
+        || relative.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        })
+    {
+        return Err(CoreError::invalid(
+            "Untracked file path must stay inside the repository",
+        ));
+    }
+    let cwd = authorize(store, platform, cwd)?;
+    Ok(run_git(&cwd, &["clean", "-f", "-q", "--", path])?.ok)
+}
+
 pub fn commit(
     store: &StateStore,
     platform: Platform,
