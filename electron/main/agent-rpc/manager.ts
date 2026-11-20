@@ -33,6 +33,16 @@ export type RuntimeRetentionSource = RuntimeRetentionOptions | (() => RuntimeRet
  */
 export type HostToolHandler = (args: Record<string, unknown>) => Promise<Record<string, unknown>>
 
+/**
+ * Host tools one runtime is allowed to call, advertised to that child through
+ * `set_host_tools` at start. Handlers are bound to the runtime's own session,
+ * so a call can never fall through to another runtime's browser tabs.
+ */
+export interface HostToolScope {
+  tools: RpcObject[]
+  handlers: Map<string, HostToolHandler>
+}
+
 const HOST_TOOL_CONCURRENCY_LIMIT = 8
 const HOST_TOOL_TIMEOUT_MS = 30_000
 
@@ -86,6 +96,9 @@ export class AgentRpcManager {
   private readonly hostToolSlotWaiters = new Map<string, Array<() => void>>()
   /** Host URI reads awaiting a reply, so host_uri_cancel can abort the matching one. */
   private readonly hostUriRequests = new Map<string, Map<string, AbortController>>()
+  /** Per-runtime host tool scopes; absent until the provider advertises one. */
+  private readonly hostToolScopes = new Map<string, HostToolScope>()
+  private hostToolScopeProvider: (runtime: RuntimeInfo) => HostToolScope | undefined = () => undefined
 
   constructor(
     private readonly executable: ExecutableSource,
@@ -117,6 +130,17 @@ export class AgentRpcManager {
   async setHostTools(runtimeId: unknown, tools: RpcObject[]): Promise<RpcObject> {
     this.hostToolsEpoch += 1
     return this.command(runtimeId, { type: 'set_host_tools', tools })
+  }
+
+  /**
+   * Installs the per-runtime host tool provider. It is consulted once per
+   * started runtime with that runtime's snapshot; the returned scope's tools
+   * are advertised through `set_host_tools` and its handlers answer that
+   * runtime's calls before the global test registry. Returning undefined
+   * leaves the runtime without host tools and never blocks its start.
+   */
+  setHostToolScopeProvider(provider: (runtime: RuntimeInfo) => HostToolScope | undefined): void {
+    this.hostToolScopeProvider = provider
   }
 
   setWorkspaceUseProvider(provider: (
@@ -288,6 +312,10 @@ export class AgentRpcManager {
         runtimeStartNotified = true
         if (state.sessionFile) this.durableIdentityByRuntimeId.set(runtime.runtimeId, { sessionId: state.sessionId, sessionFile: canonicalSessionPath(state.sessionFile) })
       } catch { /* capability binding must never fail a start */ }
+      // Advertise this runtime's own host tools once its session claim is
+      // bound, so a failing registration fails the start rather than leaving a
+      // runtime that silently lacks browser tools.
+      await this.applyHostToolScope(runtime)
       this.startingRuntimes.delete(runtime.runtimeId)
       this.scheduleIdleRetirement()
       return runtime.snapshot()
@@ -302,6 +330,7 @@ export class AgentRpcManager {
         this.startSessionPathById.delete(runtime.runtimeId)
         this.durableIdentityByRuntimeId.delete(runtime.runtimeId)
         this.quarantinedRuntimes.delete(runtime.runtimeId)
+        this.hostToolScopes.delete(runtime.runtimeId)
         await runtime.stop().catch(() => false)
       }
       // Admission/constructor failures have no close event; failed handshakes
@@ -339,6 +368,10 @@ export class AgentRpcManager {
         this.runtimeStartListener(environment, state)
         this.durableIdentityByRuntimeId.set(runtime.runtimeId, { sessionId: state.sessionId, sessionFile: canonicalSessionPath(state.sessionFile) })
       } catch { /* a later state update can retry the initial binding */ }
+      // An initially file-less runtime only becomes addressable now; advertise
+      // its host tools once, and never retry a failed advertisement here (the
+      // next state update re-enters this branch only while unbound).
+      if (!this.hostToolScopes.has(runtime.runtimeId)) void this.applyHostToolScope(runtime).catch(() => undefined)
       return
     }
     const sessionFile = canonicalSessionPath(state.sessionFile)
@@ -357,6 +390,9 @@ export class AgentRpcManager {
     try { this.runtimeStartListener(environment, state) } catch { /* capability rebinding must never break the event stream */ }
     try { this.runtimeSessionReboundListener(environment, previousInfo, state) } catch { /* capability rebinding must never break the event stream */ }
     this.durableIdentityByRuntimeId.set(runtime.runtimeId, { sessionId: state.sessionId, sessionFile })
+    // Handlers captured the previous session file; rebuild the scope so this
+    // runtime's calls resolve the claim that was just rebound to the new path.
+    void this.applyHostToolScope(runtime).catch(() => undefined)
   }
 
   /**
@@ -753,7 +789,9 @@ export class AgentRpcManager {
       respond({ type: 'host_tool_result', id, isError: true, result: { content: [{ type: 'text', text: 'Invalid host tool call' }] } })
       return
     }
-    const handler = this.hostTools.get(toolName)
+    // The runtime's own scope wins; the global registry stays as the test
+    // fallback so a call can never run another runtime's bound handler.
+    const handler = this.hostToolScopes.get(runtime.runtimeId)?.handlers.get(toolName) ?? this.hostTools.get(toolName)
     if (!handler) {
       respond({ type: 'host_tool_result', id, isError: true, result: { content: [{ type: 'text', text: `Unknown host tool: ${toolName}` }] } })
       return
@@ -854,6 +892,9 @@ export class AgentRpcManager {
 
   /** Drops every in-flight host call for one runtime: a cancelled call is never answered. */
   private abortHostCalls(runtimeId: string, reason: string): void {
+    // Stop, exit, true identity change, and stopAll all land here; the scope
+    // dies with the runtime so no later frame can reach its bound handlers.
+    this.hostToolScopes.delete(runtimeId)
     const calls = this.hostToolCalls.get(runtimeId)
     if (calls) {
       this.hostToolCalls.delete(runtimeId)
@@ -866,6 +907,28 @@ export class AgentRpcManager {
     if (uriRequests) {
       this.hostUriRequests.delete(runtimeId)
       for (const controller of uriRequests.values()) controller.abort(new Error(reason))
+    }
+  }
+
+  /**
+   * Resolves the runtime's host tool scope and advertises it through
+   * `set_host_tools`. The scope is installed before the request is sent so a
+   * child that answers immediately can already reach its handlers; a failed
+   * registration removes it again and fails the caller.
+   */
+  private async applyHostToolScope(runtime: RpcRuntime): Promise<void> {
+    const scope = this.hostToolScopeProvider(runtime.snapshot())
+    if (!scope || scope.tools.length === 0) return
+    const command = await validateRpcCommand({ type: 'set_host_tools', tools: scope.tools }, this.validateSessionPath)
+    this.hostToolScopes.set(runtime.runtimeId, scope)
+    try {
+      const response = await runtime.command(command)
+      if (response.success !== true) {
+        throw new Error(typeof response.error === 'string' ? response.error : 'OMP rejected the host tool registration')
+      }
+    } catch (error) {
+      if (this.hostToolScopes.get(runtime.runtimeId) === scope) this.hostToolScopes.delete(runtime.runtimeId)
+      throw error
     }
   }
 

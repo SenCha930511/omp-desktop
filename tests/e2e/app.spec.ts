@@ -330,6 +330,11 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     send({ id: command.id, type: 'response', command: command.type, success: true, data: { contextUsage: { tokens: 12000, contextWindow: 100000, percent: 12 }, cost: 0.42, tokens: { input: 10000, output: 2000, cacheRead: 0, cacheWrite: 0, total: 12000 } } })
   } else if (command.type === 'get_session_lease') {
     send({ id: command.id, type: 'response', command: command.type, success: true, data: { held: [], unknown: [] } })
+  } else if (command.type === 'set_host_tools') {
+    fs.writeFileSync(marker('set-host-tools.json'), JSON.stringify(command.tools.map((tool) => tool.name)))
+    send({ id: command.id, type: 'response', command: command.type, success: true, data: { toolNames: command.tools.map((tool) => tool.name) } })
+  } else if (command.type === 'set_host_uri_schemes') {
+    send({ id: command.id, type: 'response', command: command.type, success: true, data: { schemes: command.schemes.map((scheme) => scheme.scheme) } })
   } else if (command.type === 'set_subagent_subscription') {
     send({ id: command.id, type: 'response', command: command.type, success: true, data: { level: command.level } })
     send({ type: 'available_commands_update', commands: [{ name: 'compact', description: 'Compact the conversation context' }, { name: 'context', description: 'Show runtime context' }, { name: 'effort', subcommands: [{ name: 'high', description: 'Deep reasoning' }] }, { name: 'modelpreset', source: 'builtin', subcommands: [{ name: 'list', description: 'List presets' }] }] })
@@ -3036,6 +3041,17 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(page.getByRole('tab', { name: 'Files' })).toHaveAttribute('aria-selected', 'true')
     await page.keyboard.press('ArrowRight')
     await expect(page.getByRole('tab', { name: 'Agents' })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  test('advertises browser host tools when a runtime starts', async () => {
+    await page.locator('.project-group .session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
+    const composer = page.getByRole('combobox', { name: 'Message OMP' })
+    await composer.fill('Start the runtime for host tools')
+    await composer.press('Enter')
+    const markerPath = join(fixtureRoot, 'set-host-tools.json')
+    await expect.poll(() => existsSync(markerPath)).toBe(true)
+    const names = JSON.parse(readFileSync(markerPath, 'utf8')) as string[]
+    expect(names).toEqual(expect.arrayContaining(['browser_tabs', 'browser_navigate']))
   })
 
   test('binds Git to a secondary workspace and clears stale paths during a folder switch', async () => {

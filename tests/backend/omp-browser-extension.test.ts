@@ -99,41 +99,14 @@ describe('omp-work-browser extension', () => {
     expect(tools).toHaveLength(0)
   })
 
-  it('registers the same tool surface as the Prime Agent extension', async () => {
+  it('registers only terminal_read now that the browser tools are host tools', async () => {
     const { tools } = await fixture()
-    expect(tools.map((candidate) => candidate.name)).toEqual([
-      'terminal_read',
-      'browser_tabs',
-      'browser_navigate',
-      'browser_screenshot',
-      'browser_read_page',
-      'browser_click',
-      'browser_type',
-      'browser_press_key',
-      'browser_scroll',
-      'browser_evaluate',
-    ])
+    expect(tools.map((candidate) => candidate.name)).toEqual(['terminal_read'])
     for (const candidate of tools) {
       expect(candidate.label.length).toBeGreaterThan(0)
       expect(candidate.description.length).toBeGreaterThan(0)
       expect(candidate.parameters).toBeDefined()
     }
-  })
-
-  it('forwards calls to the broker with the bearer token and cleaned params', async () => {
-    const { calls, tool } = await fixture()
-    const result = await tool('browser_navigate').execute('call-1', { url: 'https://example.test/next' })
-    expect(calls).toEqual([{ method: 'navigate', params: { url: 'https://example.test/next' } }])
-    expect(result.content[0].text).toContain('<untrusted-page-content>')
-    expect(result.content[0].text).toContain('https://example.test/next')
-    await tool('browser_click').execute('call-2', { ref: 3, tab_id: 'tab-1' })
-    expect(calls[1]).toEqual({ method: 'click', params: { ref: 3, tabId: 'tab-1' } })
-  })
-
-  it('requires url or action for browser_navigate', async () => {
-    const { calls, tool } = await fixture()
-    await expect(tool('browser_navigate').execute('call-1', {})).rejects.toThrow('Provide url or action')
-    expect(calls).toHaveLength(0)
   })
 
   it('reads the terminal through the broker and fences it as untrusted', async () => {
@@ -144,30 +117,15 @@ describe('omp-work-browser extension', () => {
     expect(result.content[0].text).toContain('npm test')
   })
 
-  it('returns screenshots as image content with fenced page metadata', async () => {
-    const { tool } = await fixture()
-    const result = await tool('browser_screenshot').execute('call-1', {})
-    expect(result.content[0]).toEqual({ type: 'image', data: 'aGVsbG8=', mimeType: 'image/jpeg' })
-    expect(result.content[1].type).toBe('text')
-    expect(result.content[1].text).toContain('<untrusted-page-content>')
-  })
-
-  it('opens tabs and reports the new tab id', async () => {
-    const { calls, tool } = await fixture()
-    const result = await tool('browser_tabs').execute('call-1', { action: 'open', url: 'https://example.test/' })
-    expect(calls[0]).toEqual({ method: 'tabs.open', params: { url: 'https://example.test/' } })
-    expect(result.content[0].text).toContain('Opened tab tab-1')
-  })
-
   it('surfaces broker errors as tool errors without leaking the token', async () => {
     const { bridge, environment, tool } = await fixture()
     const denied = await loadExtension({ ...environment, OMP_DESKTOP_BROWSER_TOKEN: 'not-the-real-token' })
     const { tools: deniedTools, pi } = fakePi()
     denied(pi)
-    const deniedTabs = deniedTools.find((candidate) => candidate.name === 'browser_tabs')!
-    await expect(deniedTabs.execute('call-1', { action: 'list' })).rejects.toThrow(/Unauthorized|expired/)
+    const deniedTerminal = deniedTools.find((candidate) => candidate.name === 'terminal_read')!
+    await expect(deniedTerminal.execute('call-1', {})).rejects.toThrow(/Unauthorized|expired/)
     await bridge.stop()
-    await expect(tool('browser_tabs').execute('call-2', { action: 'list' })).rejects.toSatisfy((error: unknown) => {
+    await expect(tool('terminal_read').execute('call-2', {})).rejects.toSatisfy((error: unknown) => {
       const message = String((error as Error).message)
       expect(message).toContain('OMP Work is not reachable')
       expect(message).not.toContain(environment.OMP_DESKTOP_BROWSER_TOKEN)
