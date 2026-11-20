@@ -7,8 +7,8 @@ fn resolves_three_docked_columns_on_a_wide_window() {
     assert!(layout.sidebar_docked);
     assert!(layout.right_pane_docked);
     assert_eq!(layout.sidebar_width, 248.0);
-    assert_eq!(layout.right_pane_width, 360.0);
-    assert_eq!(layout.center_width, 592.0);
+    assert_eq!(layout.right_pane_width, 571.0);
+    assert_eq!(layout.center_width, 381.0);
     assert!(layout.overlay.is_none());
 }
 

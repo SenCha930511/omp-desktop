@@ -1,3 +1,4 @@
+use crate::i18n::{self, Language};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -115,6 +116,47 @@ impl RightPane {
             "activity" => RightPane::Activity,
             _ => return None,
         })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SettingsSection {
+    General,
+    Appearance,
+    Agent,
+    Session,
+    Providers,
+    Voice,
+    Browser,
+    Privacy,
+    About,
+}
+
+impl SettingsSection {
+    const ALL: [Self; 9] = [
+        Self::General,
+        Self::Appearance,
+        Self::Agent,
+        Self::Session,
+        Self::Providers,
+        Self::Voice,
+        Self::Browser,
+        Self::Privacy,
+        Self::About,
+    ];
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::General => "settings.general",
+            Self::Appearance => "settings.appearance",
+            Self::Agent => "settings.harness",
+            Self::Session => "settings.session",
+            Self::Providers => "settings.providers",
+            Self::Voice => "settings.voice",
+            Self::Browser => "settings.browser",
+            Self::Privacy => "settings.privacy",
+            Self::About => "settings.about",
+        }
     }
 }
 
@@ -682,14 +724,16 @@ fn context_usage_dial(usage: ContextUsage, colors: ThemeColor) -> impl IntoEleme
     div()
         .id("context-usage")
         .aria_label(context_usage_label(&usage))
-        .px_2()
-        .py_0p5()
+        .flex()
+        .items_center()
+        .justify_center()
+        .size(px(26.0))
         .rounded(px(999.0))
-        .border_1()
+        .border_2()
         .border_color(ring)
-        .text_xs()
-        .text_color(colors.foreground)
-        .child(format!("Context {percent}%"))
+        .text_size(px(8.5))
+        .text_color(colors.muted_foreground)
+        .child(format!("{percent}"))
 }
 
 pub struct WorkspaceData {
@@ -814,12 +858,14 @@ pub struct Workspace {
     selected_session: Option<usize>,
     collapsed_projects: HashSet<String>,
     expanded_thinking: HashSet<String>,
+    expanded_tool_results: HashSet<String>,
     todo_open: bool,
     sidebar_search_open: bool,
     sidebar_filter: Entity<InputState>,
     _sidebar_filter_subscription: Subscription,
     composer: Entity<InputState>,
     _composer_subscription: Subscription,
+    right_pane_search: Entity<InputState>,
     submit_requested: Option<bool>,
     // The composer's mention menu: the bounded list of sessions it draws, and
     // the status it shows when the catalog has nothing to mention. A selection
@@ -843,6 +889,7 @@ pub struct Workspace {
     side_error: Option<String>,
     side_streaming: bool,
     view: AppView,
+    settings_section: SettingsSection,
     plugin_catalog: Option<PluginCatalog>,
     // The Extensions page's last toggle outcome: `plugin_status` is the
     // `Extensions updated` notice, `plugin_error` the reason a change failed.
@@ -947,6 +994,7 @@ pub struct Workspace {
     // paths, so this is recomputed after each of them and read by the launcher.
     attention_count: usize,
     menu_open: bool,
+    model_menu_open: bool,
     // Which project row has its menu open. One at a time: the row's ellipsis
     // button toggles it, and every menu row closes it again.
     project_menu: Option<String>,
@@ -976,9 +1024,10 @@ impl Workspace {
         // `main` installs the guard before the window opens, so the close
         // handler and this view share one; a test without one gets its own.
         let close_guard = cx.try_global::<CloseGuard>().cloned().unwrap_or_default();
+        let language = i18n::resolve(data.settings.locale);
         let composer = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("Ask OMP…")
+                .placeholder(i18n::t(language, "composer.placeholder"))
                 .submit_on_enter(true)
         });
         let composer_subscription = cx.subscribe(&composer, |this, _, event: &InputEvent, cx| {
@@ -986,6 +1035,10 @@ impl Workspace {
                 this.submit_requested = Some(*secondary);
                 cx.notify();
             }
+        });
+        let right_pane_search = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(i18n::t(language, "rightPane.searchPlaceholder"))
         });
         let side_input = cx.new(|cx| {
             InputState::new(window, cx)
@@ -1111,12 +1164,14 @@ impl Workspace {
             selected_session: None,
             collapsed_projects: HashSet::new(),
             expanded_thinking: HashSet::new(),
+            expanded_tool_results: HashSet::new(),
             todo_open: false,
             sidebar_search_open: false,
             sidebar_filter,
             _sidebar_filter_subscription: sidebar_filter_subscription,
             composer,
             _composer_subscription: composer_subscription,
+            right_pane_search,
             submit_requested: None,
             mention_menu_open: false,
             mention_status: None,
@@ -1130,6 +1185,7 @@ impl Workspace {
             side_error: None,
             side_streaming: false,
             view: AppView::Workspace,
+            settings_section: SettingsSection::General,
             plugin_catalog: None,
             plugin_status: None,
             plugin_error: None,
@@ -1182,6 +1238,7 @@ impl Workspace {
             overview_pinned: false,
             attention_count: 0,
             menu_open: false,
+            model_menu_open: false,
             project_menu: None,
             turn_changes: TurnChanges::default(),
             turn_baseline: None,
@@ -1956,6 +2013,136 @@ impl Workspace {
         }));
     }
 
+    /// A collapsed tool-result disclosure. The header keeps the tool name and
+    /// the first line; the full output is one click away, so a long test log
+    /// does not take over the transcript.
+    fn tool_result_element(
+        &self,
+        part: &TranscriptPart,
+        message_id: &str,
+        colors: ThemeColor,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let key = format!(
+            "{message_id}:{}",
+            part.id
+                .clone()
+                .unwrap_or_else(|| part.name.clone().unwrap_or_default())
+        );
+        let expanded = self.expanded_tool_results.contains(&key);
+        let text = part.text.clone().unwrap_or_default();
+        let preview: String = text
+            .lines()
+            .next()
+            .unwrap_or("")
+            .chars()
+            .take(120)
+            .collect();
+        let toggle_key = key.clone();
+        let body_key = key.clone();
+        let color = if part.is_error == Some(true) {
+            colors.danger
+        } else {
+            colors.muted_foreground
+        };
+        let tool_name = part
+            .name
+            .clone()
+            .unwrap_or_else(|| self.t("transcript.tool").to_string());
+        let (state_icon, state_color) = if part.is_error == Some(true) {
+            (IconName::CircleAlert, colors.danger)
+        } else {
+            (IconName::Check, colors.success)
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .w_full()
+            .child(
+                div()
+                    .id(format!("tool-result-{key}"))
+                    .aria_label("Tool result")
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .min_h(px(30.0))
+                    .py(px(3.0))
+                    .text_size(px(13.0))
+                    .text_color(colors.muted_foreground)
+                    .hover(|style| style.text_color(colors.foreground))
+                    .child(
+                        div()
+                            .size(px(16.0))
+                            .text_color(colors.muted_foreground)
+                            .child(tool_icon(&tool_name)),
+                    )
+                    .child(
+                        div()
+                            .text_color(colors.foreground)
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .child(tool_name),
+                    )
+                    .child(div().flex_1().overflow_hidden().text_ellipsis().child(
+                        if expanded || preview.is_empty() {
+                            String::new()
+                        } else {
+                            format!("· {preview}")
+                        },
+                    ))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .text_size(px(10.0))
+                            .text_color(state_color)
+                            .child(div().size(px(12.0)).child(state_icon)),
+                    )
+                    .child(
+                        div()
+                            .size(px(14.0))
+                            .text_color(colors.muted_foreground)
+                            .child(if expanded {
+                                IconName::ChevronDown
+                            } else {
+                                IconName::ChevronRight
+                            }),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if !this.expanded_tool_results.remove(&toggle_key) {
+                            this.expanded_tool_results.insert(toggle_key.clone());
+                        }
+                        cx.notify();
+                    })),
+            )
+            .when(expanded, |element| {
+                element.child(
+                    div()
+                        .id(format!("tool-result-body-{body_key}"))
+                        .ml(px(24.0))
+                        .mt(px(1.5))
+                        .max_h(px(260.0))
+                        .overflow_y_scroll()
+                        .rounded(px(11.0))
+                        .border_1()
+                        .border_color(colors.border)
+                        .bg(colors.background)
+                        .p(px(9.0))
+                        .font_family("Menlo")
+                        .text_size(px(11.5))
+                        .text_color(color)
+                        .child(text)
+                        .with_animation(
+                            "tool-result-body",
+                            Animation::new(Duration::from_millis(160)),
+                            |element, delta| element.opacity(delta),
+                        ),
+                )
+            })
+            .into_any_element()
+    }
+
     /// A collapsed thinking disclosure. The body is only built when the row
     /// is open, so a long reasoning block does not dominate the transcript by
     /// default; the Electron version starts folded too.
@@ -1989,26 +2176,29 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .px_2()
-                    .py_1()
-                    .rounded(px(8.0))
-                    .bg(colors.tab)
-                    .text_size(px(11.5))
+                    .min_h(px(30.0))
+                    .py(px(3.0))
+                    .text_size(px(13.0))
                     .text_color(colors.muted_foreground)
-                    .hover(|style| style.bg(colors.accent))
-                    .child(if expanded {
+                    .hover(|style| style.text_color(colors.foreground))
+                    .child(div().size(px(14.0)).child(if expanded {
                         IconName::ChevronDown
                     } else {
                         IconName::ChevronRight
-                    })
-                    .child("Thinking")
+                    }))
                     .child(
                         div()
-                            .flex_1()
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .child(if expanded { String::new() } else { preview }),
+                            .text_color(colors.foreground)
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .child(self.t("transcript.thinking")),
                     )
+                    .child(div().flex_1().overflow_hidden().text_ellipsis().child(
+                        if expanded || preview.is_empty() {
+                            String::new()
+                        } else {
+                            format!("· {preview}")
+                        },
+                    ))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if !this.expanded_thinking.remove(&toggle_key) {
                             this.expanded_thinking.insert(toggle_key.clone());
@@ -2019,11 +2209,10 @@ impl Workspace {
             .when(expanded, |element| {
                 element.child(
                     div()
-                        .px_2()
-                        .py_1()
-                        .rounded(px(8.0))
-                        .bg(colors.tab)
-                        .text_size(px(12.5))
+                        .ml(px(24.0))
+                        .mt(px(1.5))
+                        .text_size(px(13.0))
+                        .line_height(px(21.0))
                         .text_color(colors.muted_foreground)
                         .child(text)
                         .with_animation(
@@ -2140,7 +2329,7 @@ impl Workspace {
             .aria_label(session.title.clone())
             .flex()
             .items_center()
-            .h(px(32.0))
+            .h(px(37.0))
             .pl(px(26.0))
             .pr_2()
             .rounded(px(7.0))
@@ -2150,17 +2339,31 @@ impl Workspace {
             } else {
                 colors.muted_foreground
             })
-            .when(selected, |element| element.bg(colors.accent))
+            .when(selected, |element| element.bg(colors.selection))
             .hover(|style| style.bg(colors.accent))
             .child(
                 div()
                     .flex_1()
+                    .min_w(px(0.0))
                     .overflow_hidden()
                     .text_ellipsis()
                     .child(session.title.clone()),
             )
-            .when(session.unread, |element| {
-                element.child(div().size(px(6.0)).rounded(px(999.0)).bg(colors.primary))
+            .when(session.pinned, |element| {
+                element.child(
+                    div()
+                        .text_size(px(12.0))
+                        .text_color(colors.primary)
+                        .child(IconName::Pin),
+                )
+            })
+            .when(session.status == "running", |element| {
+                element.child(
+                    div()
+                        .text_size(px(14.0))
+                        .text_color(colors.muted_foreground)
+                        .child(IconName::LoaderCircle),
+                )
             })
             .on_click(cx.listener(move |this, _, _, cx| this.select_session(index, cx)))
     }
@@ -2207,19 +2410,22 @@ impl Workspace {
                     .child(div().w(px(84.0)))
                     .child(div().flex_1())
                     .child(self.toolbar_icon(
-                        "sidebar-search",
-                        IconName::Search,
+                        "sidebar-new-session",
+                        IconName::SquarePen,
                         colors.muted_foreground,
-                        cx.listener(|this, _, _, cx| {
-                            this.sidebar_search_open = !this.sidebar_search_open;
-                            cx.notify();
+                        cx.listener(|this, _, window, cx| {
+                            if let Some(project) = this.projects.first().cloned() {
+                                this.start_new_session(project, cx);
+                            } else {
+                                this.add_project(window, cx);
+                            }
                         }),
                     ))
                     .child(self.toolbar_icon(
-                        "sidebar-add-project",
-                        IconName::Plus,
+                        "sidebar-collapse",
+                        IconName::PanelLeftClose,
                         colors.muted_foreground,
-                        cx.listener(|this, _, window, cx| this.add_project(window, cx)),
+                        cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)),
                     )),
             )
             .child(
@@ -2235,7 +2441,7 @@ impl Workspace {
                         SidebarNavItem {
                             id: "new-session",
                             icon: IconName::SquarePen,
-                            label: "New session",
+                            label: self.t("sidebar.newSession"),
                             shortcut: Some("⌘N"),
                             active: false,
                         },
@@ -2252,7 +2458,7 @@ impl Workspace {
                         SidebarNavItem {
                             id: "search-nav",
                             icon: IconName::Search,
-                            label: "Search",
+                            label: self.t("sidebar.search"),
                             shortcut: None,
                             active: self.sidebar_search_open,
                         },
@@ -2266,7 +2472,7 @@ impl Workspace {
                         SidebarNavItem {
                             id: "projects-nav",
                             icon: IconName::Folder,
-                            label: "Projects",
+                            label: self.t("sidebar.projects"),
                             shortcut: None,
                             active: self.view == AppView::Workspace
                                 && self.selected_session.is_none()
@@ -2282,7 +2488,7 @@ impl Workspace {
                         SidebarNavItem {
                             id: "activity-nav",
                             icon: IconName::Activity,
-                            label: "Activity",
+                            label: self.t("sidebar.activity"),
                             shortcut: None,
                             active: self.right_pane == RightPane::Activity,
                         },
@@ -2293,7 +2499,7 @@ impl Workspace {
                         SidebarNavItem {
                             id: "schedules-nav",
                             icon: IconName::Clock,
-                            label: "Schedules",
+                            label: self.t("sidebar.schedules"),
                             shortcut: None,
                             active: self.view == AppView::Schedules,
                         },
@@ -2304,7 +2510,7 @@ impl Workspace {
                         SidebarNavItem {
                             id: "capabilities-nav",
                             icon: IconName::Puzzle,
-                            label: "Capabilities",
+                            label: self.t("sidebar.capabilities"),
                             shortcut: None,
                             active: self.view == AppView::Plugins,
                         },
@@ -2335,7 +2541,7 @@ impl Workspace {
                                 div()
                                     .text_xs()
                                     .text_color(colors.muted_foreground)
-                                    .child("PROJECTS"),
+                                    .child(self.t("sidebar.projectsHeading")),
                             )
                             .child(
                                 div()
@@ -2362,9 +2568,9 @@ impl Workspace {
                                 .text_size(px(12.0))
                                 .text_color(colors.muted_foreground)
                                 .child(if query.is_empty() {
-                                    "No projects yet. Add a folder to begin."
+                                    self.t("sidebar.noProjects")
                                 } else {
-                                    "No sessions match."
+                                    self.t("sidebar.noMatches")
                                 }),
                         )
                     })
@@ -2382,6 +2588,15 @@ impl Workspace {
                         });
                         let menu_open = project_id.is_some()
                             && project_id.as_deref() == self.project_menu.as_deref();
+                        let project_group = format!("project-row-{key}");
+                        let project_selected = group
+                            .sessions
+                            .iter()
+                            .any(|index| self.selected_session == Some(*index));
+                        let group_running = group
+                            .sessions
+                            .iter()
+                            .any(|index| self.sessions[*index].status == "running");
                         div()
                             .flex()
                             .flex_col()
@@ -2393,10 +2608,12 @@ impl Workspace {
                                     .flex()
                                     .items_center()
                                     .gap_1()
-                                    .h(px(28.0))
+                                    .h(px(34.0))
                                     .px_1()
-                                    .rounded(px(6.0))
+                                    .rounded(px(7.0))
+                                    .group(project_group.clone())
                                     .hover(|style| style.bg(colors.accent))
+                                    .when(project_selected, |element| element.bg(colors.selection))
                                     .child(
                                         div()
                                             .text_size(px(14.0))
@@ -2407,14 +2624,60 @@ impl Workspace {
                                                 IconName::ChevronDown
                                             }),
                                     )
-                                    .child(IconName::Folder)
+                                    .child(
+                                        div()
+                                            .text_size(px(16.0))
+                                            .text_color(colors.muted_foreground)
+                                            .child(IconName::Folder),
+                                    )
                                     .child(
                                         div()
                                             .flex_1()
+                                            .min_w(px(0.0))
                                             .overflow_hidden()
                                             .text_ellipsis()
                                             .text_size(px(13.0))
+                                            .font_weight(gpui::FontWeight::MEDIUM)
                                             .child(group.name.clone()),
+                                    )
+                                    .when(collapsed && group_running, |element| {
+                                        element.child(
+                                            div()
+                                                .size(px(16.0))
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .rounded(px(999.0))
+                                                .bg(colors.primary.opacity(0.13))
+                                                .with_animation(
+                                                    "project-working",
+                                                    Animation::new(Duration::from_millis(2400))
+                                                        .repeat(),
+                                                    |element, delta| {
+                                                        element.opacity(
+                                                            0.45 + 0.55
+                                                                * (1.0 - (2.0 * delta - 1.0).abs()),
+                                                        )
+                                                    },
+                                                )
+                                                .child(
+                                                    div()
+                                                        .size(px(6.0))
+                                                        .rounded(px(999.0))
+                                                        .bg(colors.primary),
+                                                ),
+                                        )
+                                    })
+                                    .when(
+                                        project.as_ref().is_some_and(|project| project.pinned),
+                                        |element| {
+                                            element.child(
+                                                div()
+                                                    .text_size(px(14.0))
+                                                    .text_color(colors.primary)
+                                                    .child(IconName::Pin),
+                                            )
+                                        },
                                     )
                                     .when_some(project.clone(), |element, project| {
                                         element.child(
@@ -2427,8 +2690,16 @@ impl Workspace {
                                                 .size(px(22.0))
                                                 .rounded(px(5.0))
                                                 .text_color(colors.muted_foreground)
+                                                .opacity(0.0)
+                                                .group_hover(project_group.clone(), |style| {
+                                                    style.opacity(1.0)
+                                                })
                                                 .hover(|style| style.bg(colors.background))
-                                                .child(IconName::SquarePen)
+                                                .child(
+                                                    div()
+                                                        .text_size(px(14.0))
+                                                        .child(IconName::SquarePen),
+                                                )
                                                 .on_click(cx.listener(move |this, _, _, cx| {
                                                     this.start_new_session(project.clone(), cx);
                                                     cx.stop_propagation();
@@ -2446,8 +2717,16 @@ impl Workspace {
                                                 .size(px(22.0))
                                                 .rounded(px(5.0))
                                                 .text_color(colors.muted_foreground)
+                                                .opacity(0.0)
+                                                .group_hover(project_group, |style| {
+                                                    style.opacity(1.0)
+                                                })
                                                 .hover(|style| style.bg(colors.background))
-                                                .child(IconName::EllipsisVertical)
+                                                .child(
+                                                    div()
+                                                        .text_size(px(14.0))
+                                                        .child(IconName::EllipsisVertical),
+                                                )
                                                 .on_click(cx.listener(move |this, _, _, cx| {
                                                     this.toggle_project_menu(&id, cx);
                                                     cx.stop_propagation();
@@ -2527,13 +2806,14 @@ impl Workspace {
                                     .text_color(colors.muted_foreground)
                                     .child(IconName::Download),
                             )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .overflow_hidden()
-                                    .text_ellipsis()
-                                    .child(self.update_check.label()),
-                            )
+                            .child(div().flex_1().overflow_hidden().text_ellipsis().child(
+                                match self.update_check.label().as_str() {
+                                    "not configured" => {
+                                        self.t("sidebar.update.notConfigured").to_string()
+                                    }
+                                    label => label.to_string(),
+                                },
+                            ))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.start_update_check(cx);
                             })),
@@ -2542,7 +2822,7 @@ impl Workspace {
                         SidebarNavItem {
                             id: "settings-nav",
                             icon: IconName::Settings,
-                            label: "Settings",
+                            label: self.t("sidebar.settings"),
                             shortcut: None,
                             active: self.view == AppView::Settings,
                         },
@@ -2550,6 +2830,40 @@ impl Workspace {
                         cx.listener(|this, _, _, cx| this.set_view(AppView::Settings, cx)),
                     )),
             )
+    }
+
+    fn language(&self) -> Language {
+        i18n::resolve(self.settings.locale)
+    }
+
+    fn t(&self, key: &'static str) -> &'static str {
+        i18n::t(self.language(), key)
+    }
+
+    pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
+        self.geometry.sidebar_open = !self.geometry.sidebar_open;
+        if let Some(bounds) = self.last_bounds {
+            self.layout = self.geometry.resolve(bounds.2 as f64);
+        }
+        self.schedule_geometry_save(cx);
+        cx.notify();
+    }
+
+    /// Toggles the right pane: the docked pane in a wide window, the overlay
+    /// in a compact one. The toolbar button and the parity test both call this
+    /// path, so the control and its test cannot drift apart.
+    pub fn toggle_details(&mut self, cx: &mut Context<Self>) {
+        if self.compact_layout {
+            self.details_open = !self.details_open;
+        } else {
+            self.geometry.right_pane_open = !self.geometry.right_pane_open;
+            if let Some(bounds) = self.last_bounds {
+                self.layout = self.geometry.resolve(bounds.2 as f64);
+            }
+            self.resize_terminal();
+            self.schedule_geometry_save(cx);
+        }
+        cx.notify();
     }
 
     fn toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2572,10 +2886,27 @@ impl Workspace {
         } else {
             self.geometry.right_pane_open
         };
-        let (status, status_color, status_bg) = if self.running {
-            ("Working", colors.success, colors.success.opacity(0.14))
+        let (status, status_color, status_bg, status_icon) = if self.running {
+            (
+                self.t("sidebar.status.running"),
+                colors.success,
+                colors.success.opacity(0.14),
+                Some(IconName::LoaderCircle),
+            )
+        } else if !self.transcript.is_empty() {
+            (
+                self.t("sidebar.status.completed"),
+                colors.success,
+                colors.success.opacity(0.14),
+                Some(IconName::Check),
+            )
         } else {
-            ("Idle", colors.muted_foreground, colors.accent)
+            (
+                self.t("sidebar.status.idle"),
+                colors.muted_foreground,
+                colors.accent,
+                None,
+            )
         };
         div()
             .flex()
@@ -2585,6 +2916,14 @@ impl Workspace {
             .px_3()
             .border_b_1()
             .border_color(colors.border)
+            .when(!self.geometry.sidebar_open, |element| {
+                element.child(self.toolbar_icon(
+                    "sidebar-toggle",
+                    IconName::PanelLeft,
+                    colors.foreground,
+                    cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)),
+                ))
+            })
             .child(
                 div()
                     .text_size(px(12.5))
@@ -2605,7 +2944,7 @@ impl Workspace {
                         .rounded(px(6.0))
                         .border_1()
                         .border_color(colors.border)
-                        .bg(colors.accent)
+                        .bg(colors.tab)
                         .text_size(px(11.5))
                         .text_color(colors.muted_foreground)
                         .child(IconName::GitBranch)
@@ -2614,12 +2953,18 @@ impl Workspace {
             })
             .child(
                 div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
                     .px_2()
                     .py_0p5()
                     .rounded(px(999.0))
                     .bg(status_bg)
                     .text_size(px(10.5))
                     .text_color(status_color)
+                    .when_some(status_icon, |element, icon| {
+                        element.child(div().text_size(px(12.0)).child(icon))
+                    })
                     .child(status),
             )
             .child(div().flex_1())
@@ -2646,30 +2991,14 @@ impl Workspace {
                 }),
             ))
             .child(self.toolbar_icon(
-                if self.compact_layout {
-                    "details-toggle"
-                } else {
-                    "right-pane-toggle"
-                },
+                "right-pane-toggle",
                 IconName::PanelRight,
                 if panel_active {
                     colors.primary
                 } else {
                     colors.foreground
                 },
-                cx.listener(|this, _, _, cx| {
-                    if this.compact_layout {
-                        this.details_open = !this.details_open;
-                    } else {
-                        this.geometry.right_pane_open = !this.geometry.right_pane_open;
-                        if let Some(bounds) = this.last_bounds {
-                            this.layout = this.geometry.resolve(bounds.2 as f64);
-                        }
-                        this.resize_terminal();
-                        this.schedule_geometry_save(cx);
-                    }
-                    cx.notify();
-                }),
+                cx.listener(|this, _, _, cx| this.toggle_details(cx)),
             ))
     }
 
@@ -2692,7 +3021,6 @@ impl Workspace {
             .text_color(color)
             .hover(|style| style.bg(color.opacity(0.12)))
             .child(icon)
-            .test_support()
             .on_click(on_click)
     }
 
@@ -4639,74 +4967,37 @@ impl Workspace {
                 .into_any_element();
         }
         if self.transcript.is_empty() {
-            let text = if self.selected_session.is_some() {
-                "This session has no renderable messages yet."
-            } else {
-                "Select a session or create a new one."
-            };
             return div()
                 .flex()
                 .flex_col()
+                .items_center()
+                .justify_center()
                 .flex_1()
-                .min_h(px(0.0))
+                .gap_4()
                 .p_6()
-                .text_sm()
-                .text_color(colors.muted_foreground)
-                .child(text)
+                .child(
+                    div()
+                        .text_size(px(34.0))
+                        .text_color(colors.muted_foreground)
+                        .child(IconName::Sparkles),
+                )
+                .child(
+                    div()
+                        .text_size(px(24.0))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(colors.foreground)
+                        .child(self.t("transcript.welcomeTitle")),
+                )
+                .child(
+                    div()
+                        .max_w(px(460.0))
+                        .text_center()
+                        .text_size(px(13.0))
+                        .text_color(colors.muted_foreground)
+                        .child(self.t("transcript.welcomeBody")),
+                )
                 .into_any_element();
         }
-        let status_row = div()
-            .flex()
-            .items_center()
-            .h(px(40.0))
-            .px_6()
-            .border_b_1()
-            .border_color(colors.border)
-            .child(div().flex_1())
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .text_size(px(10.5))
-                    .text_color(if self.running {
-                        colors.success
-                    } else {
-                        colors.muted_foreground
-                    })
-                    .child(if self.running {
-                        div()
-                            .size(px(6.0))
-                            .rounded(px(999.0))
-                            .bg(colors.success)
-                            .with_animation(
-                                "status-pulse",
-                                Animation::new(Duration::from_millis(1200)).repeat(),
-                                |element, delta| {
-                                    element.opacity(0.35 + 0.65 * (1.0 - (2.0 * delta - 1.0).abs()))
-                                },
-                            )
-                            .into_any_element()
-                    } else {
-                        div()
-                            .size(px(6.0))
-                            .rounded(px(999.0))
-                            .bg(colors.muted_foreground)
-                            .into_any_element()
-                    })
-                    .child(if self.running {
-                        "Working…"
-                    } else {
-                        "Completed"
-                    }),
-            )
-            .child(div().flex_1())
-            .child(
-                div()
-                    .text_size(px(10.5))
-                    .text_color(colors.muted_foreground)
-                    .child(format!("Subagents {}", self.agents.list().len())),
-            );
         let todo_phases = latest_todo_phases(&self.transcript);
         let todo_total: usize = todo_phases.iter().map(|phase| phase.tasks.len()).sum();
         let todo_done = todo_phases
@@ -4798,18 +5089,23 @@ impl Workspace {
                                     .gap_2()
                                     .px_2()
                                     .py_1()
-                                    .rounded(px(8.0))
+                                    .rounded(px(10.0))
+                                    .border_1()
+                                    .border_color(colors.border)
                                     .bg(colors.tab)
                                     .text_size(px(11.5))
                                     .text_color(colors.foreground)
                                     .hover(|style| style.bg(colors.accent))
                                     .child(IconName::ListTodo)
-                                    .child("Plan")
+                                    .child(self.t("transcript.plan"))
                                     .child(
                                         div()
                                             .text_size(px(10.5))
                                             .text_color(colors.muted_foreground)
-                                            .child(format!("{todo_done}/{todo_total} done")),
+                                            .child(format!(
+                                                "{todo_done}/{todo_total} {}",
+                                                self.t("transcript.done")
+                                            )),
                                     )
                                     .when_some(todo_current, |element, current| {
                                         element.child(
@@ -4861,23 +5157,44 @@ impl Workspace {
                 div()
                     .flex()
                     .flex_col()
-                    .gap_4()
+                    .gap(px(0.0))
                     .w_full()
                     .max_w(px(960.0))
                     .mx_auto()
                     .children(self.transcript.iter().enumerate().map(|(index, message)| {
                         let is_user = message.role == "user";
                         let is_assistant = message.role == "assistant";
+                        let is_toolish = message.parts.is_empty()
+                            || message.parts.iter().all(|part| {
+                                part.kind == "thinking"
+                                    || part.kind == "toolResult"
+                                    || part.kind == "toolCall"
+                            });
+                        let message_group = format!("message-{}", message.id);
+                        let copy_text = transcript_row_text(message);
+                        let copy = (!copy_text.is_empty()).then(|| {
+                            let text = copy_text.clone();
+                            div()
+                                .id(format!("transcript-copy-{}", message.id))
+                                .aria_label(self.t("transcript.copy"))
+                                .text_size(px(10.5))
+                                .text_color(colors.muted_foreground)
+                                .hover(|style| style.text_color(colors.foreground))
+                                .child(self.t("transcript.copy"))
+                                .on_click(cx.listener(move |_, _, _, cx| {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+                                }))
+                        });
                         let forkable = forkable_transcript_row(message);
                         let fork = forkable.then(|| {
                             let entry_id = message.id.clone();
                             div()
                                 .id(format!("transcript-fork-{}", message.id))
-                                .aria_label("Fork from here")
+                                .aria_label(self.t("transcript.fork"))
                                 .text_size(px(10.5))
                                 .text_color(colors.muted_foreground)
                                 .hover(|style| style.text_color(colors.foreground))
-                                .child("Fork from here")
+                                .child(self.t("transcript.fork"))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.fork_from_message(&entry_id, cx);
                                 }))
@@ -4885,9 +5202,12 @@ impl Workspace {
                         let parts: Vec<AnyElement> = message
                             .parts
                             .iter()
+                            .filter(|part| part.kind != "toolCall")
                             .map(|part| {
                                 if part.kind == "thinking" {
                                     self.thinking_part_element(part, &message.id, colors, cx)
+                                } else if part.kind == "toolResult" {
+                                    self.tool_result_element(part, &message.id, colors, cx)
                                 } else {
                                     transcript_part_element(part, &message.role, colors)
                                 }
@@ -4908,38 +5228,27 @@ impl Workspace {
                                     .children(parts),
                             )
                         } else {
-                            div()
-                                .flex()
-                                .flex_col()
-                                .gap_2()
-                                .w_full()
-                                .when(!is_assistant, |element| {
-                                    element.child(
-                                        div()
-                                            .text_size(px(10.5))
-                                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                                            .text_color(colors.muted_foreground)
-                                            .child(transcript_role_label(message)),
-                                    )
-                                })
-                                .children(parts)
+                            div().flex().flex_col().gap_2().w_full().children(parts)
                         };
+                        let actions = div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .opacity(0.0)
+                            .group_hover(message_group.clone(), |style| style.opacity(1.0))
+                            .when(is_assistant, |element| element.justify_start())
+                            .when(!is_assistant, |element| element.justify_end())
+                            .when_some(copy, |element, copy| element.child(copy))
+                            .when_some(fork, |element, fork| element.child(fork));
                         let row = div()
                             .flex()
                             .flex_col()
                             .gap_1()
                             .w_full()
+                            .pb(px(if is_toolish { 10.0 } else { 32.0 }))
+                            .group(message_group)
                             .child(body)
-                            .when_some(fork, |element, fork| {
-                                element.child(
-                                    div()
-                                        .flex()
-                                        .items_center()
-                                        .when(is_assistant, |element| element.justify_start())
-                                        .when(!is_assistant, |element| element.justify_end())
-                                        .child(fork),
-                                )
-                            });
+                            .child(actions);
                         if index >= self.transcript_animation_floor {
                             row.with_animation(
                                 format!("message-enter-{}", message.id),
@@ -4966,7 +5275,6 @@ impl Workspace {
             .flex_col()
             .flex_1()
             .min_h(px(0.0))
-            .child(status_row)
             .when_some(todo_hud, |element, hud| element.child(hud))
             .child(scroll)
             .when(!self.transcript_at_bottom, |element| {
@@ -4981,17 +5289,13 @@ impl Workspace {
                         .child(
                             div()
                                 .id("transcript-jump-latest")
-                                .aria_label("Jump to latest")
+                                .aria_label(self.t("transcript.jumpLatest"))
                                 .px_3()
                                 .py_1()
-                                .rounded(px(6.0))
-                                .border_1()
-                                .border_color(colors.border)
-                                .bg(colors.primary)
-                                .text_xs()
-                                .text_color(colors.primary_foreground)
-                                .hover(|style| style.bg(colors.primary.opacity(0.9)))
-                                .child("Jump to latest")
+                                .bg(colors.popover)
+                                .text_color(colors.muted_foreground)
+                                .hover(|style| style.bg(colors.accent))
+                                .child(self.t("transcript.jumpLatest"))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.jump_to_transcript_latest(cx);
                                 }))
@@ -5119,6 +5423,82 @@ impl Workspace {
             )
     }
 
+    fn cycle_effort(&mut self, cx: &mut Context<Self>) {
+        let next = match self.settings.default_effort.as_str() {
+            "low" => "medium",
+            "medium" => "high",
+            "high" => "max",
+            _ => "low",
+        };
+        self.update_setting(json!({ "defaultEffort": next }), cx);
+    }
+
+    fn cycle_approval(&mut self, cx: &mut Context<Self>) {
+        let next = match self.settings.omp_approval_mode {
+            omp_core::settings::OmpApprovalMode::Inherit => "always-ask",
+            omp_core::settings::OmpApprovalMode::AlwaysAsk => "write",
+            omp_core::settings::OmpApprovalMode::Write => "yolo",
+            omp_core::settings::OmpApprovalMode::Yolo => "inherit",
+        };
+        self.update_setting(json!({ "ompApprovalMode": next }), cx);
+    }
+
+    fn model_menu(&self, colors: ThemeColor, cx: &mut Context<Self>) -> impl IntoElement {
+        let selected = self.settings.last_selected_model();
+        let rows: Vec<AnyElement> = self
+            .model_catalog
+            .as_ref()
+            .map(|catalog| {
+                visible_models(&catalog.models, &selected, None)
+                    .into_iter()
+                    .map(|model| {
+                        Self::model_row(
+                            model.key.clone(),
+                            model.name.clone(),
+                            model.key == selected,
+                            colors,
+                            cx,
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        div()
+            .id("composer-model-menu")
+            .absolute()
+            .left(px(0.0))
+            .bottom(px(44.0))
+            .w(px(420.0))
+            .max_h(px(300.0))
+            .overflow_y_scroll()
+            .p_1()
+            .rounded(px(10.0))
+            .border_1()
+            .border_color(colors.border)
+            .bg(colors.popover)
+            .shadow(vec![gpui::BoxShadow {
+                color: black().opacity(0.38),
+                offset: point(px(0.0), px(12.0)),
+                blur_radius: px(32.0),
+                spread_radius: px(0.0),
+                inset: false,
+            }])
+            .when(rows.is_empty(), |element| {
+                element.child(
+                    div()
+                        .p_2()
+                        .text_sm()
+                        .text_color(colors.muted_foreground)
+                        .child(self.t("common.loading")),
+                )
+            })
+            .children(rows)
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.model_menu_open = false;
+                cx.notify();
+            }))
+    }
+
     fn composer(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.theme().colors;
         let dictation_status = self
@@ -5139,26 +5519,59 @@ impl Workspace {
                     .clone()
                     .map(|status| (status, colors.muted_foreground))
             });
+        let model_label = if self.settings.last_selected_model().is_empty() {
+            self.t("common.auto").to_string()
+        } else {
+            composer_model_label(&self.settings.last_selected_model())
+                .trim_start_matches("Model: ")
+                .to_string()
+        };
+        let effort_label = match self.settings.default_effort.as_str() {
+            "low" => self.t("common.low"),
+            "high" => self.t("common.high"),
+            "max" => self.t("common.max"),
+            _ => self.t("common.medium"),
+        };
+        let approval_label = match self.settings.omp_approval_mode {
+            omp_core::settings::OmpApprovalMode::Inherit => self.t("common.inherit"),
+            omp_core::settings::OmpApprovalMode::AlwaysAsk => "Ask",
+            omp_core::settings::OmpApprovalMode::Write => "Write",
+            omp_core::settings::OmpApprovalMode::Yolo => "Yolo",
+        };
+        let has_draft = !self.composer.read(cx).value().trim().is_empty();
+
         div()
             .flex()
             .flex_col()
             .gap_2()
+            .relative()
             .mx(px(24.0))
             .mt(px(8.0))
             .mb(px(13.0))
             .min_h(px(92.0))
-            .p(px(10.0))
-            .rounded(px(18.0))
+            .px(px(11.0))
+            .pt(px(10.0))
+            .pb(px(9.0))
+            .rounded(px(14.0))
             .border_1()
             .border_color(colors.border)
             .bg(colors.popover)
-            .shadow(vec![gpui::BoxShadow {
-                color: black().opacity(0.28),
-                offset: point(px(0.0), px(4.0)),
-                blur_radius: px(20.0),
-                spread_radius: px(0.0),
-                inset: false,
-            }])
+            .shadow(vec![
+                gpui::BoxShadow {
+                    color: black().opacity(0.28),
+                    offset: point(px(0.0), px(4.0)),
+                    blur_radius: px(20.0),
+                    spread_radius: px(0.0),
+                    inset: false,
+                },
+                gpui::BoxShadow {
+                    color: white().opacity(0.09),
+                    offset: point(px(0.0), px(0.0)),
+                    blur_radius: px(0.0),
+                    spread_radius: px(0.5),
+                    inset: true,
+                },
+            ])
             .when_some(banner, |element, (text, color)| {
                 element.child(
                     div()
@@ -5185,7 +5598,7 @@ impl Workspace {
                             .bg(colors.primary)
                             .text_size(px(11.0))
                             .text_color(colors.primary_foreground)
-                            .child("Add this folder")
+                            .child(self.t("common.addFolder"))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 let path = this
                                     .selected_session
@@ -5334,30 +5747,16 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .gap_1p5()
+                    .min_h(px(28.0))
+                    .pt(px(6.0))
+                    .border_t_1()
+                    .border_color(colors.border.opacity(0.62))
                     .text_xs()
                     .text_color(colors.muted_foreground)
                     .child(
                         div()
-                            .id("mention-session")
-                            .aria_label("Mention session")
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .size(px(28.0))
-                            .rounded(px(6.0))
-                            .text_color(if self.mention_menu_open {
-                                colors.primary
-                            } else {
-                                colors.muted_foreground
-                            })
-                            .hover(|style| style.bg(colors.accent))
-                            .child(IconName::AtSign)
-                            .on_click(cx.listener(|this, _, _, cx| this.toggle_mention_menu(cx))),
-                    )
-                    .child(
-                        div()
-                            .id("attach-image")
-                            .aria_label("Attach image")
+                            .id("composer-plus")
+                            .aria_label(self.t("common.attach"))
                             .flex()
                             .items_center()
                             .justify_center()
@@ -5365,10 +5764,91 @@ impl Workspace {
                             .rounded(px(6.0))
                             .text_color(colors.muted_foreground)
                             .hover(|style| style.bg(colors.accent))
-                            .child(IconName::Paperclip)
+                            .child(div().text_size(px(16.0)).child(IconName::Plus))
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.pick_image(window, cx)),
                             ),
+                    )
+                    .child(
+                        div()
+                            .id("model-picker")
+                            .aria_label(self.t("composer.model"))
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .h(px(26.0))
+                            .max_w(px(170.0))
+                            .overflow_hidden()
+                            .px_2()
+                            .rounded(px(999.0))
+                            .text_size(px(11.0))
+                            .text_color(colors.muted_foreground)
+                            .hover(|style| style.bg(colors.accent))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.model_menu_open = !this.model_menu_open;
+                                if this.model_menu_open {
+                                    this.ensure_models(cx);
+                                }
+                                cx.notify();
+                            }))
+                            .child(div().text_size(px(14.0)).child(IconName::Brain))
+                            .child(div().overflow_hidden().text_ellipsis().child(model_label))
+                            .child(div().text_size(px(12.0)).child(IconName::ChevronDown)),
+                    )
+                    .child(
+                        div()
+                            .id("effort-picker")
+                            .aria_label(self.t("composer.effort"))
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .h(px(26.0))
+                            .px_2()
+                            .rounded(px(999.0))
+                            .text_size(px(11.0))
+                            .text_color(colors.muted_foreground)
+                            .hover(|style| style.bg(colors.accent))
+                            .on_click(cx.listener(|this, _, _, cx| this.cycle_effort(cx)))
+                            .child(div().text_size(px(14.0)).child(IconName::Gauge))
+                            .child(effort_label)
+                            .child(div().text_size(px(12.0)).child(IconName::ChevronDown)),
+                    )
+                    .child(
+                        div()
+                            .id("approval-mode")
+                            .aria_label(self.t("composer.approval"))
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .h(px(26.0))
+                            .px_2()
+                            .rounded(px(999.0))
+                            .text_size(px(11.0))
+                            .text_color(colors.muted_foreground)
+                            .hover(|style| style.bg(colors.accent))
+                            .on_click(cx.listener(|this, _, _, cx| this.cycle_approval(cx)))
+                            .child(div().text_size(px(14.0)).child(IconName::Shield))
+                            .child(approval_label),
+                    )
+                    .child(div().flex_1())
+                    .when_some(self.context_usage, |element, usage| {
+                        element.child(context_usage_dial(usage, colors))
+                    })
+                    .child(
+                        div()
+                            .id("live-voice")
+                            .aria_label(self.t("common.live"))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .size(px(28.0))
+                            .rounded(px(6.0))
+                            .text_color(colors.muted_foreground)
+                            .hover(|style| style.bg(colors.accent))
+                            .child(div().text_size(px(16.0)).child(IconName::AudioLines))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.set_right_pane("live-voice", cx);
+                            })),
                     )
                     .child(
                         div()
@@ -5385,26 +5865,41 @@ impl Workspace {
                                 colors.muted_foreground
                             })
                             .hover(|style| style.bg(colors.accent))
-                            .child(IconName::Mic)
+                            .child(div().text_size(px(16.0)).child(IconName::Mic))
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_dictation(cx))),
                     )
-                    .child(div().flex_1())
-                    .when_some(self.context_usage, |element, usage| {
-                        element.child(context_usage_dial(usage, colors))
-                    })
-                    .child(self.model_footer())
                     .child(
                         div()
                             .id("send-prompt")
-                            .aria_label("Send prompt")
+                            .aria_label(if self.running {
+                                self.t("common.stop")
+                            } else {
+                                self.t("common.send")
+                            })
                             .flex()
                             .items_center()
                             .justify_center()
-                            .size(px(32.0))
+                            .size(px(30.0))
                             .rounded(px(999.0))
-                            .bg(colors.primary)
-                            .text_color(colors.primary_foreground)
-                            .child(IconName::ArrowUp)
+                            .bg(if self.running {
+                                colors.danger
+                            } else if has_draft {
+                                colors.foreground
+                            } else {
+                                colors.selection
+                            })
+                            .text_color(if self.running {
+                                white()
+                            } else if has_draft {
+                                colors.background
+                            } else {
+                                colors.muted_foreground
+                            })
+                            .child(div().text_size(px(16.0)).child(if self.running {
+                                IconName::Square
+                            } else {
+                                IconName::ArrowUp
+                            }))
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.send_prompt(window, cx)),
                             ),
@@ -5415,8 +5910,11 @@ impl Workspace {
                     .text_size(px(9.5))
                     .text_color(colors.muted_foreground)
                     .text_center()
-                    .child("OMP can make mistakes. Review commands and changes before submitting."),
+                    .child(self.t("composer.note")),
             )
+            .when(self.model_menu_open, |element| {
+                element.child(self.model_menu(colors, cx))
+            })
     }
 
     pub fn set_view(&mut self, view: AppView, cx: &mut Context<Self>) {
@@ -5494,14 +5992,6 @@ impl Workspace {
         if self.overview_pinned {
             self.right_pane = RightPane::Launcher;
         }
-    }
-
-    /// The launcher's pin control. The pin is session-only: the scenario that
-    /// needs it is the view switch, not the next launch.
-    fn toggle_overview_pin(&mut self, cx: &mut Context<Self>) {
-        self.overview_pinned = !self.overview_pinned;
-        self.apply_overview_pin();
-        cx.notify();
     }
 
     pub fn notifications(&self) -> &[NotificationRecord] {
@@ -6033,23 +6523,46 @@ impl Workspace {
             .flex()
             .items_center()
             .gap_2()
-            .px_3()
-            .py_2()
-            .rounded(px(8.0))
-            .border_1()
+            .min_h(px(64.0))
+            .py(px(15.0))
+            .border_b_1()
             .border_color(colors.border)
-            .text_sm()
+            .text_size(px(12.0))
             .text_color(colors.foreground)
             .hover(|style| style.bg(colors.accent))
             .child(label)
             .child(div().flex_1())
             .child(
                 div()
-                    .text_xs()
+                    .text_size(px(10.5))
                     .text_color(colors.muted_foreground)
                     .child(value),
             )
             .on_click(cx.listener(move |this, _, window, cx| on_click(this, window, cx)))
+    }
+
+    fn settings_info_card(
+        &self,
+        label: &'static str,
+        value: impl Into<String>,
+        colors: ThemeColor,
+    ) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .px_3()
+            .py_2()
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(colors.border)
+            .child(div().text_sm().text_color(colors.foreground).child(label))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(colors.muted_foreground)
+                    .child(value.into()),
+            )
     }
 
     /// The provider chips above the model list: `All` plus one chip per
@@ -6988,222 +7501,561 @@ impl Workspace {
 
     fn settings_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.theme().colors;
-        let theme = match self.settings.theme {
-            omp_core::settings::Theme::System => "system",
-            omp_core::settings::Theme::Light => "light",
-            omp_core::settings::Theme::Dark => "dark",
-        };
-        let density = match self.settings.conversation_density {
-            omp_core::settings::ConversationDensity::Compact => "compact",
-            omp_core::settings::ConversationDensity::Comfortable => "comfortable",
-        };
-        let enter = match self.settings.message_enter_action {
-            omp_core::settings::MessageEnterAction::Steer => "steer",
-            omp_core::settings::MessageEnterAction::Queue => "queue",
-        };
-        // The picker's list is the cached catalog, filtered to the active
-        // provider chip and bounded; its failure is inline text, not a reason
-        // to hide the current model. The chips come from the catalog's
-        // providers, or from its models when it lists none.
-        let selected_model = self.settings.last_selected_model();
-        let provider_filter = self.provider_filter.clone();
-        let provider_list: Vec<ProviderChip> = self
-            .model_catalog
-            .as_ref()
-            .map(provider_chips)
-            .unwrap_or_default();
-        let model_error = self.model_catalog_error();
-        let model_loading = self.model_load_task.is_some();
-        let model_status = self.model_status.clone();
-        let model_rows: Vec<(String, String, bool)> = self
-            .model_catalog
-            .as_ref()
-            .map(|catalog| {
-                visible_models(&catalog.models, &selected_model, provider_filter.as_deref())
-                    .into_iter()
-                    .map(|model| {
-                        let key = model_key(&model.provider, &model.id);
-                        let selected = key == selected_model;
-                        (key, model.name.clone(), selected)
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        let model_elements: Vec<AnyElement> = model_rows
-            .into_iter()
-            .map(|(key, name, selected)| Self::model_row(key, name, selected, colors, cx))
-            .collect();
-        let provider_row = (!provider_list.is_empty()).then(|| {
-            Self::provider_filter_row(&provider_list, provider_filter.as_deref(), colors, cx)
-        });
         div()
             .id("settings-page")
             .flex()
-            .flex_col()
-            .flex_1()
-            .min_w(px(0.0))
-            .w_full()
-            .max_w(px(760.0))
-            .mx_auto()
             .h_full()
-            .p_6()
-            .gap_4()
-            // The picker can add up to `MODEL_PICKER_LIMIT` rows, so the page
-            // scrolls instead of clipping its last section.
-            .overflow_y_scroll()
+            .w_full()
+            .child(self.settings_nav(colors, cx))
             .child(
                 div()
+                    .id("settings-content")
                     .flex()
-                    .items_center()
-                    .gap_2()
+                    .flex_col()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .h_full()
+                    .overflow_y_scroll()
+                    .bg(colors.background)
+                    .px(px(32.0))
+                    .pt(px(36.0))
+                    .pb(px(70.0))
                     .child(
                         div()
-                            .id("settings-back")
-                            .px_2()
-                            .py_1()
-                            .rounded(px(6.0))
-                            .border_1()
-                            .border_color(colors.border)
-                            .text_xs()
-                            .text_color(colors.muted_foreground)
-                            .child("‹ Workspace")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.view = AppView::Workspace;
-                                cx.notify();
-                            })),
-                    )
-                    .child(div().text_lg().font_weight(gpui::FontWeight::SEMIBOLD).child("Settings")),
+                            .flex()
+                            .flex_col()
+                            .gap_4()
+                            .w_full()
+                            .max_w(px(720.0))
+                            .mx_auto()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .id("settings-back")
+                                            .px_2()
+                                            .py_1()
+                                            .rounded(px(6.0))
+                                            .border_1()
+                                            .border_color(colors.border)
+                                            .text_xs()
+                                            .text_color(colors.muted_foreground)
+                                            .child("‹ Workspace")
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.view = AppView::Workspace;
+                                                cx.notify();
+                                            })),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(22.0))
+                                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                                            .child(self.t(self.settings_section.key())),
+                                    ),
+                            )
+                            .child(self.settings_section_content(colors, cx)),
+                    ),
             )
-            .child(div().text_xs().text_color(colors.muted_foreground).child("APPEARANCE"))
-            .child(self.settings_row("Theme", theme.to_string(), colors, cx, |this, window, cx| {
-                let (next, mode) = match this.settings.theme {
-                    omp_core::settings::Theme::System => ("light", ThemeMode::Light),
-                    omp_core::settings::Theme::Light => ("dark", ThemeMode::Dark),
-                    omp_core::settings::Theme::Dark => ("system", ThemeMode::from(window.appearance())),
+    }
+
+    fn settings_nav(&self, colors: ThemeColor, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .w(px(190.0))
+            .h_full()
+            .px(px(10.0))
+            .py(px(20.0))
+            .gap(px(2.0))
+            .border_r_1()
+            .border_color(colors.border)
+            .bg(colors.tab)
+            .children(SettingsSection::ALL.into_iter().map(|section| {
+                let active = self.settings_section == section;
+                div()
+                    .id(section.key())
+                    .aria_label(self.t(section.key()))
+                    .flex()
+                    .items_center()
+                    .h(px(33.0))
+                    .px_2()
+                    .rounded(px(7.0))
+                    .text_sm()
+                    .text_color(if active {
+                        colors.foreground
+                    } else {
+                        colors.muted_foreground
+                    })
+                    .when(active, |element| element.bg(colors.accent))
+                    .hover(|style| style.bg(colors.accent))
+                    .child(self.t(section.key()))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.settings_section = section;
+                        cx.notify();
+                    }))
+            }))
+    }
+
+    fn settings_section_content(&self, colors: ThemeColor, cx: &mut Context<Self>) -> AnyElement {
+        match self.settings_section {
+            SettingsSection::General => {
+                let density = match self.settings.conversation_density {
+                    omp_core::settings::ConversationDensity::Compact => "compact",
+                    omp_core::settings::ConversationDensity::Comfortable => "comfortable",
                 };
-                this.update_setting(json!({ "theme": next }), cx);
-                Theme::change(mode, Some(window), cx);
-                apply_electron_palette(cx, &this.settings.accent_color);
-            }))
-            .child(self.settings_row("Accent", self.settings.accent_color.clone(), colors, cx, |this, _window, cx| {
-                let colors = ["prime", "blue", "teal", "green", "orange", "pink"];
-                let index = colors.iter().position(|color| *color == this.settings.accent_color).unwrap_or(0);
-                let next = colors[(index + 1) % colors.len()];
-                this.update_setting(json!({ "accentColor": next }), cx);
-                apply_electron_palette(cx, &this.settings.accent_color);
-            }))
-            .child(self.settings_row("Interface font scale", format!("{}%", self.settings.interface_font_scale), colors, cx, |this, _window, cx| {
-                let next = match this.settings.interface_font_scale {
-                    105 => 110,
-                    110 => 115,
-                    _ => 105,
+                let enter = match self.settings.message_enter_action {
+                    omp_core::settings::MessageEnterAction::Steer => "steer",
+                    omp_core::settings::MessageEnterAction::Queue => "queue",
                 };
-                this.update_setting(json!({ "interfaceFontScale": next }), cx);
-            }))
-            .child(self.settings_row("Conversation density", density.to_string(), colors, cx, |this, _window, cx| {
-                let next = if this.settings.conversation_density == omp_core::settings::ConversationDensity::Compact {
-                    "comfortable"
-                } else {
-                    "compact"
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .child(self.settings_row(
+                        "Conversation density",
+                        density.to_string(),
+                        colors,
+                        cx,
+                        |this, _window, cx| {
+                            let next = if this.settings.conversation_density
+                                == omp_core::settings::ConversationDensity::Compact
+                            {
+                                "comfortable"
+                            } else {
+                                "compact"
+                            };
+                            this.update_setting(json!({ "conversationDensity": next }), cx);
+                        },
+                    ))
+                    .child(self.settings_row(
+                        "Enter sends",
+                        enter.to_string(),
+                        colors,
+                        cx,
+                        |this, _window, cx| {
+                            let next = if this.settings.message_enter_action
+                                == omp_core::settings::MessageEnterAction::Steer
+                            {
+                                "queue"
+                            } else {
+                                "steer"
+                            };
+                            this.update_setting(json!({ "messageEnterAction": next }), cx);
+                        },
+                    ))
+                    .child(self.settings_row(
+                        "Idle session timeout",
+                        format!("{} min", self.settings.idle_session_minutes),
+                        colors,
+                        cx,
+                        |this, _window, cx| {
+                            let next = match this.settings.idle_session_minutes {
+                                0 => 5,
+                                5 => 15,
+                                15 => 30,
+                                _ => 0,
+                            };
+                            this.update_setting(json!({ "idleSessionMinutes": next }), cx);
+                        },
+                    ))
+                    .into_any_element()
+            }
+            SettingsSection::Appearance => {
+                let theme = match self.settings.theme {
+                    omp_core::settings::Theme::System => "system",
+                    omp_core::settings::Theme::Light => "light",
+                    omp_core::settings::Theme::Dark => "dark",
                 };
-                this.update_setting(json!({ "conversationDensity": next }), cx);
-            }))
-            .child(div().text_xs().text_color(colors.muted_foreground).child("CONVERSATION"))
-            .child(self.settings_row("Enter sends", enter.to_string(), colors, cx, |this, _window, cx| {
-                let next = if this.settings.message_enter_action == omp_core::settings::MessageEnterAction::Steer {
-                    "queue"
-                } else {
-                    "steer"
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .child(self.settings_row(
+                        "Theme",
+                        theme.to_string(),
+                        colors,
+                        cx,
+                        |this, window, cx| {
+                            let (next, mode) = match this.settings.theme {
+                                omp_core::settings::Theme::System => ("light", ThemeMode::Light),
+                                omp_core::settings::Theme::Light => ("dark", ThemeMode::Dark),
+                                omp_core::settings::Theme::Dark => {
+                                    ("system", ThemeMode::from(window.appearance()))
+                                }
+                            };
+                            this.update_setting(json!({ "theme": next }), cx);
+                            Theme::change(mode, Some(window), cx);
+                            apply_electron_palette(cx, &this.settings.accent_color);
+                        },
+                    ))
+                    .child(self.settings_row(
+                        "Accent",
+                        self.settings.accent_color.clone(),
+                        colors,
+                        cx,
+                        |this, _window, cx| {
+                            let colors = ["prime", "blue", "teal", "green", "orange", "pink"];
+                            let index = colors
+                                .iter()
+                                .position(|color| *color == this.settings.accent_color)
+                                .unwrap_or(0);
+                            let next = colors[(index + 1) % colors.len()];
+                            this.update_setting(json!({ "accentColor": next }), cx);
+                            apply_electron_palette(cx, &this.settings.accent_color);
+                        },
+                    ))
+                    .child(self.settings_row(
+                        "Interface font scale",
+                        format!("{}%", self.settings.interface_font_scale),
+                        colors,
+                        cx,
+                        |this, _window, cx| {
+                            let next = match this.settings.interface_font_scale {
+                                105 => 110,
+                                110 => 115,
+                                _ => 105,
+                            };
+                            this.update_setting(json!({ "interfaceFontScale": next }), cx);
+                        },
+                    ))
+                    .into_any_element()
+            }
+            SettingsSection::Agent => {
+                let approval = match self.settings.omp_approval_mode {
+                    omp_core::settings::OmpApprovalMode::Inherit => "Inherit",
+                    omp_core::settings::OmpApprovalMode::AlwaysAsk => "Ask",
+                    omp_core::settings::OmpApprovalMode::Write => "Write",
+                    omp_core::settings::OmpApprovalMode::Yolo => "Yolo",
                 };
-                this.update_setting(json!({ "messageEnterAction": next }), cx);
-            }))
-            .child(self.settings_row("Idle session timeout", format!("{} min", self.settings.idle_session_minutes), colors, cx, |this, _window, cx| {
-                let next = match this.settings.idle_session_minutes {
-                    0 => 5,
-                    5 => 15,
-                    15 => 30,
-                    _ => 0,
-                };
-                this.update_setting(json!({ "idleSessionMinutes": next }), cx);
-            }))
-            .child(div().text_xs().text_color(colors.muted_foreground).child("MODELS"))
-            .child(Self::current_model_row(&selected_model, colors))
-            .when_some(provider_row, |element, row| element.child(row))
-            .when_some(model_error, |element, error| {
-                element.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .child(self.settings_info_card(
+                        "Harness",
+                        self.settings.active_harness.clone(),
+                        colors,
+                    ))
+                    .child(self.settings_row(
+                        "Default effort",
+                        self.settings.default_effort.clone(),
+                        colors,
+                        cx,
+                        |this, _window, cx| this.cycle_effort(cx),
+                    ))
+                    .child(self.settings_row(
+                        "Approval mode",
+                        approval.to_string(),
+                        colors,
+                        cx,
+                        |this, _window, cx| this.cycle_approval(cx),
+                    ))
+                    .child(self.settings_row(
+                        "Show reasoning summaries",
+                        if self.settings.show_reasoning_summaries {
+                            "On"
+                        } else {
+                            "Off"
+                        }
+                        .to_string(),
+                        colors,
+                        cx,
+                        |this, _window, cx| {
+                            let next = !this.settings.show_reasoning_summaries;
+                            this.update_setting(json!({ "showReasoningSummaries": next }), cx);
+                        },
+                    ))
+                    .child(self.settings_row(
+                        "Show tool calls",
+                        if self.settings.show_tool_calls {
+                            "On"
+                        } else {
+                            "Off"
+                        }
+                        .to_string(),
+                        colors,
+                        cx,
+                        |this, _window, cx| {
+                            let next = !this.settings.show_tool_calls;
+                            this.update_setting(json!({ "showToolCalls": next }), cx);
+                        },
+                    ))
+                    .child(self.settings_row(
+                        "Reasoning expanded by default",
+                        if self.settings.reasoning_expanded_by_default {
+                            "On"
+                        } else {
+                            "Off"
+                        }
+                        .to_string(),
+                        colors,
+                        cx,
+                        |this, _window, cx| {
+                            let next = !this.settings.reasoning_expanded_by_default;
+                            this.update_setting(
+                                json!({ "reasoningExpandedByDefault": next }),
+                                cx,
+                            );
+                        },
+                    ))
+                    .into_any_element()
+            }
+            SettingsSection::Session => div()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .child(self.settings_row(
+                    "Show file changes popup",
+                    if self.settings.show_file_changes_popup {
+                        "On"
+                    } else {
+                        "Off"
+                    }
+                    .to_string(),
+                    colors,
+                    cx,
+                    |this, _window, cx| {
+                        let next = !this.settings.show_file_changes_popup;
+                        this.update_setting(json!({ "showFileChangesPopup": next }), cx);
+                    },
+                ))
+                .child(self.settings_row(
+                    "Keep running in background",
+                    if self.settings.keep_running_in_background {
+                        "On"
+                    } else {
+                        "Off"
+                    }
+                    .to_string(),
+                    colors,
+                    cx,
+                    |this, _window, cx| {
+                        let next = !this.settings.keep_running_in_background;
+                        this.update_setting(json!({ "keepRunningInBackground": next }), cx);
+                    },
+                ))
+                .child(self.settings_row(
+                    "Launch at login",
+                    if self.settings.launch_at_login {
+                        "On"
+                    } else {
+                        "Off"
+                    }
+                    .to_string(),
+                    colors,
+                    cx,
+                    |this, _window, cx| {
+                        let next = !this.settings.launch_at_login;
+                        this.update_setting(json!({ "launchAtLogin": next }), cx);
+                    },
+                ))
+                .into_any_element(),
+            SettingsSection::Providers => {
+                let selected_model = self.settings.last_selected_model();
+                let provider_filter = self.provider_filter.clone();
+                let provider_list: Vec<ProviderChip> = self
+                    .model_catalog
+                    .as_ref()
+                    .map(provider_chips)
+                    .unwrap_or_default();
+                let model_error = self.model_catalog_error();
+                let model_loading = self.model_load_task.is_some();
+                let model_status = self.model_status.clone();
+                let model_rows: Vec<(String, String, bool)> = self
+                    .model_catalog
+                    .as_ref()
+                    .map(|catalog| {
+                        visible_models(
+                            &catalog.models,
+                            &selected_model,
+                            provider_filter.as_deref(),
+                        )
+                        .into_iter()
+                        .map(|model| {
+                            let key = model_key(&model.provider, &model.id);
+                            let selected = key == selected_model;
+                            (key, model.name.clone(), selected)
+                        })
+                        .collect()
+                    })
+                    .unwrap_or_default();
+                let model_elements: Vec<AnyElement> = model_rows
+                    .into_iter()
+                    .map(|(key, name, selected)| {
+                        Self::model_row(key, name, selected, colors, cx)
+                    })
+                    .collect();
+                let provider_row = (!provider_list.is_empty()).then(|| {
+                    Self::provider_filter_row(
+                        &provider_list,
+                        provider_filter.as_deref(),
+                        colors,
+                        cx,
+                    )
+                });
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .child(Self::current_model_row(&selected_model, colors))
+                    .when_some(provider_row, |element, row| element.child(row))
+                    .when_some(model_error, |element, error| {
+                        element.child(
+                            div()
+                                .px_3()
+                                .py_2()
+                                .rounded(px(8.0))
+                                .border_1()
+                                .border_color(colors.danger)
+                                .text_xs()
+                                .text_color(colors.danger)
+                                .child(format!("Model catalog unavailable: {error}")),
+                        )
+                    })
+                    .when(model_loading, |element| {
+                        element.child(
+                            div()
+                                .px_3()
+                                .py_2()
+                                .text_xs()
+                                .text_color(colors.muted_foreground)
+                                .child("Loading models…"),
+                        )
+                    })
+                    .when_some(model_status, |element, status| {
+                        element.child(
+                            div()
+                                .px_3()
+                                .py_2()
+                                .text_xs()
+                                .text_color(colors.danger)
+                                .child(status),
+                        )
+                    })
+                    .children(model_elements)
+                    .into_any_element()
+            }
+            SettingsSection::Voice => div()
+                .px_3()
+                .py_2()
+                .rounded(px(8.0))
+                .border_1()
+                .border_color(colors.border)
+                .text_sm()
+                .text_color(colors.muted_foreground)
+                .child("Live voice is RPC-driven: the Live Voice pane sends live_start, live_stop, and live_mute to the OMP harness, which owns the microphone, audio, and transcription. Dictation works the same way: the composer's Dictate button sends dictation_start/dictation_stop and inserts the transcript the harness returns.")
+                .into_any_element(),
+            SettingsSection::Browser => div()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .child(self.settings_info_card(
+                    "Home page",
+                    self.settings.browser_home.clone(),
+                    colors,
+                ))
+                .child(self.settings_row(
+                    "Ask before downloads",
+                    if self.settings.browser_ask_for_downloads {
+                        "On"
+                    } else {
+                        "Off"
+                    }
+                    .to_string(),
+                    colors,
+                    cx,
+                    |this, _window, cx| {
+                        let next = !this.settings.browser_ask_for_downloads;
+                        this.update_setting(json!({ "browserAskForDownloads": next }), cx);
+                    },
+                ))
+                .into_any_element(),
+            SettingsSection::Privacy => div()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .child(self.settings_info_card(
+                    "Telemetry",
+                    if self.settings.telemetry {
+                        "Enabled"
+                    } else {
+                        "Disabled"
+                    },
+                    colors,
+                ))
+                .child(self.settings_info_card(
+                    "Local data",
+                    "Sessions and settings stay on this machine.",
+                    colors,
+                ))
+                .into_any_element(),
+            SettingsSection::About => div()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .child(
                     div()
                         .px_3()
                         .py_2()
                         .rounded(px(8.0))
                         .border_1()
-                        .border_color(colors.danger)
-                        .text_xs()
-                        .text_color(colors.danger)
-                        .child(format!("Model catalog unavailable: {error}")),
+                        .border_color(colors.border)
+                        .text_sm()
+                        .child(format!("OMP Desktop {} · Rust/GPUI", env!("CARGO_PKG_VERSION"))),
                 )
-            })
-            .when(model_loading, |element| {
-                element.child(
-                    div()
-                        .px_3()
-                        .py_2()
-                        .text_xs()
-                        .text_color(colors.muted_foreground)
-                        .child("Loading models…"),
-                )
-            })
-            .when_some(model_status, |element, status| {
-                element.child(
-                    div()
-                        .px_3()
-                        .py_2()
-                        .text_xs()
-                        .text_color(colors.danger)
-                        .child(status),
-                )
-            })
-            .children(model_elements)
-            .child(div().text_xs().text_color(colors.muted_foreground).child("VOICE"))
-            .child(
-                div()
-                    .px_3()
-                    .py_2()
-                    .rounded(px(8.0))
-                    .border_1()
-                    .border_color(colors.border)
-                    .text_sm()
-                    .text_color(colors.muted_foreground)
-                    .child("Live voice is RPC-driven: the Live Voice pane sends live_start, live_stop, and live_mute to the OMP harness, which owns the microphone, audio, and transcription. Dictation works the same way: the composer's Dictate button sends dictation_start/dictation_stop and inserts the transcript the harness returns."),
-            )
-            .child(div().text_xs().text_color(colors.muted_foreground).child("ABOUT"))
-            .child(
-                div()
-                    .px_3()
-                    .py_2()
-                    .rounded(px(8.0))
-                    .border_1()
-                    .border_color(colors.border)
-                    .text_sm()
-                    .child(format!("OMP Desktop {} · Rust/GPUI", env!("CARGO_PKG_VERSION"))),
-            )
-            .child(self.settings_row("Check for updates", self.update_check.label(), colors, cx, |this, _window, cx| {
-                this.start_update_check(cx);
-            }))
+                .child(self.settings_row(
+                    "Check for updates",
+                    self.update_check.label(),
+                    colors,
+                    cx,
+                    |this, _window, cx| this.start_update_check(cx),
+                ))
+                .into_any_element(),
+        }
     }
 
     fn right_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.theme().colors;
         let items = [
-            (RightPane::Summary, "Summary", IconName::FileText),
-            (RightPane::Review, "Review", IconName::GitBranch),
-            (RightPane::Files, "Open File", IconName::Folder),
-            (RightPane::Browser, "Browser", IconName::Globe),
+            (
+                RightPane::Summary,
+                "Summary",
+                "rightPane.summary",
+                IconName::FileText,
+            ),
+            (
+                RightPane::Review,
+                "Review",
+                "rightPane.review",
+                IconName::GitBranch,
+            ),
+            (
+                RightPane::Files,
+                "Files",
+                "rightPane.files",
+                IconName::Folder,
+            ),
+            (
+                RightPane::Browser,
+                "Browser",
+                "rightPane.browser",
+                IconName::Globe,
+            ),
             (
                 RightPane::SideQuestion,
                 "Side Question",
+                "rightPane.sideQuestion",
                 IconName::MessageSquare,
             ),
-            (RightPane::Subagents, "Subagents", IconName::Bot),
+            (
+                RightPane::Subagents,
+                "Subagents",
+                "rightPane.subagents",
+                IconName::Bot,
+            ),
         ];
         let content = match self.right_pane {
             RightPane::Launcher => None,
@@ -7218,16 +8070,16 @@ impl Workspace {
             RightPane::Activity => Some(self.activity_content(cx).into_any_element()),
         };
         let title = match self.right_pane {
-            RightPane::Launcher => "Overview",
-            RightPane::Summary => "Summary",
-            RightPane::Review => "Review",
-            RightPane::Files => "Open File",
-            RightPane::Browser => "Browser",
-            RightPane::SideQuestion => "Side Question",
+            RightPane::Launcher => self.t("rightPane.overview"),
+            RightPane::Summary => self.t("rightPane.summary"),
+            RightPane::Review => self.t("rightPane.review"),
+            RightPane::Files => self.t("rightPane.files"),
+            RightPane::Browser => self.t("rightPane.browser"),
+            RightPane::SideQuestion => self.t("rightPane.sideQuestion"),
             RightPane::Ask => "Ask",
-            RightPane::Subagents => "Subagents",
+            RightPane::Subagents => self.t("rightPane.subagents"),
             RightPane::LiveVoice => "Live Voice",
-            RightPane::Activity => "Activity",
+            RightPane::Activity => self.t("sidebar.activity"),
         };
         div()
             .id("right-pane")
@@ -7243,7 +8095,7 @@ impl Workspace {
                     omp_core::geometry::clamp_right_pane(self.geometry.right_pane_width)
                 } as f32,
             ))
-            .bg(colors.sidebar)
+            .bg(colors.background)
             .border_l_1()
             .border_color(colors.border)
             .p_3()
@@ -7263,7 +8115,14 @@ impl Workspace {
                         .text_xs()
                         .text_color(colors.muted_foreground)
                         .child(IconName::Search)
-                        .child(div().flex_1().child("Search or enter a URL"))
+                        .child(
+                            div().flex_1().child(
+                                Input::new(&self.right_pane_search)
+                                    .appearance(false)
+                                    .bordered(false)
+                                    .aria_label(self.t("rightPane.searchPlaceholder")),
+                            ),
+                        )
                         .child(self.toolbar_icon(
                             "right-pane-menu",
                             IconName::EllipsisVertical,
@@ -7293,7 +8152,7 @@ impl Workspace {
                                 .text_xs()
                                 .text_color(colors.muted_foreground)
                                 .hover(|style| style.bg(colors.accent))
-                                .child("‹ Back")
+                                .child(self.t("rightPane.back"))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     if this.right_pane == RightPane::Ask {
                                         // Backing out of a live dialog dismisses
@@ -7311,7 +8170,7 @@ impl Workspace {
             })
             .children(content)
             .when(self.right_pane == RightPane::Launcher, |element| {
-                element.children(items.into_iter().map(|(pane, label, icon)| {
+                element.children(items.into_iter().map(|(pane, label, key, icon)| {
                     let selected = self.right_pane == pane;
                     div()
                         .id(label)
@@ -7319,14 +8178,19 @@ impl Workspace {
                         .flex()
                         .items_center()
                         .gap_2()
+                        .min_h(px(32.0))
                         .px_2()
-                        .py_1p5()
                         .rounded(px(6.0))
                         .text_sm()
                         .text_color(colors.foreground)
                         .when(selected, |element| element.bg(colors.accent))
-                        .child(icon)
-                        .child(label)
+                        .child(
+                            div()
+                                .text_size(px(16.0))
+                                .text_color(colors.muted_foreground)
+                                .child(icon),
+                        )
+                        .child(self.t(key))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.set_right_pane(pane.name(), cx);
                             // A launcher row is the only control that can build
@@ -7336,58 +8200,6 @@ impl Workspace {
                             }
                         }))
                 }))
-            })
-            // The launcher's title row: the pin and the attention badge live
-            // here. It sits below the pane rows so those rows keep the measured
-            // positions the parity suite clicks, and it is a plain row, so only
-            // the pin itself takes a click.
-            .when(self.right_pane == RightPane::Launcher, |element| {
-                element.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .px_2()
-                        .py_1()
-                        .rounded(px(6.0))
-                        .text_sm()
-                        .text_color(colors.foreground)
-                        .child(
-                            div()
-                                .id("overview-pin")
-                                .aria_label("Pin overview")
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .size(px(22.0))
-                                .rounded(px(6.0))
-                                .text_color(if self.overview_pinned {
-                                    colors.primary
-                                } else {
-                                    colors.muted_foreground
-                                })
-                                .hover(|style| style.bg(colors.accent))
-                                .child(if self.overview_pinned {
-                                    IconName::Pin
-                                } else {
-                                    IconName::PinOff
-                                })
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.toggle_overview_pin(cx);
-                                })),
-                        )
-                        .child(title)
-                        .child(
-                            div()
-                                .id("overview-attention")
-                                .aria_label("Attention")
-                                .px_2()
-                                .rounded(px(999.0))
-                                .bg(colors.accent)
-                                .text_xs()
-                                .child(self.attention_count.to_string()),
-                        ),
-                )
             })
             .child(div().h(px(1.0)).my_2().bg(colors.border))
             .child(
@@ -7404,7 +8216,7 @@ impl Workspace {
                     .text_color(colors.foreground)
                     .hover(|style| style.bg(colors.accent))
                     .child(IconName::Activity)
-                    .child("Background Tasks")
+                    .child(self.t("rightPane.backgroundTasks"))
                     .child(div().flex_1())
                     .child(
                         div()
@@ -9026,6 +9838,29 @@ fn is_local_transcript_row(id: &str) -> bool {
         .any(|prefix| id.starts_with(prefix))
 }
 
+fn tool_icon(name: &str) -> IconName {
+    let lower = name.to_lowercase();
+    if lower.contains("bash") || lower.contains("shell") || lower.contains("terminal") {
+        IconName::Terminal
+    } else if lower.contains("git") {
+        IconName::GitBranch
+    } else if lower.contains("todo") || lower.contains("plan") {
+        IconName::ListTodo
+    } else if lower.contains("ask") || lower.contains("question") {
+        IconName::MessageCircleQuestionMark
+    } else if lower.contains("read")
+        || lower.contains("write")
+        || lower.contains("edit")
+        || lower.contains("file")
+    {
+        IconName::FileCode
+    } else if lower.contains("web") || lower.contains("browser") || lower.contains("fetch") {
+        IconName::Globe
+    } else {
+        IconName::Wrench
+    }
+}
+
 /// Whether a row can be forked from: it carries an id the harness wrote, so
 /// `fork` has an entry to continue at. A view-minted row has none, and a row
 /// whose parts are all compaction is the harness's own summarisation rather
@@ -9456,16 +10291,19 @@ fn transcript_part_element(part: &TranscriptPart, role: &str, colors: ThemeColor
                 .items_center()
                 .gap_2()
                 .w_full()
-                .px_2()
-                .py_1()
-                .rounded(px(8.0))
-                .border_1()
-                .border_color(colors.border)
-                .bg(colors.tab)
-                .child(IconName::Wrench)
+                .min_h(px(30.0))
+                .py(px(3.0))
+                .text_size(px(13.0))
+                .text_color(colors.muted_foreground)
                 .child(
                     div()
-                        .text_size(px(12.0))
+                        .size(px(16.0))
+                        .text_color(colors.muted_foreground)
+                        .child(tool_icon(&name)),
+                )
+                .child(
+                    div()
+                        .text_color(colors.foreground)
                         .font_weight(gpui::FontWeight::MEDIUM)
                         .child(name),
                 )
@@ -9475,17 +10313,14 @@ fn transcript_part_element(part: &TranscriptPart, role: &str, colors: ThemeColor
                             .flex_1()
                             .overflow_hidden()
                             .text_ellipsis()
-                            .font_family("Menlo")
-                            .text_size(px(11.0))
-                            .text_color(colors.muted_foreground)
-                            .child(command),
+                            .child(format!("· {command}")),
                     )
                 })
                 .child(div().flex_1())
                 .when_some(part.status.clone(), |element, status| {
                     element.child(
                         div()
-                            .text_size(px(10.5))
+                            .text_size(px(10.0))
                             .text_color(colors.muted_foreground)
                             .child(status),
                     )

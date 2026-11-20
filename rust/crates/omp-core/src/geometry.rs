@@ -41,6 +41,15 @@ pub struct UiGeometry {
     pub unknown: BTreeMap<String, Value>,
 }
 
+/// The old docked width. It is migrated once because it was the app default,
+/// not a width the user chose.
+const LEGACY_RIGHT_PANE_WIDTH: f64 = 360.0;
+
+/// The Electron reference window docks its inspector at 571px after the
+/// 248px sidebar. The CSS clamp allows 420..660px, and this matches the
+/// reference window instead of the old 360px sidebar-sized pane.
+const DEFAULT_RIGHT_PANE_WIDTH: f64 = 571.0;
+
 impl Default for UiGeometry {
     fn default() -> Self {
         Self {
@@ -48,7 +57,7 @@ impl Default for UiGeometry {
             sidebar_open: true,
             sidebar_width: 248.0,
             right_pane_open: true,
-            right_pane_width: 360.0,
+            right_pane_width: DEFAULT_RIGHT_PANE_WIDTH,
             compact_restore: None,
             unknown: BTreeMap::new(),
         }
@@ -75,6 +84,15 @@ impl UiGeometry {
             "rightPaneWidth",
             "compactRestore",
         ];
+        let stored_right_width = record
+            .get("rightPaneWidth")
+            .and_then(Value::as_f64)
+            .unwrap_or(defaults.right_pane_width);
+        let right_pane_width = if (stored_right_width - LEGACY_RIGHT_PANE_WIDTH).abs() < 0.5 {
+            DEFAULT_RIGHT_PANE_WIDTH
+        } else {
+            clamp_right_pane(stored_right_width)
+        };
         Self {
             window_bounds,
             sidebar_open: record
@@ -91,12 +109,7 @@ impl UiGeometry {
                 .get("rightPaneOpen")
                 .and_then(Value::as_bool)
                 .unwrap_or(defaults.right_pane_open),
-            right_pane_width: clamp_right_pane(
-                record
-                    .get("rightPaneWidth")
-                    .and_then(Value::as_f64)
-                    .unwrap_or(defaults.right_pane_width),
-            ),
+            right_pane_width,
             compact_restore,
             unknown: record
                 .iter()

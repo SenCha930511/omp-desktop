@@ -1,0 +1,368 @@
+//! Interface language for the shell.
+//!
+//! The Electron reference resolves its catalog from the system locale; the
+//! Rust shell keeps the same three choices and falls back to English when a
+//! key is missing. Only the shell vocabulary lives here: page-specific copy
+//! still belongs to the page that owns it.
+
+use omp_core::settings::Locale;
+use std::sync::OnceLock;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Language {
+    En,
+    ZhCn,
+    ZhTw,
+}
+
+pub fn resolve(locale: Locale) -> Language {
+    match locale {
+        Locale::En => Language::En,
+        Locale::ZhCn => Language::ZhCn,
+        Locale::ZhTw => Language::ZhTw,
+        Locale::System => system_language(),
+    }
+}
+
+fn system_language() -> Language {
+    static LANGUAGE: OnceLock<Language> = OnceLock::new();
+    *LANGUAGE.get_or_init(detect_system_language)
+}
+
+fn detect_system_language() -> Language {
+    #[cfg(target_os = "macos")]
+    if let Ok(output) = std::process::Command::new("defaults")
+        .args(["read", "-g", "AppleLocale"])
+        .output()
+    {
+        let value = String::from_utf8_lossy(&output.stdout).to_lowercase();
+        if value.contains("zh") {
+            return if value.contains("cn") || value.contains("hans") {
+                Language::ZhCn
+            } else {
+                Language::ZhTw
+            };
+        }
+    }
+    let value = std::env::var("LC_ALL")
+        .or_else(|_| std::env::var("LC_MESSAGES"))
+        .or_else(|_| std::env::var("LANG"))
+        .unwrap_or_default()
+        .to_lowercase();
+    if value.contains("zh") {
+        if value.contains("cn") || value.contains("hans") {
+            Language::ZhCn
+        } else {
+            Language::ZhTw
+        }
+    } else {
+        Language::En
+    }
+}
+
+/// Looks up one shell label. Unknown keys are returned unchanged so a missed
+/// string is visible in a screenshot instead of silently disappearing.
+pub fn t(language: Language, key: &'static str) -> &'static str {
+    lookup(language, key)
+        .or_else(|| lookup(Language::En, key))
+        .unwrap_or(key)
+}
+
+fn lookup(language: Language, key: &'static str) -> Option<&'static str> {
+    let value = match language {
+        Language::En => match key {
+            "sidebar.newSession" => "New session",
+            "sidebar.search" => "Search",
+            "sidebar.projects" => "Projects",
+            "sidebar.activity" => "Activity",
+            "sidebar.schedules" => "Schedules",
+            "sidebar.capabilities" => "Capabilities",
+            "sidebar.settings" => "Settings",
+            "sidebar.projectsHeading" => "Projects",
+            "sidebar.noProjects" => "No projects yet. Add a folder to begin.",
+            "sidebar.noMatches" => "No sessions match.",
+            "sidebar.addProject" => "Add project",
+            "sidebar.commands" => "Commands",
+            "sidebar.update.notConfigured" => "Not configured",
+            "settings.sections" => "Settings sections",
+            "settings.general" => "General",
+            "settings.appearance" => "Appearance",
+            "settings.harness" => "Harness",
+            "settings.session" => "Session",
+            "settings.providers" => "Providers",
+            "settings.voice" => "Voice",
+            "settings.browser" => "Browser",
+            "settings.privacy" => "Privacy",
+            "settings.about" => "About",
+            "sidebar.status.idle" => "Idle",
+            "sidebar.status.running" => "Working",
+            "sidebar.status.completed" => "Completed",
+            "sidebar.subagents" => "Subagents",
+            "sidebar.showAll" => "Show all",
+            "sidebar.showLess" => "Show less",
+            "sidebar.searchPlaceholder" => "Projects, chats, branches",
+            "rightPane.summary" => "Summary",
+            "rightPane.review" => "Review",
+            "rightPane.files" => "Files",
+            "rightPane.browser" => "Browser",
+            "rightPane.sideQuestion" => "Side Question",
+            "rightPane.subagents" => "Subagents",
+            "rightPane.backgroundTasks" => "Background Tasks",
+            "rightPane.overview" => "Overview",
+            "rightPane.searchPlaceholder" => "Search or enter a URL",
+            "rightPane.back" => "‹ Back",
+            "composer.placeholder" => "Ask OMP…",
+            "composer.note" => {
+                "OMP can make mistakes. Review commands and changes before submitting."
+            }
+            "composer.reasoning" => "Reasoning",
+            "composer.model" => "Model",
+            "composer.effort" => "Effort",
+            "composer.approval" => "Approval",
+            "transcript.thinking" => "Thinking",
+            "transcript.fork" => "Fork from here",
+            "transcript.copy" => "Copy",
+            "transcript.jumpLatest" => "Jump to latest",
+            "transcript.plan" => "Plan",
+            "transcript.done" => "done",
+            "transcript.completed" => "Completed",
+            "transcript.subagents" => "Subagents",
+            "transcript.tool" => "Tool",
+            "transcript.empty" => "Select a session or create a new one.",
+            "transcript.welcomeTitle" => "Start a new session",
+            "transcript.welcomeBody" => "Ask OMP anything, mention a session, or use a command.",
+            "common.back" => "‹ Back",
+            "common.send" => "Send",
+            "common.stop" => "Stop",
+            "common.auto" => "Auto",
+            "common.inherit" => "Inherit",
+            "common.low" => "Low",
+            "common.medium" => "Medium",
+            "common.high" => "High",
+            "common.max" => "Max",
+            "common.add" => "Add",
+            "common.attach" => "Attach",
+            "common.mic" => "Dictate",
+            "common.live" => "Live",
+            "common.close" => "Close",
+            "common.cancel" => "Cancel",
+            "common.save" => "Save",
+            "common.delete" => "Delete",
+            "common.rename" => "Rename",
+            "common.pin" => "Pin",
+            "common.unpin" => "Unpin",
+            "common.archive" => "Archive",
+            "common.showAll" => "Show all",
+            "common.showLess" => "Show less",
+            "common.working" => "Working",
+            "common.idle" => "Idle",
+            "common.ready" => "Ready",
+            "common.noChanges" => "No changes",
+            "common.loading" => "Loading…",
+            "common.error" => "Error",
+            "common.retry" => "Retry",
+            "common.addFolder" => "Add this folder",
+            "common.open" => "Open",
+            "common.remove" => "Remove",
+            "common.confirm" => "Confirm",
+            "common.yes" => "Yes",
+            "common.no" => "No",
+            _ => return None,
+        },
+        Language::ZhTw => match key {
+            "sidebar.newSession" => "新增工作階段",
+            "sidebar.search" => "搜尋",
+            "sidebar.projects" => "專案",
+            "sidebar.activity" => "動態",
+            "sidebar.schedules" => "排程任務",
+            "sidebar.capabilities" => "功能",
+            "sidebar.settings" => "設定",
+            "sidebar.projectsHeading" => "專案",
+            "sidebar.noProjects" => "還沒有專案。新增資料夾以開始。",
+            "sidebar.noMatches" => "沒有符合的工作階段。",
+            "sidebar.addProject" => "新增專案",
+            "sidebar.commands" => "命令",
+            "sidebar.update.notConfigured" => "未設定",
+            "settings.sections" => "設定分類",
+            "settings.general" => "一般",
+            "settings.appearance" => "外觀",
+            "settings.harness" => "執行環境",
+            "settings.session" => "工作階段",
+            "settings.providers" => "供應商",
+            "settings.voice" => "語音",
+            "settings.browser" => "瀏覽器",
+            "settings.privacy" => "隱私",
+            "settings.about" => "關於",
+            "sidebar.status.idle" => "閒置",
+            "sidebar.status.running" => "執行中",
+            "sidebar.status.completed" => "已完成",
+            "sidebar.subagents" => "子代理",
+            "sidebar.showAll" => "顯示全部",
+            "sidebar.showLess" => "顯示較少",
+            "sidebar.searchPlaceholder" => "專案、對話、分支",
+            "rightPane.summary" => "摘要",
+            "rightPane.review" => "變更",
+            "rightPane.files" => "檔案",
+            "rightPane.browser" => "瀏覽器",
+            "rightPane.sideQuestion" => "側邊提問",
+            "rightPane.subagents" => "子代理",
+            "rightPane.backgroundTasks" => "背景任務",
+            "rightPane.overview" => "總覽",
+            "rightPane.searchPlaceholder" => "搜尋或輸入網址",
+            "rightPane.back" => "‹ 返回",
+            "composer.placeholder" => "詢問 OMP 任何問題,@ 提及工作階段與技能,/ 使用命令",
+            "composer.note" => "OMP 可能會犯錯。提交前請先檢查命令與變更。",
+            "composer.reasoning" => "推理",
+            "composer.model" => "模型",
+            "composer.effort" => "強度",
+            "composer.approval" => "權限",
+            "transcript.thinking" => "思考",
+            "transcript.fork" => "從這裡分支",
+            "transcript.copy" => "複製",
+            "transcript.jumpLatest" => "跳到最新",
+            "transcript.plan" => "待辦清單",
+            "transcript.done" => "完成",
+            "transcript.completed" => "已完成",
+            "transcript.subagents" => "子代理",
+            "transcript.tool" => "工具",
+            "transcript.empty" => "選擇一個工作階段或建立新的工作階段。",
+            "transcript.welcomeTitle" => "開始新工作階段",
+            "transcript.welcomeBody" => "詢問 OMP 任何問題、提及工作階段或使用命令。",
+            "common.back" => "‹ 返回",
+            "common.send" => "傳送",
+            "common.stop" => "停止",
+            "common.auto" => "自動",
+            "common.inherit" => "繼承",
+            "common.low" => "低",
+            "common.medium" => "中",
+            "common.high" => "高",
+            "common.max" => "最高",
+            "common.add" => "新增",
+            "common.attach" => "附加",
+            "common.mic" => "聽寫",
+            "common.live" => "即時語音",
+            "common.close" => "關閉",
+            "common.cancel" => "取消",
+            "common.save" => "儲存",
+            "common.delete" => "刪除",
+            "common.rename" => "重新命名",
+            "common.pin" => "釘選",
+            "common.unpin" => "取消釘選",
+            "common.archive" => "封存",
+            "common.showAll" => "顯示全部",
+            "common.showLess" => "顯示較少",
+            "common.working" => "處理中",
+            "common.idle" => "閒置",
+            "common.ready" => "就緒",
+            "common.noChanges" => "沒有變更",
+            "common.loading" => "載入中…",
+            "common.error" => "錯誤",
+            "common.retry" => "重試",
+            "common.addFolder" => "新增此資料夾",
+            "common.open" => "開啟",
+            "common.remove" => "移除",
+            "common.confirm" => "確認",
+            "common.yes" => "是",
+            "common.no" => "否",
+            _ => return None,
+        },
+        Language::ZhCn => match key {
+            "sidebar.newSession" => "新建会话",
+            "sidebar.search" => "搜索",
+            "sidebar.projects" => "项目",
+            "sidebar.activity" => "动态",
+            "sidebar.schedules" => "定时任务",
+            "sidebar.capabilities" => "功能",
+            "sidebar.settings" => "设置",
+            "sidebar.projectsHeading" => "项目",
+            "sidebar.noProjects" => "还没有项目。新建文件夹以开始。",
+            "sidebar.noMatches" => "没有匹配的会话。",
+            "sidebar.addProject" => "新建项目",
+            "sidebar.commands" => "命令",
+            "sidebar.update.notConfigured" => "未配置",
+            "settings.sections" => "设置分类",
+            "settings.general" => "常规",
+            "settings.appearance" => "外观",
+            "settings.harness" => "运行环境",
+            "settings.session" => "会话",
+            "settings.providers" => "提供商",
+            "settings.voice" => "语音",
+            "settings.browser" => "浏览器",
+            "settings.privacy" => "隐私",
+            "settings.about" => "关于",
+            "sidebar.status.idle" => "空闲",
+            "sidebar.status.running" => "运行中",
+            "sidebar.status.completed" => "已完成",
+            "sidebar.subagents" => "子代理",
+            "sidebar.showAll" => "显示全部",
+            "sidebar.showLess" => "显示较少",
+            "sidebar.searchPlaceholder" => "项目、对话、分支",
+            "rightPane.summary" => "摘要",
+            "rightPane.review" => "变更",
+            "rightPane.files" => "文件",
+            "rightPane.browser" => "浏览器",
+            "rightPane.sideQuestion" => "侧边提问",
+            "rightPane.subagents" => "子代理",
+            "rightPane.backgroundTasks" => "后台任务",
+            "rightPane.overview" => "总览",
+            "rightPane.searchPlaceholder" => "搜索或输入网址",
+            "rightPane.back" => "‹ 返回",
+            "composer.placeholder" => "询问 OMP 任何问题,@ 提及会话与技能,/ 使用命令",
+            "composer.note" => "OMP 可能会犯错。提交前请先检查命令与变更。",
+            "composer.reasoning" => "推理",
+            "composer.model" => "模型",
+            "composer.effort" => "强度",
+            "composer.approval" => "权限",
+            "transcript.thinking" => "思考",
+            "transcript.fork" => "从这里分支",
+            "transcript.copy" => "复制",
+            "transcript.jumpLatest" => "跳到最新",
+            "transcript.plan" => "待办清单",
+            "transcript.done" => "完成",
+            "transcript.completed" => "已完成",
+            "transcript.subagents" => "子代理",
+            "transcript.tool" => "工具",
+            "transcript.empty" => "选择一个会话或新建会话。",
+            "transcript.welcomeTitle" => "新建会话",
+            "transcript.welcomeBody" => "询问 OMP 任何问题、提及会话或使用命令。",
+            "common.back" => "‹ 返回",
+            "common.send" => "发送",
+            "common.stop" => "停止",
+            "common.auto" => "自动",
+            "common.inherit" => "继承",
+            "common.low" => "低",
+            "common.medium" => "中",
+            "common.high" => "高",
+            "common.max" => "最高",
+            "common.add" => "新增",
+            "common.attach" => "附加",
+            "common.mic" => "听写",
+            "common.live" => "实时语音",
+            "common.close" => "关闭",
+            "common.cancel" => "取消",
+            "common.save" => "保存",
+            "common.delete" => "删除",
+            "common.rename" => "重命名",
+            "common.pin" => "固定",
+            "common.unpin" => "取消固定",
+            "common.archive" => "归档",
+            "common.showAll" => "显示全部",
+            "common.showLess" => "显示较少",
+            "common.working" => "处理中",
+            "common.idle" => "空闲",
+            "common.ready" => "就绪",
+            "common.noChanges" => "没有变更",
+            "common.loading" => "加载中…",
+            "common.error" => "错误",
+            "common.retry" => "重试",
+            "common.addFolder" => "新增此文件夹",
+            "common.open" => "打开",
+            "common.remove" => "移除",
+            "common.confirm" => "确认",
+            "common.yes" => "是",
+            "common.no" => "否",
+            _ => return None,
+        },
+    };
+    Some(value)
+}

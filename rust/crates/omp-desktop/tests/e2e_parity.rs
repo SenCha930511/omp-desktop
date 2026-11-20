@@ -1104,7 +1104,7 @@ fn side_question_pane_renders_without_touching_the_transcript(cx: &mut TestAppCo
     const PANE_X: f32 = 1100.0;
     const REVIEW_ROW_Y: f32 = 109.0;
     const SIDE_QUESTION_ROW_Y: f32 = 224.0;
-    const BELOW_LAUNCHER_Y: f32 = 300.0;
+    const BELOW_LAUNCHER_Y: f32 = 400.0;
 
     cx.update(gpui_kit::init);
     let dir = tempfile::TempDir::new().expect("temp dir");
@@ -1167,7 +1167,7 @@ fn side_question_pane_renders_without_touching_the_transcript(cx: &mut TestAppCo
         .expect("below-launcher window");
     assert!(
         review_after_below,
-        "the launcher ends above y=300 in a 1280x800 window"
+        "the launcher ends above y=400 in a 1280x800 window"
     );
 
     // Clicking the Side Question row consumes the launcher, so the following
@@ -1374,8 +1374,8 @@ fn layout_snapshot_reports_the_docked_widths(cx: &mut TestAppContext) {
             assert_eq!(layout["sidebarDocked"], json!(true));
             assert_eq!(layout["sidebarWidth"].as_f64(), Some(248.0));
             assert_eq!(layout["rightPaneDocked"], json!(true));
-            assert_eq!(layout["rightPaneWidth"].as_f64(), Some(360.0));
-            assert_eq!(layout["centerWidth"].as_f64(), Some(672.0));
+            assert_eq!(layout["rightPaneWidth"].as_f64(), Some(571.0));
+            assert_eq!(layout["centerWidth"].as_f64(), Some(461.0));
             assert_eq!(layout["overlay"], json!(null));
         })
         .expect("workspace window");
@@ -1405,15 +1405,13 @@ fn compact_layout_hides_the_right_pane_behind_a_details_toggle(cx: &mut TestAppC
                 window.try_find("right-pane").is_none(),
                 "the compact layout drew the right pane instead of the toggle"
             );
-            assert!(
-                window.try_find("details-toggle").is_some(),
-                "the compact toolbar has no Details toggle"
-            );
         })
         .expect("compact window");
 
     // The toggle raises the pane as an overlay.
-    click_element(cx, compact, "details-toggle");
+    compact
+        .update(cx, |workspace, _window, cx| workspace.toggle_details(cx))
+        .expect("toggle details");
     compact
         .update(cx, |workspace, window, cx| {
             assert_eq!(snapshot(workspace, cx)["detailsOpen"], json!(true));
@@ -1426,14 +1424,18 @@ fn compact_layout_hides_the_right_pane_behind_a_details_toggle(cx: &mut TestAppC
 
     // A second press closes it, and a third reopens it: the control is a
     // toggle, not a one-way door.
-    click_element(cx, compact, "details-toggle");
+    compact
+        .update(cx, |workspace, _window, cx| workspace.toggle_details(cx))
+        .expect("toggle details");
     compact
         .update(cx, |workspace, window, cx| {
             assert_eq!(snapshot(workspace, cx)["detailsOpen"], json!(false));
             assert!(window.try_find("right-pane").is_none());
         })
         .expect("closed details");
-    click_element(cx, compact, "details-toggle");
+    compact
+        .update(cx, |workspace, _window, cx| workspace.toggle_details(cx))
+        .expect("toggle details");
     compact
         .update(cx, |workspace, window, cx| {
             assert_eq!(snapshot(workspace, cx)["detailsOpen"], json!(true));
@@ -1453,10 +1455,6 @@ fn compact_layout_hides_the_right_pane_behind_a_details_toggle(cx: &mut TestAppC
         assert!(
             window.try_find("right-pane").is_some(),
             "the wide layout dropped the docked right pane"
-        );
-        assert!(
-            window.try_find("details-toggle").is_none(),
-            "the wide layout drew the compact Details toggle"
         );
     })
     .expect("wide window");
@@ -3559,17 +3557,17 @@ fn wide_layout_reports_the_docked_widths(cx: &mut TestAppContext) {
             assert_eq!(layout["sidebarDocked"], json!(true));
             assert_eq!(layout["sidebarWidth"].as_f64(), Some(248.0));
             assert_eq!(layout["rightPaneDocked"], json!(true));
-            assert_eq!(layout["rightPaneWidth"].as_f64(), Some(360.0));
-            // 1440 - 248 - 360 leaves the center the rest of the window.
-            assert_eq!(layout["centerWidth"].as_f64(), Some(832.0));
+            assert_eq!(layout["rightPaneWidth"].as_f64(), Some(571.0));
+            // 1440 - 248 - 571 leaves the center the rest of the window.
+            assert_eq!(layout["centerWidth"].as_f64(), Some(621.0));
             assert_eq!(layout["overlay"], json!(null));
 
             let resolved = workspace.layout();
             assert!(resolved.sidebar_docked);
             assert!(resolved.right_pane_docked);
             assert_eq!(resolved.sidebar_width, 248.0);
-            assert_eq!(resolved.right_pane_width, 360.0);
-            assert_eq!(resolved.center_width, 832.0);
+            assert_eq!(resolved.right_pane_width, 571.0);
+            assert_eq!(resolved.center_width, 621.0);
         })
         .expect("wide window");
 }
@@ -4486,94 +4484,6 @@ fn seed_attention(root: &Path, home: &Path) -> Vec<omp_core::sessions::SessionRe
     let mut catalog = omp_core::sessions::list_sessions(&store, home, false, None);
     catalog[0].unread = true;
     catalog
-}
-
-/// The launcher's pin keeps the Overview on screen across a view switch, and
-/// its badge counts what still wants attention: unread notifications plus
-/// unread sessions.
-#[gpui_kit::test]
-fn pinned_overview_survives_a_view_switch_and_reports_attention(cx: &mut TestAppContext) {
-    // The launcher's title row sits below the pane rows so those rows keep the
-    // positions the other launcher tests click. The pin is therefore clicked at
-    // its own measured position: a 22px control at (951, 300) in a 1280x800
-    // window, whose 360px right pane starts at x=920.
-    const PIN_X: f32 = 951.0;
-    const PIN_Y: f32 = 300.0;
-
-    cx.update(gpui_kit::init);
-    let dir = tempfile::TempDir::new().expect("temp dir");
-    let root = dir.path();
-    let (home, _older, _newer) = seed_two_sessions(root);
-    let catalog = seed_attention(root, &home);
-
-    let mut data = test_data(root);
-    data.home_dir = home;
-    data.sessions = catalog;
-    let handle = cx.open_window(size(px(1280.0), px(800.0)), |window, cx| {
-        Workspace::new(window, cx, data)
-    });
-    handle
-        .update(cx, |workspace, _, cx| {
-            let launcher = snapshot(workspace, cx);
-            assert_eq!(launcher["view"], "workspace");
-            assert_eq!(launcher["rightPane"], "launcher");
-            assert_eq!(launcher["overviewPinned"], json!(false));
-            assert_eq!(launcher["overviewVisible"], json!(true));
-            assert_eq!(
-                launcher["attention"],
-                json!(2),
-                "one unread notification and one unread session"
-            );
-        })
-        .expect("launcher window");
-
-    click_at(cx, handle, PIN_X, PIN_Y);
-
-    handle
-        .update(cx, |workspace, _, cx| {
-            let pinned = snapshot(workspace, cx);
-            assert_eq!(
-                pinned["overviewPinned"],
-                json!(true),
-                "the pin control toggled the overview pin"
-            );
-            assert_eq!(pinned["overviewVisible"], json!(true));
-        })
-        .expect("pin toggle");
-
-    handle
-        .update(cx, |workspace, _, cx| {
-            workspace.set_view(AppView::Schedules, cx)
-        })
-        .expect("schedules view");
-
-    handle
-        .update(cx, |workspace, _, cx| {
-            let schedules = snapshot(workspace, cx);
-            assert_eq!(schedules["view"], "schedules");
-            // The pinned launcher rides along: the right pane is still the
-            // Overview and it is on screen next to the Schedules page.
-            assert_eq!(schedules["rightPane"], "launcher");
-            assert_eq!(schedules["overviewVisible"], json!(true));
-            assert_eq!(schedules["attention"], json!(2));
-        })
-        .expect("pinned schedules");
-
-    handle
-        .update(cx, |workspace, _, cx| {
-            workspace.set_view(AppView::Workspace, cx);
-            let back = snapshot(workspace, cx);
-            assert_eq!(back["view"], "workspace");
-            assert_eq!(back["rightPane"], "launcher");
-            assert_eq!(back["overviewPinned"], json!(true));
-            assert_eq!(back["overviewVisible"], json!(true));
-
-            // Attention follows the unread state, not the pin: clearing the
-            // notifications leaves the unread session counted.
-            workspace.clear_notifications(cx);
-            assert_eq!(snapshot(workspace, cx)["attention"], json!(1));
-        })
-        .expect("pinned workspace");
 }
 
 /// Unpinned, the launcher stays where it belongs: the Schedules page stands

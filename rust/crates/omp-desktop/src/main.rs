@@ -114,8 +114,8 @@ fn window_options(geometry: &UiGeometry) -> WindowOptions {
         window_bounds: Some(window_bounds),
         titlebar: Some(TitlebarOptions {
             title: Some("OMP Desktop".into()),
-            appears_transparent: false,
-            traffic_light_position: None,
+            appears_transparent: true,
+            traffic_light_position: Some(point(px(20.0), px(20.0))),
         }),
         window_min_size: Some(size(px(720.0), px(520.0))),
         app_id: Some(APP_ID.to_string()),
@@ -198,9 +198,10 @@ fn main() {
     // WebKitGTK needs an X11 window, so the Browser pane's webview requires X11/XWayland;
     // `WebView::build` returns an error on a native Wayland window.
     #[cfg(target_os = "linux")]
-    let application = gpui_kit::platform::linux(gpui_kit::WindowingModes::X11);
+    let application = gpui_kit::platform::linux(gpui_kit::WindowingModes::X11)
+        .with_assets(gpui_kit::assets::AllAssets);
     #[cfg(not(target_os = "linux"))]
-    let application = gpui_kit::application();
+    let application = gpui_kit::application().with_assets(gpui_kit::assets::AllAssets);
     application.run(move |cx| {
         gpui_kit::init(cx);
         // The close guard is shared by the window's close handler, the tray's
