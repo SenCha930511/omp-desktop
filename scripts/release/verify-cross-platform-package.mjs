@@ -1,24 +1,14 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process'
 import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs'
-import { join, relative, resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { listPackage } from '@electron/asar'
-import { assertAsarLayout, assertPackagedExtensions } from './lib.mjs'
+import { assertAsarLayout, assertNoUnpackedNativeFiles, assertPackagedExtensions } from './lib.mjs'
 
 function requireOption(value, label, allowed) {
   if (!value || !allowed.includes(value)) throw new Error(`${label} must be one of: ${allowed.join(', ')}`)
   return value
-}
-
-function listFiles(directory, found = []) {
-  for (const entry of readdirSync(directory, { withFileTypes: true })) {
-    const path = join(directory, entry.name)
-    if (entry.isDirectory()) listFiles(path, found)
-    else if (entry.isFile()) found.push(path)
-    else throw new Error(`Packaged runtime contains a forbidden non-file entry: ${path}`)
-  }
-  return found
 }
 
 export function findUnpackedDirectory(outputDirectory, target) {
@@ -109,40 +99,6 @@ export function assertValidAuthenticode(path, spawn = spawnSync, env = process.e
   if (result.status !== 0) throw new Error(`Invalid Authenticode signature for ${path}: ${(result.stderr || result.stdout || 'verification failed').trim()}`)
 }
 
-/** Maps a packaging target (electron-builder CLI naming) to the Node process.platform directory native modules ship under. */
-export function nativeRuntimeDirectory(target) {
-  return target === 'win' ? 'win32' : target
-}
-
-/** The exact non-ZeroMQ native files each target must unpack; mirrors package.json build.<target>.asarUnpack. */
-export function expectedNativeFiles(target, architecture) {
-  if (target === 'linux') return ['node_modules/node-pty/build/Release/pty.node']
-  // node-pty resolves prebuilds from `prebuilds/${process.platform}-${process.arch}` (hyphenated, no nesting).
-  const prebuilds = `node_modules/node-pty/prebuilds/win32-${architecture}`
-  return [
-    `${prebuilds}/pty.node`,
-    `${prebuilds}/conpty.node`,
-    `${prebuilds}/conpty_console_list.node`,
-    `${prebuilds}/winpty-agent.exe`,
-    `${prebuilds}/winpty.dll`,
-    `${prebuilds}/conpty/OpenConsole.exe`,
-    `${prebuilds}/conpty/conpty.dll`,
-  ]
-}
-
-export function assertUnpackedNativeLayout(directory, target, architecture) {
-  const files = listFiles(directory)
-    .map((path) => relative(directory, path).replaceAll('\\', '/'))
-    .sort()
-  const required = expectedNativeFiles(target, architecture)
-  const allowed = new Set(required)
-  const unexpected = files.filter((path) => !allowed.has(path))
-  const missing = required.filter((path) => !files.includes(path))
-  if (missing.length || unexpected.length) {
-    throw new Error(`Unexpected native unpack layout (missing: ${missing.join(', ') || 'none'}; extra: ${unexpected.join(', ') || 'none'})`)
-  }
-}
-
 export function verifyPackage(target, architecture, { unpackedOnly = false, mode = 'qa' } = {}) {
   const outputDirectory = resolve('release', target, architecture)
   if (!existsSync(outputDirectory)) throw new Error(`Release directory does not exist: ${outputDirectory}`)
@@ -150,13 +106,11 @@ export function verifyPackage(target, architecture, { unpackedOnly = false, mode
   const app = findUnpackedDirectory(outputDirectory, target)
   const resources = join(app, 'resources')
   const asar = join(resources, 'app.asar')
-  const unpacked = join(resources, 'app.asar.unpacked')
   assertPackagedExtensions(resources)
   if (!existsSync(asar) || !lstatSync(asar).isFile()) throw new Error('Packaged application must contain resources/app.asar')
   if (existsSync(join(resources, 'app'))) throw new Error('Packaged application contains forbidden loose resources/app')
-  if (!existsSync(unpacked)) throw new Error('Packaged application must contain resources/app.asar.unpacked')
   assertAsarLayout(listPackage(asar, { isPack: false }))
-  assertUnpackedNativeLayout(unpacked, target, architecture)
+  assertNoUnpackedNativeFiles(join(resources, 'app.asar.unpacked'))
   if (!unpackedOnly && target === 'win' && mode === 'public') {
     const installer = artifacts.find((name) => name.endsWith('.exe'))
     if (!installer) throw new Error('Windows installer is missing')
@@ -165,7 +119,7 @@ export function verifyPackage(target, architecture, { unpackedOnly = false, mode
   }
   const scope = unpackedOnly ? 'unpacked directory build' : 'installable artifacts'
   const signature = !unpackedOnly && target === 'win' && mode === 'public' ? ', and valid Authenticode signatures' : ''
-  console.log(`Verified ${target}/${architecture} package: ${scope}, ASAR runtime layout, exact native unpack allowlist${signature}.`)
+  console.log(`Verified ${target}/${architecture} package: ${scope}, ASAR runtime layout, no unpacked native payload${signature}.`)
 }
 
 const invokedDirectly = process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href

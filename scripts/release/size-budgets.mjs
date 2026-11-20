@@ -40,8 +40,8 @@ export const BUNDLE_SIZE_BUDGETS = Object.freeze({
 /**
  * Ceilings for one packaged macOS build: `asarBytes` the packed app.asar,
  * `appBytes` the regular-file bytes inside OMP Desktop.app, and `dmgBytes`/
- * `zipBytes` the compressed distributables users download (Electron runtime,
- * unpacked native addons, and the bundled agent included).
+ * `zipBytes` the compressed distributables users download (Electron runtime
+ * and the bundled agent included).
  *
  * Raising a budget is deliberate: record the measured new size and the
  * dependency or feature that caused the growth in the pull request, and raise it

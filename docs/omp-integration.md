@@ -5,7 +5,7 @@ This document is OMP Desktop's integration spec for its single agent harness: OM
 ## Product behavior
 
 - The product is **OMP Desktop** and the agent is **OMP**. Granted projects, the session catalog, the model catalog, and runtimes all belong to the single harness.
-- Streaming transcripts, steering/follow-ups, abort, model + thinking selection, compaction, session resume/switch/rename/fork(branch), and extension-UI dialogs (which is also how OMP surfaces **tool approval prompts**) run over the OMP RPC transport. The browser, git, and terminal capabilities are harness-agnostic surfaces around it.
+- Streaming transcripts, steering/follow-ups, abort, model + thinking selection, compaction, session resume/switch/rename/fork(branch), and extension-UI dialogs (which is also how OMP surfaces **tool approval prompts**) run over the OMP RPC transport. The browser, git, and project-script capabilities are harness-agnostic surfaces around it.
 - Scheduled tasks run through OMP Desktop's local schedule service and executor. OMP scheduled tasks do not use heartbeat RPC commands: the injected extension calls a harness-scoped loopback broker, and due work is executed through OMP's normal prompt lifecycle.
 - OMP credentials remain CLI-owned. The desktop keeps only provider/model visibility toggles in its own state; they control which providers appear in the model picker and never change OMP's own configuration or authentication.
 - Capabilities use OMP's native plugin manager (`omp plugin install`), user/project plugin roots, `.omp/skills` plus shared `.agents/skills`, and OMP-native `mcp.json`.

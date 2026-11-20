@@ -253,17 +253,12 @@ export function parseArchitectures(output) {
   return new Set(output.trim().split(/\s+/).filter(Boolean))
 }
 
-export function assertArchitectureCoverage(appArchitectures, nativeArchitectures, label) {
-  const missing = [...appArchitectures].filter((architecture) => !nativeArchitectures.has(architecture))
-  if (missing.length) throw new Error(`${label} is missing app architecture(s): ${missing.join(', ')}`)
-}
-
 export function assertAsarLayout(entries) {
   const normalized = new Set(entries.map((entry) => entry.replaceAll('\\', '/').replace(/^\//, '')))
-  const required = ['out/main/index.js', 'out/preload/index.js', 'out/renderer/index.html', 'node_modules/node-pty/lib/index.js']
+  const required = ['out/main/index.js', 'out/preload/index.js', 'out/renderer/index.html']
   const missing = required.filter((entry) => !normalized.has(entry))
   if (missing.length) throw new Error(`ASAR is missing required runtime entries: ${missing.join(', ')}`)
-  const forbiddenPrefixes = ['node_modules/@xterm/', 'node_modules/lucide-react/', 'node_modules/react/', 'node_modules/react-dom/', 'node_modules/react-markdown/', 'node_modules/remark-gfm/']
+  const forbiddenPrefixes = ['node_modules/lucide-react/', 'node_modules/react/', 'node_modules/react-dom/', 'node_modules/react-markdown/', 'node_modules/remark-gfm/']
   const forbidden = [...normalized].find((entry) => forbiddenPrefixes.some((prefix) => entry.startsWith(prefix)))
   if (forbidden) throw new Error(`Renderer-only dependency was duplicated into the ASAR: ${forbidden}`)
 }
@@ -290,12 +285,6 @@ export function assertPackagedExtensions(resourcesDirectory) {
   }
 }
 
-const NODE_PTY_UNPACKED_FILES = ['node_modules/node-pty/build/Release/pty.node', 'node_modules/node-pty/build/Release/spawn-helper']
-
-export function expectedUnpackedNativeLayout() {
-  return { files: [...NODE_PTY_UNPACKED_FILES], zeroMqAddons: [] }
-}
-
 function listUnpackedEntries(directory, prefix = '', found = { files: [], directories: [] }) {
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
     const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name
@@ -308,33 +297,15 @@ function listUnpackedEntries(directory, prefix = '', found = { files: [], direct
   return found
 }
 
-function expectedDirectories(files) {
-  const directories = new Set()
-  for (const file of files) {
-    const segments = file.split('/')
-    for (let end = 1; end < segments.length; end += 1) directories.add(segments.slice(0, end).join('/'))
-  }
-  return directories
-}
-
-export function assertUnpackedNativeLayout(unpackedDirectory, appArchitectures, readArchitectures) {
-  const { files, zeroMqAddons } = expectedUnpackedNativeLayout()
-  const actual = listUnpackedEntries(unpackedDirectory)
-  const missing = files.filter((path) => !actual.files.includes(path))
-  if (missing.length) throw new Error(`Missing unpacked native runtime file(s): ${missing.join(', ')}`)
-  const expected = [...files]
-  for (const { label, pattern } of zeroMqAddons) {
-    const matches = actual.files.filter((path) => pattern.test(path))
-    if (!matches.length) throw new Error(`Expected at least one unpacked ZeroMQ addon matching ${label}, found 0`)
-    expected.push(...matches)
-  }
-  const expectedSet = new Set(expected)
-  const allowedDirectories = expectedDirectories(expected)
-  const extra = [...actual.files.filter((path) => !expectedSet.has(path)), ...actual.directories.filter((path) => !allowedDirectories.has(path))]
-  if (extra.length) throw new Error(`Unexpected unpacked path(s): ${extra.join(', ')}`)
-
-  for (const relativePath of expected) {
-    const architectures = readArchitectures(join(unpackedDirectory, relativePath))
-    assertArchitectureCoverage(appArchitectures, architectures, relativePath)
-  }
+/**
+ * The packaged application ships no native addons: every runtime dependency is
+ * pure JavaScript, so anything electron-builder had to unpack beside the ASAR
+ * is an unexpected native payload. electron-builder omits the directory when
+ * nothing is unpacked, so absence is the expected layout.
+ */
+export function assertNoUnpackedNativeFiles(unpackedDirectory) {
+  if (!existsSync(unpackedDirectory)) return
+  const { files, directories } = listUnpackedEntries(unpackedDirectory)
+  const unexpected = [...directories, ...files]
+  if (unexpected.length) throw new Error(`Packaged application ships unexpected unpacked path(s): ${unexpected.join(', ')}`)
 }
