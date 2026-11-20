@@ -5,9 +5,11 @@ import type { BrowserAnnotationsApi } from '@/hooks/useBrowserAnnotations'
 import { useI18n } from '@/lib/i18n'
 import type { AgentBrowserTabRecord, AutomationScheduleRecord, GitStatus, InspectorTab, ProjectRecord, RuntimeInfo } from '@/types/api'
 import type { AgentSlotRect } from './AgentBrowserLayer'
+import type { SubagentsTabPanelProps } from './inspector/SubagentsTabPanel'
 import { BrowserPanel } from './inspector/BrowserPanel'
 import { ChangesPanel } from './inspector/ChangesPanel'
 import { FilesPanel } from './inspector/FilesPanel'
+import { SubagentsTabPanel } from './inspector/SubagentsTabPanel'
 import { SummaryPanel } from './inspector/SummaryPanel'
 import { IconButton, useFocusTrap } from './ui'
 
@@ -44,10 +46,12 @@ export interface InspectorProps {
   onOpenExternal(url: string): void
   onRevealPath(path: string): void
   onGrantProject(): Promise<void> | void
+  /** Session roster and selected agent transcript for the Agents tab. */
+  subagents?: SubagentsTabPanelProps
   overlay?: boolean
 }
 
-const tabIds: InspectorTab[] = ['summary', 'changes', 'browser', 'files']
+const tabIds: InspectorTab[] = ['summary', 'changes', 'browser', 'files', 'agents']
 
 /** Memoized so transcript frames reach the shell only as the store's summary snapshot, and only on the Summary tab. */
 export const Inspector = memo(function Inspector({
@@ -80,6 +84,7 @@ export const Inspector = memo(function Inspector({
   onOpenExternal,
   onRevealPath,
   onGrantProject,
+  subagents,
   overlay = false,
   platform = 'darwin',
 }: InspectorProps) {
@@ -151,6 +156,7 @@ export const Inspector = memo(function Inspector({
           />
         ) : null}
         {activeTab === 'files' ? <FilesPanel project={project} git={git} onReveal={onRevealPath} /> : null}
+        {activeTab === 'agents' && subagents ? <SubagentsTabPanel {...subagents} /> : null}
       </div>
     </aside>
   )

@@ -69,6 +69,18 @@ describe('GeneralSettings macOS background controls', () => {
     expect(update).toHaveBeenCalledWith({ idleSessionMinutes: 15 })
   })
 
+  it('offers the Agents tab as the default inspector surface', () => {
+    const update = vi.fn()
+    act(() => root.render(<GeneralSettings settings={DEFAULT_SETTINGS} onUpdate={update} platform="darwin" />))
+    const select = [...container.querySelectorAll<HTMLSelectElement>('select')].find((candidate) => [...candidate.options].some((option) => option.value === 'agents'))!
+    expect([...select.options].map((option) => option.value)).toEqual(['summary', 'changes', 'browser', 'files', 'agents'])
+    act(() => {
+      select.value = 'agents'
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    expect(update).toHaveBeenCalledWith({ defaultInspectorTab: 'agents' })
+  })
+
   it('offers worktree isolation or in-place branch switching', () => {
     const update = vi.fn()
     act(() => root.render(<GeneralSettings settings={DEFAULT_SETTINGS} onUpdate={update} platform="linux" />))

@@ -7,7 +7,7 @@ export const BROWSER_PARTITION = 'persist:omp-desktop-browser'
 
 export type ThemeMode = 'system' | 'light' | 'dark'
 export type WorkspaceView = 'session' | 'projects' | 'activity' | 'scheduled' | 'plugins' | 'settings'
-export type InspectorTab = 'summary' | 'changes' | 'browser' | 'files'
+export type InspectorTab = 'summary' | 'changes' | 'browser' | 'files' | 'agents'
 export type SessionStatus = 'idle' | 'running' | 'waiting' | 'complete' | 'failed' | 'unknown'
 
 export const HARNESS_IDS = ['omp'] as const
@@ -627,7 +627,6 @@ export type IdleSessionMinutes = typeof IDLE_SESSION_MINUTES[number]
 
 export interface AppSettings {
   conversationDensity: 'compact' | 'comfortable'
-  subagentsPanelPinned: boolean
   theme: ThemeMode
   locale: LocalePreference
   /** Workspace accent hue; 'prime' keeps the stock purple. */

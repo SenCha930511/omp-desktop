@@ -124,7 +124,6 @@ export function defaultSettings(): AppSettings {
     reasoningExpandedByDefault: false,
     defaultEffort: 'medium',
     conversationDensity: 'comfortable',
-    subagentsPanelPinned: false,
     showToolCalls: true,
     // 2.6:對齊 TUI 預設——執行中 Enter 插話(steer)、Ctrl/Cmd+Enter follow-up(queue)。
     messageEnterAction: 'steer',
@@ -249,7 +248,7 @@ function parseSettings(value: unknown): AppSettings {
     idleSessionMinutes: IDLE_SESSION_MINUTES.includes(value.idleSessionMinutes as AppSettings['idleSessionMinutes']) ? value.idleSessionMinutes as AppSettings['idleSessionMinutes'] : defaults.idleSessionMinutes,
     keepRunningInBackground: typeof value.keepRunningInBackground === 'boolean' ? value.keepRunningInBackground : defaults.keepRunningInBackground,
     launchAtLogin: typeof value.launchAtLogin === 'boolean' ? value.launchAtLogin : defaults.launchAtLogin,
-    defaultInspectorTab: value.defaultInspectorTab === 'changes' || value.defaultInspectorTab === 'browser' || value.defaultInspectorTab === 'files' || value.defaultInspectorTab === 'summary' ? value.defaultInspectorTab : defaults.defaultInspectorTab,
+    defaultInspectorTab: value.defaultInspectorTab === 'changes' || value.defaultInspectorTab === 'browser' || value.defaultInspectorTab === 'files' || value.defaultInspectorTab === 'summary' || value.defaultInspectorTab === 'agents' ? value.defaultInspectorTab : defaults.defaultInspectorTab,
     browserHome: typeof value.browserHome === 'string' ? value.browserHome : defaults.browserHome,
     browserAskForDownloads: typeof value.browserAskForDownloads === 'boolean' ? value.browserAskForDownloads : defaults.browserAskForDownloads,
     reduceMotion: typeof value.reduceMotion === 'boolean' ? value.reduceMotion : defaults.reduceMotion,
@@ -257,7 +256,6 @@ function parseSettings(value: unknown): AppSettings {
     reasoningExpandedByDefault: typeof value.reasoningExpandedByDefault === 'boolean' ? value.reasoningExpandedByDefault : defaults.reasoningExpandedByDefault,
     defaultEffort: typeof value.defaultEffort === 'string' && THINKING_LEVELS.has(value.defaultEffort) ? value.defaultEffort as PrimeEffortSelector : defaults.defaultEffort,
     conversationDensity: value.conversationDensity === 'compact' || value.conversationDensity === 'comfortable' ? value.conversationDensity : defaults.conversationDensity,
-    subagentsPanelPinned: typeof value.subagentsPanelPinned === 'boolean' ? value.subagentsPanelPinned : defaults.subagentsPanelPinned,
     showToolCalls: typeof value.showToolCalls === 'boolean' ? value.showToolCalls : defaults.showToolCalls,
     // 2.6 遷移:未蓋戳的舊狀態一律套用 TUI 預設('steer')。舊檔無法區分
     // 「沿用舊預設 queue」與「明確選了 queue」,依審查決議不把舊預設誤認為

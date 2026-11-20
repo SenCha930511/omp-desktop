@@ -153,7 +153,6 @@ describe('settings field ownership', () => {
       reasoningExpandedByDefault: 'agent',
       defaultEffort: 'agent',
       conversationDensity: 'general',
-      subagentsPanelPinned: 'agent',
       showToolCalls: 'agent',
       messageEnterAction: 'agent',
       inputShortcutsVersion: 'general',
