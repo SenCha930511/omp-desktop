@@ -773,14 +773,15 @@ test.describe('OMP Desktop desktop smoke', () => {
     await composer.fill('subagent fixture')
     await page.getByRole('button', { name: 'Send message', exact: true }).click()
     await page.getByRole('button', { name: /Subagents ·/ }).click()
-    await page.getByRole('button', { name: /Explore.*Completed/ }).click()
+    await expect(page.getByRole('tab', { name: 'Agents' })).toHaveAttribute('aria-selected', 'true')
+    await page.locator('.inspector .subagents__roster').getByRole('button', { name: /Explore.*Completed/ }).click()
     await page.locator('.subagents__messages .work-disclosure__button').click()
     // Each thinking row folds on its own (dsh shape); open it to read the body.
     await page.locator('.subagents__messages .reasoning-disclosure > summary').first().click()
     await expect(page.locator('.reasoning-disclosure .prose').getByText('Inspecting fixture code', { exact: true })).toBeVisible()
     await expect(page.getByText('Subagent fixture result')).toBeVisible()
     await expect(page.locator('.subagents__instruction')).toHaveJSProperty('open', false)
-    for (const width of [1280, 1600, 680]) {
+    for (const width of [1280, 1600]) {
       await page.setViewportSize({ width, height: 900 })
       const columns = await page.locator('.subagents__transcript').evaluate((element) => {
         const bounds = (selector: string) => {
@@ -808,11 +809,13 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(page.locator('.subagents__commands-toggle')).toHaveCount(0)
     await expect(page.locator('.project-run-control')).toHaveCount(0)
     await page.screenshot({ path: test.info().outputPath('subagents.png') })
-    // Split view: the composer never leaves the screen while an agent pane
-    // is open; closing the pane deselects the agent.
+    // The conversation stays full width while the inspector shows the agent;
+    // closing the transcript returns the Agents tab to its roster.
     await expect(composer).toBeVisible()
+    await expect(page.locator('.conversation-pane .subagents__transcript')).toHaveCount(0)
     await page.getByRole('button', { name: 'Close agent transcript' }).click()
-    await expect(page.locator('.subagents__page:not([hidden])')).toHaveCount(0)
+    await expect(page.locator('.subagents__transcript')).toHaveCount(0)
+    await expect(page.locator('.inspector .subagents__roster')).toBeVisible()
   })
 
   test('renders a manual compact in the live transcript', async () => {
@@ -869,7 +872,8 @@ test.describe('OMP Desktop desktop smoke', () => {
     await composer.fill('subagent fixture')
     await page.getByRole('button', { name: 'Send message', exact: true }).click()
     await page.getByRole('button', { name: /Subagents ·/ }).click()
-    await page.getByRole('button', { name: /Explore.*Completed/ }).click()
+    await expect(page.getByRole('tab', { name: 'Agents' })).toHaveAttribute('aria-selected', 'true')
+    await page.locator('.inspector .subagents__roster').getByRole('button', { name: /Explore.*Completed/ }).click()
     await expect(page.locator('.subagents__messages .work-disclosure__button')).toHaveAttribute('aria-expanded', 'true')
     // Thinking rows keep their labelled header (dsh shape); the expand-by-default
     // setting means the section itself opens with its content visible.
@@ -881,7 +885,7 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(page.locator('.subagents__messages .work-disclosure__button')).toHaveAttribute('aria-expanded', 'false')
   })
 
-  test('pins an agent overview, prioritizes attention and preserves it while switching views', async () => {
+  test('prioritizes agent attention in the inspector Agents tab and keeps the conversation full width', async () => {
     await page.setViewportSize({ width: 1800, height: 950 })
     if (await page.locator('.inspector').count()) await page.getByRole('button', { name: 'Toggle inspector' }).click()
     await expect(page.locator('.model-picker__trigger')).toHaveAccessibleName('Model: Claude Fixture')
@@ -893,54 +897,60 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(page.locator('.command-output__status')).toHaveText('Completed')
     await page.getByRole('combobox', { name: 'Message OMP' }).fill('subagent overview fixture')
     await page.getByRole('button', { name: 'Send message', exact: true }).click()
+    // The toolbar button opens the inspector on the Agents tab; the
+    // conversation column keeps its full width instead of hosting a split view.
     await page.getByRole('button', { name: /Subagents ·/ }).click()
-    await page.getByRole('button', { name: 'Pin agent list', exact: true }).click()
-    const roster = page.locator('.subagents__roster.is-pinned')
+    await expect(page.getByRole('tab', { name: 'Agents' })).toHaveAttribute('aria-selected', 'true')
+    const roster = page.locator('.inspector .subagents__roster')
     await expect(roster).toBeVisible()
     await expect(roster.locator('.subagents__agent')).toHaveCount(3)
     await expect(roster.locator('.subagents__agent').nth(0)).toHaveAttribute('aria-label', /Task · Waiting for input/)
     await expect(roster.locator('.subagents__agent').nth(1)).toHaveAttribute('aria-label', /Reviewer · Failed/)
     await expect(roster.locator('.subagents__agent').nth(2)).toContainText('Running tests')
     await roster.getByRole('button', { name: /Task · Waiting for input/ }).click()
-    const activeAgent = page.locator('.subagents__page:not([hidden])')
+    const activeAgent = page.locator('.inspector .subagents__transcript')
     await expect(activeAgent.locator('.subagents__heading h2')).toHaveText('Task')
     await activeAgent.locator('.subagents__details summary').click()
     // The subagent turn is still running, so the work disclosure streams open;
     // only click when the default decided to stay closed (e.g. it completed).
     const agentDisclosure = activeAgent.locator('.work-disclosure__button')
     if (await agentDisclosure.getAttribute('aria-expanded') !== 'true') await agentDisclosure.click()
-    await activeAgent.locator('.subagents__messages').evaluate((element) => { element.scrollTop = 200; element.dispatchEvent(new Event('scroll')) })
-    const previousTop = await activeAgent.locator('.subagents__messages').evaluate((element) => element.scrollTop)
-    expect(previousTop).toBeGreaterThan(0)
     await expect(roster).toBeVisible()
     await roster.getByRole('button', { name: /Reviewer · Failed/ }).click()
     await expect(activeAgent.locator('.subagents__heading h2')).toHaveText('Reviewer')
     await expect(activeAgent.locator('.subagents__heading')).toContainText('Fixture review failed')
     await roster.getByRole('button', { name: /Task · Waiting for input/ }).click()
-    await expect(activeAgent.locator('.subagents__details')).toHaveJSProperty('open', true)
+    await expect(activeAgent.locator('.subagents__heading h2')).toHaveText('Task')
     // A running (waiting) disclosure has no collapse control — it stays open.
     await expect(activeAgent.locator('.work-timeline')).toBeVisible()
-    await expect.poll(() => activeAgent.locator('.subagents__messages').evaluate((element) => element.scrollTop)).toBeCloseTo(previousTop, 0)
-    await expect(activeAgent.getByRole('button', { name: /Jump to/ })).toBeVisible()
     await page.getByRole('button', { name: 'Close agent transcript' }).click()
-    await expect(page.locator('.subagents__page:not([hidden])')).toHaveCount(0)
-    const positions = await page.locator('.subagents__body').evaluate((element) => {
-      const main = element.querySelector('main')!.getBoundingClientRect()
-      const list = element.querySelector('.subagents__roster')!.getBoundingClientRect()
-      return { mainRight: main.right, listLeft: list.left }
+    await expect(page.locator('.subagents__transcript')).toHaveCount(0)
+    // The conversation owns the workspace width; the roster and transcript
+    // live entirely in the inspector column.
+    const positions = await page.locator('.session-workspace').evaluate((element) => {
+      const main = element.querySelector('.conversation-pane')!.getBoundingClientRect()
+      const list = element.querySelector('.inspector .subagents__roster')!.getBoundingClientRect()
+      return { mainRight: main.right, listLeft: list.left, mainWidth: main.width }
     })
-    expect(positions.mainRight).toBeCloseTo(positions.listLeft, 0)
+    expect(positions.mainWidth).toBeGreaterThan(600)
+    expect(positions.listLeft).toBeGreaterThan(positions.mainRight)
     await page.screenshot({ path: test.info().outputPath('agent-overview-wide.png') })
     await page.setViewportSize({ width: 680, height: 850 })
+    // Below the smallest breakpoint the inspector is suppressed; the toolbar
+    // button reopens it as an overlay on the Agents tab.
+    await expect(page.locator('.inspector')).toHaveCount(0)
+    await page.getByRole('button', { name: /Subagents ·/ }).click()
     await expect(roster).toBeVisible()
-    expect(await roster.evaluate((element) => element.getBoundingClientRect().width)).toBeLessThan(400)
+    expect(await roster.evaluate((element) => element.getBoundingClientRect().width)).toBeLessThan(680)
+    // Wait out the overlay's panel-in animation before capturing it.
+    await expect.poll(() => page.locator('.inspector').evaluate((element) => getComputedStyle(element).opacity)).toBe('1')
     await page.screenshot({ path: test.info().outputPath('agent-overview-compact.png') })
+    await page.setViewportSize({ width: 1280, height: 900 })
     await page.reload()
     await expect(page.locator('.app-shell')).toHaveAttribute('data-ready', 'true')
-    await expect(page.locator('.subagents__roster.is-pinned')).toBeVisible()
-    await page.getByRole('button', { name: 'Close agent list', exact: true }).click()
-    await expect(page.locator('.subagents__roster')).toHaveCount(0)
-    await expect.poll(async () => page.evaluate(async () => (await window.desktop.settings.get()).subagentsPanelPinned)).toBe(false)
+    // The tab choice is not persisted; the toolbar button always lands on Agents.
+    await page.getByRole('button', { name: /Subagents ·/ }).click()
+    await expect(page.getByRole('tab', { name: 'Agents' })).toHaveAttribute('aria-selected', 'true')
   })
 
   test('moves the transcript on the very first wheel scroll of a long history', async () => {
@@ -1031,7 +1041,7 @@ test.describe('OMP Desktop desktop smoke', () => {
     await composer.press('Enter')
     await expect(panel.getByRole('status')).toHaveText('Running command…')
     await expect(panel.getByRole('status')).toHaveText('Completed')
-    await expect(page.locator('.subagents__toolbar > .execution-status')).not.toContainText('Waiting for input')
+    await expect(page.locator('.conversation-toolbar > .execution-status')).not.toContainText('Waiting for input')
     await expect(panel.locator('pre')).toHaveText('Model presets\nfixture-default\nPreset list loaded')
     await expect(page.locator('.transcript .user-bubble').filter({ hasText: '/modelpreset list' })).toHaveCount(0)
     await expect(page.locator('.transcript .thinking-dots')).toHaveCount(0)
@@ -1154,7 +1164,7 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(page.locator('.command-output pre')).toContainText('fixture-default')
   })
 
-  test('filters unread agent updates and measures retained view switching', async () => {
+  test('filters unread agent updates in the inspector Agents tab', async () => {
     await page.setViewportSize({ width: 1600, height: 950 })
     if (await page.locator('.inspector').count()) await page.getByRole('button', { name: 'Toggle inspector' }).click()
     await expect(page.locator('.model-picker__trigger')).toHaveAccessibleName('Model: Claude Fixture')
@@ -1165,14 +1175,14 @@ test.describe('OMP Desktop desktop smoke', () => {
     await composer.fill('subagent overview fixture')
     await composer.press('Enter')
     await page.getByRole('button', { name: /Subagents ·/ }).click()
-    await page.getByRole('button', { name: 'Pin agent list', exact: true }).click()
-    const roster = page.locator('.subagents__roster.is-pinned')
+    await expect(page.getByRole('tab', { name: 'Agents' })).toHaveAttribute('aria-selected', 'true')
+    const roster = page.locator('.inspector .subagents__roster')
     await expect(roster.locator('.subagents__unread')).toHaveCount(3)
     const times: number[] = []
     for (const name of ['Task', 'Reviewer', 'Explore', 'Task']) {
       const started = Date.now()
       await roster.getByRole('button', { name: new RegExp(`^${name} ·`) }).click()
-      await expect(page.locator('.subagents__page:not([hidden]) h2')).toHaveText(name)
+      await expect(page.locator('.inspector .subagents__transcript h2')).toHaveText(name)
       times.push(Date.now() - started)
     }
     await expect(roster.locator('.subagents__unread')).toHaveCount(0)
@@ -1184,7 +1194,7 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(roster.locator('.subagents__agent')).toHaveCount(2)
     await filter.selectOption('completed')
     await expect(roster.locator('.subagents__agent')).toHaveCount(0)
-    await test.info().attach('agent-switch-performance', { body: JSON.stringify({ agents: 3, switchMs: times, retainedViews: await page.locator('.subagents__page').count() }), contentType: 'application/json' })
+    await test.info().attach('agent-switch-performance', { body: JSON.stringify({ agents: 3, switchMs: times, retainedViews: await page.locator('.inspector .subagents__transcript').count() }), contentType: 'application/json' })
   })
 
   test('captures the current localized conversation and agent workspace', async () => {
@@ -1211,8 +1221,8 @@ test.describe('OMP Desktop desktop smoke', () => {
       if (command.startsWith('/')) await expect(page.locator('.command-output__status')).toHaveText('已完成')
       else await expect(page.locator('.subagents__count')).toHaveText('3')
     }
-    await page.locator('.subagents__roster-toggle').click()
-    await page.getByRole('button', { name: '固定代理清單', exact: true }).click()
+    await page.getByRole('button', { name: /子代理 ·/ }).click()
+    await expect(page.getByRole('tab', { name: '子代理' })).toHaveAttribute('aria-selected', 'true')
     await page.keyboard.press('Meta+f')
     await page.getByRole('textbox', { name: '在對話中尋找', exact: true }).fill('子代理進度')
     await expect(page.locator('.is-search-match')).toBeVisible()
@@ -1233,7 +1243,7 @@ test.describe('OMP Desktop desktop smoke', () => {
       await expect(page.locator('.app-shell')).toHaveAttribute('data-ready', 'true')
       const row = page.locator('.project-group .session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' })
       await row.locator('.session-row').click()
-      await expect(page.locator('.subagents__roster-toggle')).toContainText('子代理')
+      await expect(page.locator('.conversation-toolbar__agents')).toContainText('子代理')
       await page.locator('.composer-input textarea').fill('/context')
       await page.locator('.composer .send-button').click()
       await expect(page.getByRole('region', { name: result, exact: true })).toBeVisible()
@@ -2364,11 +2374,11 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(page.locator('.todo-hud__task.is-in_progress')).toContainText('task2')
     await expect(page.locator('.todo-hud__task.is-pending')).toContainText('task3')
 
-    // The search trigger docks into the subagents toolbar row (right of the
-    // roster), and the plan card spans the conversation column.
+    // The search trigger docks into the conversation toolbar row (right of the
+    // Agents button), and the plan card spans the conversation column.
     const trigger = page.locator('.subagents__search-slot .conversation-search-trigger')
     const triggerBox = await trigger.boundingBox()
-    const toolbarBox = await page.locator('.subagents__toolbar').boundingBox()
+    const toolbarBox = await page.locator('.conversation-toolbar').boundingBox()
     expect(triggerBox).not.toBeNull()
     expect(toolbarBox).not.toBeNull()
     expect(triggerBox!.y).toBeGreaterThanOrEqual(toolbarBox!.y)
@@ -2559,7 +2569,7 @@ test.describe('OMP Desktop desktop smoke', () => {
 
     const dialog = page.getByRole('dialog', { name: 'Answer 2 questions' })
     await expect(dialog).toBeVisible()
-    await expect(page.locator('.subagents__toolbar > .execution-status .execution-status__phase')).toHaveText('Waiting for input')
+    await expect(page.locator('.conversation-toolbar > .execution-status .execution-status__phase')).toHaveText('Waiting for input')
     const workStatus = page.locator('.work-disclosure__button[role="status"]')
     await expect(workStatus).toContainText('Working')
     // While the turn streams, the work disclosure stays open at top level:
@@ -2882,7 +2892,7 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(page.locator('.session-welcome')).toHaveCount(0, { timeout: 1000 })
     await expect(page.locator('.transcript .user-bubble')).toContainText('Start this new conversation', { timeout: 1000 })
     await expect(page.locator('.transcript .thinking-dots')).toBeVisible({ timeout: 1000 })
-    await expect(page.locator('.subagents__toolbar > .execution-status .execution-status__phase')).toHaveText('Starting', { timeout: 1000 })
+    await expect(page.locator('.conversation-toolbar > .execution-status .execution-status__phase')).toHaveText('Starting', { timeout: 1000 })
     await page.screenshot({ path: test.info().outputPath('new-session-starting.png') })
     await expect(page.locator('.transcript .thinking-dots')).toHaveCount(0, { timeout: 15000 })
     await expect(page.locator('.composer-attachment-error')).toHaveCount(0)
@@ -2967,6 +2977,8 @@ test.describe('OMP Desktop desktop smoke', () => {
     await page.getByRole('tab', { name: 'Browser' }).focus()
     await page.keyboard.press('ArrowRight')
     await expect(page.getByRole('tab', { name: 'Files' })).toHaveAttribute('aria-selected', 'true')
+    await page.keyboard.press('ArrowRight')
+    await expect(page.getByRole('tab', { name: 'Agents' })).toHaveAttribute('aria-selected', 'true')
   })
 
   test('binds Git to a secondary workspace and clears stale paths during a folder switch', async () => {

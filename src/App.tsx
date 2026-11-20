@@ -9,10 +9,10 @@ import { ReasoningExpandedContext } from '@/components/ReasoningDisclosure'
 import { ConversationDock } from '@/components/ConversationDock'
 import { CommandOutputPanel } from '@/components/CommandOutputPanel'
 import { useCommandOutput } from '@/hooks/useCommandOutput'
-import { SubagentsPanel } from '@/components/SubagentsPanel'
+import { ConversationToolbar } from '@/components/ConversationToolbar'
 import { conversationExecution } from '@/lib/execution-state'
 import { useSideQuestions } from '@/hooks/useSideQuestions'
-import { useSubagents } from '@/hooks/useSubagents'
+import { useSubagents, type SubagentPanelState } from '@/hooks/useSubagents'
 import { NoHarnessPrompt } from '@/components/NoHarnessPrompt'
 import type { ProjectScriptKind } from '@/components/ProjectRunControl'
 import { ResizeHandle } from '@/components/ResizeHandle'
@@ -728,6 +728,18 @@ export default function App() {
     setSideChatOpen(false)
     toggleInspector()
   }, [toggleInspector])
+  // The conversation toolbar's Agents button opens the inspector on the Agents
+  // tab instead of toggling a split-view roster.
+  const openAgentsTab = () => {
+    setSideChatOpen(false)
+    if (layout.compactLayout && settingsState.sidebarOpen) {
+      layout.setSmallestSidebarAllowed(false)
+      settingsState.setSidebarOpen(false)
+    }
+    layout.setSmallestInspectorAllowed(true)
+    if (!settingsState.inspectorOpen) void settingsState.updateSettings({ inspectorOpen: true })
+    settingsState.selectInspectorTab('agents')
+  }
   const askSideQuestion = useCallback(
     (question: string, topicId?: string) => {
       if (!sideChatSessionId) return
@@ -834,6 +846,48 @@ export default function App() {
     setScheduleFocusId(id)
     setView('scheduled')
   }, [])
+  // The Agents tab gets one memoized state bundle: useSubagents returns a fresh
+  // object every render, and the inspector's memo boundary should reopen only
+  // when the roster or its controls actually change.
+  const {
+    agents: subagentAgents,
+    selectedId: subagentSelectedId,
+    error: subagentError,
+    subscriptionLevel: subagentSubscriptionLevel,
+    pendingActions: subagentPendingActions,
+    select: selectSubagent,
+    cancel: cancelSubagent,
+    steer: steerSubagent,
+    loadEarlier: loadEarlierSubagent,
+    setSubscriptionLevel: setSubagentSubscriptionLevel,
+  } = subagents
+  const subagentPanel = useMemo<SubagentPanelState>(
+    () => ({
+      agents: subagentAgents,
+      selectedId: subagentSelectedId,
+      error: subagentError,
+      subscriptionLevel: subagentSubscriptionLevel,
+      pendingActions: subagentPendingActions,
+      select: selectSubagent,
+      cancel: cancelSubagent,
+      steer: steerSubagent,
+      loadEarlier: loadEarlierSubagent,
+      setSubscriptionLevel: setSubagentSubscriptionLevel,
+    }),
+    [subagentAgents, subagentSelectedId, subagentError, subagentSubscriptionLevel, subagentPendingActions, selectSubagent, cancelSubagent, steerSubagent, loadEarlierSubagent, setSubagentSubscriptionLevel],
+  )
+  // Depend on the connection flag, not the runtime record: the record changes
+  // with every usage/token frame and would reopen the inspector memo.
+  const subagentsConnected = Boolean(workspace.runtime)
+  const inspectorSubagents = useMemo(
+    () => ({
+      state: subagentPanel,
+      connected: subagentsConnected,
+      showReasoning: settingsState.settings.showReasoningSummaries,
+      showTools: settingsState.settings.showToolCalls,
+    }),
+    [subagentPanel, subagentsConnected, settingsState.settings.showReasoningSummaries, settingsState.settings.showToolCalls],
+  )
   const selectAgentTab = useStableCallback((tabId: string) => {
     setAgentPreviewSelected(false)
     agentBrowser.select(tabId)
@@ -1347,166 +1401,158 @@ export default function App() {
                   className="session-workspace"
                   style={{ '--inspector-width': `${layout.inspectorWidth}px`, '--side-chat-width': `${layout.sideChatWidth}px` } as CSSProperties}
                 >
-                  <div className="conversation-column">
-                    <SubagentsPanel
-                      key={workspace.workspaceGeneration}
-                      state={subagents}
-                      connected={Boolean(workspace.runtime)}
-                      showReasoning={settingsState.settings.showReasoningSummaries}
-                      showTools={settingsState.settings.showToolCalls}
+                  <div className={`conversation-column${subagents.selectedId ? ' has-selection' : ''}`}>
+                    <ConversationToolbar
                       execution={execution}
-                      pinned={settingsState.settings.subagentsPanelPinned}
-                      onPinnedChange={(subagentsPanelPinned) => {
-                        void settingsState.updateSettings({ subagentsPanelPinned })
-                      }}
-                    >
-                      <main className="conversation-pane">
-                        <Suspense fallback={<LoadingPanel label={t('app.panel.conversation')} />}>
-                          <Transcript
-                            key={workspace.activeSessionId ?? 'new-session'}
-                            followKey={workspace.activeSessionId ?? 'new-session'}
-                            transcript={workspace.transcriptStore}
-                            git={turnGit}
-                            harness={activeHarness}
-                            loading={workspace.loadingSession}
-                            active={busy || activeSession?.status === 'running'}
-                            visible={!subagents.selectedId}
-                            onRetry={retryTurn}
-                            onRestorePrompt={restoreTranscriptPrompt}
-                            showReasoning={settingsState.settings.showReasoningSummaries}
-                            showTools={settingsState.settings.showToolCalls}
-                            onOpenChanges={openChanges}
-                            onSuggestion={suggestPrompt}
-                            suggestionsDisabled={!activeProject || workspace.loadingSession || submitting}
-                            showChangesCard={Boolean(turnChanges?.length && settingsState.settings.showFileChangesPopup && !changesCardDismissed)}
-                            onDismissChanges={dismissChangesCard}
-                            queuedMessageCount={queuedMessages.length + harnessQueuedMessageCount}
-                            onOpenSessionReference={openSessionReference}
-                          />
-                        </Suspense>
-                        {btwHint ? (
-                          <div className="conversation-hint" role="status">
-                            {t('sidechat.needsRuntime')}
-                          </div>
-                        ) : null}
-                        <ConversationDock>
-                          <CommandOutputPanel
-                            text={commandOutput.text}
-                            command={commandOutput.command}
-                            status={commandOutput.status}
-                            onAbort={commandOutput.onAbort}
-                            onClose={commandOutput.dismiss}
-                            history={commandOutput.history}
-                            selectedId={commandOutput.selectedId}
-                            onSelect={commandOutput.select}
-                            onClear={commandOutput.clear}
-                          />
-                          <ExtensionUiPresentation
-                            status={extension.extensionStatus}
-                            widgets={extension.extensionWidgets}
-                            editorText={extension.editorTextUpdate}
-                            openUrl={extension.openUrlRequest}
-                            capabilityNotices={extension.extensionCapabilityNotices}
-                            composerDraft={
-                              readComposerDraft(workspace.activeSessionId ? `${activeProject?.id ?? 'no-project'}:${workspace.activeSessionId}` : `${activeProject?.id ?? 'no-project'}:new`)?.text ??
-                              ''
+                      agentCount={subagents.agents.length}
+                      runningCount={subagents.agents.filter((agent) => agent.status === 'running').length}
+                      onOpenAgents={openAgentsTab}
+                    />
+                    <main className="conversation-pane">
+                      <Suspense fallback={<LoadingPanel label={t('app.panel.conversation')} />}>
+                        <Transcript
+                          key={workspace.activeSessionId ?? 'new-session'}
+                          followKey={workspace.activeSessionId ?? 'new-session'}
+                          transcript={workspace.transcriptStore}
+                          git={turnGit}
+                          harness={activeHarness}
+                          loading={workspace.loadingSession}
+                          active={busy || activeSession?.status === 'running'}
+                          onRetry={retryTurn}
+                          onRestorePrompt={restoreTranscriptPrompt}
+                          showReasoning={settingsState.settings.showReasoningSummaries}
+                          showTools={settingsState.settings.showToolCalls}
+                          onOpenChanges={openChanges}
+                          onSuggestion={suggestPrompt}
+                          suggestionsDisabled={!activeProject || workspace.loadingSession || submitting}
+                          showChangesCard={Boolean(turnChanges?.length && settingsState.settings.showFileChangesPopup && !changesCardDismissed)}
+                          onDismissChanges={dismissChangesCard}
+                          queuedMessageCount={queuedMessages.length + harnessQueuedMessageCount}
+                          onOpenSessionReference={openSessionReference}
+                        />
+                      </Suspense>
+                      {btwHint ? (
+                        <div className="conversation-hint" role="status">
+                          {t('sidechat.needsRuntime')}
+                        </div>
+                      ) : null}
+                      <ConversationDock>
+                        <CommandOutputPanel
+                          text={commandOutput.text}
+                          command={commandOutput.command}
+                          status={commandOutput.status}
+                          onAbort={commandOutput.onAbort}
+                          onClose={commandOutput.dismiss}
+                          history={commandOutput.history}
+                          selectedId={commandOutput.selectedId}
+                          onSelect={commandOutput.select}
+                          onClear={commandOutput.clear}
+                        />
+                        <ExtensionUiPresentation
+                          status={extension.extensionStatus}
+                          widgets={extension.extensionWidgets}
+                          editorText={extension.editorTextUpdate}
+                          openUrl={extension.openUrlRequest}
+                          capabilityNotices={extension.extensionCapabilityNotices}
+                          composerDraft={
+                            readComposerDraft(workspace.activeSessionId ? `${activeProject?.id ?? 'no-project'}:${workspace.activeSessionId}` : `${activeProject?.id ?? 'no-project'}:new`)?.text ??
+                            ''
+                          }
+                          activeRuntimeId={workspace.runtime?.runtimeId}
+                          onApplyEditorText={(text) => {
+                            // Stale guard: only the update currently pending for
+                            // the active runtime may reach the composer draft.
+                            const update = extension.editorTextUpdate
+                            if (!update || update.runtimeId !== workspace.runtime?.runtimeId || update.text !== text) return
+                            extension.consumeEditorTextUpdate()
+                            setRestorePrompt({ owner: workspace.workspaceGeneration, id: Date.now(), text })
+                          }}
+                          onDismissEditorText={() => extension.dismissEditorTextUpdate()}
+                          onOpenUrl={(url) => {
+                            if (bridge)
+                              void openExternalUrl(bridge.app, url).then((failure) => {
+                                if (failure) setToast(failure)
+                              })
+                          }}
+                          onDismissOpenUrl={() => extension.dismissOpenUrlRequest()}
+                          onDismissCapabilityNotice={extension.dismissCapabilityNotice}
+                        >
+                          <Composer
+                            availableCommands={visibleSlashCommands}
+                            key={
+                              workspace.activeSessionId
+                                ? `${activeProject?.id ?? 'no-project'}:${workspace.activeSessionId}`
+                                : `${activeProject?.id ?? 'no-project'}:new:${workspace.workspaceGeneration}`
                             }
-                            activeRuntimeId={workspace.runtime?.runtimeId}
-                            onApplyEditorText={(text) => {
-                              // Stale guard: only the update currently pending for
-                              // the active runtime may reach the composer draft.
-                              const update = extension.editorTextUpdate
-                              if (!update || update.runtimeId !== workspace.runtime?.runtimeId || update.text !== text) return
-                              extension.consumeEditorTextUpdate()
-                              setRestorePrompt({ owner: workspace.workspaceGeneration, id: Date.now(), text })
-                            }}
-                            onDismissEditorText={() => extension.dismissEditorTextUpdate()}
-                            onOpenUrl={(url) => {
-                              if (bridge)
-                                void openExternalUrl(bridge.app, url).then((failure) => {
-                                  if (failure) setToast(failure)
-                                })
-                            }}
-                            onDismissOpenUrl={() => extension.dismissOpenUrlRequest()}
-                            onDismissCapabilityNotice={extension.dismissCapabilityNotice}
-                          >
-                            <Composer
-                              availableCommands={visibleSlashCommands}
-                              key={
-                                workspace.activeSessionId
-                                  ? `${activeProject?.id ?? 'no-project'}:${workspace.activeSessionId}`
-                                  : `${activeProject?.id ?? 'no-project'}:new:${workspace.workspaceGeneration}`
-                              }
-                              draftKey={workspace.activeSessionId ? `${activeProject?.id ?? 'no-project'}:${workspace.activeSessionId}` : `${activeProject?.id ?? 'no-project'}:new`}
-                              busy={busy}
-                              submitting={submitting}
-                              submittingKind={submittingKind}
-                              loading={workspace.loadingSession}
-                              disabled={!activeProject}
-                              messageEnterAction={settingsState.settings.messageEnterAction}
-                              voice={bridge?.voice}
-                              transcriptionProvider={settingsState.settings.voiceTranscriptionProvider}
-                              model={provider.model}
-                              effort={provider.effort}
-                              modelsByProvider={provider.modelsByProvider}
-                              resolvedAutoEffort={provider.resolvedAutoEffort}
-                              providers={provider.catalog?.providers ?? EMPTY_PROVIDERS}
-                              presets={provider.catalog?.presets}
-                              onSwitchPreset={switchModelPreset}
-                              onSavePreset={saveModelPreset}
-                              reasoningLevels={provider.reasoningLevels}
-                              fast={provider.fast}
-                              fastSupported={provider.selectedModel?.fastModeSupported ?? false}
-                              fastAvailable={workspace.runtime?.fastModeAvailable !== false}
-                              usageLimit={provider.usageLimit}
-                              approvalMode={settingsState.settings.ompApprovalMode}
-                              onApprovalModeChange={changeApprovalMode}
-                              checkoutCatalog={checkoutCatalog}
-                              checkoutLabel={git.branch ?? activeProject?.gitBranch ?? activeProject?.name}
-                              checkoutsLoading={checkoutsLoading}
-                              onExecuteCheckout={bridge && activeProject && !activeProject.inferred && checkoutCatalog ? executeCheckout : undefined}
-                              projects={projects}
-                              activeProjectId={activeProject?.id}
-                              onSelectProject={selectComposerProject}
-                              onAddProjectFolder={addProjectFolder}
-                              agentName={HARNESS_AGENT_NAMES[activeHarness]}
-                              shortName={HARNESS_SHORT_NAMES[activeHarness]}
-                              imageInputSupported={Boolean(provider.selectedModel?.input.includes('image') || provider.catalog?.visionDelegation)}
-                              contextUsage={workspace.runtime?.contextUsage}
-                              sessionUsage={workspace.runtime?.sessionUsage}
-                              runtimeId={workspace.runtime?.runtimeId}
-                              harnessTokensPerSecond={workspace.runtime?.tokensPerSecond}
-                              executingModel={workspace.runtime?.executingModel}
-                              skills={pluginSkills.skills}
-                              sessions={mentionableSessions}
-                              annotations={browserAnnotations.annotations}
-                              queuedMessages={queuedMessages}
-                              harnessQueuedMessageCount={harnessQueuedMessageCount}
-                              harnessQueuedPreviews={harnessQueuedPreviews}
-                              queueRuntimeId={workspace.runtime?.runtimeId}
-                              onRemoveHarnessQueuedMessage={removeHarnessQueuedMessage}
-                              onPromoteHarnessQueuedMessage={promoteHarnessQueuedMessage}
-                              onReclaimHarnessQueuedMessage={reclaimHarnessQueuedMessage}
-                              onDeleteQueuedMessage={removeQueuedMessage}
-                              onSendQueuedMessage={sendQueuedMessage}
-                              onEditQueuedMessage={editQueuedMessage}
-                              sendSignal={browserAnnotations.sendSignal}
-                              restoreRequest={restorePrompt?.owner === workspace.workspaceGeneration ? restorePrompt : undefined}
-                              onRestoreHandled={dismissRestoreRequest}
-                              onModelChange={provider.changeModel}
-                              onEffortChange={provider.changeEffort}
-                              onFastChange={provider.changeFast}
-                              onSend={sendVisiblePrompt}
-                              onStop={stopRuntime}
-                              retryStoppedTurn={stoppedTurnRetryAvailable}
-                              onRetryStoppedTurn={retryTurn}
-                              onRemoveAnnotation={browserAnnotations.remove}
-                              onClearAnnotations={browserAnnotations.clear}
-                            />
-                          </ExtensionUiPresentation>
-                        </ConversationDock>
-                      </main>
-                    </SubagentsPanel>
+                            draftKey={workspace.activeSessionId ? `${activeProject?.id ?? 'no-project'}:${workspace.activeSessionId}` : `${activeProject?.id ?? 'no-project'}:new`}
+                            busy={busy}
+                            submitting={submitting}
+                            submittingKind={submittingKind}
+                            loading={workspace.loadingSession}
+                            disabled={!activeProject}
+                            messageEnterAction={settingsState.settings.messageEnterAction}
+                            voice={bridge?.voice}
+                            transcriptionProvider={settingsState.settings.voiceTranscriptionProvider}
+                            model={provider.model}
+                            effort={provider.effort}
+                            modelsByProvider={provider.modelsByProvider}
+                            resolvedAutoEffort={provider.resolvedAutoEffort}
+                            providers={provider.catalog?.providers ?? EMPTY_PROVIDERS}
+                            presets={provider.catalog?.presets}
+                            onSwitchPreset={switchModelPreset}
+                            onSavePreset={saveModelPreset}
+                            reasoningLevels={provider.reasoningLevels}
+                            fast={provider.fast}
+                            fastSupported={provider.selectedModel?.fastModeSupported ?? false}
+                            fastAvailable={workspace.runtime?.fastModeAvailable !== false}
+                            usageLimit={provider.usageLimit}
+                            approvalMode={settingsState.settings.ompApprovalMode}
+                            onApprovalModeChange={changeApprovalMode}
+                            checkoutCatalog={checkoutCatalog}
+                            checkoutLabel={git.branch ?? activeProject?.gitBranch ?? activeProject?.name}
+                            checkoutsLoading={checkoutsLoading}
+                            onExecuteCheckout={bridge && activeProject && !activeProject.inferred && checkoutCatalog ? executeCheckout : undefined}
+                            projects={projects}
+                            activeProjectId={activeProject?.id}
+                            onSelectProject={selectComposerProject}
+                            onAddProjectFolder={addProjectFolder}
+                            agentName={HARNESS_AGENT_NAMES[activeHarness]}
+                            shortName={HARNESS_SHORT_NAMES[activeHarness]}
+                            imageInputSupported={Boolean(provider.selectedModel?.input.includes('image') || provider.catalog?.visionDelegation)}
+                            contextUsage={workspace.runtime?.contextUsage}
+                            sessionUsage={workspace.runtime?.sessionUsage}
+                            runtimeId={workspace.runtime?.runtimeId}
+                            harnessTokensPerSecond={workspace.runtime?.tokensPerSecond}
+                            executingModel={workspace.runtime?.executingModel}
+                            skills={pluginSkills.skills}
+                            sessions={mentionableSessions}
+                            annotations={browserAnnotations.annotations}
+                            queuedMessages={queuedMessages}
+                            harnessQueuedMessageCount={harnessQueuedMessageCount}
+                            harnessQueuedPreviews={harnessQueuedPreviews}
+                            queueRuntimeId={workspace.runtime?.runtimeId}
+                            onRemoveHarnessQueuedMessage={removeHarnessQueuedMessage}
+                            onPromoteHarnessQueuedMessage={promoteHarnessQueuedMessage}
+                            onReclaimHarnessQueuedMessage={reclaimHarnessQueuedMessage}
+                            onDeleteQueuedMessage={removeQueuedMessage}
+                            onSendQueuedMessage={sendQueuedMessage}
+                            onEditQueuedMessage={editQueuedMessage}
+                            sendSignal={browserAnnotations.sendSignal}
+                            restoreRequest={restorePrompt?.owner === workspace.workspaceGeneration ? restorePrompt : undefined}
+                            onRestoreHandled={dismissRestoreRequest}
+                            onModelChange={provider.changeModel}
+                            onEffortChange={provider.changeEffort}
+                            onFastChange={provider.changeFast}
+                            onSend={sendVisiblePrompt}
+                            onStop={stopRuntime}
+                            retryStoppedTurn={stoppedTurnRetryAvailable}
+                            onRetryStoppedTurn={retryTurn}
+                            onRemoveAnnotation={browserAnnotations.remove}
+                            onClearAnnotations={browserAnnotations.clear}
+                          />
+                        </ExtensionUiPresentation>
+                      </ConversationDock>
+                    </main>
                   </div>
                   {sideChatVisible ? (
                     <ResizeHandle
@@ -1575,6 +1621,7 @@ export default function App() {
                         onOpenExternal={openExternal}
                         onRevealPath={revealInFileManager}
                         onGrantProject={grantActiveProject}
+                        subagents={inspectorSubagents}
                         overlay={layout.compactLayout}
                         platform={platform}
                       />

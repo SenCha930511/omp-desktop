@@ -66,14 +66,13 @@ export class SettingsService {
         if (!(PRIME_EFFORT_SELECTORS as readonly string[]).includes(value as string)) throw new TypeError('Invalid default reasoning effort')
         return value as AppSettings['defaultEffort']
       },
-      subagentsPanelPinned: (value) => requireBoolean(value, 'subagentsPanelPinned'),
       showToolCalls: (value) => requireBoolean(value, 'showToolCalls'),
       telemetry: (value) => requireBoolean(value, 'telemetry'),
       askUserEnabled: (value) => requireBoolean(value, 'askUserEnabled'),
       browserEnabled: (value) => requireBoolean(value, 'browserEnabled'),
       computerUseEnabled: (value) => requireBoolean(value, 'computerUseEnabled'),
       defaultInspectorTab: (value) => {
-        if (value !== 'summary' && value !== 'changes' && value !== 'browser' && value !== 'files') throw new TypeError('Invalid inspector tab')
+        if (value !== 'summary' && value !== 'changes' && value !== 'browser' && value !== 'files' && value !== 'agents') throw new TypeError('Invalid inspector tab')
         return value
       },
       messageEnterAction: (value) => {

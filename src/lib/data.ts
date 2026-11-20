@@ -10,7 +10,6 @@ import type {
 
 export const DEFAULT_SETTINGS: AppSettings = {
   conversationDensity: 'comfortable',
-  subagentsPanelPinned: false,
   theme: 'system',
   locale: 'system',
   accentColor: 'prime',
