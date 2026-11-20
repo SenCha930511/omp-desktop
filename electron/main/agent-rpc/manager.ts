@@ -4,7 +4,7 @@ import { assertNoMcpAuthenticationCommand } from '../../../src/lib/mcp-policy'
 import { parseSessionActionSnapshot, streamingBehaviorForIntent } from '../../../src/lib/session-actions'
 import { resolveExecutable, type ExecutableSource } from '../process-utils'
 import { canonicalSessionPath } from '../session-paths'
-import { isPathWithin, isRecord, rejectUnknownKeys, requireId, requireRecord, requireString } from '../validation'
+import { errorMessage, isPathWithin, isRecord, rejectUnknownKeys, requireId, requireRecord, requireString } from '../validation'
 import { isThinkingLevel, validateRpcCommand } from './command-schema'
 import { OMP_RPC_ADAPTER, type HarnessRpcAdapter } from './harness-adapter'
 import { RpcRuntime } from './runtime'
@@ -25,6 +25,26 @@ export interface ProviderCatalog {
 export interface RuntimeRetentionOptions { idleMs?: number; warmCount?: number }
 /** Settings-backed source so the idle window follows the live preference. */
 export type RuntimeRetentionSource = RuntimeRetentionOptions | (() => RuntimeRetentionOptions)
+
+/**
+ * Main-process implementation of one host tool the agent can call. Arguments
+ * are the child's `host_tool_call.arguments` object; the returned object is
+ * sent back verbatim as `host_tool_result.result` (normally `{ content }`).
+ */
+export type HostToolHandler = (args: Record<string, unknown>) => Promise<Record<string, unknown>>
+
+const HOST_TOOL_CONCURRENCY_LIMIT = 8
+const HOST_TOOL_TIMEOUT_MS = 30_000
+
+interface HostToolCall {
+  controller: AbortController
+  /** Registry epoch at dispatch; a re-registration makes this call stale. */
+  epoch: number
+  timer: NodeJS.Timeout | null
+  /** Set once the call was answered, cancelled, or abandoned; late results are dropped. */
+  settled: boolean
+}
+
 const RETENTION_EVENTS = new Set(['agent_start', 'agent_end', 'runtime_state', 'session_action_update', 'compaction_start', 'compaction_end', 'auto_retry_end', 'prompt_result', 'runtime_exit', 'session_settled', 'extension_ui_request'])
 
 export class AgentRpcManager {
@@ -55,6 +75,17 @@ export class AgentRpcManager {
   private readonly sessionMutations = new Set<string>()
   private readonly idleSince = new Map<string, number>()
   private idleTimer: NodeJS.Timeout | null = null
+  /** Host tool handlers by advertised name; the child sees these through set_host_tools. */
+  private readonly hostTools = new Map<string, HostToolHandler>()
+  /** Bumped by every registry change so results dispatched under an older registry are dropped. */
+  private hostToolsEpoch = 0
+  /** In-flight host tool calls per runtime id, keyed by the child's call id. */
+  private readonly hostToolCalls = new Map<string, Map<string, HostToolCall>>()
+  /** Occupied handler slots per runtime id (concurrency cap). */
+  private readonly hostToolSlots = new Map<string, number>()
+  private readonly hostToolSlotWaiters = new Map<string, Array<() => void>>()
+  /** Host URI reads awaiting a reply, so host_uri_cancel can abort the matching one. */
+  private readonly hostUriRequests = new Map<string, Map<string, AbortController>>()
 
   constructor(
     private readonly executable: ExecutableSource,
@@ -70,6 +101,23 @@ export class AgentRpcManager {
   ) {}
 
   setEventSink(sink: (envelope: PrimeEventEnvelope) => void): void { this.eventSink = sink }
+
+  /**
+   * Registers the main-process implementation of one host tool. Every
+   * registration bumps the registry epoch, so a call dispatched against the
+   * previous registry can never answer with a handler that has been replaced.
+   */
+  registerHostTool(name: string, handler: HostToolHandler): void {
+    const toolName = requireString(name, 'name', { min: 1, max: 128, trim: true })
+    this.hostToolsEpoch += 1
+    this.hostTools.set(toolName, handler)
+  }
+
+  /** Advertises the registered host tools to one runtime. */
+  async setHostTools(runtimeId: unknown, tools: RpcObject[]): Promise<RpcObject> {
+    this.hostToolsEpoch += 1
+    return this.command(runtimeId, { type: 'set_host_tools', tools })
+  }
 
   setWorkspaceUseProvider(provider: (
     cwd: string,
@@ -188,7 +236,8 @@ export class AgentRpcManager {
         environment: runtimeEnvironment,
       })
       runtime = await this.admitRuntime(() => {
-        const created = new RpcRuntime(
+        let created!: RpcRuntime
+        created = new RpcRuntime(
           executable,
           args,
           cwd,
@@ -209,6 +258,7 @@ export class AgentRpcManager {
             this.durableIdentityByRuntimeId.delete(closed.runtimeId)
             this.quarantinedRuntimes.delete(closed.runtimeId)
             this.idleSince.delete(closed.runtimeId)
+            this.abortHostCalls(closed.runtimeId, 'Runtime exited')
             // Normal close must release the environment generation exactly like
             // the failed-start path does; a leftover entry would keep a retired
             // child counted against the next settings refresh.
@@ -219,6 +269,8 @@ export class AgentRpcManager {
           runtimeEnvironment,
           {},
           this.adapter,
+          undefined,
+          (frame, respond) => this.handleHostRequest(created, frame, respond),
         )
         // Record the environment generation before admission resolves so a
         // concurrent settings refresh cannot mistake this child for a new one.
@@ -293,6 +345,7 @@ export class AgentRpcManager {
     if (record.sessionFile === sessionFile && record.sessionId === state.sessionId) return
     if (record.sessionId !== state.sessionId) {
       this.quarantinedRuntimes.add(runtime.runtimeId)
+      this.abortHostCalls(runtime.runtimeId, 'Session identity changed')
       this.durableIdentityByRuntimeId.delete(runtime.runtimeId)
       this.startSessionPathById.delete(runtime.runtimeId)
       notifyEnd(state)
@@ -552,6 +605,7 @@ export class AgentRpcManager {
     const runtime = this.runtimes.get(id)
     if (!runtime) return false
     if (this.sessionMutations.has(id)) throw new Error('Session identity is being changed')
+    this.abortHostCalls(id, 'Runtime is stopping')
     return runtime.stop()
   }
 
@@ -664,7 +718,197 @@ export class AgentRpcManager {
   async stopAll(): Promise<void> {
     this.beginShutdown()
     const runtimes = [...this.runtimes.values()]
+    for (const runtime of runtimes) this.abortHostCalls(runtime.runtimeId, 'Runtime is stopping')
     await Promise.all(runtimes.map((runtime) => runtime.stop()))
+  }
+
+  /**
+   * Host-originated frames from one runtime. Tool calls run a registered
+   * handler and answer with `host_tool_result`; URI reads have no registered
+   * schemes yet, so they answer with an error. Nothing here reaches the
+   * session event stream.
+   */
+  private handleHostRequest(runtime: RpcRuntime, frame: RpcObject, respond: (result: RpcObject) => void): void {
+    if (frame.type === 'host_tool_call') {
+      void this.runHostToolCall(runtime, frame, respond).catch(() => undefined)
+      return
+    }
+    if (frame.type === 'host_tool_cancel') {
+      this.cancelHostToolCall(runtime, frame)
+      return
+    }
+    if (frame.type === 'host_uri_request') {
+      this.rejectHostUriRequest(runtime, frame, respond)
+      return
+    }
+    if (frame.type === 'host_uri_cancel') this.cancelHostUriRequest(runtime, frame)
+  }
+
+  private async runHostToolCall(runtime: RpcRuntime, frame: RpcObject, respond: (result: RpcObject) => void): Promise<void> {
+    const id = typeof frame.id === 'string' ? frame.id : ''
+    if (!id) return
+    const toolName = typeof frame.toolName === 'string' ? frame.toolName : ''
+    const rawArguments = frame.arguments
+    if (!toolName || (rawArguments !== undefined && !isRecord(rawArguments))) {
+      respond({ type: 'host_tool_result', id, isError: true, result: { content: [{ type: 'text', text: 'Invalid host tool call' }] } })
+      return
+    }
+    const handler = this.hostTools.get(toolName)
+    if (!handler) {
+      respond({ type: 'host_tool_result', id, isError: true, result: { content: [{ type: 'text', text: `Unknown host tool: ${toolName}` }] } })
+      return
+    }
+    const call: HostToolCall = { controller: new AbortController(), epoch: this.hostToolsEpoch, timer: null, settled: false }
+    this.hostToolCallsFor(runtime.runtimeId).set(id, call)
+    await this.acquireHostToolSlot(runtime.runtimeId)
+    if (call.settled || call.controller.signal.aborted) {
+      // Cancelled while queued for a slot: nothing ran and nothing is owed.
+      this.releaseHostToolSlot(runtime.runtimeId)
+      return
+    }
+    try {
+      const result = await this.executeHostTool(toolName, handler, rawArguments ?? {}, call)
+      if (call.settled || call.controller.signal.aborted || call.epoch !== this.hostToolsEpoch) return
+      call.settled = true
+      respond({ type: 'host_tool_result', id, result })
+    } catch (error) {
+      if (call.settled || call.controller.signal.aborted || call.epoch !== this.hostToolsEpoch) return
+      call.settled = true
+      respond({ type: 'host_tool_result', id, isError: true, result: { content: [{ type: 'text', text: errorMessage(error) }] } })
+    } finally {
+      if (call.timer) clearTimeout(call.timer)
+      call.timer = null
+      call.settled = true
+      this.forgetHostToolCall(runtime.runtimeId, id)
+      this.releaseHostToolSlot(runtime.runtimeId)
+    }
+  }
+
+  private async executeHostTool(
+    toolName: string,
+    handler: HostToolHandler,
+    args: Record<string, unknown>,
+    call: HostToolCall,
+  ): Promise<Record<string, unknown>> {
+    const timeout = new Promise<never>((_, reject) => {
+      const timer = setTimeout(() => reject(new Error(`Host tool ${toolName} timed out after 30 seconds`)), HOST_TOOL_TIMEOUT_MS)
+      timer.unref()
+      call.timer = timer
+    })
+    try {
+      const result = await Promise.race([handler(args), timeout])
+      if (!isRecord(result)) throw new Error(`Host tool ${toolName} returned an invalid result`)
+      return result
+    } finally {
+      if (call.timer) clearTimeout(call.timer)
+      call.timer = null
+    }
+  }
+
+  /** The timeout is left running on cancel so a handler that ignores the abort still frees its slot. */
+  private cancelHostToolCall(runtime: RpcRuntime, frame: RpcObject): void {
+    const targetId = typeof frame.targetId === 'string' ? frame.targetId : ''
+    if (!targetId) return
+    const calls = this.hostToolCalls.get(runtime.runtimeId)
+    const call = calls?.get(targetId)
+    if (!calls || !call) return
+    calls.delete(targetId)
+    if (calls.size === 0) this.hostToolCalls.delete(runtime.runtimeId)
+    call.settled = true
+    call.controller.abort(new Error('Host tool call was cancelled'))
+  }
+
+  /**
+   * No host URI scheme is registered yet, so every read is answered with an
+   * error immediately. The request is still tracked across the reply so a
+   * cancel that arrives while that reply is queued can abort it.
+   */
+  private rejectHostUriRequest(runtime: RpcRuntime, frame: RpcObject, respond: (result: RpcObject) => void): void {
+    const id = typeof frame.id === 'string' ? frame.id : ''
+    if (!id) return
+    const controller = new AbortController()
+    const requests = this.hostUriRequests.get(runtime.runtimeId) ?? new Map<string, AbortController>()
+    requests.set(id, controller)
+    this.hostUriRequests.set(runtime.runtimeId, requests)
+    const scheme = typeof frame.uri === 'string' ? /^([a-z][a-z0-9+.-]*):/i.exec(frame.uri)?.[1] : undefined
+    respond({
+      type: 'host_uri_result',
+      id,
+      isError: true,
+      error: scheme ? `Host URI scheme "${scheme}" is not registered` : 'Host URI scheme is not registered',
+    })
+    requests.delete(id)
+    if (requests.size === 0) this.hostUriRequests.delete(runtime.runtimeId)
+  }
+
+  private cancelHostUriRequest(runtime: RpcRuntime, frame: RpcObject): void {
+    const targetId = typeof frame.targetId === 'string' ? frame.targetId : ''
+    if (!targetId) return
+    const requests = this.hostUriRequests.get(runtime.runtimeId)
+    const controller = requests?.get(targetId)
+    if (!requests || !controller) return
+    requests.delete(targetId)
+    if (requests.size === 0) this.hostUriRequests.delete(runtime.runtimeId)
+    controller.abort(new Error('Host URI request was cancelled'))
+  }
+
+  /** Drops every in-flight host call for one runtime: a cancelled call is never answered. */
+  private abortHostCalls(runtimeId: string, reason: string): void {
+    const calls = this.hostToolCalls.get(runtimeId)
+    if (calls) {
+      this.hostToolCalls.delete(runtimeId)
+      for (const call of calls.values()) {
+        call.settled = true
+        call.controller.abort(new Error(reason))
+      }
+    }
+    const uriRequests = this.hostUriRequests.get(runtimeId)
+    if (uriRequests) {
+      this.hostUriRequests.delete(runtimeId)
+      for (const controller of uriRequests.values()) controller.abort(new Error(reason))
+    }
+  }
+
+  private hostToolCallsFor(runtimeId: string): Map<string, HostToolCall> {
+    const existing = this.hostToolCalls.get(runtimeId)
+    if (existing) return existing
+    const calls = new Map<string, HostToolCall>()
+    this.hostToolCalls.set(runtimeId, calls)
+    return calls
+  }
+
+  private forgetHostToolCall(runtimeId: string, id: string): void {
+    const calls = this.hostToolCalls.get(runtimeId)
+    if (!calls) return
+    calls.delete(id)
+    if (calls.size === 0) this.hostToolCalls.delete(runtimeId)
+  }
+
+  private acquireHostToolSlot(runtimeId: string): Promise<void> {
+    const occupied = this.hostToolSlots.get(runtimeId) ?? 0
+    if (occupied < HOST_TOOL_CONCURRENCY_LIMIT) {
+      this.hostToolSlots.set(runtimeId, occupied + 1)
+      return Promise.resolve()
+    }
+    return new Promise((resolveSlot) => {
+      const waiters = this.hostToolSlotWaiters.get(runtimeId) ?? []
+      waiters.push(resolveSlot)
+      this.hostToolSlotWaiters.set(runtimeId, waiters)
+    })
+  }
+
+  private releaseHostToolSlot(runtimeId: string): void {
+    const waiters = this.hostToolSlotWaiters.get(runtimeId)
+    const next = waiters?.shift()
+    if (waiters && next) {
+      if (waiters.length === 0) this.hostToolSlotWaiters.delete(runtimeId)
+      next()
+      return
+    }
+    if (waiters) this.hostToolSlotWaiters.delete(runtimeId)
+    const occupied = (this.hostToolSlots.get(runtimeId) ?? 1) - 1
+    if (occupied <= 0) this.hostToolSlots.delete(runtimeId)
+    else this.hostToolSlots.set(runtimeId, occupied)
   }
 
   private async retireWhenIdle(runtime: RpcRuntime): Promise<void> {
