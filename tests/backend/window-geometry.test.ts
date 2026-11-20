@@ -91,7 +91,8 @@ describe('resolveWindowBounds', () => {
   it('prefers the primary work area when overlaps tie', () => {
     const left = { x: -800, y: 0, width: 800, height: 1080 }
     const right = { x: 0, y: 0, width: 800, height: 1080 }
-    expect(resolveWindowBounds(geometry({ x: -550, y: 100, width: 1100, height: 760 }), [left, right], right)).toMatchObject({ x: 0, y: 100 })
+    const primary = { ...right }
+    expect(resolveWindowBounds(geometry({ x: -550, y: 100, width: 1100, height: 760 }), [left, right], primary)).toMatchObject({ x: 0, y: 100 })
   })
 
   it('recenters a fully off-screen rectangle in the primary work area', () => {

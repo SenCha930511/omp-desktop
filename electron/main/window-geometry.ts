@@ -82,12 +82,16 @@ function overlap(saved: Rectangle, workArea: Rectangle): number {
   return width < MIN_VISIBLE_OVERLAP || height < MIN_VISIBLE_OVERLAP ? 0 : width * height
 }
 
+function sameRectangle(left: Rectangle, right: Rectangle): boolean {
+  return left.x === right.x && left.y === right.y && left.width === right.width && left.height === right.height
+}
+
 function visibleWorkArea(saved: Rectangle, workAreas: readonly Rectangle[], primary: Rectangle): Rectangle | null {
   let best: Rectangle | null = null
   let bestOverlap = 0
   for (const workArea of workAreas) {
     const area = overlap(saved, workArea)
-    if (area > bestOverlap || (area === bestOverlap && area > 0 && workArea === primary)) {
+    if (area > bestOverlap || (area === bestOverlap && area > 0 && sameRectangle(workArea, primary))) {
       best = workArea
       bestOverlap = area
     }
