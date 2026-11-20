@@ -1,5 +1,5 @@
-import { GitBranch, ListTree, PanelLeft, PanelRight, PanelRightClose } from 'lucide-react'
-import { memo, type MouseEvent } from 'react'
+import { GitBranch, LayoutDashboard, ListTree, PanelLeft, PanelRight, PanelRightClose, Settings, SquarePen } from 'lucide-react'
+import { memo, useEffect, useId, useRef, useState, type MouseEvent } from 'react'
 import { type MessageKey, useI18n } from '@/lib/i18n'
 import { shortcutLabel } from '@/lib/platform-shortcuts'
 import type { ApplicationMenuName, ProjectRecord, WorkspaceView } from '@/types/api'
@@ -42,6 +42,17 @@ export interface TitleToolbarProps {
   onOpenBrowser(): void
   /** Opens the session tree dialog; only rendered in the session view. */
   onOpenSessionTree?(): void
+  /** Starts a fresh session in the active project; only rendered in the session view. */
+  onNewSession?(): void
+  /** Workspace totals shown in the Overview popover. */
+  projectCount?: number
+  sessionCount?: number
+  agentCount?: number
+  runningAgentCount?: number
+  /** Enabled (active) automation schedules. */
+  scheduleCount?: number
+  /** Opens Settings; the Overview popover's secondary action. */
+  onOpenSettings?(): void
   activeProjectScriptKind?: ProjectScriptKind
   onRunProjectScript?(kind: ProjectScriptKind): Promise<void> | void
   onStopProjectScript?(): void
@@ -61,11 +72,48 @@ function TitleToolbarView({
   onToggleInspector,
   onOpenBrowser,
   onOpenSessionTree,
+  onNewSession,
+  projectCount = 0,
+  sessionCount = 0,
+  agentCount = 0,
+  runningAgentCount = 0,
+  scheduleCount = 0,
+  onOpenSettings,
   platform = 'darwin',
 }: TitleToolbarProps) {
   const { t } = useI18n()
+  const overviewId = useId()
+  const overviewRef = useRef<HTMLDivElement>(null)
+  const [overviewOpen, setOverviewOpen] = useState(false)
   const sidebarShortcut = shortcutLabel(platform, ['Primary', 'B'])
   const browserShortcut = shortcutLabel(platform, ['Primary', 'Shift', 'B'])
+  const overviewCounts: ReadonlyArray<{ label: MessageKey; value: number }> = [
+    { label: 'toolbar.overviewProjects', value: projectCount },
+    { label: 'toolbar.overviewSessions', value: sessionCount },
+    { label: 'toolbar.overviewAgents', value: agentCount },
+    { label: 'toolbar.overviewRunningAgents', value: runningAgentCount },
+    { label: 'toolbar.overviewSchedules', value: scheduleCount },
+  ]
+  // Escape and an outside pointer both dismiss the popover, mirroring the
+  // other toolbar menus; actions close it themselves before they run.
+  useEffect(() => {
+    if (!overviewOpen) return
+    const dismiss = (event: PointerEvent) => {
+      if (!overviewRef.current?.contains(event.target as Node)) setOverviewOpen(false)
+    }
+    const dismissOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        setOverviewOpen(false)
+      }
+    }
+    document.addEventListener('pointerdown', dismiss, true)
+    document.addEventListener('keydown', dismissOnEscape, true)
+    return () => {
+      document.removeEventListener('pointerdown', dismiss, true)
+      document.removeEventListener('keydown', dismissOnEscape, true)
+    }
+  }, [overviewOpen])
   return (
     <header className="title-toolbar drag-region">
       {!sidebarOpen && platform === 'darwin' ? <div className="traffic-light-clearance traffic-light-clearance--toolbar" aria-hidden="true" /> : null}
@@ -95,6 +143,65 @@ function TitleToolbarView({
         ) : null}
       </div>
       <div className="title-toolbar__actions no-drag">
+        {view === 'session' && onNewSession ? (
+          <IconButton label={t('toolbar.newSession')} onClick={onNewSession}>
+            <SquarePen size={17} />
+          </IconButton>
+        ) : null}
+        {view === 'session' ? (
+          <div ref={overviewRef} className="title-toolbar__overview">
+            <IconButton
+              className={overviewOpen ? 'is-active' : ''}
+              label={t('toolbar.overview')}
+              aria-haspopup="dialog"
+              aria-expanded={overviewOpen}
+              aria-controls={overviewOpen ? overviewId : undefined}
+              onClick={() => setOverviewOpen((open) => !open)}
+            >
+              <LayoutDashboard size={16} />
+            </IconButton>
+            {overviewOpen ? (
+              <section id={overviewId} className="toolbar-overview" role="dialog" aria-label={t('toolbar.overviewTitle')}>
+                <dl className="toolbar-overview__counts">
+                  {overviewCounts.map(({ label, value }) => (
+                    <div key={label}>
+                      <dt>{t(label)}</dt>
+                      <dd>{value}</dd>
+                    </div>
+                  ))}
+                </dl>
+                <div className="toolbar-overview__actions">
+                  {onNewSession ? (
+                    <button
+                      type="button"
+                      className="toolbar-overview__action"
+                      onClick={() => {
+                        setOverviewOpen(false)
+                        onNewSession?.()
+                      }}
+                    >
+                      <SquarePen size={14} />
+                      {t('toolbar.overviewNewSession')}
+                    </button>
+                  ) : null}
+                  {onOpenSettings ? (
+                    <button
+                      type="button"
+                      className="toolbar-overview__action"
+                      onClick={() => {
+                        setOverviewOpen(false)
+                        onOpenSettings?.()
+                      }}
+                    >
+                      <Settings size={14} />
+                      {t('toolbar.overviewOpenSettings')}
+                    </button>
+                  ) : null}
+                </div>
+              </section>
+            ) : null}
+          </div>
+        ) : null}
         {view === 'session' && onOpenSessionTree ? (
           <IconButton label={t('toolbar.sessionTree')} onClick={onOpenSessionTree}>
             <ListTree size={17} />

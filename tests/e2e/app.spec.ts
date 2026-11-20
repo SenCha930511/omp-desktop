@@ -1580,6 +1580,27 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(page.locator('.sidebar__footer button[title="Settings"]')).toBeVisible()
   })
 
+  test('opens the title toolbar overview with workspace counts and a New session action', async () => {
+    const overview = page.getByRole('button', { name: 'Overview', exact: true })
+    await expect(overview).toHaveAttribute('aria-expanded', 'false')
+    await overview.click()
+
+    const dialog = page.getByRole('dialog', { name: 'Workspace overview' })
+    await expect(dialog).toBeVisible()
+    await expect(overview).toHaveAttribute('aria-expanded', 'true')
+    await expect(dialog.locator('.toolbar-overview__counts > div')).toHaveCount(5)
+    for (const label of ['Projects', 'Sessions', 'Agents', 'Running agents', 'Active schedules']) {
+      await expect(dialog.locator('dt').filter({ hasText: new RegExp(`^${label}$`) })).toBeVisible()
+    }
+    for (const value of await dialog.locator('dd').allTextContents()) expect(value).toMatch(/^\d+$/)
+
+    const newSession = dialog.getByRole('button', { name: 'New session', exact: true })
+    await expect(newSession).toBeVisible()
+    await newSession.click()
+    await expect(dialog).toHaveCount(0)
+    await expect(page.getByRole('combobox', { name: 'Message OMP' })).toBeVisible()
+  })
+
   test('opens General settings when the main process requests Settings', async () => {
     await page.locator('.sidebar__footer button').filter({ hasText: 'Settings' }).click()
     await page.getByRole('button', { name: 'Appearance', exact: true }).click()
