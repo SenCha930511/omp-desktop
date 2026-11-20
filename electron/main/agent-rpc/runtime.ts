@@ -98,6 +98,18 @@ const isSessionQueueMode = (value: unknown): value is SessionQueueMode => value 
 const isSessionInterruptMode = (value: unknown): value is SessionInterruptMode => value === 'immediate' || value === 'wait'
 const isSessionCacheWarmingMode = (value: unknown): value is SessionCacheWarmingMode => value === 'off' || value === 'streaming' || value === 'idle'
 
+/**
+ * A JSONL frame from the agent is its own `JSON.stringify` output, so its text
+ * bounds the reserialized event. Exponent-form numbers are the one divergence
+ * (`1e9` reserializes as `1000000000`), so a frame containing one gets no hint
+ * and pays exact envelope accounting instead.
+ */
+const EXPONENT_FORM_NUMBER = /(?:^|[:,\s\[])-?\d+(?:\.\d+)?[eE][+-]?\d/
+
+function frameByteHint(line: string, bytes: number = Buffer.byteLength(line, 'utf8')): number | undefined {
+  return EXPONENT_FORM_NUMBER.test(line) ? undefined : bytes
+}
+
 export class RpcRuntime {
   readonly runtimeId = randomUUID()
   private readonly pending = new Map<string, PendingRequest>()
@@ -631,10 +643,10 @@ export class RpcRuntime {
       this.emit({ type: 'transport_error', error: `${this.adapter.agentName} emitted malformed JSON` })
       return
     }
-    this.handleFrame(value)
+    this.handleFrame(value, frameByteHint(line))
   }
 
-  private handleFrame(raw: unknown): void {
+  private handleFrame(raw: unknown, eventBytesHint?: number): void {
     if (!isRecord(raw) || typeof raw.type !== 'string') return
     this.receivedFrame = true
     if (raw.type === 'ready') this.info.bashExcludeFromContext = raw.supportsBashExcludeFromContext === true
@@ -751,7 +763,9 @@ export class RpcRuntime {
     } else if (value.type === 'auto_retry_start') this.retryPending = true
     else if (value.type === 'auto_retry_end') this.retryPending = false
     else if (value.type === 'session_action_update') this.lastSessionActionEventAt = Date.now()
-    this.emit(value)
+    // Only an identity normalization leaves the event text equal to the frame,
+    // which is what makes the frame's byte count a safe upper bound.
+    this.emit(value, value === raw ? eventBytesHint : undefined)
     if (liveUsageUpdate.changed || liveUsageUpdate.reset) this.publishLiveContextUsage(value.type === 'message_end')
     if (value.type === 'message_end'
       || value.type === 'tool_execution_end'
@@ -825,13 +839,14 @@ export class RpcRuntime {
     }
     this.chunkAssemblies.delete(chunkId)
     this.rescheduleChunkAssemblySweep()
+    const text = Buffer.concat(current.parts).toString('utf8')
     let value: unknown
-    try { value = JSON.parse(Buffer.concat(current.parts).toString('utf8')) } catch {
+    try { value = JSON.parse(text) } catch {
       this.disposeChunkAssemblies()
       this.emit({ type: 'transport_error', error: `${this.adapter.agentName} emitted a malformed chunked frame` })
       return
     }
-    this.handleFrame(value)
+    this.handleFrame(value, frameByteHint(text, current.bytes))
   }
 
   /** A broken reassembly is dropped without killing the runtime: the agent is still running, so the renderer reconciles from disk. */
@@ -1119,7 +1134,7 @@ export class RpcRuntime {
     this.settlement = 'unsettled'
   }
 
-  private emit(event: RpcObject): void { this.eventForwarder.emit(event) }
+  private emit(event: RpcObject, eventBytesHint?: number): void { this.eventForwarder.emit(event, eventBytesHint) }
 
   private rememberUncertainDelivery(id: string): void {
     this.uncertainDeliveries.add(id)

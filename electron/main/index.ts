@@ -15,7 +15,7 @@ import { installCrashGuards } from './crash-guard'
 import { CuaDriverService } from './cua-driver'
 import { GitService } from './git'
 import { CheckoutService } from './checkouts'
-import { isTrustedRendererUrl, registerIpc, type IpcRegistration } from './ipc'
+import { createTrustedRendererUrlCache, isTrustedRendererUrl, registerIpc, type IpcRegistration } from './ipc'
 import { HarnessDiscoveryService, reconcileActiveHarness } from './harness-discovery'
 import { beginProcessShutdown, captureLoginShellEnvironment, runProcess, setLoginShellEnvironmentSnapshot, stopChildProcesses } from './process-utils'
 import { PluginService, beginPluginDiscoveryShutdown } from './plugins'
@@ -837,6 +837,9 @@ async function bootstrap(): Promise<void> {
     return { meta: structuredClone(meta), settings: currentSettings }
   }
   trustedRendererUrl = resolveRendererUrl()
+  // Every forwarded envelope re-checks the renderer; while the window stays on
+  // the trusted document the cached exact URL pair skips both URL parses.
+  const isTrustedForwardTarget = createTrustedRendererUrlCache(trustedRendererUrl)
   ipc = registerIpc({
     meta, refreshHarnesses, projects, checkouts, sessions, agents: ompManager, terminals, git, plugins, catalog, settings, updates, harnessUpdates, cuaDriver, schedules, browser: browserService, voice,
     popupApplicationMenu, setTitleBarTheme,
@@ -847,8 +850,7 @@ async function bootstrap(): Promise<void> {
   const forwardAgentEvent = (envelope: PrimeEventEnvelope): void => {
     const renderer = mainWindow?.webContents
     if (!shutdownStarted && renderer && !renderer.isDestroyed()
-      && isTrustedRendererUrl(renderer.getURL(), trustedRendererUrl)
-      && isTrustedRendererUrl(renderer.mainFrame.url, trustedRendererUrl)) {
+      && isTrustedForwardTarget(renderer.getURL(), renderer.mainFrame.url)) {
       renderer.send(IPC_CHANNELS.agent.onEvent, envelope)
     }
   }
@@ -856,16 +858,14 @@ async function bootstrap(): Promise<void> {
   updates.setEventSink((state: AppUpdateState) => {
     const renderer = mainWindow?.webContents
     if (!shutdownStarted && renderer && !renderer.isDestroyed()
-      && isTrustedRendererUrl(renderer.getURL(), trustedRendererUrl)
-      && isTrustedRendererUrl(renderer.mainFrame.url, trustedRendererUrl)) {
+      && isTrustedForwardTarget(renderer.getURL(), renderer.mainFrame.url)) {
       renderer.send(IPC_CHANNELS.updates.onChanged, state)
     }
   })
   harnessUpdates.setEventSink((state: HarnessUpdateState) => {
     const renderer = mainWindow?.webContents
     if (!shutdownStarted && renderer && !renderer.isDestroyed()
-      && isTrustedRendererUrl(renderer.getURL(), trustedRendererUrl)
-      && isTrustedRendererUrl(renderer.mainFrame.url, trustedRendererUrl)) {
+      && isTrustedForwardTarget(renderer.getURL(), renderer.mainFrame.url)) {
       renderer.send(IPC_CHANNELS.harnessUpdates.onChanged, state)
     }
     // A finished install replaced the omp binary: re-probe so the About view

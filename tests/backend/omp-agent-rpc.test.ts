@@ -2,7 +2,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { AgentRpcManager, OMP_RPC_ADAPTER } from '../../electron/main/agent-rpc'
+import { AgentEventForwarder, AgentRpcManager, OMP_RPC_ADAPTER } from '../../electron/main/agent-rpc'
 import type { ProviderCatalog } from '../../electron/main/agent-rpc'
 import {
   RPC_CHUNK_ASSEMBLY_INACTIVITY_MS,
@@ -1322,5 +1322,49 @@ describe('OMP RPC chunked frames', () => {
     expect(view.chunkAssemblySweepTimer).toBeNull()
     expect(timing.activeTimers()).toHaveLength(0)
     expect(events.some((event) => event.type === 'transport_limit')).toBe(false)
+  })
+})
+
+describe('RPC frame byte hints', () => {
+  it('hints the forwarder with the raw frame length for identity events', () => {
+    const { view } = directChunkRuntime()
+    const line = JSON.stringify({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'hi' } })
+    const emit = vi.spyOn(AgentEventForwarder.prototype, 'emit')
+
+    view.handleLine(line)
+
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({ type: 'message_update' }), Buffer.byteLength(line, 'utf8'))
+  })
+
+  it('hints the forwarder from a reassembled chunked frame', () => {
+    const { view } = directChunkRuntime()
+    const complete = Buffer.from(JSON.stringify({ type: 'message_update', text: 'chunked' }))
+    const splitAt = Math.floor(complete.length / 2)
+    const emit = vi.spyOn(AgentEventForwarder.prototype, 'emit')
+
+    view.handleFrame(chunkFrame('hinted', 0, 2, complete.subarray(0, splitAt)))
+    view.handleFrame(chunkFrame('hinted', 1, 2, complete.subarray(splitAt)))
+
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({ type: 'message_update' }), complete.length)
+  })
+
+  it('withholds the hint when normalization rewrites the frame', () => {
+    const { view } = directChunkRuntime()
+    const line = JSON.stringify({ type: 'auto_compaction_start', reason: 'auto' })
+    const emit = vi.spyOn(AgentEventForwarder.prototype, 'emit')
+
+    view.handleLine(line)
+
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({ type: 'compaction_start' }), undefined)
+  })
+
+  it('withholds the hint when a number would reserialize larger', () => {
+    const { view } = directChunkRuntime()
+    const line = '{"type":"message_update","n":1e9}'
+    const emit = vi.spyOn(AgentEventForwarder.prototype, 'emit')
+
+    view.handleLine(line)
+
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({ n: 1e9 }), undefined)
   })
 })
