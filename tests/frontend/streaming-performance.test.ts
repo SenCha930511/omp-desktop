@@ -12,7 +12,7 @@ import { applyPrimeEvent, createPrimeEventBuffer, createSteerAcceptedEvent, crea
 import { reconcileTranscripts } from '../../src/app/transcript-reconcile'
 import { createSidebarActionProxy } from '../../src/hooks/useSidebarActions'
 import { mergeSessionCatalog } from '../../src/hooks/useBootstrap'
-import { shouldRefreshGitOnSessionTransition } from '../../src/lib/workspace'
+import { lastAssistantMessage, shouldRefreshGitOnSessionTransition } from '../../src/lib/workspace'
 import type { ProjectRecord, SessionRecord, TranscriptMessage } from '../../src/types/api'
 import { createAssistantTurnCoalescer } from '../../src/lib/assistant-turns'
 
@@ -609,4 +609,18 @@ describe('scoped async ownership', () => {
     expect(guard.isCurrent(project, 4, '/project')).toBe(false)
   })
 
+})
+
+describe('transcript tail reads', () => {
+  const assistant = (id: string, outcome?: TranscriptMessage['outcome']): TranscriptMessage => ({ id, role: 'assistant', parts: [], ...(outcome ? { outcome } : {}) })
+  const user = (id: string): TranscriptMessage => ({ id, role: 'user', parts: [] })
+
+  it('finds the newest assistant row from the tail without copying the transcript', () => {
+    const messages = [assistant('first'), user('u1'), assistant('second', 'cancelled'), user('tail')]
+    expect(lastAssistantMessage(messages)?.id).toBe('second')
+    expect(lastAssistantMessage(messages)?.outcome).toBe('cancelled')
+    expect(lastAssistantMessage([assistant('only')])?.id).toBe('only')
+    expect(lastAssistantMessage([user('u1'), user('u2')])).toBeUndefined()
+    expect(lastAssistantMessage([])).toBeUndefined()
+  })
 })

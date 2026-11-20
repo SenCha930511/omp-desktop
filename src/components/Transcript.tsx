@@ -1,5 +1,5 @@
 import { ChevronDown, LoaderCircle } from 'lucide-react'
-import { useEffect, useMemo, useRef } from 'react'
+import { memo, useEffect, useMemo, useRef } from 'react'
 import { createAssistantTurnCoalescer } from '@/lib/assistant-turns'
 import { HARNESS_SHORT_NAMES } from '@/lib/harness'
 import { useI18n } from '@/lib/i18n'
@@ -20,7 +20,7 @@ export { classifyTool, formatWorkedDuration } from './transcript/timeline'
 
 export { coalesceAssistantTurns } from '@/lib/assistant-turns'
 
-interface TranscriptProps {
+export interface TranscriptProps {
   messages: TranscriptMessage[]
   git: GitStatus
   /** Active harness; brands the assistant marks and working copy. */
@@ -69,7 +69,7 @@ function ActiveAssistantMessage({ message, showReasoning, showTools, entering = 
   )
 }
 
-export function Transcript({
+function TranscriptView({
   messages,
   git,
   harness = 'omp',
@@ -235,3 +235,9 @@ export function Transcript({
     </>
   )
 }
+
+// Streaming frames arrive through `messages`; the default shallow compare keeps
+// a parent re-render that changes nothing else (App state, layout, git churn)
+// from re-rendering the transcript shell. Every prop participates — no prop is
+// excluded from the comparison.
+export const Transcript = memo(TranscriptView)
