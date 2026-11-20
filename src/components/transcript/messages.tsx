@@ -7,7 +7,6 @@ import { HARNESS_SHORT_NAMES } from '@/lib/harness'
 import { type MessageKey, useI18n } from '@/lib/i18n'
 import { boundText } from '@/lib/render-bounds'
 import { type RoutedSessionReference, routedSessionReferences, splitSessionRouting } from '@/lib/session-mentions'
-import { splitTerminalContextBlock } from '@/lib/terminal-context'
 import type { HarnessId, MessagePart, TranscriptMessage } from '@/types/api'
 import { MarkdownText } from '../MarkdownText'
 import { SearchRevealContext } from '../TranscriptSearch'
@@ -230,38 +229,30 @@ function SessionReferenceText({ text, references, onOpen }: { text: string; refe
 }
 
 function visibleUserText(text: string): string {
-  const terminal = splitTerminalContextBlock(text)
-  const annotations = splitAnnotationBlock(terminal.text)
+  const annotations = splitAnnotationBlock(text)
   const capability = splitCapabilityRouting(annotations.text)
   return splitSessionRouting(capability.text).text
 }
 
 function UserText({ text, onOpenSessionReference }: { text: string; onOpenSessionReference?(sessionId: string, harness: HarnessId): void }) {
   const { t } = useI18n()
-  // Sent prompts can carry verbose model-facing context blocks. Keep both
-  // attachments collapsed and capability routing hidden while preserving the
-  // user's own message.
-  const terminal = splitTerminalContextBlock(text)
-  const annotations = splitAnnotationBlock(terminal.text)
+  // Sent prompts can carry verbose model-facing context blocks. Keep the
+  // annotation block collapsed and capability routing hidden while preserving
+  // the user's own message.
+  const annotations = splitAnnotationBlock(text)
   const capability = splitCapabilityRouting(annotations.text)
   const sessions = splitSessionRouting(capability.text)
   const references = routedSessionReferences(sessions.block)
-  if (!sessions.block && !capability.block && !annotations.block && !terminal.block) return <InlineText text={text} />
+  if (!sessions.block && !capability.block && !annotations.block) return <InlineText text={text} />
   return (
     <>
-      {sessions.text && sessions.text !== '[Page annotations]' && sessions.text !== '[Terminal selection]' ? (
+      {sessions.text && sessions.text !== '[Page annotations]' ? (
         <SessionReferenceText text={sessions.text} references={references} onOpen={onOpenSessionReference} />
       ) : null}
       {annotations.block ? (
         <details className="user-annotations">
           <summary>{annotations.count > 0 ? t('transcript.annotations.count', { count: annotations.count }) : t('transcript.annotations.title')}</summary>
           <pre>{annotations.block}</pre>
-        </details>
-      ) : null}
-      {terminal.selection ? (
-        <details className="user-annotations user-terminal-context">
-          <summary>{t('transcript.terminalContext.title', { source: terminal.label ?? t('transcript.terminalContext.terminal') })}</summary>
-          <pre>{terminal.selection}</pre>
         </details>
       ) : null}
     </>

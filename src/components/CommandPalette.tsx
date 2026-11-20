@@ -1,4 +1,4 @@
-import { Bell, CalendarClock, Folder, LayoutPanelLeft, NotebookPen, PackageOpen, Search, Settings, Terminal } from 'lucide-react'
+import { Bell, CalendarClock, Folder, LayoutPanelLeft, NotebookPen, PackageOpen, Search, Settings } from 'lucide-react'
 import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useI18n } from '@/lib/i18n'
@@ -22,7 +22,6 @@ export function CommandPalette({
   onNavigate,
   onNewSession,
   onToggleSidebar,
-  onToggleTerminal,
   onOpenBrowser,
   platform = 'darwin',
 }: {
@@ -31,7 +30,6 @@ export function CommandPalette({
   onNavigate(view: WorkspaceView): void
   onNewSession(): void
   onToggleSidebar(): void
-  onToggleTerminal(): void
   onOpenBrowser(): void
   platform?: NodeJS.Platform
 }) {
@@ -57,14 +55,6 @@ export function CommandPalette({
       shortcut: shortcutLabel(platform, ['Primary', 'Shift', 'B']),
       icon: <BrowserGlobe size={14} />,
       run: onOpenBrowser,
-    },
-    {
-      id: 'terminal',
-      label: t('palette.toggleTerminal'),
-      detail: t('palette.toggleTerminalDetail'),
-      shortcut: shortcutLabel(platform, ['Primary', 'J']),
-      icon: <Terminal size={14} />,
-      run: onToggleTerminal,
     },
     {
       id: 'sidebar',

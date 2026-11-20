@@ -18,7 +18,6 @@ import type { ProjectScriptKind } from '@/components/ProjectRunControl'
 import { ResizeHandle } from '@/components/ResizeHandle'
 import { SessionTreeDialog } from '@/components/SessionTreeDialog'
 import { Sidebar } from '@/components/Sidebar'
-import type { TerminalDrawerHandle } from '@/components/TerminalDrawer'
 import { TitleToolbar } from '@/components/TitleToolbar'
 import { useAgentBrowserTabs } from '@/hooks/useAgentBrowserTabs'
 import { useAgentEvents } from '@/hooks/useAgentEvents'
@@ -30,7 +29,7 @@ import { Modal } from '@/components/ui'
 import { useBootstrap } from '@/hooks/useBootstrap'
 import { useBrowserAnnotations } from '@/hooks/useBrowserAnnotations'
 import { useExtensionUi } from '@/hooks/useExtensionUi'
-import { INSPECTOR_DEFAULT, INSPECTOR_MIN, SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_MIN, TERMINAL_DEFAULT, TERMINAL_MIN, usePanelLayout } from '@/hooks/usePanelLayout'
+import { INSPECTOR_DEFAULT, INSPECTOR_MIN, SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_MIN, usePanelLayout } from '@/hooks/usePanelLayout'
 import { usePluginSkills } from '@/hooks/usePluginSkills'
 import { useProviderAccounts } from '@/hooks/useProviderAccounts'
 import { useProviderCatalog } from '@/hooks/useProviderCatalog'
@@ -69,14 +68,12 @@ import {
   type QueuedPrompt,
   type ScheduleTiming,
   type SessionRecord,
-  type TerminalSelectionContext,
   type WorkspaceView,
 } from '@/types/api'
 
 const Transcript = lazy(() => import('@/components/ConversationTranscript').then((module) => ({ default: module.ConversationTranscript })))
 const Inspector = lazy(() => import('@/components/WorkspaceInspector').then((module) => ({ default: module.WorkspaceInspector })))
 const SideChatPanel = lazy(() => import('@/components/SideChatPanel').then((module) => ({ default: module.SideChatPanel })))
-const TerminalDrawer = lazy(() => import('@/components/TerminalDrawer').then((module) => ({ default: module.TerminalDrawer })))
 const CommandPalette = lazy(() => import('@/components/CommandPalette').then((module) => ({ default: module.CommandPalette })))
 const ExtensionUiModal = lazy(() => import('@/components/ExtensionUiModal').then((module) => ({ default: module.ExtensionUiModal })))
 const ProjectsPage = lazy(() => import('@/pages/ProjectsPage').then((module) => ({ default: module.ProjectsPage })))
@@ -100,22 +97,7 @@ const LoadingPanel = ({ label }: { label: string }) => {
     </div>
   )
 }
-const TerminalLoadingPanel = () => {
-  const { t } = useI18n()
-  return (
-    <div className="terminal-drawer terminal-drawer--loading" role="status">
-      {t('app.loadingTerminal')}
-    </div>
-  )
-}
 
-interface TerminalSessionMount {
-  id: string
-  workspaceKey: string
-  cwd?: string
-  sessionPath?: string
-  initialCommand?: { id: string; command: string; label: string; onExit(exitCode: number): void }
-}
 interface ActiveProjectScriptRun {
   /** Renderer-chosen id, so exit events match even before `start` resolves. */
   runId: string
@@ -144,7 +126,6 @@ export default function App() {
   const [settingsSectionRequest, setSettingsSectionRequest] = useState<{ section: 'general' | 'agent'; id: number }>({ section: 'general', id: 0 })
   const [noHarnessPromptDismissed, setNoHarnessPromptDismissed] = useState(false)
   const [browserGeneration, setBrowserGeneration] = useState(0)
-  const [browserNavigationRequest, setBrowserNavigationRequest] = useState<{ id: number; url: string }>()
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [submittingKind, setSubmittingKind] = useState<'prompt' | 'compact'>('prompt')
@@ -359,16 +340,9 @@ export default function App() {
         session.projectPath === activeCwd,
     )
   }, [activeCwd, activeSession?.id, sessions])
-  const terminalSessionKey = workspace.activeSessionId
-    ? `${activeProject?.id ?? 'no-project'}:${workspace.activeSessionId}`
-    : `${activeProject?.id ?? 'no-project'}:new:${workspace.workspaceGeneration}`
-  const activeTerminalSessionPath = workspace.runtime?.sessionFile ?? activeSession?.filePath
-  const [terminalSessions, setTerminalSessions] = useState<TerminalSessionMount[]>([])
-  const activeTerminalSession = useMemo(
-    () => terminalSessions.find((terminal) => terminal.workspaceKey === terminalSessionKey || Boolean(activeTerminalSessionPath && terminal.sessionPath === activeTerminalSessionPath)),
-    [activeTerminalSessionPath, terminalSessionKey, terminalSessions],
-  )
-  const terminalOpen = Boolean(activeTerminalSession)
+  // The headless runner binds a run to the session the user is looking at, so
+  // deleting that session stops the script in the main process.
+  const projectScriptSessionPath = workspace.runtime?.sessionFile ?? activeSession?.filePath
   const { git, refreshGit } = useGitStatus({
     bridge,
     cwd: activeCwd,
@@ -394,7 +368,6 @@ export default function App() {
     inspectorOpen: settingsState.inspectorOpen,
     setInspectorOpen: settingsState.setInspectorOpen,
     closeSmallestPanels,
-    terminalOpen,
     view,
   })
   const sidebarVisible = settingsState.sidebarOpen && !layout.sidebarSuppressed
@@ -558,8 +531,6 @@ export default function App() {
     if (shouldRefreshGitOnSessionTransition(previousStatus, activeSessionStatus, locallyOwnedActiveSession)) void refreshGit()
   }, [activeSessionStatus, locallyOwnedActiveSession, refreshGit])
   const agentBrowser = useAgentBrowserTabs({ bridge, reportError })
-  const terminalDrawerRefs = useRef(new Map<string, TerminalDrawerHandle>())
-  const [terminalSelection, setTerminalSelection] = useState<TerminalSelectionContext>()
   const [agentPreviewSelected, setAgentPreviewSelected] = useState(true)
   const [agentSlotRect, setAgentSlotRect] = useState<AgentSlotRect | null>(null)
   const activeRuntimeSessionFile = workspace.runtime?.sessionFile
@@ -741,9 +712,6 @@ export default function App() {
     openSessionTree,
     refreshSchedules,
     resetBrowserView: () => setBrowserGeneration((value) => value + 1),
-    closeTerminalForSession: (sessionPath) => {
-      setTerminalSessions((current) => current.filter((terminal) => terminal.sessionPath !== sessionPath))
-    },
     clearSessionAttention,
     bumpRecentSessionOpen,
     reportError,
@@ -821,21 +789,6 @@ export default function App() {
     },
     [sideChatIntercept, sideChatSessionId, askSideQuestion, sendPrompt],
   )
-  const openTerminalLink = useCallback(
-    (url: string, external: boolean) => {
-      if (external) {
-        openExternal(url)
-        return
-      }
-      setAgentPreviewSelected(true)
-      setBrowserNavigationRequest((current) => ({ id: (current?.id ?? 0) + 1, url }))
-      openBrowser()
-    },
-    [openBrowser, openExternal],
-  )
-  const handleBrowserNavigationRequest = useCallback((id: number) => {
-    setBrowserNavigationRequest((current) => (current?.id === id ? undefined : current))
-  }, [])
   useEffect(() => {
     const onOpenSettings = bridge?.app.onOpenSettings
     if (!onOpenSettings) return
@@ -870,52 +823,6 @@ export default function App() {
     [activeProject, addOrReplaceProject, bridge, newSession, reportError],
   )
 
-  const closeTerminal = useCallback(
-    (id: string) => {
-      terminalDrawerRefs.current.delete(id)
-      setTerminalSessions((current) => current.filter((terminal) => terminal.id !== id))
-      if (activeTerminalSession?.id === id) setTerminalSelection(undefined)
-    },
-    [activeTerminalSession?.id],
-  )
-  const toggleTerminal = useCallback(async () => {
-    if (activeTerminalSession) {
-      closeTerminal(activeTerminalSession.id)
-      return
-    }
-    if (!activeProject || !activeCwd) return
-    if (activeProject.inferred) {
-      try {
-        await grantProject(activeProject)
-      } catch (error) {
-        reportError(error)
-        return
-      }
-    }
-    setTerminalSessions((current) => {
-      const existing = current.find((terminal) => terminal.workspaceKey === terminalSessionKey || Boolean(activeTerminalSessionPath && terminal.sessionPath === activeTerminalSessionPath))
-      if (existing) return current
-      return [...current, { id: crypto.randomUUID(), workspaceKey: terminalSessionKey, cwd: activeCwd, sessionPath: activeTerminalSessionPath }]
-    })
-  }, [activeCwd, activeProject, activeTerminalSession, activeTerminalSessionPath, closeTerminal, grantProject, reportError, terminalSessionKey])
-  useEffect(() => {
-    settingsState.setTerminalOpen(terminalOpen)
-  }, [settingsState.setTerminalOpen, terminalOpen])
-  useEffect(() => {
-    if (!activeTerminalSession) {
-      setTerminalSelection(undefined)
-      return
-    }
-    setTerminalSessions((current) =>
-      current.map((terminal) => {
-        if (terminal.id !== activeTerminalSession.id) return terminal
-        const sessionPath = activeTerminalSessionPath ?? terminal.sessionPath
-        if (terminal.cwd === activeCwd && terminal.sessionPath === sessionPath) return terminal
-        return { ...terminal, cwd: activeCwd, sessionPath }
-      }),
-    )
-    setTerminalSelection(terminalDrawerRefs.current.get(activeTerminalSession.id)?.readSelectionContext())
-  }, [activeCwd, activeTerminalSession?.id, activeTerminalSessionPath])
   // Stable identities keep the memoized Inspector and Composer from
   // re-rendering at streaming-frame rate; useStableCallback always dispatches
   // to the latest render's closures.
@@ -945,7 +852,6 @@ export default function App() {
           .catch(reportError)
       : undefined,
   )
-  const getTerminalContext = useStableCallback(() => (activeTerminalSession ? terminalDrawerRefs.current.get(activeTerminalSession.id)?.readSelectionContext() : undefined))
   const removeQueuedMessage = useStableCallback((message: QueuedPrompt) => workspace.removeQueuedPrompt(message.id))
   const sendQueuedMessage = useStableCallback(async (message: QueuedPrompt) => {
     workspace.updateQueuedPromptDelivery(message.id, true)
@@ -994,9 +900,6 @@ export default function App() {
         },
       ])
     }
-  })
-  const clearTerminalSelection = useStableCallback(() => {
-    if (activeTerminalSession) terminalDrawerRefs.current.get(activeTerminalSession.id)?.clearSelection()
   })
   // Prop callbacks for the memoized Composer, Transcript, and toolbar. Each
   // keeps one identity (useStableCallback reads the latest render's closures)
@@ -1067,7 +970,7 @@ export default function App() {
           kind,
           cwd: activeCwd,
           command,
-          sessionPath: activeTerminalSessionPath,
+          sessionPath: projectScriptSessionPath,
         })
         if (activeProjectScriptRunRef.current?.runId !== started.runId) {
           // Stopped while the main process was authorizing and spawning.
@@ -1083,7 +986,7 @@ export default function App() {
         projectScriptStartingRef.current = false
       }
     },
-    [activeCwd, activeProject, activeTerminalSessionPath, bridge, grantProject, patchProjectScripts],
+    [activeCwd, activeProject, bridge, grantProject, patchProjectScripts, projectScriptSessionPath],
   )
   const saveProjectScripts = useCallback(
     async (scripts: { setup: string; run: string }) => {
@@ -1149,9 +1052,6 @@ export default function App() {
         'new-session': () => newSession(),
         'open-browser': () => openBrowser(),
         'toggle-sidebar': () => toggleSidebar(),
-        'toggle-terminal': () => {
-          void toggleTerminal()
-        },
         'open-settings': () => navigate('settings'),
         'close-palette': () => setPaletteOpen(false),
         'close-settings': () => navigate('session'),
@@ -1429,7 +1329,6 @@ export default function App() {
               view={view}
               productName={HARNESS_PRODUCT_NAMES[activeHarness]}
               sidebarOpen={sidebarVisible}
-              terminalOpen={terminalOpen}
               activeProjectScriptKind={activeProjectScriptKind(activeProjectScriptRun, activeProject?.id)}
               onRunProjectScript={startProjectScript}
               onStopProjectScript={stopProjectScript}
@@ -1437,7 +1336,6 @@ export default function App() {
               onToggleSidebar={toggleSidebar}
               inspectorOpen={inspectorVisible && !sideChatVisible}
               onToggleInspector={toggleInspectorPanel}
-              onToggleTerminal={toggleTerminal}
               onOpenBrowser={openBrowser}
               onOpenSessionTree={view === 'session' ? openSessionTree : undefined}
               platform={platform}
@@ -1447,9 +1345,9 @@ export default function App() {
                 <div
                   ref={layout.workspaceRowRef}
                   className="session-workspace"
-                  style={{ '--inspector-width': `${layout.inspectorWidth}px`, '--side-chat-width': `${layout.sideChatWidth}px`, '--terminal-height': `${layout.terminalHeight}px` } as CSSProperties}
+                  style={{ '--inspector-width': `${layout.inspectorWidth}px`, '--side-chat-width': `${layout.sideChatWidth}px` } as CSSProperties}
                 >
-                  <div ref={layout.sessionWorkspaceRef} className="conversation-column">
+                  <div className="conversation-column">
                     <SubagentsPanel
                       key={workspace.workspaceGeneration}
                       state={subagents}
@@ -1582,8 +1480,6 @@ export default function App() {
                               skills={pluginSkills.skills}
                               sessions={mentionableSessions}
                               annotations={browserAnnotations.annotations}
-                              terminalSelection={terminalSelection}
-                              getTerminalContext={getTerminalContext}
                               queuedMessages={queuedMessages}
                               harnessQueuedMessageCount={harnessQueuedMessageCount}
                               harnessQueuedPreviews={harnessQueuedPreviews}
@@ -1606,39 +1502,11 @@ export default function App() {
                               onRetryStoppedTurn={retryTurn}
                               onRemoveAnnotation={browserAnnotations.remove}
                               onClearAnnotations={browserAnnotations.clear}
-                              onClearTerminalSelection={clearTerminalSelection}
                             />
                           </ExtensionUiPresentation>
                         </ConversationDock>
                       </main>
                     </SubagentsPanel>
-                    {terminalSessions.map((terminal) => (
-                      <Suspense key={terminal.id} fallback={terminal.id === activeTerminalSession?.id ? <TerminalLoadingPanel /> : null}>
-                        <TerminalDrawer
-                          ref={(handle) => {
-                            if (handle) terminalDrawerRefs.current.set(terminal.id, handle)
-                            else terminalDrawerRefs.current.delete(terminal.id)
-                          }}
-                          visible={terminal.id === activeTerminalSession?.id}
-                          cwd={terminal.cwd}
-                          sessionPath={terminal.sessionPath}
-                          shell={settingsState.settings.terminalShell}
-                          initialCommand={terminal.initialCommand}
-                          height={layout.terminalHeight}
-                          minHeight={TERMINAL_MIN}
-                          maxHeight={layout.terminalMax}
-                          defaultHeight={TERMINAL_DEFAULT}
-                          onHeightChange={layout.setTerminalHeight}
-                          onClose={() => closeTerminal(terminal.id)}
-                          onError={reportError}
-                          onInitialCommandConsumed={() => setTerminalSessions((current) => current.map((item) => (item.id === terminal.id ? { ...item, initialCommand: undefined } : item)))}
-                          onOpenLink={openTerminalLink}
-                          onSelectionChange={(selection) => {
-                            if (terminal.id === activeTerminalSession?.id) setTerminalSelection(selection)
-                          }}
-                        />
-                      </Suspense>
-                    ))}
                   </div>
                   {sideChatVisible ? (
                     <ResizeHandle
@@ -1691,8 +1559,6 @@ export default function App() {
                         automations={inspectorAutomations}
                         onOpenAutomation={openAutomation}
                         browserHome={settingsState.settings.browserHome}
-                        browserNavigationRequest={browserNavigationRequest}
-                        onBrowserNavigationRequestHandled={handleBrowserNavigationRequest}
                         browserAnnotations={browserAnnotations}
                         agentBrowserTabs={activeAgentTabs}
                         activeAgentTabId={activeAgentTabId}
@@ -1732,7 +1598,6 @@ export default function App() {
                 onNavigate={navigate}
                 onNewSession={newSession}
                 onToggleSidebar={toggleSidebar}
-                onToggleTerminal={toggleTerminal}
                 onOpenBrowser={openBrowser}
                 platform={platform}
               />

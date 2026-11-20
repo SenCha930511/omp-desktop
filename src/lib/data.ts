@@ -135,7 +135,7 @@ export const SAMPLE_TRANSCRIPT: TranscriptMessage[] = [
     id: 'user-1',
     role: 'user',
     timestamp: Date.now() - 420000,
-    parts: [{ type: 'text', text: 'Build the renderer for OMP Desktop. Keep the interface native, calm, and focused, with a real browser and terminal.' }],
+    parts: [{ type: 'text', text: 'Build the renderer for OMP Desktop. Keep the interface native, calm, and focused, with a real browser and a focused workspace.' }],
   },
   {
     id: 'assistant-1',
@@ -150,7 +150,7 @@ export const SAMPLE_TRANSCRIPT: TranscriptMessage[] = [
       { type: 'toolResult', name: 'Read files', text: 'Read 2 files in 96ms' },
       { type: 'toolCall', id: 'tool-2', name: 'Write renderer', args: { paths: ['src/App.tsx', 'src/styles.css'] } },
       { type: 'toolResult', name: 'Write renderer', text: 'Updated 12 files in 1.4s' },
-      { type: 'text', text: 'The three-pane workspace is in place. Browser, Git review, terminal, and plugin surfaces all use the native bridge and retain useful empty states when a service is unavailable.' },
+      { type: 'text', text: 'The three-pane workspace is in place. Browser, Git review, project scripts, and plugin surfaces all use the native bridge and retain useful empty states when a service is unavailable.' },
     ],
   },
 ]
@@ -165,7 +165,6 @@ export const SAMPLE_GIT: GitStatus = {
     { path: 'src/App.tsx', status: 'M', staged: false, additions: 84, deletions: 14 },
     { path: 'src/components/Inspector.tsx', status: 'M', staged: false, additions: 118, deletions: 9 },
     { path: 'src/styles.css', status: 'M', staged: true, additions: 203, deletions: 31 },
-    { path: 'src/components/TerminalDrawer.tsx', status: 'A', staged: false, additions: 96, deletions: 0 },
   ],
 }
 

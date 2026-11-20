@@ -17,7 +17,6 @@ export function useAppSettings({ bridge, reportError }: UseAppSettingsOptions) {
   const [initialized, setInitialized] = useState(!bridge)
   const [sidebarOpen, setSidebarOpenState] = useState(true)
   const [inspectorOpen, setInspectorOpenState] = useState(true)
-  const [terminalOpen, setTerminalOpenState] = useState(false)
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>('summary')
   const settingsRef = useRef(settings)
   settingsRef.current = settings
@@ -40,17 +39,12 @@ export function useAppSettings({ bridge, reportError }: UseAppSettingsOptions) {
     transientPanelKeysRef.current.add('inspectorOpen')
     setInspectorOpenState(value)
   }, [])
-  const setTerminalOpen = useCallback((value: boolean) => {
-    transientPanelKeysRef.current.add('terminalOpen')
-    setTerminalOpenState(value)
-  }, [])
 
   const applySettings = useCallback((next: AppSettings, panelPatch: Partial<AppSettings>) => {
     settingsRef.current = next
     setSettings(next)
     if ('sidebarOpen' in panelPatch) setSidebarOpenState(next.sidebarOpen)
     if ('inspectorOpen' in panelPatch) setInspectorOpenState(next.inspectorOpen)
-    if ('terminalOpen' in panelPatch) setTerminalOpenState(next.terminalOpen)
   }, [])
 
   const takeConfirmedPanelPatch = useCallback((next: AppSettings) => {
@@ -154,8 +148,6 @@ export function useAppSettings({ bridge, reportError }: UseAppSettingsOptions) {
     setSidebarOpen,
     inspectorOpen,
     setInspectorOpen,
-    terminalOpen,
-    setTerminalOpen,
     inspectorTab,
     selectInspectorTab,
     updateSettings,

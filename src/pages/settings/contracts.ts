@@ -1,6 +1,6 @@
 import type { AppMeta, AppSettings } from '@/types/api'
 
-export type SettingsSection = 'general' | 'appearance' | 'agent' | 'session' | 'providers' | 'voice' | 'browser' | 'terminal' | 'privacy' | 'about'
+export type SettingsSection = 'general' | 'appearance' | 'agent' | 'session' | 'providers' | 'voice' | 'browser' | 'privacy' | 'about'
 
 export type SettingsUpdate = (patch: Partial<AppSettings>) => Promise<void> | void
 
@@ -14,6 +14,8 @@ export interface SettingsMetaSectionProps extends SettingsSectionProps {
   onRefreshHarnesses(): Promise<void>
 }
 
+// terminalOpen/terminalShell remain persisted settings for the Phase 2 backend;
+// the renderer exposes no surface for them, so the map omits them.
 export const SETTINGS_FIELD_SECTIONS = {
   theme: 'appearance',
   accentColor: 'appearance',
@@ -27,11 +29,9 @@ export const SETTINGS_FIELD_SECTIONS = {
   idleSessionMinutes: 'general',
   keepRunningInBackground: 'general',
   launchAtLogin: 'general',
-  terminalOpen: 'terminal',
   defaultInspectorTab: 'general',
   browserHome: 'browser',
   browserAskForDownloads: 'browser',
-  terminalShell: 'terminal',
   reduceMotion: 'appearance',
   showReasoningSummaries: 'agent',
   reasoningExpandedByDefault: 'agent',
@@ -58,4 +58,4 @@ export const SETTINGS_FIELD_SECTIONS = {
   voiceSelfHostedModel: 'voice',
   voiceLocalWhisperExecutable: 'voice',
   voiceLocalWhisperModel: 'voice',
-} as const satisfies Record<keyof AppSettings, SettingsSection>
+} as const satisfies Record<Exclude<keyof AppSettings, 'terminalOpen' | 'terminalShell'>, SettingsSection>
