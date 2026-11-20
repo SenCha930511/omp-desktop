@@ -1,17 +1,54 @@
 # Session collaboration
 
-OMP Desktop lets top-level sessions in the same working directory coordinate without turning them into parent/child subagents. In the composer, type `@` and part of a sidebar session title, then select the result. The visible `@title` is sent with a model-only routing block containing the stable session UUID. A session's context menu also exposes **Copy session UUID** for explicit coordination prompts.
+OMP Desktop lets top-level sessions in the same working directory coordinate
+without turning them into parent/child subagents. This document describes the
+layer the Rust application implements today: signed peer envelopes and bounded
+peer reads in `rust/crates/omp-core/src/collaboration.rs`.
 
-Every OMP runtime receives six app-owned tools:
+## Signed peer envelopes
 
-- `gooeypi_session_list`: list accessible peer titles, UUIDs, status, and liveness.
-- `gooeypi_session_models`: list models available to this harness from providers currently active in OMP Desktop, including each model's exact key and reasoning levels.
-- `gooeypi_session_create`: create and immediately prompt a new readable top-level session in the caller's same harness and canonical working directory. It accepts an optional model, reasoning level, title, and `fast` request; approximate model/reasoning wording uses the same resolver as voice-created tasks, then the runtime manager revalidates the exact selection and enables fast/priority mode only when the selected model and harness support it. The result contains the new session UUID and the applied fast-mode state.
-- `gooeypi_session_read`: read a bounded recent conversational snapshot and cursor without modifying the peer. It retains user, assistant, agent, and thinking text while omitting tool calls, tool results, and compaction internals.
-- `gooeypi_session_send`: deliver an attributed prompt or follow-up. Incoming messages carry the sender's exact `from_session_id` and a signed `reply_with: "gooeypi_session_send"` hint, so the recipient can answer directly without listing sessions. If the saved peer is idle/offline, OMP Desktop starts its normal RPC runtime first; the runtime manager revalidates its project and session paths.
-- `gooeypi_session_wait`: wait up to 30 seconds for a peer to become idle and produce context after a cursor. Sends are non-blocking, and tool guidance prohibits mutual waits.
+Incoming peer prompts travel as an app-local, HMAC-signed envelope so ordinary
+prompt text cannot impersonate another session:
 
-The `gooeypi_session_*` tool names are stable compatibility contracts and intentionally keep their GooeyPi-era names.
+```
+===== BEGIN GOOEYPI AGENT MESSAGE =====
+{"version":3,"from_session_id":"…","reply_with":"gooeypi_session_send","nonce":"…","sent_at":"…","signature":"…"}
+===== END GOOEYPI AGENT MESSAGE =====
+
+<the actual message>
+```
+
+- The signing key (`agent-message-signing.key`) is a 32-byte regular file in the
+  app's user-data directory, created with `create_new` and mode `0600` on POSIX.
+  A symlink, a directory, or a wrong-length file is rejected; the key is never
+  exposed to a harness runtime.
+- Verification is constant-time (`subtle`) and happens before the transcript may
+  render a user record with agent-message styling.
+- Version 3 envelopes expose only the sender UUID, a `gooeypi_session_send`
+  reply hint, envelope-authenticity fields, and the message itself. They never
+  include the sender title, harness, opening prompt, or transcript context.
+  Saved version-1 and version-2 envelopes (which carried a sender title and
+  harness) remain readable for transcript compatibility but are never newly
+  produced.
+- The marker and field names (`GOOEYPI` framing, `gooeypi_session_send`) are
+  deliberate pre-rebrand compatibility contracts and keep their names.
+
+## Peer discovery and reads
+
+`peer_sessions` lists candidate peers from the same canonical working directory
+with their UUIDs, titles, and liveness. `peer_messages` returns a bounded recent
+conversational snapshot and cursor for one peer: user, assistant, agent, and
+thinking text are retained, while tool calls, tool results, and compaction
+internals are omitted. Transcripts stay read-only.
+
+## Tool surface
+
+The `gooeypi_session_list`, `gooeypi_session_models`, `gooeypi_session_create`,
+`gooeypi_session_read`, `gooeypi_session_send`, and `gooeypi_session_wait` tool
+names are reserved compatibility contracts: agent-facing tools must keep these
+names if they are provided. The Rust build does not inject JavaScript extension
+files into OMP runtimes, so those tools are not installed by this application
+today; the envelope and peer-read layer above is what ships.
 
 ## Upstream research
 
@@ -24,19 +61,12 @@ No single runtime provides the top-level-session API this feature needs:
 | OMP 17.2.15 | Task subagents can follow up/await inside one parent run; `/collab` and `omp join` provide a live shared relay room. | No arbitrary saved top-level session UUID/name read/send/wait RPC. |
 | pi 0.84.1 | Current-session RPC, `switch_session`, and illustrative subprocess subagent/handoff extensions. | `switch_session` replaces the caller's runtime; there is no durable peer mailbox or arbitrary target API. (Historical row: pi support was removed from the app.) |
 
-OMP's task subagents and relay rooms do not offer arbitrary saved top-level session read/send/wait RPC, and mutating OMP JSONL would violate harness ownership. The design is therefore an app-owned broker over the existing OMP RPC manager.
+## Safety boundaries
 
-## Trust and lifecycle boundaries
-
-- Access is same-harness, same-canonical-working-directory, and excludes the caller. A multi-folder workspace does not silently widen one session's authority to its other roots, and harness-scoped project grants never authorize another harness.
-- Every runtime receives a separate random bearer token bound to its immutable harness/session claim. Tokens stay in the child environment and never cross renderer IPC.
-- Target UUIDs are exact and validated. Titles are display-only; `@title` resolution happens in the renderer against the visible sidebar catalog.
-- Session creation cannot select another harness or working directory. Model discovery excludes hidden, disabled, and unavailable providers/models, and creation goes through the owning manager's normal cwd, model, and reasoning validation before a prompt is accepted.
-- Session JSONL remains read-only. Reads go through the owning `SessionService`; sends go through the owning live RPC manager.
-- Read snapshots are limited to 40 recent conversational messages and 30,000 estimated tokens using the same portable four-characters-per-token convention as upstream compaction. The result reports its estimate and whether it was truncated. Tool-only transcript records do not consume the message or token budget. Sends are limited to 64 KiB. Waits are capped at 30 seconds, broker calls are body-bounded and rate-limited, and cached catalogs prevent wait polling from rescanning all session files.
-- An offline send may start a normal runtime only after the existing manager reauthorizes both cwd and canonical session path. Concurrent wake requests share one in-flight start, and each source token may have only one session creation in flight.
-- Routing blocks are stripped from the rendered user transcript. User-supplied routing delimiters are neutralized before OMP Desktop adds its own block.
-
-OMP task subagents and relay rooms remain unchanged. Session collaboration is an additional top-level coordination surface.
-
-Incoming peer prompts use a signed, app-local envelope. New envelopes expose only the sender UUID, a `gooeypi_session_send` reply hint, envelope-authenticity fields, and the actual message to the recipient model; they never include the sender title, harness, opening prompt, or transcript context. The signature survives app restarts and is verified before the transcript can render a user record with native agent-message styling, so ordinary prompt text cannot impersonate another session. The signing key stays in Electron's user-data directory with owner-only permissions and is never exposed to a harness or the renderer. Saved version-1 and version-2 envelopes remain readable for transcript compatibility, but are never newly emitted.
+- Targets are exact session UUIDs resolved through the session catalog; titles
+  are display-only.
+- Peers must be different, non-archived top-level sessions in the same canonical
+  working directory. A multi-folder workspace does not widen that scope.
+- Reads are bounded and never mutate the peer's transcript. Anything that would
+  start or wake a runtime must go through the normal path, which revalidates the
+  project grant and the canonical session path.

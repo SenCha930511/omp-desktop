@@ -1,16 +1,11 @@
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, truncateSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, test } from 'vitest'
-import { SHIPPED_EXTENSION_FILENAMES } from '../electron/main/extension-manifest'
-// after-pack.cjs is CommonJS; the interop layer exposes module.exports properties as named exports.
-import { executablePath } from '../scripts/release/after-pack.cjs'
-import { producedReleaseArtifactNames, RELEASE_BUILD_MATRIX, readElectronBuilderConfig } from '../scripts/release/artifact-names.mjs'
-import { collectAuditAdvisories, describeAuditEvaluation, evaluateAuditReport, parseAuditExceptions, readAuditExceptions } from '../scripts/release/audit-exceptions.mjs'
 import {
   bootstrapNpm,
   parsePinnedNpmArtifact,
@@ -20,121 +15,13 @@ import {
   resolveNpmGlobalLayout,
   verifyPinnedNpmArtifact,
 } from '../scripts/release/bootstrap-npm.mjs'
-import { brandDevElectron, DEV_LSREGISTER_PATH } from '../scripts/release/brand-dev-electron.mjs'
-import { installAppDependencies } from '../scripts/release/install-app-deps.mjs'
-import {
-  artifactArchitectures,
-  assertArchitectureCoverage,
-  assertAsarLayout,
-  assertExactArchitectures,
-  assertPackagedExtensions,
-  assertSupportedNode,
-  assertSupportedNpm,
-  assertSupportedToolchain,
-  assertUnpackedNativeLayout,
-  expectedUnpackedNativeLayout,
-  parseArchitectures,
-  parseTeamIdentifier,
-  parseToolchainMetadata,
-  readNpmOutput,
-  readNpmVersion,
-  readRepositoryToolchain,
-  requireReleaseArtifacts,
-  resolveCommandInvocation,
-  validateReleaseCredentials,
-  validateWindowsReleaseCredentials,
-  withoutReleaseCredentials,
-} from '../scripts/release/lib.mjs'
-import {
-  expectedDownloadedReleaseAssets,
-  expectedGitHubReleaseAssets,
-  mergeUpdateMetadata,
-  parseReleasePlatforms,
-  prepareGitHubRelease,
-  releaseAssetNames,
-} from '../scripts/release/prepare-github-release.mjs'
+import { assertSupportedNode, assertSupportedNpm, assertSupportedToolchain, parseToolchainMetadata, readNpmOutput, readNpmVersion, readRepositoryToolchain } from '../scripts/release/lib.mjs'
 import { buildUpdateFeed, prepareRustUpdateFeed, readRustPackageVersion, serializeUpdateFeed, validateUpdateBaseUrl, validateUpdateVersion } from '../scripts/release/prepare-rust-update-feed.mjs'
 import { parseDraftAssetNames, staleDraftReleaseAssets } from '../scripts/release/prune-draft-release-assets.mjs'
-import { assertBundleSizeBudgets, assertPackageSizeBudgets, BUNDLE_SIZE_BUDGETS, collectBundleSizeMetrics, collectPackageSizeMetrics, PACKAGE_SIZE_BUDGETS } from '../scripts/release/size-budgets.mjs'
 import { assertReleaseTag } from '../scripts/release/validate-release-tag.mjs'
-import {
-  assertUnpackedNativeLayout as assertCrossPlatformUnpackedNativeLayout,
-  assertValidAuthenticode,
-  expectedArtifactExtensions,
-  expectedAuthenticodeSigner,
-  expectedNativeFiles,
-  nativeRuntimeDirectory,
-} from '../scripts/release/verify-cross-platform-package.mjs'
 
 // js-yaml ships no type declarations, so it is required rather than imported.
 const load = createRequire(import.meta.url)('js-yaml').load as (source: string) => unknown
-
-const baseEnvironment = {
-  RELEASE_SIGNING_TEAM_ID: 'TEAM123',
-  CSC_LINK: 'base64-certificate',
-  CSC_KEY_PASSWORD: 'certificate-password',
-  APPLE_ID: 'release@example.com',
-  APPLE_APP_SPECIFIC_PASSWORD: 'app-password',
-  APPLE_TEAM_ID: 'TEAM123',
-}
-
-function createUnpackedFixture() {
-  const directory = mkdtempSync(join(tmpdir(), 'omp-desktop-unpacked-'))
-  for (const relativePath of expectedUnpackedNativeLayout().files) {
-    const path = join(directory, relativePath)
-    mkdirSync(dirname(path), { recursive: true })
-    writeFileSync(path, 'fixture')
-  }
-  return directory
-}
-
-function writeSizedFile(path: string, bytes: number) {
-  mkdirSync(dirname(path), { recursive: true })
-  writeFileSync(path, '')
-  truncateSync(path, bytes)
-}
-
-function writeUpdateManifest(directory: string, name: string, url: string, sha512: string, releaseDate: string) {
-  const path = join(directory, name, 'latest-mac.yml')
-  mkdirSync(dirname(path), { recursive: true })
-  writeFileSync(path, `version: 0.2.0\nreleaseDate: '${releaseDate}'\nfiles:\n  - url: ${url}\n    sha512: ${sha512}\n    size: 42\npath: ${url}\nsha512: ${sha512}\n`)
-  return path
-}
-
-/** A complete downloaded macOS release artifact tree, optionally missing one produced artifact. */
-function writeMacReleaseFixture(directory: string, { omit }: { omit?: string } = {}) {
-  const projectDirectory = join(directory, 'project')
-  const inputDirectory = join(directory, 'downloaded')
-  mkdirSync(projectDirectory, { recursive: true })
-  mkdirSync(inputDirectory, { recursive: true })
-  writeFileSync(join(projectDirectory, 'package.json'), JSON.stringify({ version: '0.2.0' }))
-  writeFileSync(join(projectDirectory, 'package-lock.json'), JSON.stringify({ version: '0.2.0', packages: { '': { version: '0.2.0' } } }))
-  for (const [index, name] of expectedDownloadedReleaseAssets('0.2.0', ['mac']).entries()) {
-    if (name === omit) continue
-    const artifactDirectory = join(inputDirectory, `artifact-${index}`)
-    mkdirSync(artifactDirectory, { recursive: true })
-    const content = name.endsWith('.yml')
-      ? 'version: 0.2.0\nfiles:\n  - url: OMP-Desktop-0.2.0-x64.zip\n    sha512: x64-digest\n    size: 42\npath: OMP-Desktop-0.2.0-x64.zip\nsha512: x64-digest\n'
-      : `asset ${index}`
-    writeFileSync(join(artifactDirectory, name), content)
-  }
-  return { projectDirectory, inputDirectory }
-}
-
-function createBundleSizeFixture() {
-  const directory = mkdtempSync(join(tmpdir(), 'prime-work-bundle-size-'))
-  writeSizedFile(join(directory, 'main/index.js'), 101)
-  writeSizedFile(join(directory, 'preload/index.js'), 102)
-  writeSizedFile(join(directory, 'renderer/assets/entry.js'), 103)
-  writeSizedFile(join(directory, 'renderer/assets/vendor.js'), 104)
-  writeSizedFile(join(directory, 'renderer/assets/lazy.js'), 105)
-  writeSizedFile(join(directory, 'renderer/assets/app.css'), 106)
-  writeFileSync(
-    join(directory, 'renderer/index.html'),
-    '<script type="module" src="./assets/entry.js"></script><link rel="modulepreload" href="./assets/vendor.js"><link rel="stylesheet" href="./assets/app.css">',
-  )
-  return directory
-}
 
 const PINNED_NPM_INTEGRITY = 'sha512-uIXokLlBj6FpNUTQX1PmT5pz7BlIN9QlixX+zdaSNHsd0qUXsbDLr50xzY6Sw7cJVr0uzHKDOle0swmPW/p5Qw=='
 
@@ -166,48 +53,48 @@ function createPinnedNpmArtifactFixture(contents = Buffer.from('verified npm arc
   return { temporaryDirectory, repositoryRoot, artifactPath, artifact, manifest, contents, integrity }
 }
 
-describe('release preflight', () => {
-  test('package.mjs --dry-run says nothing executed instead of claiming success', () => {
-    const platform = process.platform === 'darwin' ? 'mac' : process.platform === 'win32' ? 'win' : 'linux'
-    const result = spawnSync(process.execPath, ['scripts/release/package.mjs', '--qa', '--platform', platform, '--dry-run'], { encoding: 'utf8' })
-    expect(result.status, result.stderr).toBe(0)
-    expect(result.stdout).toContain('DRY RUN — nothing executed.')
-    expect(result.stdout).not.toContain('pipeline passed')
-  })
+interface WorkflowStep {
+  job: string
+  name: string | undefined
+  uses: string | undefined
+  secretLines: string[]
+  lines: string[]
+}
 
-  test('verify-package runs when invoked as a script and fails closed on a missing entrypoint', async () => {
-    const { invokedAsScript } = await import('../scripts/release/verify-package.mjs')
-    const original = process.argv[1]
-    try {
-      process.argv[1] = fileURLToPath(new URL('../scripts/release/verify-package.mjs', import.meta.url))
-      expect(invokedAsScript()).toBe(true)
-      process.argv[1] = join(tmpdir(), 'another-entrypoint.mjs')
-      expect(invokedAsScript()).toBe(false)
-      process.argv[1] = undefined as unknown as string
-      expect(invokedAsScript()).toBe(true)
-    } finally {
-      process.argv[1] = original
+/** Minimal structural read of a GitHub workflow: jobs and their step blocks. */
+function parseWorkflowSteps(source: string): WorkflowStep[] {
+  const steps: WorkflowStep[] = []
+  let job = ''
+  let inJobs = false
+  let current: WorkflowStep | undefined
+  for (const line of source.split('\n')) {
+    if (/^jobs:\s*$/.test(line)) {
+      inJobs = true
+      continue
     }
-  })
+    if (!inJobs) continue
+    const jobMatch = line.match(/^ {2}([A-Za-z0-9_-]+):\s*$/)
+    if (jobMatch) {
+      job = jobMatch[1]
+      current = undefined
+      continue
+    }
+    if (/^ {6}- /.test(line)) {
+      current = { job, name: undefined, uses: undefined, secretLines: [], lines: [] }
+      steps.push(current)
+    }
+    if (!current) continue
+    current.lines.push(line)
+    const name = line.match(/^\s*(?:- )?name:\s*(.+?)\s*$/)
+    if (name && current.name === undefined) current.name = name[1]
+    const uses = line.match(/^\s*(?:- )?uses:\s*(\S+)/)
+    if (uses && current.uses === undefined) current.uses = uses[1]
+    if (line.includes('secrets.')) current.secretLines.push(line)
+  }
+  return steps
+}
 
-  test('binds the requested target architecture to the produced mac artifacts', async () => {
-    const { assertBooleanEntitlement, assertRequestedArchitecture } = await import('../scripts/release/verify-package.mjs')
-    const artifacts = { dmg: 'release/mac/arm64/OMP-Desktop-1.0.0-arm64.dmg', zip: 'release/mac/arm64/OMP-Desktop-1.0.0-arm64.zip' }
-    expect(() => assertRequestedArchitecture(artifacts, 'arm64')).not.toThrow()
-    expect(() => assertRequestedArchitecture(artifacts, undefined)).not.toThrow()
-    expect(() => assertRequestedArchitecture(artifacts, 'x64')).toThrow(/declares architecture arm64, but --arch x64 was requested/)
-    expect(() => assertRequestedArchitecture({ ...artifacts, zip: 'release/mac/x64/OMP-Desktop-1.0.0-x64.zip' }, 'arm64')).toThrow(/declares architecture x64/)
-    expect(() => assertRequestedArchitecture(artifacts, 'universal')).toThrow(/must be arm64 or x64/)
-    expect(() => assertRequestedArchitecture(artifacts, '')).toThrow(/must be arm64 or x64/)
-    // package.mjs forwards the authoritative arch into mac post-package verification.
-    expect(readFileSync('scripts/release/package.mjs', 'utf8')).toContain("'--arch', arch, '--release-directory'")
-
-    const entitlement = 'com.apple.security.device.audio-input'
-    expect(() => assertBooleanEntitlement(`<key>${entitlement}</key><true/>`, entitlement, 'fixture')).not.toThrow()
-    expect(() => assertBooleanEntitlement(`[Key] ${entitlement}\n[Value]\n[Bool] true`, entitlement, 'fixture')).not.toThrow()
-    expect(() => assertBooleanEntitlement(`<key>${entitlement}</key><false/>`, entitlement, 'fixture')).toThrow(/missing required true entitlement/)
-  })
-
+describe('release toolchain', () => {
   test('enforces the repository Node and npm boundaries from checked-in metadata', () => {
     expect(readRepositoryToolchain()).toEqual({ node: '24.15.0', npm: '12.0.2' })
     expect(() => assertSupportedNode('v24.14.99')).toThrow(/Node\.js >=24\.15\.0 is required/)
@@ -242,13 +129,188 @@ describe('release preflight', () => {
     expect(() => parseToolchainMetadata(JSON.stringify(packageMetadata), '24.15.0-rc.1\n')).toThrow(/stable \.nvmrc release/)
     expect(() => parseToolchainMetadata('{', '24.15.0\n')).toThrow(/Cannot parse package\.json/)
 
-    for (const path of ['scripts/release/lib.mjs', 'scripts/release/bootstrap-npm.mjs', 'scripts/release/package.mjs', 'scripts/release/preflight.mjs']) {
+    for (const path of ['scripts/release/lib.mjs', 'scripts/release/bootstrap-npm.mjs', 'scripts/release/preflight.mjs']) {
       const source = readFileSync(path, 'utf8')
       expect(source).not.toContain('24.15.0')
       expect(source).not.toContain('12.0.2')
     }
   })
 
+  test('probes npm through its JavaScript CLI and the preflight rejects an old npm', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'omp-desktop-npm-version-'))
+    const npmCli = join(directory, 'npm-cli.mjs')
+    writeFileSync(npmCli, "process.stdout.write('12.0.1\\n')\n")
+    const env = { ...process.env, npm_execpath: npmCli }
+    try {
+      expect(readNpmVersion({ env })).toBe('12.0.1')
+      const preflight = spawnSync(process.execPath, ['scripts/release/preflight.mjs'], { encoding: 'utf8', env })
+      expect(preflight.status).toBe(1)
+      expect(preflight.stderr).toContain('npm >=12.0.2 is required')
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  test('keeps contributor instructions aligned with the enforced engines', () => {
+    const packageJson = JSON.parse(readFileSync('package.json', 'utf8'))
+    const toolchain = readRepositoryToolchain()
+    expect(packageJson.engines).toEqual({ node: `>=${toolchain.node}`, npm: `>=${toolchain.npm}` })
+    expect(packageJson.packageManager).toBe(`npm@${toolchain.npm}`)
+    expect(readFileSync('.nvmrc', 'utf8').trim()).toBe(toolchain.node)
+    const readme = readFileSync('README.md', 'utf8')
+    expect(readme).toContain(`Node.js ${toolchain.node} or newer and npm ${toolchain.npm} or newer`)
+    expect(readme).toContain('npm run toolchain:bootstrap')
+    expect(readme).toContain("invoked npm's configured global prefix")
+    expect(readme).toContain('install-time lifecycle scripts disabled')
+    expect(readme).not.toContain('into the active Node installation')
+    expect(readFileSync('scripts/release/preflight.mjs', 'utf8')).toContain('assertSupportedToolchain()')
+  })
+
+  test('pins every workflow action, including third-party owners, to a full commit SHA', () => {
+    for (const path of ['.github/workflows/release.yml', '.github/workflows/ci.yml']) {
+      const steps = parseWorkflowSteps(readFileSync(path, 'utf8'))
+      expect(steps.length).toBeGreaterThan(0)
+      for (const step of steps) {
+        if (step.uses === undefined) continue
+        // Every `uses:` reference must be `owner/repo[/path]@<40-hex sha>`,
+        // regardless of owner - tags and branches are movable for actions/*
+        // and third-party owners alike.
+        expect(step.uses, `${path} ${step.job}: ${step.uses}`).toMatch(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_./-]+@[0-9a-f]{40}$/)
+      }
+    }
+  })
+
+  test('confines workflow secrets to the Rust updater signing step', () => {
+    const releaseSteps = parseWorkflowSteps(readFileSync('.github/workflows/release.yml', 'utf8'))
+    const secretSteps = releaseSteps.filter((step) => step.secretLines.length > 0)
+    expect(secretSteps.map((step) => `${step.job}: ${step.name}`)).toEqual(['package-rust: Package and sign the application'])
+    for (const step of secretSteps) {
+      // Secrets may only be consumed as env-var assignments inside the step's
+      // env block - never interpolated into run commands or action inputs.
+      expect(step.lines.some((line) => /^\s*env:\s*$/.test(line))).toBe(true)
+      for (const line of step.secretLines) {
+        expect(line).toMatch(/^\s+[A-Z][A-Z0-9_]*: \$\{\{ secrets\.[A-Z][A-Z0-9_]* \}\}$/)
+      }
+      expect(step.lines.join('\n')).not.toMatch(/run:.*secrets\./)
+    }
+
+    const ciSteps = parseWorkflowSteps(readFileSync('.github/workflows/ci.yml', 'utf8'))
+    expect(ciSteps.filter((step) => step.secretLines.length > 0)).toEqual([])
+  })
+
+  test('cancels superseded PR runs without cancelling validation for pushed SHAs', () => {
+    const workflow = load(readFileSync('.github/workflows/ci.yml', 'utf8')) as {
+      concurrency: { group: string; 'cancel-in-progress': string }
+    }
+    expect(workflow.concurrency.group).toBe(
+      "ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.event_name == 'push' && format('push-{0}', github.sha) || format('dispatch-{0}', github.run_id) }}",
+    )
+    expect(workflow.concurrency['cancel-in-progress']).toBe("${{ github.event_name == 'pull_request' }}")
+  })
+
+  test('reads the Node version from .nvmrc and bootstraps the pinned toolchain before npm ci', () => {
+    for (const path of ['.github/workflows/release.yml', '.github/workflows/ci.yml']) {
+      const source = readFileSync(path, 'utf8')
+      expect(source).not.toMatch(/node-version:/)
+      const steps = parseWorkflowSteps(source)
+      const setupSteps = steps.filter((step) => step.uses?.startsWith('actions/setup-node@'))
+      expect(setupSteps.length).toBeGreaterThan(0)
+      for (const setup of setupSteps) {
+        const setupIndex = steps.indexOf(setup)
+        const bootstrapIndexes = steps.flatMap((step, index) => (step.job === setup.job && step.lines.some((line) => line.includes('run: npm run toolchain:bootstrap')) ? [index] : []))
+        const preflightIndexes = steps.flatMap((step, index) => (step.job === setup.job && step.lines.some((line) => line.includes('run: npm run release:preflight')) ? [index] : []))
+        expect(bootstrapIndexes, `${path} ${setup.job} bootstrap steps`).toHaveLength(1)
+        expect(preflightIndexes, `${path} ${setup.job} preflight steps`).toHaveLength(1)
+        const bootstrapIndex = bootstrapIndexes[0]
+        const preflightIndex = preflightIndexes[0]
+        const installIndex = steps.findIndex((step, index) => index > setupIndex && step.job === setup.job && step.lines.some((line) => /run: npm ci(?:\s|$)/.test(line)))
+        expect(bootstrapIndex).toBeGreaterThan(setupIndex)
+        expect(preflightIndex).toBeGreaterThan(bootstrapIndex)
+        if (installIndex >= 0) expect(preflightIndex).toBeGreaterThan(installIndex)
+      }
+      const uploads = source.match(/uses: actions\/upload-artifact@/g) ?? []
+      expect(source.match(/if-no-files-found: error/g)).toHaveLength(uploads.length)
+    }
+  })
+
+  test('runs only Rust jobs in CI plus the release-tooling suite', () => {
+    const workflow = load(readFileSync('.github/workflows/ci.yml', 'utf8')) as {
+      on: Record<string, unknown>
+      jobs: Record<string, { strategy?: { matrix?: { include?: Array<Record<string, string>> } }; steps?: Array<{ name?: string; run?: string }> }>
+    }
+    expect(workflow.on).toHaveProperty('pull_request')
+    expect(Object.keys(workflow.jobs)).toEqual(['release-scripts', 'rust', 'rust-conformance', 'rust-package-smoke', 'rust-package-smoke-linux', 'rust-package-smoke-windows'])
+
+    const toolingRuns = workflow.jobs['release-scripts']?.steps?.map((step) => step.run).filter((run): run is string => typeof run === 'string') ?? []
+    expect(toolingRuns).toEqual(['npm run toolchain:bootstrap', 'npm ci', 'npm run release:preflight', 'npm run typecheck', 'npm run check', 'npm test'])
+
+    const rustRunners = (workflow.jobs.rust?.strategy?.matrix?.include ?? []).map((entry) => entry.runner).sort()
+    expect(rustRunners).toEqual(['macos-15', 'ubuntu-22.04', 'windows-2022'])
+    // The Windows leg of the Rust matrix is what covers state migration there.
+    expect(workflow.jobs.rust?.steps?.some((step) => step.run?.includes('cargo test --workspace --locked'))).toBe(true)
+
+    const conformanceRunners = (workflow.jobs['rust-conformance']?.strategy?.matrix?.include ?? []).map((entry) => entry.runner).sort()
+    expect(conformanceRunners).toEqual(['macos-15', 'ubuntu-22.04', 'windows-2022'])
+    expect(workflow.jobs['rust-conformance']?.steps?.some((step) => step.run?.includes('--config vitest.conformance.config.ts'))).toBe(true)
+  })
+
+  test('publishes only signed Rust packages from an existing version tag', () => {
+    const workflow = load(readFileSync('.github/workflows/release.yml', 'utf8')) as {
+      on: { push: { tags: string[] }; workflow_dispatch: { inputs: Record<string, { required: boolean; type: string }> } }
+      env: Record<string, string>
+      jobs: Record<string, { needs?: string[]; if?: string; steps?: Array<{ name?: string; id?: string; run?: string; if?: string; env?: Record<string, string> }> }>
+    }
+    expect(workflow.env.RELEASE_TAG).toBe('${{ inputs.tag || github.ref_name }}')
+    expect(workflow.on.push.tags).toEqual(['v*.*.*'])
+    expect(workflow.on.workflow_dispatch.inputs.tag).toMatchObject({ required: true, type: 'string' })
+    expect(Object.keys(workflow.on.workflow_dispatch.inputs)).toEqual(['tag'])
+    expect(Object.keys(workflow.jobs)).toEqual(['validate', 'quality', 'package-rust', 'release-packages', 'rust-update-feed'])
+
+    const packageRust = workflow.jobs['package-rust']
+    expect(packageRust.needs).toEqual(['validate', 'quality'])
+    const sign = packageRust.steps?.find((step) => step.id === 'package')
+    expect(sign?.env).toEqual({
+      RUST_UPDATER_SIGNING_KEY: '${{ secrets.RUST_UPDATER_SIGNING_KEY }}',
+      CARGO_PACKAGER_SIGN_PRIVATE_KEY: '${{ secrets.RUST_UPDATER_SIGNING_KEY }}',
+    })
+    expect(sign?.run).toContain('cargo packager --formats ${{ matrix.format }} --release')
+    expect(sign?.run).toContain('skipping the signed Rust package')
+
+    const release = workflow.jobs['release-packages']
+    expect(release.needs).toEqual(['validate', 'package-rust'])
+    expect(release.if).toBe('always()')
+    const steps = release.steps ?? []
+    expect(steps.find((step) => step.name === 'Fail if a release prerequisite did not succeed')?.run).toContain('exit 1')
+    expect(steps.find((step) => step.name === 'Fail closed unless every signed Rust package was produced')?.run).toContain('RUST_UPDATER_SIGNING_KEY')
+    expect(steps.find((step) => step.name === 'Add the signed Rust packages to the release assets')?.run).toContain('release-assets')
+    expect(steps.find((step) => step.name === 'Write SHA-256 checksums for every published asset')?.run).toContain('SHA256SUMS.txt')
+    expect(steps.some((step) => step.name === 'Attest release assets')).toBe(true)
+
+    const publish = steps.find((step) => step.name === 'Publish GitHub Release')?.run ?? ''
+    expect(publish.trimStart().startsWith('tag_sha=$(gh api repos/${{ github.repository }}/commits/$RELEASE_TAG --jq .sha)')).toBe(true)
+    expect(publish).toContain('is already published and will not be replaced')
+    expect(publish).toContain('gh release upload "$RELEASE_TAG" release-assets/* --clobber')
+    expect(publish).toContain('gh release create "$RELEASE_TAG" release-assets/*')
+    expect(publish).toContain('--verify-tag')
+    expect(publish).toContain('--fail-on-no-commits')
+    expect(publish).toContain('--latest')
+    expect(publish).not.toContain('--prerelease')
+    expect(steps.find((step) => step.name === 'Publish GitHub Release')?.env?.GH_TOKEN).toBe('${{ github.token }}')
+
+    const feed = workflow.jobs['rust-update-feed']
+    expect(feed.needs).toEqual(['validate', 'release-packages', 'package-rust'])
+    expect(feed.if).toContain("needs.release-packages.result == 'success'")
+    expect(feed.if).toContain("needs.package-rust.result == 'success'")
+    const generate = feed.steps?.find((step) => step.name === 'Generate and upload the Rust updater feed')
+    expect(generate?.if).toBe("steps.signatures.outputs.signed == 'true'")
+    expect(generate?.run).toContain('--version-file rust/Cargo.toml')
+    expect(generate?.run).toContain('--artifacts rust-artifacts')
+    expect(generate?.run).toContain('gh release upload "$RELEASE_TAG" rust-update-feed/updates.json --clobber')
+    expect(generate?.env?.GH_TOKEN).toBe('${{ github.token }}')
+  })
+})
+
+describe('npm bootstrap', () => {
   test('binds the npm bootstrap artifact to the packageManager version and canonical registry provenance', () => {
     const fixture = createPinnedNpmArtifactFixture()
     try {
@@ -320,26 +382,6 @@ describe('release preflight', () => {
       ).toThrow(/regular non-symlink file/)
     } finally {
       rmSync(fixture.temporaryDirectory, { recursive: true, force: true })
-    }
-  })
-
-  test('probes npm through its JavaScript CLI and both release entry points reject an old npm', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'omp-desktop-npm-version-'))
-    const npmCli = join(directory, 'npm-cli.mjs')
-    writeFileSync(npmCli, "process.stdout.write('12.0.1\\n')\n")
-    const env = { ...process.env, npm_execpath: npmCli }
-    try {
-      expect(readNpmVersion({ env })).toBe('12.0.1')
-      const preflight = spawnSync(process.execPath, ['scripts/release/preflight.mjs', '--toolchain-only'], { encoding: 'utf8', env })
-      expect(preflight.status).toBe(1)
-      expect(preflight.stderr).toContain('npm >=12.0.2 is required')
-
-      const platform = process.platform === 'darwin' ? 'mac' : process.platform === 'win32' ? 'win' : 'linux'
-      const packaging = spawnSync(process.execPath, ['scripts/release/package.mjs', '--qa', '--platform', platform, '--dry-run'], { encoding: 'utf8', env })
-      expect(packaging.status).toBe(1)
-      expect(packaging.stderr).toContain('npm >=12.0.2 is required')
-    } finally {
-      rmSync(directory, { recursive: true, force: true })
     }
   })
 
@@ -529,1251 +571,13 @@ else if (JSON.stringify(args) === ${JSON.stringify(JSON.stringify(expectedInstal
       rmSync(directory, { recursive: true, force: true })
     }
   })
-
-  test('keeps contributor instructions aligned with the enforced engines', () => {
-    const packageJson = JSON.parse(readFileSync('package.json', 'utf8'))
-    const toolchain = readRepositoryToolchain()
-    expect(packageJson.engines).toEqual({ node: `>=${toolchain.node}`, npm: `>=${toolchain.npm}` })
-    expect(packageJson.packageManager).toBe(`npm@${toolchain.npm}`)
-    expect(readFileSync('.nvmrc', 'utf8').trim()).toBe(toolchain.node)
-    const readme = readFileSync('README.md', 'utf8')
-    expect(readme).toContain(`Node.js ${toolchain.node} or newer and npm ${toolchain.npm} or newer`)
-    expect(readme).toContain('npm run toolchain:bootstrap')
-    expect(readme).toContain("invoked npm's configured global prefix")
-    expect(readme).toContain('install-time lifecycle scripts disabled')
-    expect(readme).not.toContain('into the active Node installation')
-    expect(readFileSync('scripts/release/package.mjs', 'utf8')).toContain('assertSupportedToolchain()')
-    expect(readFileSync('scripts/release/preflight.mjs', 'utf8')).toContain('assertSupportedToolchain()')
-  })
-
-  test('fails closed without Developer ID credentials', () => {
-    expect(() => validateReleaseCredentials({}, { checkApiKeyFile: false })).toThrow(/RELEASE_SIGNING_TEAM_ID/)
-    expect(() => validateReleaseCredentials({ ...baseEnvironment, CSC_LINK: '' }, { checkApiKeyFile: false })).toThrow(/CSC_LINK/)
-  })
-
-  test('accepts exactly one complete notarization credential set', () => {
-    expect(() => validateReleaseCredentials(baseEnvironment, { checkApiKeyFile: false })).not.toThrow()
-    const apiEnvironment = {
-      RELEASE_SIGNING_TEAM_ID: 'TEAM123',
-      CSC_LINK: 'certificate',
-      CSC_KEY_PASSWORD: 'password',
-      APPLE_API_KEY: '/tmp/AuthKey.p8',
-      APPLE_API_KEY_ID: 'KEY123',
-      APPLE_API_ISSUER: 'issuer-id',
-    }
-    expect(() => validateReleaseCredentials(apiEnvironment, { checkApiKeyFile: false })).not.toThrow()
-    expect(() => validateReleaseCredentials({ ...baseEnvironment, ...apiEnvironment }, { checkApiKeyFile: false })).toThrow(/exactly one/)
-  })
-
-  test('binds Apple ID notarization to the signing Team ID', () => {
-    expect(() => validateReleaseCredentials({ ...baseEnvironment, APPLE_TEAM_ID: 'OTHER' }, { checkApiKeyFile: false })).toThrow(/must match/)
-  })
-
-  test('fails closed without Windows Authenticode credentials', () => {
-    expect(() => validateWindowsReleaseCredentials({})).toThrow(/WIN_CSC_LINK, WIN_CSC_KEY_PASSWORD/)
-    expect(() => validateWindowsReleaseCredentials({ WIN_CSC_LINK: 'certificate', WIN_CSC_KEY_PASSWORD: 'password' })).not.toThrow()
-    const packaging = readFileSync('scripts/release/package.mjs', 'utf8')
-    expect(packaging).toContain("builderArgs.push('--config.forceCodeSigning=true')")
-    expect(packaging).toContain("'--mode', isPublic ? 'public' : 'qa'")
-  })
-
-  test('removes release credentials from untrusted verification commands', () => {
-    const environment = { PATH: '/usr/bin', ...baseEnvironment, APPLE_API_KEY: '/tmp/private-key' }
-    expect(withoutReleaseCredentials(environment)).toEqual({ PATH: '/usr/bin' })
-    expect(withoutReleaseCredentials(environment, ['RELEASE_SIGNING_TEAM_ID'])).toEqual({
-      PATH: '/usr/bin',
-      RELEASE_SIGNING_TEAM_ID: 'TEAM123',
-    })
-    expect(withoutReleaseCredentials({ PATH: '/usr/bin', WIN_CSC_LINK: 'certificate', WIN_CSC_KEY_PASSWORD: 'password' })).toEqual({ PATH: '/usr/bin' })
-  })
-
-  interface WorkflowStep {
-    job: string
-    name: string | undefined
-    uses: string | undefined
-    secretLines: string[]
-    lines: string[]
-  }
-
-  /** Minimal structural read of a GitHub workflow: jobs and their step blocks. */
-  function parseWorkflowSteps(source: string): WorkflowStep[] {
-    const steps: WorkflowStep[] = []
-    let job = ''
-    let inJobs = false
-    let current: WorkflowStep | undefined
-    for (const line of source.split('\n')) {
-      if (/^jobs:\s*$/.test(line)) {
-        inJobs = true
-        continue
-      }
-      if (!inJobs) continue
-      const jobMatch = line.match(/^ {2}([A-Za-z0-9_-]+):\s*$/)
-      if (jobMatch) {
-        job = jobMatch[1]
-        current = undefined
-        continue
-      }
-      if (/^ {6}- /.test(line)) {
-        current = { job, name: undefined, uses: undefined, secretLines: [], lines: [] }
-        steps.push(current)
-      }
-      if (!current) continue
-      current.lines.push(line)
-      const name = line.match(/^\s*(?:- )?name:\s*(.+?)\s*$/)
-      if (name && current.name === undefined) current.name = name[1]
-      const uses = line.match(/^\s*(?:- )?uses:\s*(\S+)/)
-      if (uses && current.uses === undefined) current.uses = uses[1]
-      if (line.includes('secrets.')) current.secretLines.push(line)
-    }
-    return steps
-  }
-
-  test('pins every workflow action, including third-party owners, to a full commit SHA', () => {
-    for (const path of ['.github/workflows/release.yml', '.github/workflows/ci.yml']) {
-      const steps = parseWorkflowSteps(readFileSync(path, 'utf8'))
-      expect(steps.length).toBeGreaterThan(0)
-      for (const step of steps) {
-        if (step.uses === undefined) continue
-        // Every `uses:` reference must be `owner/repo[/path]@<40-hex sha>`,
-        // regardless of owner - tags and branches are movable for actions/*
-        // and third-party owners alike.
-        expect(step.uses, `${path} ${step.job}: ${step.uses}`).toMatch(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_./-]+@[0-9a-f]{40}$/)
-      }
-    }
-  })
-
-  test('confines workflow secrets to the signing and notarization release steps', () => {
-    const releaseSteps = parseWorkflowSteps(readFileSync('.github/workflows/release.yml', 'utf8'))
-    const secretSteps = releaseSteps.filter((step) => step.secretLines.length > 0)
-    expect(secretSteps.map((step) => `${step.job}: ${step.name}`).sort()).toEqual([
-      'package-rust: Package and sign the application',
-      'package-windows: Build, Authenticode-sign, and verify Windows packages',
-      'package: Build, sign, notarize, and verify release packages',
-      'package: Fail closed unless every release credential is configured',
-    ])
-    for (const step of secretSteps) {
-      // Secrets may only be consumed as env-var assignments inside the step's
-      // env block - never interpolated into run commands or action inputs.
-      expect(step.lines.some((line) => /^\s*env:\s*$/.test(line))).toBe(true)
-      for (const line of step.secretLines) {
-        expect(line).toMatch(/^\s+[A-Z][A-Z0-9_]*: \$\{\{ secrets\.[A-Z][A-Z0-9_]* \}\}$/)
-      }
-      expect(step.lines.join('\n')).not.toMatch(/run:.*secrets\./)
-    }
-
-    const ciSteps = parseWorkflowSteps(readFileSync('.github/workflows/ci.yml', 'utf8'))
-    expect(ciSteps.filter((step) => step.secretLines.length > 0)).toEqual([])
-  })
-
-  test('cancels superseded PR runs without cancelling validation for pushed SHAs', () => {
-    const workflow = load(readFileSync('.github/workflows/ci.yml', 'utf8')) as {
-      concurrency: { group: string; 'cancel-in-progress': string }
-    }
-    expect(workflow.concurrency.group).toBe(
-      "ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.event_name == 'push' && format('push-{0}', github.sha) || format('dispatch-{0}', github.run_id) }}",
-    )
-    expect(workflow.concurrency['cancel-in-progress']).toBe("${{ github.event_name == 'pull_request' }}")
-  })
-
-  test('gates packaging regressions on every pull request', () => {
-    const ciWorkflow = readFileSync('.github/workflows/ci.yml', 'utf8')
-    expect(ciWorkflow).toMatch(/on:\n {2}push:\n {4}branches:\n {6}- main/)
-    expect(ciWorkflow).toMatch(/packaging-smoke:\n {4}if: github\.event_name == 'pull_request'/)
-    for (const runner of ['macos-15', 'ubuntu-22.04', 'windows-2022']) expect(ciWorkflow).toContain(`runner: ${runner}`)
-    expect(ciWorkflow).toContain('node node_modules/electron-builder/cli.js --dir')
-    expect(ciWorkflow).toContain('--publish=never')
-    expect(ciWorkflow).not.toContain('--publish never')
-    expect(ciWorkflow).toContain('verify-cross-platform-package.mjs --platform ${{ matrix.target }} --arch ${{ matrix.arch }} --unpacked-only')
-  })
-
-  test('runs the cross-platform conformance suite and macOS launch smoke in CI', () => {
-    type Workflow = {
-      jobs: Record<string, { strategy?: { matrix?: { include?: Array<Record<string, string>> } }; steps?: Array<{ name?: string; if?: string; run?: string }> }>
-    }
-    const ci = load(readFileSync('.github/workflows/ci.yml', 'utf8')) as Workflow
-    const conformanceRunners = (ci.jobs.conformance?.strategy?.matrix?.include ?? []).map((entry) => entry.runner).sort()
-    expect(conformanceRunners).toEqual(['macos-15', 'ubuntu-22.04', 'windows-2022'])
-    expect(ci.jobs.conformance?.steps?.some((step) => step.run === 'npm run test:conformance')).toBe(true)
-
-    const smokeLaunchStep = ci.jobs['packaging-smoke']?.steps?.find((step) => step.name === 'Launch the packaged application')
-    expect(smokeLaunchStep?.run).toBe('node scripts/release/smoke-packaged-app.mjs --platform ${{ matrix.target }} --arch ${{ matrix.arch }}')
-    expect(smokeLaunchStep?.if).toBeUndefined()
-  })
-
-  test('gates every pull-request head and pinned release SHA on the named production audit', () => {
-    type WorkflowJob = {
-      name?: string
-      needs?: string | string[]
-      if?: string
-      steps?: Array<{ name?: string; uses?: string; run?: string; if?: string; with?: Record<string, unknown> }>
-    }
-    type Workflow = { on: Record<string, unknown>; jobs: Record<string, WorkflowJob> }
-    const ci = load(readFileSync('.github/workflows/ci.yml', 'utf8')) as Workflow
-    const release = load(readFileSync('.github/workflows/release.yml', 'utf8')) as Workflow
-
-    expect(ci.on).toHaveProperty('pull_request')
-    const ciAudit = ci.jobs['production-audit']
-    expect(ciAudit.name).toBe('Production dependency audit')
-    expect(ciAudit.if).toBeUndefined()
-    expect(ciAudit.steps?.find((step) => step.uses?.startsWith('actions/checkout@'))?.with?.ref).toBe('${{ github.event.pull_request.head.sha || github.sha }}')
-    const ciAuditSteps = ciAudit.steps?.filter((step) => step.run === 'npm run audit:production') ?? []
-    expect(ciAuditSteps).toHaveLength(1)
-    expect(ciAuditSteps[0].name).toBe('Apply named production dependency audit exceptions')
-
-    const releaseAudit = release.jobs['production-audit']
-    expect(releaseAudit.name).toBe(ciAudit.name)
-    expect(releaseAudit.needs).toBe('validate')
-    expect(releaseAudit.steps?.find((step) => step.uses?.startsWith('actions/checkout@'))?.with?.ref).toBe('${{ needs.validate.outputs.sha }}')
-    const releaseAuditSteps = releaseAudit.steps?.filter((step) => step.run === 'npm run audit:production') ?? []
-    expect(releaseAuditSteps).toHaveLength(1)
-    expect(releaseAuditSteps[0].name).toBe(ciAuditSteps[0].name)
-
-    for (const jobName of ['package', 'package-linux', 'package-windows']) {
-      expect(release.jobs[jobName].needs, `${jobName} must wait for the pinned production audit`).toEqual(['validate', 'production-audit', 'quality', 'conformance', 'hermetic-e2e'])
-    }
-    expect(release.jobs['release-packages'].needs).toEqual(['validate', 'production-audit', 'package-rust', 'package', 'package-linux', 'package-windows'])
-    expect(release.jobs['release-packages'].steps?.find((step) => step.name === 'Fail if a release prerequisite did not succeed')?.if).toContain("needs.production-audit.result != 'success'")
-  })
-
-  test('keeps the weekly and manual disclosure audit on the same exception-aware evaluator', () => {
-    type Workflow = {
-      on: { schedule?: Array<{ cron?: string }>; workflow_dispatch?: unknown }
-      jobs: Record<string, { steps?: Array<{ run?: string }> }>
-    }
-    const audit = load(readFileSync('.github/workflows/audit.yml', 'utf8')) as Workflow
-
-    expect(audit.on.schedule).toEqual([{ cron: '17 6 * * 1' }])
-    expect(audit.on).toHaveProperty('workflow_dispatch')
-    expect(audit.jobs.audit.steps?.filter((step) => step.run === 'npm run audit:production')).toHaveLength(1)
-  })
-
-  test('reads the Node version from .nvmrc and hard-fails empty artifact uploads', () => {
-    const releaseWorkflow = readFileSync('.github/workflows/release.yml', 'utf8')
-    const ciWorkflow = readFileSync('.github/workflows/ci.yml', 'utf8')
-    const auditWorkflow = readFileSync('.github/workflows/audit.yml', 'utf8')
-    const workflows = [
-      { path: '.github/workflows/release.yml', source: releaseWorkflow },
-      { path: '.github/workflows/ci.yml', source: ciWorkflow },
-      { path: '.github/workflows/audit.yml', source: auditWorkflow },
-    ]
-    for (const { path, source } of workflows) {
-      const workflow = source
-      expect(workflow).not.toMatch(/node-version:/)
-      const steps = parseWorkflowSteps(workflow)
-      const setupSteps = steps.filter((step) => step.uses?.startsWith('actions/setup-node@'))
-      expect(setupSteps.length).toBeGreaterThan(0)
-      for (const setup of setupSteps) {
-        const setupIndex = steps.indexOf(setup)
-        const bootstrapIndexes = steps.flatMap((step, index) => (step.job === setup.job && step.lines.some((line) => line.includes('run: npm run toolchain:bootstrap')) ? [index] : []))
-        const preflightIndexes = steps.flatMap((step, index) => (step.job === setup.job && step.lines.some((line) => line.includes('run: npm run release:preflight:toolchain')) ? [index] : []))
-        expect(bootstrapIndexes, `${path} ${setup.job} bootstrap steps`).toHaveLength(1)
-        expect(preflightIndexes, `${path} ${setup.job} toolchain preflight steps`).toHaveLength(1)
-        const bootstrapIndex = bootstrapIndexes[0]
-        const preflightIndex = preflightIndexes[0]
-        const installIndex = steps.findIndex((step, index) => index > setupIndex && step.job === setup.job && step.lines.some((line) => /run: npm ci(?:\s|$)/.test(line)))
-        expect(bootstrapIndex).toBeGreaterThan(setupIndex)
-        expect(preflightIndex).toBeGreaterThan(bootstrapIndex)
-        if (installIndex >= 0) {
-          expect(bootstrapIndex).toBeLessThan(installIndex)
-          expect(preflightIndex).toBeGreaterThan(installIndex)
-          const firstRunAfterInstall = steps.findIndex((step, index) => index > installIndex && step.job === setup.job && step.lines.some((line) => /^\s*(?:-\s*)?run:/.test(line)))
-          expect(firstRunAfterInstall, `${path} ${setup.job} first command after npm ci`).toBe(preflightIndex)
-        }
-      }
-      expect(workflow).not.toContain('npm run release:preflight -- --toolchain-only')
-    }
-    for (const workflow of [releaseWorkflow, ciWorkflow]) {
-      const uploads = workflow.match(/uses: actions\/upload-artifact@/g) ?? []
-      expect(workflow.match(/if-no-files-found: error/g)).toHaveLength(uploads.length)
-      expect(workflow).toContain('actions/cache@')
-    }
-    // Release jobs skip the CI-duplicated verification suite and never upload
-    // an unpacked application directory. The legacy Electron legs keep their
-    // per-platform update feeds when they are explicitly enabled.
-    expect(releaseWorkflow.match(/-- --skip-verify/g)).toHaveLength(2)
-    expect(releaseWorkflow.match(/node scripts\/release\/package\.mjs --(?:public|qa) --platform win --skip-verify/g)).toHaveLength(2)
-    expect(releaseWorkflow).toContain('release/mac/${{ matrix.arch }}/latest*.yml')
-    expect(releaseWorkflow).toContain('release/linux/${{ matrix.arch }}/latest*.yml')
-    expect(releaseWorkflow).toContain('release/win/**/latest*.yml')
-    expect(releaseWorkflow).toMatch(/needs: \[validate, production-audit, package-rust, package, package-linux, package-windows\]/)
-    expect(releaseWorkflow).toContain("needs.package-windows.result != 'skipped'")
-    expect(releaseWorkflow).toContain('--platforms "$platforms"')
-    expect(releaseWorkflow).toContain('release/linux/${{ matrix.arch }}/*.pacman')
-    expect(releaseWorkflow).toContain('sudo apt-get install --yes libarchive-tools')
-    expect(ciWorkflow).not.toMatch(/path: release\/(mac|linux|win)\/\s*$/m)
-  })
-
-  test('publishes one verified GitHub Release from an existing version tag', () => {
-    const workflow = readFileSync('.github/workflows/release.yml', 'utf8')
-    expect(workflow).toMatch(/push:\n {4}tags:\n {6}- 'v\*\.\*\.\*'/)
-    expect(workflow).toContain('node scripts/release/validate-release-tag.mjs --tag "$RELEASE_TAG"')
-    expect(workflow).toContain('git merge-base --is-ancestor HEAD refs/remotes/origin/main')
-    expect(workflow).toContain('node scripts/release/prepare-github-release.mjs')
-    // The privileged publishing job installs only the runtime dependency tree
-    // the release script needs, never the full dev toolchain.
-    expect(workflow).toMatch(/release-packages:[\s\S]*?npm ci --omit=dev --ignore-scripts[\s\S]*?node scripts\/release\/prepare-github-release\.mjs/)
-    expect(workflow).not.toContain('npm ci --ignore-scripts\n')
-    expect(workflow).toContain('actions/download-artifact@')
-    expect(workflow).toContain('actions/attest-build-provenance@')
-    expect(workflow).toContain('gh release create "$RELEASE_TAG" release-assets/*')
-    expect(workflow).toContain('gh release upload "$RELEASE_TAG" release-assets/* --clobber')
-    expect(workflow).toContain('gh release edit "$RELEASE_TAG" --verify-tag --draft=false "${release_channel_args[@]}"')
-    expect(workflow).toContain('is already published and will not be replaced')
-    expect(workflow).toContain('--verify-tag')
-    expect(workflow).toContain('--fail-on-no-commits')
-    expect(workflow).toContain('--generate-notes')
-    // always() keeps the aggregate job from being skipped; the first step
-    // fails explicitly when a prerequisite failed or was cancelled.
-    expect(workflow).toMatch(
-      /release-packages:\n {4}needs: \[validate, production-audit, package-rust, package, package-linux, package-windows\]\n(?: {4}#.*\n)* {4}if: always\(\)\n {4}runs-on: ubuntu-22\.04/,
-    )
-    expect(workflow).toContain('Fail if a release prerequisite did not succeed')
-    expect(workflow).toContain("needs.validate.result != 'success'")
-    expect(workflow).toContain('exit 1')
-  })
-
-  test('rechecks the version tag immediately before querying or publishing the release', () => {
-    const parsed = load(readFileSync('.github/workflows/release.yml', 'utf8')) as {
-      jobs: Record<string, { steps?: Array<{ name?: string; run?: string; env?: Record<string, string> }> }>
-    }
-    const publish = parsed.jobs['release-packages'].steps?.find((step) => step.name === 'Publish GitHub Release')
-    const script = publish?.run ?? ''
-    const resolveTag = 'tag_sha=$(gh api repos/${{ github.repository }}/commits/$RELEASE_TAG --jq .sha)'
-    const compareTag = 'if [ "$tag_sha" != "${{ needs.validate.outputs.sha }}" ]; then'
-    const existingReleaseQuery = script.indexOf('gh release view "$RELEASE_TAG" --json isDraft')
-    const tagResolution = script.indexOf(resolveTag)
-    const tagComparison = script.indexOf(compareTag)
-
-    expect(script.trimStart().startsWith(resolveTag)).toBe(true)
-    expect(tagComparison).toBeGreaterThan(tagResolution)
-    expect(script.slice(tagComparison, existingReleaseQuery)).toContain('exit 1')
-    expect(existingReleaseQuery).toBeGreaterThan(tagComparison)
-    expect(publish?.env?.GH_TOKEN).toBe('${{ github.token }}')
-  })
-
-  test('keeps signed releases latest and confines unsigned beta channels to the legacy Electron build', () => {
-    const parsed = load(readFileSync('.github/workflows/release.yml', 'utf8')) as {
-      jobs: Record<string, { steps?: Array<{ name?: string; run?: string }> }>
-    }
-    const script = parsed.jobs['release-packages'].steps?.find((step) => step.name === 'Publish GitHub Release')?.run ?? ''
-
-    expect(script).toContain('release_channel_args=(--latest)')
-    expect(script).toContain(
-      'if [ "$RELEASE_ELECTRON_LEGACY_ENABLED" = \'true\' ] && { [ "$RELEASE_MAC_UNSIGNED_ENABLED" = \'true\' ] || [ "$RELEASE_WINDOWS_UNSIGNED_ENABLED" = \'true\' ]; }; then\n  release_channel_args=(--prerelease)\nfi',
-    )
-    expect(script).toContain('gh release edit "$RELEASE_TAG" --verify-tag --draft=false "${release_channel_args[@]}"')
-    expect(script).toMatch(/gh release create "\$RELEASE_TAG" release-assets\/\*[\s\S]*?"\$\{release_channel_args\[@\]\}"/)
-    expect(script).not.toMatch(/gh release (?:create|edit)[^\n]*--latest/)
-  })
-
-  test('pins every release job to one commit SHA resolved by validate', () => {
-    const workflow = readFileSync('.github/workflows/release.yml', 'utf8')
-    const parsed = load(workflow) as {
-      env: Record<string, string>
-      on: {
-        push: { tags: string[] }
-        workflow_dispatch: { inputs: { tag: { required: boolean; type: string } } }
-      }
-      jobs: Record<string, { outputs?: Record<string, string>; steps?: Array<{ id?: string; run?: string; with?: Record<string, unknown> }> }>
-    }
-    expect(parsed.env.RELEASE_TAG).toBe('${{ inputs.tag || github.ref_name }}')
-    expect(parsed.on.push.tags).toEqual(['v*.*.*'])
-    expect(parsed.on.workflow_dispatch.inputs.tag).toMatchObject({ required: true, type: 'string' })
-    expect(workflow).not.toContain('RELEASE_REF')
-    expect(parsed.jobs.validate.outputs).toEqual({ sha: '${{ steps.resolve.outputs.sha }}' })
-    expect(parsed.jobs.validate.steps?.find((step) => step.id === 'resolve')?.run).toContain('git rev-parse HEAD^{commit}')
-    // validate resolves the movable tag once; every other job checks out that
-    // SHA so a tag moved mid-run cannot make two jobs build different commits.
-    for (const [name, job] of Object.entries(parsed.jobs)) {
-      const checkouts = (job.steps ?? []).filter((step) => step.with && 'ref' in step.with)
-      expect(checkouts.length, name).toBeGreaterThan(0)
-      for (const step of checkouts) expect(step.with?.ref, name).toBe(name === 'validate' ? '${{ env.RELEASE_TAG }}' : '${{ needs.validate.outputs.sha }}')
-    }
-    // The ancestry check depends on the full history fetched above.
-    expect(workflow).toContain('# fetch-depth: 0 above is what populates refs/remotes/origin/*')
-    expect(workflow).toMatch(/fetch-depth: 0\n[\s\S]*?git merge-base --is-ancestor HEAD refs\/remotes\/origin\/main/)
-  })
-
-  test('deletes stale draft assets before publishing a resumed release', () => {
-    const workflow = readFileSync('.github/workflows/release.yml', 'utf8')
-    expect(workflow).toContain('gh release view "$RELEASE_TAG" --json assets > draft-release.json')
-    expect(workflow).toContain('node scripts/release/prune-draft-release-assets.mjs --assets draft-release.json --expected release-assets')
-    expect(workflow).toContain('gh release delete-asset "$RELEASE_TAG" "$stale" --yes')
-    expect(workflow).toMatch(/delete-asset[\s\S]*?gh release upload "\$RELEASE_TAG" release-assets\/\* --clobber[\s\S]*?--draft=false/)
-  })
-
-  test('passes the expected Authenticode signer to Windows packaging', () => {
-    const workflow = readFileSync('.github/workflows/release.yml', 'utf8')
-    expect(workflow).toContain('GOOEYPI_WINDOWS_CERT_SUBJECT: ${{ vars.GOOEYPI_WINDOWS_CERT_SUBJECT }}')
-    expect(workflow).toContain('GOOEYPI_WINDOWS_CERT_THUMBPRINT: ${{ vars.GOOEYPI_WINDOWS_CERT_THUMBPRINT }}')
-    const security = readFileSync('docs/security.md', 'utf8')
-    expect(security).toContain('`GOOEYPI_WINDOWS_CERT_SUBJECT`')
-    expect(security).toContain('`GOOEYPI_WINDOWS_CERT_THUMBPRINT`')
-    expect(security).toContain('when neither is configured, public Windows packaging fails closed')
-  })
-
-  test('ships both mac architectures as separate builds from native-arch runners', () => {
-    const releaseWorkflow = readFileSync('.github/workflows/release.yml', 'utf8')
-    // Two matrix legs, each on a runner whose native architecture matches the
-    // target (arm64 on macos-15, x64 on macos-15-intel) so node-pty never
-    // cross-compiles, and one leg's failure never cancels the other's build.
-    expect(releaseWorkflow).toContain('fail-fast: false')
-    expect(releaseWorkflow).toMatch(/- arch: arm64\n {12}runner: macos-15/)
-    expect(releaseWorkflow).toMatch(/- arch: x64\n {12}runner: macos-15-intel/)
-    expect(releaseWorkflow).toContain('runs-on: ${{ matrix.runner }}')
-    // The explicit target arch drives packaging, and each leg uploads only its
-    // own arch directory under a per-arch artifact name and cache key.
-    expect(releaseWorkflow).toContain('npm run package:mac -- --skip-verify --arch ${{ matrix.arch }}')
-    expect(releaseWorkflow).toContain('name: omp-desktop-public-macos-${{ matrix.arch }}')
-    expect(releaseWorkflow).toContain('release/mac/${{ matrix.arch }}/*.dmg')
-    expect(releaseWorkflow).toContain('release/mac/${{ matrix.arch }}/*.zip')
-    expect(releaseWorkflow).toContain('electron-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles(')
-    // Universal binaries are excluded by design: the release ships two builds.
-    expect(releaseWorkflow).not.toContain('--universal')
-  })
-
-  test('launches every packaged macOS architecture before uploading release artifacts', () => {
-    const parsed = load(readFileSync('.github/workflows/release.yml', 'utf8')) as {
-      jobs: {
-        package: {
-          strategy: { matrix: { include: Array<{ arch: string; runner: string }> } }
-          steps: Array<{ name?: string; if?: string; uses?: string; run?: string; with?: Record<string, unknown> }>
-        }
-      }
-    }
-    const packageJob = parsed.jobs.package
-    expect(packageJob.strategy.matrix.include).toEqual([
-      { arch: 'arm64', runner: 'macos-15' },
-      { arch: 'x64', runner: 'macos-15-intel' },
-    ])
-    const steps = packageJob.steps
-    const signedBuildIndex = steps.findIndex((step) => step.name === 'Build, sign, notarize, and verify release packages')
-    const adHocBuildIndex = steps.findIndex((step) => step.name === 'Build ad-hoc signed macOS packages for beta distribution')
-    const smokeIndexes = steps.flatMap((step, index) => (step.name === 'Launch the packaged application' ? [index] : []))
-    const publicUploadIndex = steps.findIndex((step) => step.with?.name === 'omp-desktop-public-macos-${{ matrix.arch }}')
-    const diagnosticsIndex = steps.findIndex((step) => step.with?.name === 'packaged-smoke-diagnostics-mac-${{ matrix.arch }}')
-
-    expect(signedBuildIndex).toBeGreaterThanOrEqual(0)
-    expect(steps[signedBuildIndex].if).toBe("env.RELEASE_MAC_UNSIGNED_ENABLED != 'true'")
-    expect(steps[signedBuildIndex].run).toBe('npm run package:mac -- --skip-verify --arch ${{ matrix.arch }}')
-    expect(adHocBuildIndex).toBeGreaterThanOrEqual(0)
-    expect(steps[adHocBuildIndex].if).toBe("env.RELEASE_MAC_UNSIGNED_ENABLED == 'true'")
-    expect(steps[adHocBuildIndex].run).toBe('node scripts/release/package.mjs --qa --platform mac --skip-verify --arch ${{ matrix.arch }}')
-    expect(smokeIndexes).toHaveLength(1)
-    const smokeIndex = smokeIndexes[0]
-    const smoke = steps[smokeIndex]
-    expect(smoke.run).toBe('node scripts/release/smoke-packaged-app.mjs --platform mac --arch ${{ matrix.arch }}')
-    expect(smoke.if).toBeUndefined()
-    expect(smokeIndex).toBeGreaterThan(signedBuildIndex)
-    expect(smokeIndex).toBeGreaterThan(adHocBuildIndex)
-    expect(publicUploadIndex).toBeGreaterThanOrEqual(0)
-    expect(smokeIndex).toBeLessThan(publicUploadIndex)
-    expect(diagnosticsIndex).toBeGreaterThan(smokeIndex)
-    expect(diagnosticsIndex).toBeLessThan(publicUploadIndex)
-    expect(steps[diagnosticsIndex]).toMatchObject({
-      uses: 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02',
-      if: 'failure()',
-      with: {
-        name: 'packaged-smoke-diagnostics-mac-${{ matrix.arch }}',
-        path: 'release/mac/${{ matrix.arch }}/packaged-smoke-diagnostics.log',
-        'if-no-files-found': 'error',
-      },
-    })
-  })
-
-  test('ships both Linux architectures as separately labeled native builds', () => {
-    const releaseWorkflow = readFileSync('.github/workflows/release.yml', 'utf8')
-    expect(releaseWorkflow).toMatch(/package-linux:\n {4}#.*\n {4}if: .*include_legacy_electron.*\n {4}needs: \[validate, production-audit, quality, conformance, hermetic-e2e\]\n {4}strategy:/)
-    expect(releaseWorkflow).toMatch(/- arch: arm64\n {12}runner: ubuntu-24\.04-arm/)
-    expect(releaseWorkflow).toMatch(/- arch: x64\n {12}runner: ubuntu-22\.04/)
-    expect(releaseWorkflow).toContain('runs-on: ${{ matrix.runner }}')
-    expect(releaseWorkflow).toContain('npm run package:linux -- --skip-verify --arch ${{ matrix.arch }}')
-    expect(releaseWorkflow).toContain('name: omp-desktop-public-linux-${{ matrix.arch }}')
-    expect(releaseWorkflow).toContain('release/linux/${{ matrix.arch }}/*.AppImage')
-    expect(releaseWorkflow).toContain('release/linux/${{ matrix.arch }}/latest*.yml')
-    expect(releaseWorkflow).toContain('electron-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles(')
-  })
-})
-
-describe('GitHub Release publication', () => {
-  test('selects an exact enabled platform set', () => {
-    expect(parseReleasePlatforms('mac,linux')).toEqual(['mac', 'linux'])
-    expect(expectedGitHubReleaseAssets('0.2.0', ['mac', 'linux'])).not.toContain('OMP-Desktop-0.2.0-win-x64.exe')
-    expect(expectedGitHubReleaseAssets('0.2.0', ['mac'])).toEqual([
-      'OMP-Desktop-0.2.0-arm64.zip',
-      'OMP-Desktop-0.2.0-intel-chip.dmg',
-      'OMP-Desktop-0.2.0-m-chip.dmg',
-      'OMP-Desktop-0.2.0-x64.zip',
-      'latest-mac.yml',
-    ])
-    expect(expectedDownloadedReleaseAssets('0.2.0', ['mac'])).toEqual([
-      'OMP-Desktop-0.2.0-arm64.zip',
-      'OMP-Desktop-0.2.0-x64.dmg',
-      'OMP-Desktop-0.2.0-arm64.dmg',
-      'OMP-Desktop-0.2.0-x64.zip',
-      'latest-mac.yml',
-    ])
-    expect(expectedGitHubReleaseAssets('0.2.0', ['linux'])).toEqual([
-      'OMP-Desktop-0.2.0-linux-aarch64.pacman',
-      'OMP-Desktop-0.2.0-linux-aarch64.rpm',
-      'OMP-Desktop-0.2.0-linux-amd64.deb',
-      'OMP-Desktop-0.2.0-linux-arm64.AppImage',
-      'OMP-Desktop-0.2.0-linux-arm64.deb',
-      'OMP-Desktop-0.2.0-linux-x64.pacman',
-      'OMP-Desktop-0.2.0-linux-x86_64.AppImage',
-      'OMP-Desktop-0.2.0-linux-x86_64.rpm',
-      'latest-linux-arm64.yml',
-      'latest-linux.yml',
-    ])
-    expect(() => parseReleasePlatforms('mac,mac')).toThrow(/duplicates/)
-    expect(() => parseReleasePlatforms('mac,android')).toThrow(/Unsupported/)
-  })
-
-  test('keeps every release asset name in exact correspondence with electron-builder artifacts', () => {
-    // Derived from the same package.json build config and builder-util `${arch}`
-    // rules the packaging step uses, so renaming a target or adding an
-    // architecture fails here instead of during a real tag push.
-    const config = readElectronBuilderConfig()
-    const produced = producedReleaseArtifactNames(config, '0.2.0')
-    const names = releaseAssetNames('0.2.0')
-    const feeds = [...names.keys()].filter((name) => name.endsWith('.yml'))
-    expect(feeds).toEqual(['latest-linux-arm64.yml', 'latest-linux.yml', 'latest-mac.yml', 'latest.yml'])
-    // Every produced artifact is published and every published asset (other than
-    // the updater feeds) is produced - both directions, no index coupling.
-    expect([...names.values()].filter((name) => !name.endsWith('.yml')).sort()).toEqual(produced)
-    const targetCount = Object.entries(RELEASE_BUILD_MATRIX).reduce((total, [platform, architectures]) => total + architectures.length * config[platform].target.length, 0)
-    expect(produced).toHaveLength(targetCount)
-    // Only the two macOS DMGs are renamed for the public download page.
-    expect([...names].filter(([published, downloaded]) => published !== downloaded)).toEqual([
-      ['OMP-Desktop-0.2.0-intel-chip.dmg', 'OMP-Desktop-0.2.0-x64.dmg'],
-      ['OMP-Desktop-0.2.0-m-chip.dmg', 'OMP-Desktop-0.2.0-arm64.dmg'],
-      ['OMP-Desktop-0.2.0-win-x64.msix', 'OMP-Desktop-0.2.0-win-x64.appx'],
-    ])
-  })
-
-  test('covers exactly the platform and architecture legs the release workflow builds', () => {
-    const workflow = load(readFileSync('.github/workflows/release.yml', 'utf8')) as {
-      jobs: Record<string, { strategy?: { matrix?: { include?: Array<{ arch: string }> } }; steps?: Array<{ run?: string }> }>
-    }
-    const architectures = (job: string) => (workflow.jobs[job].strategy?.matrix?.include ?? []).map((leg) => leg.arch).sort()
-    expect(architectures('package')).toEqual([...RELEASE_BUILD_MATRIX.mac].sort())
-    expect(architectures('package-linux')).toEqual([...RELEASE_BUILD_MATRIX.linux].sort())
-    // The Windows leg is a single non-matrix job.
-    expect(workflow.jobs['package-windows'].strategy).toBeUndefined()
-    expect(RELEASE_BUILD_MATRIX.win).toEqual(['x64'])
-  })
-
-  test('reports the published name of a missing artifact through the rename map', async () => {
-    const directory = mkdtempSync(join(tmpdir(), 'omp-desktop-github-release-missing-'))
-    try {
-      const { projectDirectory, inputDirectory } = writeMacReleaseFixture(directory, { omit: 'OMP-Desktop-0.2.0-arm64.dmg' })
-      // The arm64 DMG publishes as m-chip.dmg: the report must name the missing
-      // published asset, not whichever entry happens to share its sort index.
-      await expect(prepareGitHubRelease({ inputDirectory, outputDirectory: join(directory, 'out'), projectDirectory, platforms: ['mac'], tag: 'v0.2.0' })).rejects.toThrow(
-        /incomplete; missing OMP-Desktop-0\.2\.0-m-chip\.dmg$/,
-      )
-    } finally {
-      rmSync(directory, { recursive: true, force: true })
-    }
-  })
-
-  test('takes legacy updater fields from the primary architecture manifest, not the first sorted path', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'omp-desktop-update-metadata-'))
-    try {
-      const arm64 = writeUpdateManifest(directory, 'a-arm64', 'OMP-Desktop-0.2.0-arm64.zip', 'arm64-digest', '2026-01-01T00:00:00.000Z')
-      const x64 = writeUpdateManifest(directory, 'z-x64', 'OMP-Desktop-0.2.0-x64.zip', 'x64-digest', '2026-02-02T00:00:00.000Z')
-      const merged = mergeUpdateMetadata([arm64, x64], '0.2.0')
-      expect(merged.path).toBe('OMP-Desktop-0.2.0-x64.zip')
-      expect(merged.sha512).toBe('x64-digest')
-      expect(merged.releaseDate).toBe('2026-02-02T00:00:00.000Z')
-      expect(merged.files.map((file: { url: string }) => file.url)).toEqual(['OMP-Desktop-0.2.0-arm64.zip', 'OMP-Desktop-0.2.0-x64.zip'])
-      // Renaming the artifact directories reverses the path sort order without
-      // changing which manifest supplies the legacy fields.
-      const swappedArm64 = writeUpdateManifest(directory, 'z-arm', 'OMP-Desktop-0.2.0-arm64.zip', 'arm64-digest', '2026-01-01T00:00:00.000Z')
-      const swappedX64 = writeUpdateManifest(directory, 'a-intel', 'OMP-Desktop-0.2.0-x64.zip', 'x64-digest', '2026-02-02T00:00:00.000Z')
-      expect(mergeUpdateMetadata([swappedArm64, swappedX64], '0.2.0')).toEqual(merged)
-      expect(mergeUpdateMetadata([swappedX64, swappedArm64], '0.2.0')).toEqual(merged)
-    } finally {
-      rmSync(directory, { recursive: true, force: true })
-    }
-  })
-
-  test('rejects updater metadata without a usable size or digest', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'omp-desktop-update-metadata-invalid-'))
-    try {
-      const write = (name: string, file: string) => {
-        const path = join(directory, name)
-        writeFileSync(path, `version: 0.2.0\nfiles:\n${file}`)
-        return path
-      }
-      const sized = (size: string) => `  - url: OMP-Desktop-0.2.0-x64.zip\n    sha512: digest\n    size: ${size}\n`
-      expect(() => mergeUpdateMetadata([write('missing-size.yml', '  - url: OMP-Desktop-0.2.0-x64.zip\n    sha512: digest\n')], '0.2.0')).toThrow(/invalid size/)
-      expect(() => mergeUpdateMetadata([write('zero-size.yml', sized('0'))], '0.2.0')).toThrow(/invalid size/)
-      expect(() => mergeUpdateMetadata([write('negative-size.yml', sized('-1'))], '0.2.0')).toThrow(/invalid size/)
-      expect(() => mergeUpdateMetadata([write('text-size.yml', sized("'42'"))], '0.2.0')).toThrow(/invalid size/)
-      expect(() => mergeUpdateMetadata([write('empty-digest.yml', "  - url: OMP-Desktop-0.2.0-x64.zip\n    sha512: ''\n    size: 42\n")], '0.2.0')).toThrow(/no sha512/)
-      expect(() => mergeUpdateMetadata([write('valid.yml', sized('42'))], '0.2.0')).not.toThrow()
-      expect(() => mergeUpdateMetadata([write('a.yml', sized('42')), write('b.yml', sized('43'))], '0.2.0')).toThrow(/disagrees/)
-      expect(() => mergeUpdateMetadata([], '0.2.0')).toThrow(/missing/)
-    } finally {
-      rmSync(directory, { recursive: true, force: true })
-    }
-  })
-
-  test('deletes only unexpected assets from a resumed draft release', () => {
-    const assets = ['OMP-Desktop-0.2.0-m-chip.dmg', 'OMP-Desktop-0.1.9-arm64.dmg', 'latest-mac.yml', 'SHA256SUMS.txt']
-    const expected = ['OMP-Desktop-0.2.0-m-chip.dmg', 'latest-mac.yml', 'SHA256SUMS.txt']
-    expect(staleDraftReleaseAssets(assets, expected)).toEqual(['OMP-Desktop-0.1.9-arm64.dmg'])
-    expect(staleDraftReleaseAssets(expected, expected)).toEqual([])
-    // An empty expected set would delete the whole draft, so it fails instead.
-    expect(() => staleDraftReleaseAssets(assets, [])).toThrow(/expected release asset set is empty/)
-    expect(parseDraftAssetNames(JSON.stringify({ assets: [{ name: 'a.dmg' }, { name: 'b.zip' }] }))).toEqual(['a.dmg', 'b.zip'])
-    expect(() => parseDraftAssetNames(JSON.stringify({ assets: [{ label: 'a.dmg' }] }))).toThrow(/without a name/)
-    expect(() => parseDraftAssetNames(JSON.stringify({}))).toThrow(/not an array/)
-  })
-
-  test('prints the stale draft assets when run as a script', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'omp-desktop-draft-prune-'))
-    try {
-      mkdirSync(join(directory, 'release-assets'))
-      for (const name of ['OMP-Desktop-0.2.0-m-chip.dmg', 'SHA256SUMS.txt']) writeFileSync(join(directory, 'release-assets', name), 'asset')
-      writeFileSync(join(directory, 'draft.json'), JSON.stringify({ assets: [{ name: 'OMP-Desktop-0.2.0-m-chip.dmg' }, { name: 'OMP-Desktop-0.1.9-arm64.dmg' }] }))
-      const args = ['scripts/release/prune-draft-release-assets.mjs', '--assets', join(directory, 'draft.json'), '--expected', join(directory, 'release-assets')]
-      const result = spawnSync(process.execPath, args, { encoding: 'utf8' })
-      expect(result.status).toBe(0)
-      expect(result.stdout.trim().split('\n')).toEqual(['OMP-Desktop-0.1.9-arm64.dmg'])
-      const failed = spawnSync(process.execPath, args.slice(0, 3), { encoding: 'utf8' })
-      expect(failed.status).toBe(1)
-      expect(failed.stderr).toMatch(/Draft release asset pruning failed/)
-    } finally {
-      rmSync(directory, { recursive: true, force: true })
-    }
-  })
-
-  test('requires the tag and both package manifests to agree exactly', () => {
-    expect(assertReleaseTag('v0.2.0', '0.2.0', '0.2.0')).toEqual({ tag: 'v0.2.0', version: '0.2.0' })
-    expect(() => assertReleaseTag('0.2.0', '0.2.0', '0.2.0')).toThrow(/must exactly match/)
-    expect(() => assertReleaseTag('v0.2.1', '0.2.0', '0.2.0')).toThrow(/v0\.2\.0/)
-    expect(() => assertReleaseTag('v0.2.0', '0.2.0', '0.1.9')).toThrow(/does not match/)
-    expect(() => assertReleaseTag('v0.2.0', '0.2.0', '0.2.0', '0.1.9')).toThrow(/root package version/)
-    expect(() => assertReleaseTag('v01.2.3', '01.2.3', '01.2.3')).toThrow(/not a supported semantic version/)
-  })
-
-  test('selects the exact cross-platform asset set and writes reproducible checksums', async () => {
-    const directory = mkdtempSync(join(tmpdir(), 'omp-desktop-github-release-'))
-    const projectDirectory = join(directory, 'project')
-    const inputDirectory = join(directory, 'downloaded')
-    const outputDirectory = join(directory, 'release-assets')
-    mkdirSync(projectDirectory, { recursive: true })
-    mkdirSync(inputDirectory, { recursive: true })
-    writeFileSync(join(projectDirectory, 'package.json'), JSON.stringify({ version: '0.2.0' }))
-    writeFileSync(join(projectDirectory, 'package-lock.json'), JSON.stringify({ version: '0.2.0', packages: { '': { version: '0.2.0' } } }))
-    const expected = expectedGitHubReleaseAssets('0.2.0')
-    const downloaded = expectedDownloadedReleaseAssets('0.2.0')
-    for (const [index, name] of downloaded.entries()) {
-      const artifactDirectory = join(inputDirectory, `artifact-${index}`)
-      mkdirSync(artifactDirectory)
-      const updateTarget =
-        name === 'latest-mac.yml'
-          ? 'OMP-Desktop-0.2.0-arm64.zip'
-          : name === 'latest-linux.yml'
-            ? 'OMP-Desktop-0.2.0-linux-x86_64.AppImage'
-            : name === 'latest-linux-arm64.yml'
-              ? 'OMP-Desktop-0.2.0-linux-arm64.AppImage'
-              : 'OMP-Desktop-0.2.0-win-x64.exe'
-      const content = name.startsWith('latest')
-        ? `version: 0.2.0\nfiles:\n  - url: ${updateTarget}\n    sha512: checksum-${index}\n    size: ${index + 1}\n${name === 'latest-mac.yml' ? '  - url: OMP-Desktop-0.2.0-arm64.dmg\n    sha512: checksum-arm64-dmg\n    size: 44\n' : ''}path: ${updateTarget}\nsha512: checksum-${index}\n`
-        : `asset ${index}`
-      writeFileSync(join(artifactDirectory, name), content)
-    }
-    const secondMacManifest = join(inputDirectory, 'macos-x64')
-    mkdirSync(secondMacManifest)
-    writeFileSync(join(secondMacManifest, 'latest-mac.yml'), 'version: 0.2.0\nfiles:\n  - url: OMP-Desktop-0.2.0-x64.zip\n    sha512: checksum-x64\n    size: 42\n')
-    try {
-      const result = await prepareGitHubRelease({ inputDirectory, outputDirectory, projectDirectory, tag: 'v0.2.0' })
-      expect(result.assets).toEqual(expected)
-      expect(readdirSync(outputDirectory).sort()).toEqual([...expected, 'SHA256SUMS.txt'].sort())
-      const checksums = readFileSync(join(outputDirectory, 'SHA256SUMS.txt'), 'utf8').trim().split('\n')
-      expect(checksums).toHaveLength(expected.length)
-      for (const name of expected) {
-        const digest = createHash('sha256')
-          .update(readFileSync(join(outputDirectory, name)))
-          .digest('hex')
-        expect(checksums).toContain(`${digest}  ${name}`)
-      }
-      const macFeed = readFileSync(join(outputDirectory, 'latest-mac.yml'), 'utf8')
-      expect(macFeed).toContain('OMP-Desktop-0.2.0-arm64.zip')
-      expect(macFeed).toContain('OMP-Desktop-0.2.0-x64.zip')
-      expect(macFeed).toContain('OMP-Desktop-0.2.0-m-chip.dmg')
-      expect(macFeed).not.toContain('OMP-Desktop-0.2.0-arm64.dmg')
-      const linuxFeed = readFileSync(join(outputDirectory, 'latest-linux.yml'), 'utf8')
-      expect(linuxFeed).toContain('OMP-Desktop-0.2.0-linux-x86_64.AppImage')
-      expect(linuxFeed).not.toContain('OMP-Desktop-0.2.0-linux-arm64.AppImage')
-      const linuxArmFeed = readFileSync(join(outputDirectory, 'latest-linux-arm64.yml'), 'utf8')
-      expect(linuxArmFeed).toContain('OMP-Desktop-0.2.0-linux-arm64.AppImage')
-      expect(linuxArmFeed).not.toContain('OMP-Desktop-0.2.0-linux-x86_64.AppImage')
-    } finally {
-      rmSync(directory, { recursive: true, force: true })
-    }
-  })
-
-  test('rejects incomplete and duplicate downloaded release assets', async () => {
-    const directory = mkdtempSync(join(tmpdir(), 'omp-desktop-github-release-invalid-'))
-    const projectDirectory = join(directory, 'project')
-    const inputDirectory = join(directory, 'downloaded')
-    mkdirSync(projectDirectory, { recursive: true })
-    mkdirSync(inputDirectory, { recursive: true })
-    writeFileSync(join(projectDirectory, 'package.json'), JSON.stringify({ version: '0.2.0' }))
-    writeFileSync(join(projectDirectory, 'package-lock.json'), JSON.stringify({ version: '0.2.0', packages: { '': { version: '0.2.0' } } }))
-
-    try {
-      await expect(prepareGitHubRelease({ inputDirectory, outputDirectory: join(directory, 'missing-output'), projectDirectory, tag: 'v0.2.0' })).rejects.toThrow(/incomplete/)
-      const expected = expectedDownloadedReleaseAssets('0.2.0')
-      for (const [index, name] of expected.entries()) {
-        const artifactDirectory = join(inputDirectory, `artifact-${index}`)
-        mkdirSync(artifactDirectory)
-        const updateTarget =
-          name === 'latest-mac.yml'
-            ? 'OMP-Desktop-0.2.0-arm64.zip'
-            : name === 'latest-linux.yml'
-              ? 'OMP-Desktop-0.2.0-linux-x86_64.AppImage'
-              : name === 'latest-linux-arm64.yml'
-                ? 'OMP-Desktop-0.2.0-linux-arm64.AppImage'
-                : 'OMP-Desktop-0.2.0-win-x64.exe'
-        writeFileSync(join(artifactDirectory, name), name.startsWith('latest') ? `version: 0.2.0\nfiles:\n  - url: ${updateTarget}\n    sha512: checksum-${index}\n` : `asset ${index}`)
-      }
-      const duplicateDirectory = join(inputDirectory, 'duplicate')
-      mkdirSync(duplicateDirectory)
-      writeFileSync(join(duplicateDirectory, expected[0]), 'duplicate')
-      await expect(prepareGitHubRelease({ inputDirectory, outputDirectory: join(directory, 'duplicate-output'), projectDirectory, tag: 'v0.2.0' })).rejects.toThrow(/duplicate/)
-    } finally {
-      rmSync(directory, { recursive: true, force: true })
-    }
-  })
-})
-
-describe('fuse hardening configuration', () => {
-  test('uses only the configured canonical afterPack hook', () => {
-    const packageJson = JSON.parse(readFileSync('package.json', 'utf8'))
-    expect(packageJson.build.afterPack).toBe('scripts/release/after-pack.cjs')
-    expect(() => readFileSync('scripts/afterPack.cjs', 'utf8')).toThrow()
-    expect(readFileSync(packageJson.build.afterPack, 'utf8')).toContain('FuseV1Options.OnlyLoadAppFromAsar')
-  })
-})
-
-describe('coverage configuration', () => {
-  test('loads the fail-closed inventory without weakening thresholds', () => {
-    const config = readFileSync('vitest.config.ts', 'utf8')
-    expect(config).toContain("from './scripts/release/coverage-inventory'")
-    expect(config).toContain('include: coverageInventory.includePatterns')
-    expect(config).toContain('statements: 65')
-    expect(config).toContain('branches: 50')
-    expect(config).toContain('functions: 70')
-    expect(config).toContain('lines: 75')
-  })
-})
-
-describe('post-package verification helpers', () => {
-  test('parses Team IDs and architecture lists', () => {
-    expect(parseTeamIdentifier('Authority=Developer ID\nTeamIdentifier=TEAM123\n')).toBe('TEAM123')
-    expect(parseArchitectures('arm64 x86_64\n')).toEqual(new Set(['arm64', 'x86_64']))
-  })
-
-  test('requires exactly one DMG and ZIP and binds their declared architecture', () => {
-    expect(requireReleaseArtifacts(['/release/OMP-Desktop-0.1.0-arm64.dmg', '/release/OMP-Desktop-0.1.0-arm64.zip'])).toEqual({
-      dmg: '/release/OMP-Desktop-0.1.0-arm64.dmg',
-      zip: '/release/OMP-Desktop-0.1.0-arm64.zip',
-    })
-    expect(() => requireReleaseArtifacts(['/release/OMP-Desktop-0.1.0-arm64.dmg'])).toThrow(/ZIP/)
-    expect(artifactArchitectures('OMP-Desktop-0.1.0-universal.zip')).toEqual(new Set(['arm64', 'x86_64']))
-    expect(() => assertExactArchitectures(new Set(['arm64']), artifactArchitectures('OMP-Desktop-0.1.0-arm64.dmg'), 'DMG')).not.toThrow()
-    expect(() => assertExactArchitectures(new Set(['x86_64']), artifactArchitectures('OMP-Desktop-0.1.0-arm64.dmg'), 'DMG')).toThrow(/do not match/)
-  })
-
-  test('requires native modules to cover every application architecture', () => {
-    expect(() => assertArchitectureCoverage(new Set(['arm64']), new Set(['arm64']), 'pty.node')).not.toThrow()
-    expect(() => assertArchitectureCoverage(new Set(['arm64', 'x86_64']), new Set(['arm64']), 'pty.node')).toThrow(/x86_64/)
-  })
-
-  test('requires the ASAR and rejects duplicated renderer dependencies', () => {
-    const entries = ['/out/main/index.js', '/out/preload/index.js', '/out/renderer/index.html', '/node_modules/node-pty/lib/index.js']
-    expect(() => assertAsarLayout(entries)).not.toThrow()
-    expect(() => assertAsarLayout([...entries, '/node_modules/react/index.js'])).toThrow(/duplicated/)
-    expect(() => assertAsarLayout(entries.filter((entry) => !entry.includes('node-pty')))).toThrow(/missing required/)
-    expect(() => assertAsarLayout(entries.map((entry) => entry.replaceAll('/', '\\')))).not.toThrow()
-  })
-
-  test('keeps every platform native unpack allowlist exact and architecture-specific', () => {
-    const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
-    expect(packageJson.author).toEqual({ name: 'OMP Desktop contributors', email: '69847839+SenCha930511@users.noreply.github.com' })
-    expect(packageJson.description).toBe('A desktop workspace for OMP')
-    expect(packageJson.homepage).toBe('https://github.com/SenCha930511/omp-desktop')
-    expect(packageJson.build.productName).toBe('OMP Desktop')
-    expect(packageJson.build.appId).toBe('app.ompdesktop.desktop')
-    expect(packageJson.desktopName).toBe('omp-desktop.desktop')
-    expect(packageJson.build.linux.synopsis).toBe(packageJson.description)
-    expect(packageJson.build.linux.syncDesktopName).toBe(true)
-    expect(packageJson.build.mac.icon).toBe('assets/icon.icns')
-    expect(packageJson.build.mac.extendInfo.LSUIElement).toBe(true)
-    expect(packageJson.build.linux.icon).toBe('assets/icon.png')
-    expect(packageJson.build.win.icon).toBe('assets/icon.png')
-    const macIcon = readFileSync('assets/icon.icns')
-    expect(macIcon.subarray(0, 4).toString('ascii')).toBe('icns')
-    const macIconChunks = new Map<string, Buffer>()
-    for (let offset = 8; offset < macIcon.length; ) {
-      const type = macIcon.subarray(offset, offset + 4).toString('ascii')
-      const size = macIcon.readUInt32BE(offset + 4)
-      expect(size).toBeGreaterThanOrEqual(8)
-      macIconChunks.set(type, macIcon.subarray(offset + 8, offset + size))
-      offset += size
-    }
-    // The previous checked-in ICNS silently contained Prime artwork. Anchor
-    // its full-size layer to OMP Desktop's canonical PNG and retain small layers.
-    expect(macIconChunks.get('ic10')).toEqual(readFileSync('assets/icon.png'))
-    expect(macIconChunks.has('ic04')).toBe(true)
-    expect(macIconChunks.has('ic11')).toBe(true)
-    expect(packageJson.build.asarUnpack).toBeUndefined()
-    expect(packageJson.build.mac.asarUnpack).toEqual(['**/node_modules/node-pty/build/Release/pty.node', '**/node_modules/node-pty/build/Release/spawn-helper'])
-    expect(packageJson.build.linux.asarUnpack).toEqual(['**/node_modules/node-pty/build/Release/pty.node'])
-    expect(packageJson.build.win.asarUnpack).toEqual([
-      '**/node_modules/node-pty/prebuilds/win32-${arch}/pty.node',
-      '**/node_modules/node-pty/prebuilds/win32-${arch}/conpty.node',
-      '**/node_modules/node-pty/prebuilds/win32-${arch}/conpty_console_list.node',
-      '**/node_modules/node-pty/prebuilds/win32-${arch}/winpty-agent.exe',
-      '**/node_modules/node-pty/prebuilds/win32-${arch}/winpty.dll',
-      '**/node_modules/node-pty/prebuilds/win32-${arch}/conpty/OpenConsole.exe',
-      '**/node_modules/node-pty/prebuilds/win32-${arch}/conpty/conpty.dll',
-    ])
-    expect(packageJson.build.linux.target).toEqual(['AppImage', 'deb', 'rpm', 'pacman'])
-    expect(packageJson.build.win.target).toEqual(['nsis', 'zip', 'appx'])
-    expect(packageJson.build.directories.output).toBe('release')
-  })
-
-  test('verifies and uploads every configured Linux installer format', () => {
-    expect(expectedArtifactExtensions('linux')).toEqual(['.AppImage', '.deb', '.rpm', '.pacman'])
-    expect(expectedArtifactExtensions('win')).toEqual(['.exe', '.zip', '.appx'])
-    const ciWorkflow = readFileSync('.github/workflows/ci.yml', 'utf8')
-    const releaseWorkflow = readFileSync('.github/workflows/release.yml', 'utf8')
-    expect(ciWorkflow).toContain('release/linux/**/*.pacman')
-    expect(releaseWorkflow).toContain('release/linux/${{ matrix.arch }}/*.pacman')
-  })
-
-  test('fails closed when Windows Authenticode verification is not valid', () => {
-    const signerEnvironment = { GOOEYPI_WINDOWS_CERT_SUBJECT: 'CN=Example Ltd' }
-    const calls: Array<{ file: string; args: string[]; path: string | undefined }> = []
-    const validSpawn = (file: string, args: string[], options: { env?: NodeJS.ProcessEnv }) => {
-      calls.push({ file, args, path: options.env?.GOOEYPI_SIGNED_FILE })
-      return { status: 0, stdout: '', stderr: '' }
-    }
-    const spawn = validSpawn as unknown as Parameters<typeof assertValidAuthenticode>[1]
-    expect(() => assertValidAuthenticode('C:\\release\\OMP-Desktop.exe', spawn, signerEnvironment)).not.toThrow()
-    expect(calls).toEqual([
-      {
-        file: 'powershell.exe',
-        args: expect.arrayContaining(['-NoProfile', '-NonInteractive', '-Command']),
-        path: 'C:\\release\\OMP-Desktop.exe',
-      },
-    ])
-    const invalidSpawn = () => ({ status: 1, stdout: '', stderr: 'NotSigned' })
-    expect(() => assertValidAuthenticode('C:\\release\\OMP-Desktop.exe', invalidSpawn as unknown as Parameters<typeof assertValidAuthenticode>[1], signerEnvironment)).toThrow(/NotSigned/)
-  })
-
-  test('asserts the expected Authenticode signer instead of any trusted certificate', () => {
-    expect(expectedAuthenticodeSigner({ GOOEYPI_WINDOWS_CERT_SUBJECT: '  CN=Example Ltd, C=GB  ' })).toEqual({ subject: 'CN=Example Ltd, C=GB', thumbprint: '' })
-    expect(expectedAuthenticodeSigner({ GOOEYPI_WINDOWS_CERT_THUMBPRINT: 'a1:b2 c3d4e5f60718293a4b5c6d7e8f901a2b3c4d' })).toEqual({
-      subject: '',
-      thumbprint: 'A1B2C3D4E5F60718293A4B5C6D7E8F901A2B3C4D',
-    })
-    expect(() => expectedAuthenticodeSigner({ GOOEYPI_WINDOWS_CERT_THUMBPRINT: 'not-a-thumbprint' })).toThrow(/40-character SHA-1 certificate thumbprint/)
-    // Unconfigured fails closed rather than accepting whoever the runner trusts.
-    expect(() => expectedAuthenticodeSigner({})).toThrow(/GOOEYPI_WINDOWS_CERT_SUBJECT and\/or GOOEYPI_WINDOWS_CERT_THUMBPRINT/)
-
-    const calls: Array<{ args: string[]; env: NodeJS.ProcessEnv | undefined }> = []
-    const spawn = (_file: string, args: string[], options: { env?: NodeJS.ProcessEnv }) => {
-      calls.push({ args, env: options.env })
-      return { status: 0, stdout: '', stderr: '' }
-    }
-    assertValidAuthenticode('C:\\release\\OMP-Desktop.exe', spawn as unknown as Parameters<typeof assertValidAuthenticode>[1], {
-      GOOEYPI_WINDOWS_CERT_SUBJECT: 'CN=Example Ltd',
-      GOOEYPI_WINDOWS_CERT_THUMBPRINT: 'a1b2c3d4e5f60718293a4b5c6d7e8f901a2b3c4d',
-    })
-    // The file path and expected signer are passed as environment variables, never
-    // interpolated into the script, and a terminating error exits non-zero.
-    expect(calls[0].env).toMatchObject({
-      GOOEYPI_SIGNED_FILE: 'C:\\release\\OMP-Desktop.exe',
-      GOOEYPI_WINDOWS_CERT_SUBJECT: 'CN=Example Ltd',
-      GOOEYPI_WINDOWS_CERT_THUMBPRINT: 'A1B2C3D4E5F60718293A4B5C6D7E8F901A2B3C4D',
-    })
-    const script = calls[0].args.at(-1) as string
-    expect(script).not.toContain('C:\\release\\OMP-Desktop.exe')
-    expect(script).toContain("$ErrorActionPreference = 'Stop'")
-    expect(script).toContain('try {')
-    expect(script).toContain('} catch {')
-    expect(script).toContain('exit 1')
-    expect(script).toContain('$certificate.Subject -ne $env:GOOEYPI_WINDOWS_CERT_SUBJECT')
-    expect(script).toContain('$certificate.Thumbprint.ToUpperInvariant() -ne $env:GOOEYPI_WINDOWS_CERT_THUMBPRINT')
-  })
-
-  test('excludes other platform native build trees and keeps the runtime dependency set minimal', () => {
-    const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
-    expect(packageJson.build.files).toEqual(['out/**/*', 'package.json'])
-    expect(packageJson.build.mac.files).toEqual(['out/**/*', 'package.json', '!**/node_modules/extract-zip/index.linux-*.node', '!**/node_modules/extract-zip/index.win32-*.node'])
-    expect(packageJson.build.linux.files).toEqual(['out/**/*', 'package.json', '!**/node_modules/extract-zip/index.darwin-*.node', '!**/node_modules/extract-zip/index.win32-*.node'])
-    expect(packageJson.build.win.files).toEqual(['out/**/*', 'package.json', '!**/node_modules/extract-zip/index.darwin-*.node', '!**/node_modules/extract-zip/index.linux-*.node'])
-    // The slimmed runtime dependency tree: the packaged application carries
-    // only what the OMP harness shell itself needs, no agent runtimes.
-    expect(Object.keys(packageJson.dependencies).sort()).toEqual(['electron-updater', 'js-yaml', 'node-pty', 'rrule'])
-    expect(packageJson.overrides).toEqual({ 'extract-zip': 'npm:@electron-internal/extract-zip@1.0.5' })
-  })
-
-  test('accepts the exact unpacked native fixture with complete architecture coverage', () => {
-    const architectures = new Set(['arm64'])
-    const directory = createUnpackedFixture()
-    try {
-      expect(() => assertUnpackedNativeLayout(directory, architectures, () => new Set(['arm64']))).not.toThrow()
-    } finally {
-      rmSync(directory, { recursive: true, force: true })
-    }
-  })
-
-  test('rejects missing and extra unpacked fixture files', () => {
-    const architectures = new Set(['arm64'])
-    const missingDirectory = createUnpackedFixture()
-    rmSync(join(missingDirectory, expectedUnpackedNativeLayout().files.at(-1)!))
-    try {
-      expect(() => assertUnpackedNativeLayout(missingDirectory, architectures, () => architectures)).toThrow(/Missing unpacked/)
-    } finally {
-      rmSync(missingDirectory, { recursive: true, force: true })
-    }
-
-    const extraDirectory = createUnpackedFixture()
-    const extraPath = join(extraDirectory, 'node_modules/extra/native.node')
-    mkdirSync(dirname(extraPath), { recursive: true })
-    writeFileSync(extraPath, 'fixture')
-    try {
-      expect(() => assertUnpackedNativeLayout(extraDirectory, architectures, () => architectures)).toThrow(/Unexpected unpacked.*extra/)
-    } finally {
-      rmSync(extraDirectory, { recursive: true, force: true })
-    }
-
-    const extraPrefixDirectory = createUnpackedFixture()
-    mkdirSync(join(extraPrefixDirectory, 'empty-prefix'))
-    try {
-      expect(() => assertUnpackedNativeLayout(extraPrefixDirectory, architectures, () => architectures)).toThrow(/Unexpected unpacked.*empty-prefix/)
-    } finally {
-      rmSync(extraPrefixDirectory, { recursive: true, force: true })
-    }
-  })
-
-  test('checks every allowed native fixture file against the application architecture', () => {
-    const architectures = new Set(['arm64'])
-    const directory = createUnpackedFixture()
-    try {
-      expect(() => assertUnpackedNativeLayout(directory, architectures, (path: string) => (path.endsWith('pty.node') ? new Set(['x86_64']) : new Set(['arm64'])))).toThrow(
-        /pty\.node is missing app architecture.*arm64/,
-      )
-    } finally {
-      rmSync(directory, { recursive: true, force: true })
-    }
-  })
-})
-
-describe('cross-platform packaging repair', () => {
-  const fixtureContext = {
-    appOutDir: join('/tmp', 'app-out'),
-    packager: { appInfo: { productFilename: 'OMP Desktop', sanitizedName: 'omp-desktop' } },
-  }
-
-  test('computes the hardened executable path per platform', () => {
-    expect(executablePath(fixtureContext, 'darwin')).toBe(join('/tmp', 'app-out', 'OMP Desktop.app', 'Contents', 'MacOS', 'OMP Desktop'))
-    expect(executablePath(fixtureContext, 'win32')).toBe(join('/tmp', 'app-out', 'OMP Desktop.exe'))
-    expect(executablePath(fixtureContext, 'linux')).toBe(join('/tmp', 'app-out', 'omp-desktop'))
-  })
-
-  function globMatchExists(directory: string, segments: string[]): boolean {
-    if (!existsSync(directory) || !statSync(directory).isDirectory()) return false
-    const [head, ...rest] = segments
-    if (head === undefined) return false
-    if (head === '**') {
-      if (globMatchExists(directory, rest)) return true
-      return readdirSync(directory, { withFileTypes: true })
-        .filter((entry) => entry.isDirectory())
-        .some((entry) => globMatchExists(join(directory, entry.name), segments))
-    }
-    if (head.includes('*')) {
-      const pattern = new RegExp(
-        `^${head
-          .split('*')
-          .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-          .join('[^/]*')}$`,
-      )
-      const entries = readdirSync(directory, { withFileTypes: true })
-      if (rest.length === 0) return entries.some((entry) => entry.isFile() && pattern.test(entry.name))
-      return entries.filter((entry) => entry.isDirectory() && pattern.test(entry.name)).some((entry) => globMatchExists(join(directory, entry.name), rest))
-    }
-    const next = join(directory, head)
-    if (rest.length === 0) return existsSync(next) && statSync(next).isFile()
-    return globMatchExists(next, rest)
-  }
-
-  test('every asarUnpack glob matches at least one real file for platforms present in node_modules', () => {
-    const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
-    const root = new URL('..', import.meta.url).pathname
-    const localArchitecture = process.arch === 'arm64' ? 'arm64' : 'x64'
-    const localTarget = process.platform === 'darwin' ? 'mac' : process.platform
-    const architecturesFor = (glob: string) => (glob.includes('node-pty/build/Release') ? [localArchitecture] : ['arm64', 'x64'])
-    for (const target of ['mac', 'linux', 'win']) {
-      for (const glob of packageJson.build[target].asarUnpack as string[]) {
-        if (glob.includes('node-pty/build/Release') && target !== localTarget) continue
-        const covered = architecturesFor(glob).some((architecture) => {
-          const relativeGlob = glob.replace(/^\*\*\//, '').replaceAll('${arch}', architecture)
-          const platformRoot = relativeGlob.split('/').slice(0, 4).join('/')
-          if (!existsSync(join(root, platformRoot))) return false
-          return globMatchExists(root, relativeGlob.split('/'))
-        })
-        expect(covered, `asarUnpack glob matches no file in node_modules: ${glob}`).toBe(true)
-      }
-    }
-  })
-
-  test('the verifier and package.json agree on the native unpack allowlist', () => {
-    const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
-    for (const [target, architecture] of [
-      ['win', 'x64'],
-      ['win', 'arm64'],
-      ['linux', 'x64'],
-      ['linux', 'arm64'],
-    ] as const) {
-      const globs = (packageJson.build[target].asarUnpack as string[]).map((glob) => glob.replace(/^\*\*\//, '').replaceAll('${arch}', architecture))
-      for (const file of expectedNativeFiles(target, architecture)) {
-        expect(globs, `verifier requires ${file} but no ${target} asarUnpack glob produces it`).toContain(file)
-      }
-    }
-    expect(nativeRuntimeDirectory('win')).toBe('win32')
-    expect(nativeRuntimeDirectory('linux')).toBe('linux')
-  })
-
-  test('rejects any unpacked native file outside the expected allowlist', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'omp-desktop-cross-platform-unpacked-'))
-    for (const relativePath of expectedNativeFiles('linux', 'x64')) {
-      const path = join(directory, relativePath)
-      mkdirSync(dirname(path), { recursive: true })
-      writeFileSync(path, 'fixture')
-    }
-    try {
-      expect(() => assertCrossPlatformUnpackedNativeLayout(directory, 'linux', 'x64')).not.toThrow()
-      const stray = join(directory, 'node_modules/node-pty/build/Release/stray.node')
-      writeFileSync(stray, 'fixture')
-      expect(() => assertCrossPlatformUnpackedNativeLayout(directory, 'linux', 'x64')).toThrow(/extra: .*stray\.node/)
-    } finally {
-      rmSync(directory, { recursive: true, force: true })
-    }
-  })
-
-  test('resolves release-script commands to Windows-safe spawns', () => {
-    expect(resolveCommandInvocation('node', ['scripts/release/verify.mjs'])).toEqual({ file: process.execPath, args: ['scripts/release/verify.mjs'], shell: false })
-    const electronInstaller = resolveCommandInvocation('install-electron', [])
-    expect(electronInstaller.file).toBe(process.execPath)
-    expect(electronInstaller.args).toHaveLength(1)
-    expect(electronInstaller.args[0]).toMatch(/node_modules[\\/]electron[\\/]install\.js$/)
-    expect(electronInstaller.shell).toBe(false)
-    const builder = resolveCommandInvocation('electron-builder', ['install-app-deps'])
-    expect(builder.file).toBe(process.execPath)
-    expect(builder.shell).toBe(false)
-    expect(builder.args[0]).toMatch(/electron-builder[\\/]cli\.js$/)
-    expect(builder.args.at(-1)).toBe('install-app-deps')
-    const packageScript = readFileSync('scripts/release/package.mjs', 'utf8')
-    expect(packageScript).toContain("run('electron-builder', builderArgs, builderEnv)")
-    expect(packageScript).not.toContain("['exec', '--', 'electron-builder'")
-    const npmViaLifecycle = resolveCommandInvocation('npm', ['run', 'release:verify'], 'win32', { npm_execpath: 'C:/npm/npm-cli.js' })
-    expect(npmViaLifecycle).toEqual({ file: process.execPath, args: ['C:/npm/npm-cli.js', 'run', 'release:verify'], shell: false })
-    expect(() => resolveCommandInvocation('npm', ['ci'], 'win32', { npm_execpath: 'C:/npm/npm.cmd' })).toThrow(/JavaScript npm CLI/)
-    expect(resolveCommandInvocation('npm', ['ci'], 'darwin', {})).toEqual({ file: 'npm', args: ['ci'], shell: false })
-  })
-
-  test('installs Electron before rebuilding native app dependencies', () => {
-    const calls: Array<{ command: string; args: string[]; env: NodeJS.ProcessEnv }> = []
-    const run = (command: string, args: string[], options: { env?: NodeJS.ProcessEnv } = {}) => {
-      calls.push({ command, args, env: options.env ?? {} })
-    }
-
-    installAppDependencies(run, { TASK_MARKER: 'kept' }, 'darwin')
-
-    expect(calls.map(({ command, args }) => ({ command, args }))).toEqual([
-      { command: 'install-electron', args: [] },
-      { command: 'electron-builder', args: ['install-app-deps'] },
-    ])
-    expect(calls[0].env).toBe(calls[1].env)
-    expect(calls[0].env).toMatchObject({ TASK_MARKER: 'kept', PYTHON: '/usr/bin/python3' })
-  })
-})
-
-describe('dev Electron branding', () => {
-  function makeDevAppBundle(iconBytes: Buffer) {
-    const root = mkdtempSync(join(tmpdir(), 'brand-dev-electron-'))
-    const appBundle = join(root, 'Electron.app')
-    mkdirSync(join(appBundle, 'Contents/Resources'), { recursive: true })
-    writeFileSync(join(appBundle, 'Contents/Info.plist'), 'placeholder')
-    const iconSource = join(root, 'source.icns')
-    writeFileSync(iconSource, iconBytes)
-    return { root, appBundle, iconSource }
-  }
-
-  test('non-darwin platforms are left untouched', () => {
-    const calls: Array<{ command: string; args: string[] }> = []
-    const run = (command: string, args: string[]) => {
-      calls.push({ command, args })
-    }
-
-    expect(brandDevElectron(run, 'linux')).toEqual({ changed: false, reason: 'non-darwin platform' })
-    expect(calls).toEqual([])
-  })
-
-  test('a missing dev bundle is skipped instead of failing the install', () => {
-    expect(brandDevElectron(() => {}, 'darwin', { appBundle: '/nonexistent/Electron.app' })).toEqual({ changed: false, reason: 'dev Electron.app not found' })
-  })
-
-  test('renames the bundle, refreshes a stale icon, and re-signs ad hoc', () => {
-    const calls: Array<{ command: string; args: string[] }> = []
-    const run = (command: string, args: string[]) => {
-      calls.push({ command, args })
-    }
-    const { root, appBundle, iconSource } = makeDevAppBundle(Buffer.from('new-icon'))
-    writeFileSync(join(appBundle, 'Contents/Resources/electron.icns'), Buffer.from('old-icon'))
-    const plistPath = join(appBundle, 'Contents/Info.plist')
-
-    try {
-      const result = brandDevElectron(run, 'darwin', { appBundle, iconSource, capture: (_command, args) => (args[1] === 'CFBundleIdentifier' ? 'com.github.Electron' : 'Electron') })
-
-      expect(result).toEqual({ changed: true, renamedKeys: ['CFBundleName', 'CFBundleDisplayName', 'CFBundleIdentifier'], iconUpdated: true })
-      expect(calls).toEqual([
-        { command: 'plutil', args: ['-replace', 'CFBundleName', '-string', 'OMP Desktop', plistPath] },
-        { command: 'plutil', args: ['-replace', 'CFBundleDisplayName', '-string', 'OMP Desktop', plistPath] },
-        { command: 'plutil', args: ['-replace', 'CFBundleIdentifier', '-string', 'app.ompdesktop.dev', plistPath] },
-        { command: 'codesign', args: ['--force', '--deep', '--sign', '-', appBundle] },
-        { command: DEV_LSREGISTER_PATH, args: ['-f', appBundle] },
-      ])
-      expect(readFileSync(join(appBundle, 'Contents/Resources/electron.icns'))).toEqual(Buffer.from('new-icon'))
-    } finally {
-      rmSync(root, { recursive: true, force: true })
-    }
-  })
-
-  test('an already branded bundle with a current icon is left alone', () => {
-    const calls: Array<{ command: string; args: string[] }> = []
-    const run = (command: string, args: string[]) => {
-      calls.push({ command, args })
-    }
-    const icon = Buffer.from('shared-icon')
-    const { root, appBundle, iconSource } = makeDevAppBundle(icon)
-    writeFileSync(join(appBundle, 'Contents/Resources/electron.icns'), icon)
-
-    try {
-      expect(brandDevElectron(run, 'darwin', { appBundle, iconSource, capture: (_command, args) => (args[1] === 'CFBundleIdentifier' ? 'app.ompdesktop.dev' : 'OMP Desktop') })).toEqual({
-        changed: false,
-        reason: 'already branded',
-      })
-      expect(calls).toEqual([])
-    } finally {
-      rmSync(root, { recursive: true, force: true })
-    }
-  })
-
-  test('plist read failures surface instead of being silently ignored', () => {
-    const { root, appBundle, iconSource } = makeDevAppBundle(Buffer.from('icon'))
-
-    try {
-      expect(() =>
-        brandDevElectron(() => {}, 'darwin', {
-          appBundle,
-          iconSource,
-          capture: () => {
-            throw new Error('plutil failed')
-          },
-        }),
-      ).toThrow('plutil failed')
-    } finally {
-      rmSync(root, { recursive: true, force: true })
-    }
-  })
-})
-
-describe('DMG verification cleanup', () => {
-  test('detach failures are logged instead of masking the original error and cleanup always runs', () => {
-    const source = readFileSync('scripts/release/verify-package.mjs', 'utf8')
-    const verifyDmg = source.slice(source.indexOf('async function verifyDmg'), source.indexOf('export async function verifyPackage'))
-    // hdiutil detach runs inside its own try/catch that only logs.
-    expect(verifyDmg).toMatch(/try\s*\{\s*run\('hdiutil', \['detach', mountPoint\]\)\s*\}\s*catch \(detachError\)\s*\{\s*console\.error/)
-    // The rmSync cleanup is attempted unconditionally after the detach attempt.
-    const finallyIndex = verifyDmg.indexOf('} finally {')
-    const cleanupIndex = verifyDmg.indexOf('rmSync(mountPoint, { recursive: true, force: true })')
-    expect(finallyIndex).toBeGreaterThan(-1)
-    expect(cleanupIndex).toBeGreaterThan(finallyIndex)
-    expect(verifyDmg.slice(cleanupIndex)).not.toContain('detach')
-  })
-})
-
-describe('release size budgets', () => {
-  test('measures deterministic build-output fixtures', () => {
-    const directory = createBundleSizeFixture()
-    try {
-      const metrics = collectBundleSizeMetrics(directory)
-      expect(metrics).toEqual({
-        mainBytes: 101,
-        preloadBytes: 102,
-        initialRendererBytes: 207,
-        largestRendererChunkBytes: 106,
-        rendererJsCssBytes: 418,
-      })
-      expect(() => assertBundleSizeBudgets(metrics)).not.toThrow()
-    } finally {
-      rmSync(directory, { recursive: true, force: true })
-    }
-  })
-
-  test.each(Object.keys(BUNDLE_SIZE_BUDGETS))('rejects a %s bundle regression above its exact budget', (name) => {
-    const metrics = { ...BUNDLE_SIZE_BUDGETS, [name]: BUNDLE_SIZE_BUDGETS[name as keyof typeof BUNDLE_SIZE_BUDGETS] + 1 }
-    expect(() => assertBundleSizeBudgets(metrics)).toThrow(/exceeds its size budget/)
-    expect(() => assertBundleSizeBudgets(BUNDLE_SIZE_BUDGETS)).not.toThrow()
-  })
-
-  test('measures deterministic package fixtures and enforces every artifact budget', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'prime-work-package-size-'))
-    const paths = {
-      app: join(directory, 'OMP Desktop.app'),
-      asar: join(directory, 'OMP Desktop.app/Contents/Resources/app.asar'),
-      dmg: join(directory, 'OMP Desktop.dmg'),
-      zip: join(directory, 'OMP Desktop.zip'),
-    }
-    writeSizedFile(paths.asar, 201)
-    writeSizedFile(join(paths.app, 'Contents/MacOS/OMP Desktop'), 202)
-    writeSizedFile(paths.dmg, 203)
-    writeSizedFile(paths.zip, 204)
-    try {
-      const metrics = collectPackageSizeMetrics(paths)
-      expect(metrics).toEqual({ asarBytes: 201, appBytes: 403, dmgBytes: 203, zipBytes: 204 })
-      expect(() => assertPackageSizeBudgets(metrics)).not.toThrow()
-      for (const name of Object.keys(PACKAGE_SIZE_BUDGETS)) {
-        expect(() =>
-          assertPackageSizeBudgets({
-            ...PACKAGE_SIZE_BUDGETS,
-            [name]: PACKAGE_SIZE_BUDGETS[name as keyof typeof PACKAGE_SIZE_BUDGETS] + 1,
-          }),
-        ).toThrow(/exceeds its size budget/)
-      }
-      expect(() => assertPackageSizeBudgets(PACKAGE_SIZE_BUDGETS)).not.toThrow()
-    } finally {
-      rmSync(directory, { recursive: true, force: true })
-    }
-  })
 })
 
 describe('vendored supply-chain pins', () => {
   test('vendor/ holds only the pinned npm bootstrap artifacts', () => {
     const manifest = JSON.parse(readFileSync('scripts/release/dependency-pins.json', 'utf8'))
-    // The vendored Prime Agent tarballs and their package pins are gone with
-    // the slimmed dependency tree; a new vendored package must add a pin
-    // deliberately rather than reappearing silently in vendor/.
+    // A new vendored package must add a pin deliberately rather than
+    // reappearing silently in vendor/.
     expect(manifest.packages).toEqual({})
     expect(readdirSync('vendor').sort()).toEqual(['npm-12.0.2.md', 'npm-12.0.2.tgz'])
   })
@@ -1806,151 +610,37 @@ describe('vendored supply-chain pins', () => {
     expect(security).not.toContain('Before invoking npm,')
     expect(security).not.toContain('lifecycle scripts, extensions')
   })
-
-  test('keeps the bootstrap archive out of the packaged desktop application', () => {
-    const build = JSON.parse(readFileSync('package.json', 'utf8')).build
-    const packagedInputs = JSON.stringify({ files: build.files, extraResources: build.extraResources, mac: build.mac?.files, linux: build.linux?.files, win: build.win?.files })
-    expect(packagedInputs).not.toContain('vendor/npm-')
-    expect(packagedInputs).not.toContain('vendor/**')
-    expect(build.files).toEqual(['out/**/*', 'package.json'])
-  })
 })
 
-const AUDIT_EXCEPTION_REASON = 'no patched release exists upstream yet'
-const auditReport = (advisories: Array<{ package: string; advisory: string; severity: string }>) => ({
-  vulnerabilities: Object.fromEntries(
-    advisories.map((entry) => [
-      entry.package,
-      {
-        name: entry.package,
-        severity: entry.severity,
-        via: [{ source: 1, name: entry.package, title: `${entry.package} flaw`, url: `https://github.com/advisories/${entry.advisory}`, severity: entry.severity }],
-      },
-    ]),
-  ),
-})
-
-describe('production dependency audit', () => {
-  const advisory = { package: 'extract-zip', advisory: 'GHSA-jmr9-qjv8-65gv', severity: 'high' }
-  const exception = parseAuditExceptions(JSON.stringify({ exceptions: [{ ...advisory, expires: '2099-01-01', reason: AUDIT_EXCEPTION_REASON }] }))
-  const now = Date.parse('2026-08-14T00:00:00Z')
-
-  test('reports only high and critical advisories, ignoring back-references to other packages', () => {
-    const report = {
-      vulnerabilities: {
-        ...auditReport([advisory, { package: 'left-pad', advisory: 'GHSA-2222-2222-2222', severity: 'moderate' }]).vulnerabilities,
-        'omp-desktop': { name: 'omp-desktop', severity: 'high', via: ['extract-zip'] },
-      },
-    }
-
-    expect(collectAuditAdvisories(report)).toEqual([{ advisory: advisory.advisory, package: 'extract-zip', severity: 'high', title: 'extract-zip flaw' }])
+describe('release publication scripts', () => {
+  test('deletes stale draft assets before publishing a resumed release', () => {
+    const assets = ['OMP-Desktop-0.1.9-arm64.dmg', 'OMP-Desktop-0.2.0-arm64.dmg', 'SHA256SUMS.txt']
+    const expected = ['OMP-Desktop-0.2.0-arm64.dmg', 'SHA256SUMS.txt']
+    expect(staleDraftReleaseAssets(assets, expected)).toEqual(['OMP-Desktop-0.1.9-arm64.dmg'])
+    expect(staleDraftReleaseAssets(expected, expected)).toEqual([])
+    expect(() => staleDraftReleaseAssets(assets, [])).toThrow(/expected release asset set is empty/)
+    expect(parseDraftAssetNames(JSON.stringify({ assets: [{ name: 'a.dmg' }, { name: 'b.zip' }] }))).toEqual(['a.dmg', 'b.zip'])
+    expect(() => parseDraftAssetNames(JSON.stringify({ assets: [{ label: 'a.dmg' }] }))).toThrow(/without a name/)
+    expect(() => parseDraftAssetNames(JSON.stringify({}))).toThrow(/not an array/)
   })
 
-  test('fails closed on malformed vulnerability entries and via arrays', () => {
-    expect(() => collectAuditAdvisories({ vulnerabilities: { broken: null } })).toThrow(/broken/)
-    expect(() => collectAuditAdvisories({ vulnerabilities: { broken: { name: 'broken', via: 'oops' } } })).toThrow(/via/)
+  test('requires the release tag to match package.json and package-lock.json', () => {
+    expect(assertReleaseTag('v0.2.0', '0.2.0', '0.2.0')).toEqual({ tag: 'v0.2.0', version: '0.2.0' })
+    expect(() => assertReleaseTag('0.2.0', '0.2.0', '0.2.0')).toThrow(/must exactly match/)
+    expect(() => assertReleaseTag('v0.2.1', '0.2.0', '0.2.0')).toThrow(/v0\.2\.0/)
+    expect(() => assertReleaseTag('v0.2.0', '0.2.0', '0.1.9')).toThrow(/does not match/)
+    expect(() => assertReleaseTag('v0.2.0', '0.2.0', '0.2.0', '0.1.9')).toThrow(/root package version/)
+    expect(() => assertReleaseTag('v01.2.3', '01.2.3', '01.2.3')).toThrow(/not a supported semantic version/)
   })
 
-  test('fails closed on malformed via entries', () => {
-    expect(() => collectAuditAdvisories({ vulnerabilities: { broken: { name: 'broken', via: [42, null] } } })).toThrow(/via/)
-  })
-
-  test('fails closed when a via severity is missing or unknown', () => {
-    const missingSeverity = { url: `https://github.com/advisories/${advisory.advisory}`, title: 'missing severity' }
-    expect(() => collectAuditAdvisories({ vulnerabilities: { [advisory.package]: { name: advisory.package, via: [missingSeverity] } } })).toThrow(/severity/)
-    expect(() => collectAuditAdvisories({ vulnerabilities: { [advisory.package]: { name: advisory.package, via: [{ ...missingSeverity, severity: 'urgent' }] } } })).toThrow(/severity/)
-  })
-
-  test('fails closed when a high or critical via has no parseable advisory ID', () => {
-    const via = { name: advisory.package, severity: 'critical', title: 'unresolvable advisory', url: 'not-an-advisory-url' }
-
-    expect(() => collectAuditAdvisories({ vulnerabilities: { [advisory.package]: { name: advisory.package, via: [via] } } })).toThrow(/advisory ID/)
-  })
-
-  test('fails closed when a high or critical via has no package name', () => {
-    const via = { severity: 'high', title: 'unnamed advisory', url: `https://github.com/advisories/${advisory.advisory}` }
-
-    expect(() => collectAuditAdvisories({ vulnerabilities: { unknown: { via: [via] } } })).toThrow(/package name/)
-  })
-
-  test('accepts a listed advisory while still failing on an unlisted one', () => {
-    const unlisted = { package: 'tar-fs', advisory: 'GHSA-3333-3333-3333', severity: 'critical' }
-    const evaluation = evaluateAuditReport(auditReport([advisory, unlisted]), exception, now)
-
-    expect(evaluation.accepted).toHaveLength(1)
-    expect(evaluation.unexpected).toMatchObject([{ advisory: unlisted.advisory, package: 'tar-fs' }])
-    expect(describeAuditEvaluation(evaluation)).toMatchObject({ ok: false })
-    expect(describeAuditEvaluation(evaluation).message).toContain(unlisted.advisory)
-  })
-
-  test('fails once an accepted advisory passes its expiry so it cannot become permanent', () => {
-    const expiring = parseAuditExceptions(JSON.stringify({ exceptions: [{ ...advisory, expires: '2026-08-13', reason: AUDIT_EXCEPTION_REASON }] }))
-    const evaluation = evaluateAuditReport(auditReport([advisory]), expiring, now)
-    const described = describeAuditEvaluation(evaluation)
-
-    expect(evaluation.expired).toMatchObject([{ advisory: advisory.advisory }])
-    expect(described.ok).toBe(false)
-    expect(described.message).toContain('expired on 2026-08-13')
-  })
-
-  test('fails on a stale exception so a fixed advisory stops being suppressed', () => {
-    const evaluation = evaluateAuditReport({ vulnerabilities: {} }, exception, now)
-    const described = describeAuditEvaluation(evaluation)
-
-    expect(evaluation.stale).toHaveLength(1)
-    expect(described.ok).toBe(false)
-    expect(described.message).toContain('no longer matches any advisory')
-  })
-
-  test('passes with a clean report and names every accepted advisory in the summary', () => {
-    const evaluation = describeAuditEvaluation(evaluateAuditReport(auditReport([advisory]), exception, now))
-
-    expect(evaluation.ok).toBe(true)
-    expect(evaluation.message).toContain(`${advisory.advisory} in extract-zip until 2099-01-01`)
-  })
-
-  test('rejects an exception that lacks a reason or a parseable expiry', () => {
-    expect(() => parseAuditExceptions(JSON.stringify({ exceptions: [{ ...advisory, expires: '2099-01-01', reason: 'nope' }] }))).toThrow(/reason/)
-    expect(() => parseAuditExceptions(JSON.stringify({ exceptions: [{ ...advisory, expires: 'someday', reason: AUDIT_EXCEPTION_REASON }] }))).toThrow(/expires/)
-    expect(() => parseAuditExceptions(JSON.stringify({ exceptions: [{ ...advisory, advisory: 'CVE-2024-1', expires: '2099-01-01', reason: AUDIT_EXCEPTION_REASON }] }))).toThrow(/GHSA/)
-  })
-
-  test('the checked-in exception list is valid and every entry still expires in the future', () => {
-    const exceptions = readAuditExceptions()
-
-    expect(exceptions).toEqual([])
-    for (const entry of exceptions) {
-      expect(entry.expiresAt, `audit exception for ${entry.advisory} has expired; re-check for a fix`).toBeGreaterThan(Date.now())
-    }
-  })
-})
-
-describe('packaged extension resources', () => {
-  function createFixture() {
-    const directory = mkdtempSync(join(tmpdir(), 'omp-desktop-packaged-extensions-'))
-    const resources = join(directory, 'resources')
-    const extensions = join(resources, 'extensions')
-    mkdirSync(extensions, { recursive: true })
-    for (const filename of SHIPPED_EXTENSION_FILENAMES) writeFileSync(join(extensions, filename), 'fixture')
-    return { directory, resources, extensions }
-  }
-
-  test('accepts exactly the manifest extension files and rejects missing, extra, and non-file entries', () => {
-    const exact = createFixture()
-    const missing = createFixture()
-    const extra = createFixture()
-    const nonFile = createFixture()
-    try {
-      expect(() => assertPackagedExtensions(exact.resources)).not.toThrow()
-      rmSync(join(missing.extensions, SHIPPED_EXTENSION_FILENAMES[0]))
-      expect(() => assertPackagedExtensions(missing.resources)).toThrow(/missing:/)
-      writeFileSync(join(extra.extensions, 'unexpected.ts'), 'fixture')
-      expect(() => assertPackagedExtensions(extra.resources)).toThrow(/extra:/)
-      mkdirSync(join(nonFile.extensions, 'nested'))
-      expect(() => assertPackagedExtensions(nonFile.resources)).toThrow(/non-file:/)
-    } finally {
-      for (const fixture of [exact, missing, extra, nonFile]) rmSync(fixture.directory, { recursive: true, force: true })
-    }
+  test('validates the checked-in tag through the CLI entry point', () => {
+    const version = JSON.parse(readFileSync('package.json', 'utf8')).version as string
+    const accepted = spawnSync(process.execPath, ['scripts/release/validate-release-tag.mjs', '--tag', `v${version}`], { encoding: 'utf8' })
+    expect(accepted.status, accepted.stderr).toBe(0)
+    expect(accepted.stdout).toContain(`Validated release tag v${version}`)
+    const rejected = spawnSync(process.execPath, ['scripts/release/validate-release-tag.mjs', '--tag', 'v0.0.0'], { encoding: 'utf8' })
+    expect(rejected.status).toBe(1)
+    expect(rejected.stderr).toContain('Release tag validation failed')
   })
 })
 
@@ -2295,95 +985,5 @@ describe('Rust update feed', () => {
     } finally {
       rmSync(directory, { recursive: true, force: true })
     }
-  })
-
-  test('ships the signed Rust packages by default and gates the legacy Electron jobs off', () => {
-    type Step = { name?: string; id?: string; if?: string; uses?: string; run?: string; env?: Record<string, string>; with?: Record<string, unknown> }
-    type Job = { name?: string; needs?: string[]; if?: string; steps?: Step[] }
-    const source = readFileSync('.github/workflows/release.yml', 'utf8')
-    const workflow = load(source) as {
-      on: { workflow_dispatch: { inputs: Record<string, { default?: unknown; type?: string }> } }
-      env: Record<string, string>
-      jobs: Record<string, Job>
-    }
-
-    // The Rust release path has no opt-in gate left.
-    expect(source).not.toContain('include_rust')
-    expect(source).not.toContain('RELEASE_RUST_ENABLED')
-    expect(workflow.jobs['package-rust'].if).toBeUndefined()
-    expect(workflow.jobs['rust-update-feed'].if).not.toContain('include_')
-
-    // The retired Electron build is opt-in and off by default.
-    expect(workflow.on.workflow_dispatch.inputs.include_legacy_electron).toMatchObject({ default: false, type: 'boolean' })
-    expect(workflow.env.RELEASE_ELECTRON_LEGACY_ENABLED).toContain('vars.RELEASE_ELECTRON_ENABLED')
-    for (const jobName of ['package', 'package-linux']) {
-      const gate = workflow.jobs[jobName].if ?? ''
-      expect(gate, `${jobName} must be opt-in legacy`).toContain('inputs.include_legacy_electron')
-      expect(gate, `${jobName} must be opt-in legacy`).toContain('vars.RELEASE_ELECTRON_ENABLED')
-    }
-    const windowsGate = workflow.jobs['package-windows'].if ?? ''
-    expect(windowsGate).toContain('inputs.include_legacy_electron')
-    expect(windowsGate).toContain('inputs.include_windows')
-
-    // The release job still creates the release, but from the Rust artifacts.
-    const release = workflow.jobs['release-packages']
-    expect(release.needs).toContain('package-rust')
-    const steps = release.steps ?? []
-    const rustDownload = steps.find((step) => step.uses?.startsWith('actions/download-artifact@') && step.with?.pattern === 'rust-package-*')
-    expect(rustDownload).toBeDefined()
-    const electronDownload = steps.find((step) => step.uses?.startsWith('actions/download-artifact@') && step.with?.pattern === 'omp-desktop-public-*')
-    expect(electronDownload?.if).toBe("env.RELEASE_ELECTRON_LEGACY_ENABLED == 'true'")
-    const failClosed = steps.find((step) => step.name === 'Fail closed unless every signed Rust package was produced')
-    for (const platform of ['macos-aarch64', 'macos-x86_64', 'linux-x86_64', 'windows-x86_64']) expect(failClosed?.run).toContain(platform)
-    expect(steps.find((step) => step.name === 'Add the signed Rust packages to the release assets')?.run).toContain('release-assets')
-    expect(steps.find((step) => step.name === 'Write SHA-256 checksums for every published asset')?.run).toContain('SHA256SUMS.txt')
-    expect(source).toContain('gh release create "$RELEASE_TAG" release-assets/*')
-    expect(source).toContain('gh release upload "$RELEASE_TAG" release-assets/* --clobber')
-  })
-
-  test('wires the feed job to the signed Rust packages and the published release', () => {
-    type Step = { name?: string; id?: string; if?: string; uses?: string; run?: string; env?: Record<string, string>; with?: Record<string, unknown> }
-    const workflow = load(readFileSync('.github/workflows/release.yml', 'utf8')) as {
-      jobs: Record<
-        string,
-        {
-          needs?: string[]
-          if?: string
-          permissions?: Record<string, string>
-          strategy?: { matrix?: { include?: Array<Record<string, string>> } }
-          steps?: Step[]
-        }
-      >
-    }
-    const packageRust = workflow.jobs['package-rust']
-    expect(packageRust.needs).toEqual(['validate', 'production-audit', 'quality', 'conformance', 'hermetic-e2e'])
-    expect(packageRust.strategy?.matrix?.include?.map((leg) => `${leg.platform}:${leg.format}`)).toEqual(['macos-aarch64:app', 'macos-x86_64:app', 'linux-x86_64:appimage', 'windows-x86_64:nsis'])
-    const sign = packageRust.steps?.find((step) => step.id === 'package')
-    expect(sign?.env).toEqual({
-      RUST_UPDATER_SIGNING_KEY: '${{ secrets.RUST_UPDATER_SIGNING_KEY }}',
-      CARGO_PACKAGER_SIGN_PRIVATE_KEY: '${{ secrets.RUST_UPDATER_SIGNING_KEY }}',
-    })
-    expect(sign?.run).toContain('cargo packager --formats ${{ matrix.format }} --release')
-    expect(sign?.run).toContain('skipping the signed Rust package')
-    // A missing key must not publish artifacts the updater would reject.
-    const rustUploads = packageRust.steps?.filter((step) => step.uses?.startsWith('actions/upload-artifact@')) ?? []
-    expect(rustUploads.map((step) => step.with?.name)).toEqual(['rust-package-${{ matrix.platform }}', 'rust-package-${{ matrix.platform }}', 'rust-package-${{ matrix.platform }}'])
-    for (const upload of rustUploads) {
-      expect(upload.if).toContain("steps.package.outputs.signed == 'true'")
-      expect(upload.with?.['if-no-files-found']).toBe('error')
-    }
-
-    const feed = workflow.jobs['rust-update-feed']
-    expect(feed.needs).toEqual(['validate', 'release-packages', 'package-rust'])
-    expect(feed.permissions).toEqual({ contents: 'write' })
-    expect(feed.if).toContain("needs.release-packages.result == 'success'")
-    expect(feed.if).toContain("needs.package-rust.result == 'success'")
-    expect(feed.steps?.find((step) => step.uses?.startsWith('actions/download-artifact@'))?.with?.pattern).toBe('rust-package-*')
-    const generate = feed.steps?.find((step) => step.name === 'Generate and upload the Rust updater feed')
-    expect(generate?.if).toBe("steps.signatures.outputs.signed == 'true'")
-    expect(generate?.run).toContain('--version-file rust/Cargo.toml')
-    expect(generate?.run).toContain('--artifacts rust-artifacts')
-    expect(generate?.run).toContain('gh release upload "$RELEASE_TAG" rust-update-feed/updates.json --clobber')
-    expect(generate?.env?.GH_TOKEN).toBe('${{ github.token }}')
   })
 })

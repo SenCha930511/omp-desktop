@@ -100,12 +100,25 @@ describe('validation guide structure', () => {
     expect(new Set(releaseTable)).toEqual(new Set(Object.keys(releaseJobs)))
   })
 
-  test('documents the scheduled audit workflow contract', () => {
-    const audit = workflow(resolve('.github/workflows/audit.yml'))
-    const triggers = record(audit.on)
-    expect(triggers).toHaveProperty('schedule')
-    expect(triggers).toHaveProperty('workflow_dispatch')
-    expect(runCommands(record(audit.jobs).audit)).toContain('npm run audit:production')
+  test('documents the Rust conformance adapter contract', () => {
+    const conformance = section(validation, 'Conformance suite')
+    expect(conformance).toContain('OMP_CONFORMANCE_ADAPTER_ARGV')
+    expect(conformance).toContain('OMP_CONFORMANCE_ADAPTER_CMD')
+    expect(conformance).toContain('rust/target/debug/omp-conformance')
+    expect(conformance).toContain('npm run test:conformance')
+    expect(packageManifest.scripts).toHaveProperty('test:conformance')
+  })
+
+  test('documents the Rust updater feed contract', () => {
+    const feed = section(validation, 'Rust updater feed')
+    expect(feed).toContain('prepare-rust-update-feed.mjs')
+    expect(feed).toContain('OMP_UPDATER_PUBKEY')
+    expect(feed).toContain('minisign')
+    expect(packageManifest.scripts).toHaveProperty('release:rust-update-feed')
+
+    const releaseWorkflow = workflowJobs(resolve('.github/workflows/release.yml'))
+    expect(Object.keys(releaseWorkflow)).toContain('rust-update-feed')
+    expect(runCommands(releaseWorkflow['rust-update-feed']).join('\n')).toContain('--version-file rust/Cargo.toml')
   })
 
   test('links every workflow file from the guide', () => {
@@ -130,15 +143,15 @@ describe('validation guide structure', () => {
 
     expect(new Set(documentedExclusions)).toEqual(new Set(derivedExclusions))
     expect(new Set(requiredChecks)).toEqual(new Set(requiredContexts(ciJobs)))
-    expect(protectedSection).not.toMatch(
-      /`Production dependency audit`\s+is\s+(?:a|an)\s+(?:\d+(?:st|nd|rd|th)?|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth)\s+pull-request gate/i,
-    )
   })
 
-  test('requires the macOS packaged launch smoke before public artifact upload', () => {
+  test('requires signed Rust packages before the release is published', () => {
     const releaseRows = firstTableRows(section(validation, 'Public release validation'))
-    const packageRow = releaseRows.find(([job]) => job === '`package`')
-    expect(packageRow?.[1]).toMatch(/both .*macOS .*architectures.*launch smoke.*before .*upload/i)
+    const packageRow = releaseRows.find(([job]) => job === '`package-rust`')
+    expect(packageRow?.[1]).toMatch(/macOS arm64\/x86_64.*Linux x86_64.*Windows x86_64/i)
+    expect(packageRow?.[1]).toMatch(/RUST_UPDATER_SIGNING_KEY/)
+    const aggregateRow = releaseRows.find(([job]) => job === '`release-packages`')
+    expect(aggregateRow?.[1]).toMatch(/fails closed unless every platform produced a `\.sig`/i)
   })
 
   test('does not hard-code a suite count', () => {

@@ -1,48 +1,140 @@
 # Security model
 
-OMP Desktop separates remote presentation from privileged local execution.
+OMP Desktop is a native Rust application (`rust/crates/omp-desktop`, built on GPUI).
+There is no JavaScript renderer, no Node integration surface, and no bundled
+web application: the UI is drawn natively, and the only web engine in the
+product is the Browser pane's embedded webview.
 
-For vulnerability intake and response expectations, follow the repository's [vulnerability reporting policy](../.github/SECURITY.md). Do not put suspected vulnerability details in a public issue, discussion, or pull request.
+For vulnerability intake and response expectations, follow the repository's
+[vulnerability reporting policy](../.github/SECURITY.md). Do not put suspected
+vulnerability details in a public issue, discussion, or pull request.
 
-- The React renderer has no Node integration, is sandboxed and context-isolated, and communicates through a frozen narrow preload API. Packaged assets are served by a path-contained, MIME-fixed, CSP-protected `omp-desktop://app/` handler, allowing Electron's extra `file://` privileges fuse to remain disabled. The renderer CSP's one relaxation is inline styles (`style-src 'unsafe-inline'`); scripts, connections, objects, and frames remain `'self'`/`none'`-only.
-- Microphone permission is granted only to the exact authorized main renderer and only for audio; video, subframe checks, and every remote browser guest remain denied. Voice provider keys and optional self-hosted bearer tokens are encrypted with Electron `safeStorage` in a separate mode-0600 file, never returned across IPC, and may instead come from process environment variables. Persistent storage is fail-closed: macOS uses Keychain, Windows uses DPAPI, and Linux must provide a real desktop secret store such as GNOME Keyring/libsecret or KWallet; Electron's unprotected `basic_text` fallback and an unknown or unavailable backend are rejected with actionable setup guidance, and saved ciphertext is not decrypted or used until secure storage is available. When persistent secure storage is unavailable, a newly pasted key may be used for the current app session: after the save IPC completes it is held only in main-process memory, is never added to the secret file, returned by status IPC, or logged by the voice service, and is discarded when the app process exits. Self-hosted transcription uses a user-configured OpenAI-compatible endpoint: plain HTTP is allowed on this computer and private-network addresses, while public hosts require HTTPS, URL credentials/query/fragment data and redirects are rejected, and the optional token is attached only as a bearer header. Audio uploads, SDP, provider responses, local executable/model paths, tool arguments, and tool outputs are bounded and validated in the main process. Voice local context exposes OS time-zone and locale metadata plus a time-zone-derived approximate location hint; it does not request precise location permission. Each Realtime session is pinned to the OMP harness: project discovery, model discovery, and task launch are restricted to that harness. Voice model discovery returns only available models from providers currently visible in the GUI; hidden or disabled providers never enter fuzzy matching, and the selected model plus nearest supported reasoning level are revalidated by the runtime manager before the prompt. The Realtime orchestrator can start work only in an existing explicit project grant and only after the model emits `start_task`; the prompt is dispatched immediately without a second desktop confirmation.
-- Every IPC call must come from the authorized main frame at the exact packaged renderer URL (or an explicitly validated loopback development URL). Authorization is revoked on navigation, renderer loss, close, and shutdown; outbound agent events repeat the exact URL check.
-- OMP runs out of process over strict-LF JSONL RPC. Credentials remain owned by OMP. Commands and response-command correlations are validated. Runtimes, requests, in-flight bytes, record sizes, event counts, per-envelope bytes, and aggregate event bytes are capped.
-- Provider OAuth login/logout (the Capabilities page's provider accounts panel) keeps credential custody with OMP. Tokens and refresh material live only in OMP's own auth storage under `~/.omp`; the desktop app is a pure driver shell that issues the `login` / `get_login_providers` / `get_logout_accounts` / `logout` RPC commands and renders the flow through the existing `extension_ui` surfaces (`open_url` opens the authorization page in the system browser under the http/https whitelist; the `input` dialog returns the authorization code straight to OMP). Upstream rejects any `secret: true` prompt for RPC clients, so no secret field can ever reach the renderer; command schema validation allows only a whitelisted providerId character set and a positive-integer credentialId, renderer parsing drops every field outside the documented `LoginProvider`/`LogoutAccount` shapes (including any future secret-like field), and the GUI groups, caches, or logs none of them — state holds identifiers, labels, and flags only. Cancellation rides the dialog's cancel response, which aborts the upstream flow; the client timeout covers the full 600-second upstream OAuth window so a slow authorization is never misreported.
-- The `!` composer shorthand exposes OMP's user-driven `bash`/`abort_bash` RPC to the renderer (TUI parity). This is a direct shell channel: the command runs under the session's working directory with the user's OS permissions, bypassing the model and the tool-approval flow — the same authority the user already grants the agent's own bash tool after approval, but here there is no approval gate because the user typed the command verbatim. Validation is structural only (non-empty string capped at 64 KiB, unknown keys rejected); shell content is passed through unchanged because attempting to filter shell syntax would only simulate safety. `abort_bash` takes no parameters and cancels only the running user bash. The `!!` "exclude from context" variant is refused at the renderer because the RPC wire cannot express exclusion, and the TUI's `$`/`$$` Python shortcut has no RPC counterpart (documented gap) — neither is faked locally. Results render as transcript rows; output is ANSI-stripped, sized, and image/artifact fields map to the bounded non-text parts pipeline.
-- Quit closes IPC/process admission before taking cleanup snapshots. It then awaits RPC groups, one-shot utilities, PTYs, and captured PTY descendants through TERM/KILL escalation. Regression tests cover hostile children and background terminal jobs.
-- Terminal processes are main-owned through `node-pty`; the renderer receives opaque IDs and bounded/coalesced byte streams. PTYs are project-authorized, owner-bound, count limited, and closed with their window/app.
-- Persisted folders are explicit grants. Session-derived folders receive a read-only grant at discovery for file listing, Git status/diff/branch, and path reveal; agent execution, terminals, mutating Git, worktrees, plugins, and configuration require an explicit persisted grant. Broad `/` and home roots are rejected; removal immediately revokes access and inferred dismissals persist. Folder identity uses inode plus filesystem birth time so a device-number change after remount can refresh the grant without accepting a replaced directory; legacy device/inode grants upgrade once only when the canonical path keeps its inode and its current birth time predates the original grant.
-- Project configuration and file trees cannot escape canonical project roots. Symlinks and generated trees are excluded. Git/package/MCP mutations use validated fixed executables and argv arrays, never shell interpolation; settings writes use OMP Desktop's cooperative lock, fingerprint-based conflict retries, pinned-directory checks, atomic replacement, and rollback. This is not a filesystem compare-and-swap: a same-user writer that ignores the lock can replace the file after the final fingerprint check and race OMP Desktop's rename, so that writer's update may be overwritten. OMP Desktop writes stdio and network (HTTP/SSE) MCP definitions into OMP's native `mcp.json` files, validated against OMP's upstream schema: stdio definitions require a command, network definitions require a URL, and the two shapes are mutually exclusive. Network endpoints default to HTTPS; plain HTTP is accepted only for loopback, private, or link-local addresses and only when the user explicitly acknowledges an insecure-HTTP checkbox, and URLs with embedded credentials are rejected (secrets belong in headers via `${VAR}` references). The desktop app stores `${VAR}` and `!command` values verbatim and never expands them—OMP resolves environment references and executes `!command` values as shell commands with a 10s timeout when it loads mcp.json, so the editor labels any field containing those forms as harness-resolved. Upstream trusts committed MCP definitions and performs no SSRF checks of its own; the HTTPS-default, private-network warnings, and credential-in-URL rejection are desktop-app hardening on top of that model, not a network firewall—the separate main process never proxies MCP traffic itself, so a malicious committed definition the user chooses to keep still reaches the network from OMP with the user's OS permissions. Editor saves (`replace` mode) preserve harness-owned `auth`/`oauth` credential fields and any fields the form did not supply (existing headers, enabled state), so editing a URL cannot silently drop OMP-managed authorization. The main-process RPC manager rejects harness authentication slash commands for prompt, steer, and follow-up delivery, including every resume request. Schedules check prompts at create, update, resume, and run-now admission before project validation or queuing; startup blocks forbidden persisted active schedules before missed-run recovery and timer arming, leaves paused records available for cleanup and later resume validation, and the executor repeats the check as defense in depth. Voice tasks, collaboration creation, and peer delivery preflight the same policy before queuing, wake-up, or runtime start. MCP definitions provided by installed plugin packages rather than by mcp.json remain visible but unavailable and may only be removed for cleanup. MCP rows use an independent 2,500-definition-per-settings-file discovery budget with an explicit truncation warning; unrelated catalog records cannot consume that budget. Effective enable state follows OMP's own precedence—the definition flag, then the `enabledServers` allowlist, with the `disabledServers` denylist winning—and state toggles normalize those lists so the rendered state cannot diverge from what OMP loads. Files OMP quarantined as invalid (`mcp.json.broken-*`) are surfaced as catalog warnings. Definitions whose exact key cannot pass the bounded state API remain visible but non-actionable, with state management delegated to the harness and bounded exact removal retained. Definition removal uses a separate bounded exact key, never uninstalls an associated package, and never reads/deletes a harness credential. OMP Desktop does not inspect or change MCP credentials; authorization cleanup stays with the harness because the app cannot prove credential provenance. This is an app admission guarantee, not a claim that the independently configured harness cannot load remote MCP. Linked-worktree grants require an exact match in Git's bounded worktree catalog, and new worktree destinations come from the native save dialog before their stable directory identity is persisted as additional folders of the granting project rather than as a separate project.
-- Package installation uses one main-process source validator before dispatching to OMP. Registry specs and existing absolute local paths remain supported; remote URL sources must use HTTPS or SSH. Package-source plain HTTP is accepted only for loopback hosts, and the unauthenticated `git://` transport is rejected even on loopback.
-- Remote pages use `persist:omp-desktop-browser` with Node/preloads disabled. Popups and permissions are denied; URLs, redirects, frames, and downloads are credential-free HTTP(S). Downloads require a gesture, are limited to 512 MiB each, three concurrent, and 1 GiB/hour, and are canceled with their guest, browser reset, or app quit. When save prompting is disabled, downloads use a unique sanitized filename in the OS Downloads folder rather than being blocked or overwriting an existing name.
-- Session JSONL is sensitive and read-only. OMP Desktop never rewrites transcripts; file paths, sizes, record counts, and catalog size are bounded. Model Markdown disables raw HTML and remote image loads.
-- A single-instance lock and atomic/fsynced persistence prevent competing desktop processes from losing state.
-- Project grants are harness-scoped in state version 4. Only explicitly recognized pre-harness v1/v2 project records and v2 schedule records with an absent harness migrate to `'omp'`; schedules did not exist in v1, and v3/v4 project or schedule records with an absent or unknown harness are dropped. Persisted `'prime'` and `'pi'` harness markers map to `'omp'` on load. The authority is stored in `omp-desktop-state-v4.json`. On POSIX systems, the first v4 launch imports `omp-desktop-state.json`, file-fsyncs and atomically publishes v4, directory-fsyncs the publication, then renames the legacy file to a byte-exact `.migrated-v4-*` backup and directory-fsyncs that retirement; a failed retirement sync restores and syncs the legacy filename before startup fails. Fresh installs have no authority transition and do not require directory-fsync support.
-- Windows does not expose durable directory-entry flushes through Node's supported filesystem APIs, so migration uses an explicit compatibility protocol instead of claiming POSIX rename durability. OMP Desktop file-fsyncs a byte-exact unique backup, atomically replaces the legacy path with a version-3 marker containing zero projects and schedules, file-fsyncs and atomically publishes v4, then publishes a completed zero-authority marker. A pending marker is retryable from its named backup; a completed marker with a missing or corrupt v4 file fails closed rather than restoring possibly stale grants. Every v4 startup quarantines any non-marker file recreated at the legacy path before readiness. Older released binaries can parse the marker but see no project or schedule authority. Because a power loss can still make a Windows rename's directory entry uncertain, backups and markers are retained and startup errors report the exact files to preserve and retry.
-- A state version newer than the running build, or a state file too large to classify safely, is opened read-only and left byte-for-byte unchanged. On Windows, any separate recreated legacy authority is still quarantined before readiness fails. A compatible OMP Desktop build or explicit operator recovery is required before startup can continue.
-- A first run after the GooeyPi rename copies app-owned files from the legacy `GooeyPi` application-data directory: the state files `prime-work-state*.json` are renamed to `omp-desktop-state*.json`, and `agent-message-signing.key`, `voice-secrets.json`, and `crash.log` are carried over. The copy is bounded per file and in total, never overwrites an existing file, and leaves the legacy directory untouched so nothing is lost if it fails partway. Chromium profile and cache directories are deliberately excluded.
-- Durable automations are owned by OMP Desktop and persisted in the same bounded atomic state store. Every execution revalidates its explicitly granted project and, for thread tasks, its canonical session path before launching OMP; concurrent writes to one thread are serialized. Missed occurrences are recorded as skipped rather than replayed.
-- The bundled `omp-work-schedules` extension talks only to a random-token-authenticated loopback broker. Broker credentials are injected into the scoped OMP runtime, requests are size/content-type bounded, and every operation is constrained to that runtime's authorized project and current session. The renderer never receives the broker token.
-- Agent browser and terminal-read control use the same loopback-broker pattern: the bundled `omp-work-browser` extension receives a per-runtime random bearer token and can only act on browser tabs or read the active terminal belonging to that runtime's session (bound at spawn or first handshake, never rebound). Tabs are hardened `persist:omp-desktop-browser` webview guests; the main process only accepts guest bindings that passed the `will-attach-webview` gate, restricts agent navigation to credential-free HTTP(S), caps tabs per session and in total, rate-limits and size-bounds broker calls, and serializes input actions per tab. Page and terminal data returned to the agent are fenced as untrusted content; the renderer never receives the broker token.
-- Top-level session collaboration uses a separate random-token loopback broker. Its immutable claim includes the source harness and canonical session path; targets and agent-created sessions must be different, non-archived top-level sessions in the same harness and canonical working directory. A multi-folder workspace does not widen that scope to sibling roots. Reads are bounded and use the owning read-only `SessionService`; sends and creation use the owning RPC manager. An offline target can be awakened only through the normal manager path, which revalidates its project grant and canonical session path. Agent model discovery exposes only available models from GUI-active providers, and creation revalidates the resolved model/reasoning plus any fast-mode request through the manager before launch; unsupported fast mode degrades to the normal service tier. Exact UUID validation, per-runtime rate limits, bounded prompts/messages/snapshots/waits, single-flight wakeups/creation, and model-only routing-block stripping prevent renderer-supplied titles or prompts from expanding authority. Incoming peer-message envelopes carry an app-local HMAC verified before transcript role elevation; the owner-only key is not provided to the renderer or harness. See `docs/session-collaboration.md`.
-- In the opt-in legacy Electron build, packaged fuses disable RunAsNode, `NODE_OPTIONS`, debug CLI arguments, browser-specific snapshot loading, and extra file-protocol privileges; cookie encryption, ASAR integrity, and OnlyLoadAppFromAsar are enabled. Each platform unpacks only the native runtime files it needs: macOS uses node-pty's `pty.node` and `spawn-helper`; Linux uses `pty.node`; Windows uses the exact node-pty ConPTY/WinPTY `.node`, `.dll`, and helper `.exe` files. Release verification must reject any other unpacked path and check native architecture coverage before publication. Release gates cap main/preload bundles at 640/16 KiB, the initial renderer module graph at 1,280 KiB, each renderer JS/CSS chunk at 600 KiB, total renderer JS/CSS at 2.25 MiB, and packaged ASAR/app/installer/archive sizes under platform-specific release budgets. Signing entitlements retain only JIT and library-validation exceptions required by the Electron/native-module runtime; unsigned executable memory is not allowed.
-The default Rust release is signed by cargo-packager with minisign: `RUST_UPDATER_SIGNING_KEY` signs each macOS, Linux, and Windows package, `release-packages` fails closed unless every platform artifact has a matching `.sig`, and `rust-update-feed` publishes `updates.json` for the updater client to verify with `OMP_UPDATER_PUBKEY`. A release without the signing key is not publishable: the signing step skips with a notice and the aggregate release gate fails closed. The fuses, ASAR integrity, Developer ID, and Authenticode guarantees above apply only to the opt-in legacy Electron build.
+## Agent execution
 
-- Packaged builds accept one documented diagnostic argument, `--packaged-smoke=<absolute marker path>`, used by CI and pre-upload release verification to prove that a packaged application actually boots. It grants no capability and adds no IPC channel: the application starts exactly as it normally does and only after the renderer's own bootstrap completes an authorized `app:get-meta` invoke — which requires the main frame to be at the trusted packaged renderer URL and already authorized by the ordinary IPC trust gate — does main write a mode-0600, size-capped readiness marker and quit. The argument is read only from the first instance's own command line, never from a `second-instance` command line, is ignored outside packaged builds, and is rejected unless it names an absolute single-line path. Because readiness comes from the application itself, the inspect, `RunAsNode`, ASAR-integrity, and OnlyLoadAppFromAsar fuses stay at their shipped settings for the binaries under test.
+- OMP runs out of process over strict-LF JSONL RPC on stdio. Credentials and
+  provider authentication remain owned by OMP; the desktop reads the model
+  catalog and visible provider toggles, never OMP's credential storage.
+- The RPC client validates commands and response correlations, and caps
+  runtimes, in-flight bytes, record sizes, event counts, per-envelope bytes, and
+  aggregate event bytes. A malformed frame fails the runtime instead of growing
+  unbounded.
+- The `!` composer shorthand sends the user's own `bash`/`abort_bash` command to
+  OMP. It is a direct shell channel: it runs with the user's OS permissions in
+  the session's working directory and bypasses the model, exactly like a command
+  the user types in a terminal. Validation is structural only (a non-empty
+  string with a size cap); shell content is passed through unchanged because
+  filtering shell syntax would only simulate safety.
+- Provider login/logout stays in OMP. The app issues the documented RPC
+  commands and renders OMP's own dialog surfaces; no token, refresh material, or
+  secret prompt crosses into the desktop process.
+- Quitting stops the app's RPC runtimes and terminal children before the state
+  store takes its final snapshot.
 
-OMP packages, tools, terminals, configured MCP bridges, and the optional TryCUA driver execute with the user's OS permissions. OMP Desktop never bundles or silently installs TryCUA: Computer Use is disabled by default, enabling it requires a runnable `cua-driver`, and new sessions receive only the detected absolute executable path plus the bundled non-MCP integration guidance. The toggle does not write MCP configuration. The desktop boundary protects the renderer and remote browser; it is not an OS sandbox for intentionally launched capabilities. Review projects, commands, and third-party integrations before granting access.
+## Local capabilities
 
-Public macOS distribution requires an external Developer ID Application identity plus Apple notarization and stapling. Signed Windows releases are opt-in until Authenticode credentials are configured; when enabled, Windows packaging fails closed unless an Authenticode identity is injected and verifies the packaged application, AppX/MSIX package, and NSIS installer before publication. An explicitly enabled unsigned beta path may publish the same Windows artifacts for testing, but those files are not trust-ready and will trigger SmartScreen or enterprise policy warnings. Verification asserts the expected signer, not merely a trusted one: the maintainer must set repository variable `GOOEYPI_WINDOWS_CERT_SUBJECT` (the certificate subject, matched exactly, e.g. `CN=Example Ltd, O=Example Ltd, C=GB`) and/or `GOOEYPI_WINDOWS_CERT_THUMBPRINT` (the certificate's 40-character SHA-1 thumbprint; spaces and colons are ignored, case-insensitive) alongside the `WIN_CSC_LINK`/`WIN_CSC_KEY_PASSWORD` secrets. Both may be set, in which case both must match. A configured value that does not match the signing certificate fails the packaging job loudly; when neither is configured, public Windows packaging fails closed with an explicit message rather than accepting any certificate chain the runner happens to trust. GitHub Releases are built only from an existing semantic version tag whose version matches both package manifests and whose commit is on `main`; the final publishing job receives `contents: write` only after every enabled native package and verification job succeeds. Every published installer/archive is covered by `SHA256SUMS.txt` and a GitHub build-provenance attestation. Linux packages should additionally use repository signing metadata if package repositories are introduced. Local builds are not represented as trust-ready packages.
+- Projects are explicit grants. Only canonical, explicitly granted roots can be
+  opened, listed, diffed, or used as an agent working directory. Session-derived
+  folders receive a read-only grant for inspection; agent execution, terminals,
+  mutating Git operations, worktrees, plugins, and configuration require an
+  explicit persisted grant. Removal revokes access immediately.
+- Paths are canonicalized before use, and project configuration and file trees
+  cannot escape a granted root. Git and package operations use validated fixed
+  executables and argv arrays, never shell interpolation.
+- The bottom terminal is a real pseudo terminal (`portable-pty`) owned by the
+  app. Closing the panel kills the shell; nothing in the terminal touches the
+  persisted state store.
+- Durable schedules are owned by the app and stored in the same bounded state
+  store. Every execution revalidates its granted project (and canonical session
+  path) before launching OMP, and concurrent writes to one thread are
+  serialized.
+- App-owned tools reach the desktop through random-token loopback brokers. The
+  token is injected only into that runtime's environment, every request is
+  size- and content-type-bounded, and the operation is constrained to the
+  runtime's authorized project and session. Brokers shut down with the runtime.
+
+## Browser pane
+
+- Each tab owns a native webview with its own isolated profile directory (a
+  per-tab data store on macOS), so cookies and storage never cross tabs.
+- Page URLs go through one policy: HTTP(S) only, no embedded credentials, no
+  non-web schemes. Loopback and private hosts are only allowed where the product
+  intentionally targets a local broker or dev server.
+- Page content is never trusted as app input. The desktop does not expose a
+  scriptable bridge from the page into the application, and agent-driven
+  navigation is limited to credential-free HTTP(S).
+
+## Persisted state
+
+- Authority lives in `omp-desktop-state-v4.json`, written atomically and
+  fsynced. Unknown JSON fields survive round-trips, so a newer build's data is
+  not silently destroyed by an older one.
+- Migration from the legacy v1-v3 layout and the Windows tombstone protocol is
+  implemented in `omp-core` and replayed by its tests: byte-exact backups,
+  directory fsyncs, retryable pending markers, and fail-closed handling of a
+  completed marker with a missing or corrupt v4 file.
+- A state version newer than the running build, or a file too large to classify
+  safely, is opened read-only and left byte-for-byte unchanged. Startup fails
+  rather than rewriting authority the build does not understand.
+- The first launch after the GooeyPi rename copies app-owned files from the
+  legacy application-data directory without overwriting existing files and
+  leaves the legacy directory untouched.
+- Transcripts are read-only. The app never rewrites session JSONL; file paths,
+  sizes, record counts, and catalog sizes are bounded.
+
+## Packaging and updates
+
+- Release packages are built by cargo-packager on native runners: macOS `.app`,
+  Linux `.deb`/AppImage, and a Windows NSIS installer. There is no app-integrity
+  container, no runtime hardening fuse set, and no Developer ID or Authenticode
+  requirement in this repository's release path.
+- Every published artifact is minisign-signed. `RUST_UPDATER_SIGNING_KEY` signs
+  each platform package, the release aggregate fails closed unless every
+  platform produced a `.sig`, and the updater feed is only generated from signed
+  artifacts.
+- The updater is check-and-notify only: the app fetches the HTTPS feed, verifies
+  its signature with the `OMP_UPDATER_PUBKEY` baked in at build time, and shows
+  the available version. Nothing is downloaded or installed. A build without a
+  baked-in key reports "not configured" and never opens a socket.
+- Packaged builds accept one documented diagnostic argument,
+  `--packaged-smoke=<absolute marker path>`. It grants no capability and adds no
+  command surface: the app starts normally and, after the first frame is drawn,
+  writes a size-capped JSON marker and quits. CI uses it to prove that a
+  packaged binary really boots.
 
 ## Dependency pinning and supply chain
 
-The release toolchain bootstraps the `packageManager`-pinned npm from the exact official archive checked into `vendor/`. Before invoking npm's installer, `scripts/release/bootstrap-npm.mjs` requires the version-derived repository path to be a regular non-symlink file and verifies its exact byte size and SHA-512 against `scripts/release/dependency-pins.json`. Every bootstrap then installs that absolute local archive with `--offline`, `--ignore-scripts`, `--no-audit`, and `--no-fund`; verifies the expected CLI, shim, and exact version; and only then publishes its shim directory to later GitHub Actions steps. The archive is a build-time tool and is excluded from packaged desktop applications.
+The release toolchain bootstraps the `packageManager`-pinned npm from the exact
+official archive checked into `vendor/`. Before invoking npm's installer,
+`scripts/release/bootstrap-npm.mjs` requires the version-derived repository path
+to be a regular non-symlink file and verifies its exact byte size and SHA-512
+against `scripts/release/dependency-pins.json`. Every bootstrap then installs
+that absolute local archive with `--offline`, `--ignore-scripts`, `--no-audit`,
+and `--no-fund`; verifies the expected CLI, shim, and exact version; and only
+then publishes its shim directory to later GitHub Actions steps. The archive is
+a build-time tool and is never shipped inside a desktop package.
 
-This check authenticates the archive bytes against the reviewed Git history; it does not independently authenticate the extracted installation tree. The checked-out bootstrap code, invoking Node.js/npm processes, configured writable prefix, and local filesystem remain trusted. An attacker controlling any of those inputs can subvert installation or mutate files after verification. The provenance record in `vendor/npm-12.0.2.md` binds the vendored bytes to the npm registry metadata and upstream release tag. An npm upgrade must update the repository toolchain metadata, archive, provenance record, and artifact pin together under security-sensitive review.
+This check authenticates the archive bytes against the reviewed Git history; it
+does not independently authenticate the extracted installation tree. The
+checked-out bootstrap code, invoking Node.js/npm processes, configured writable
+prefix, and local filesystem remain trusted. An attacker controlling any of
+those inputs can subvert installation or mutate files after verification. The
+provenance record in `vendor/npm-12.0.2.md` binds the vendored bytes to the npm
+registry metadata and upstream release tag. An npm upgrade must update the
+repository toolchain metadata, archive, provenance record, and artifact pin
+together under security-sensitive review.
 
-Advisory coverage beyond Dependabot comes from the exception-aware `npm run audit:production` gate. [Pull-request CI](../.github/workflows/ci.yml) evaluates every exact PR head, the [release workflow](../.github/workflows/release.yml) evaluates its pinned commit before any package job, and the [scheduled workflow](../.github/workflows/audit.yml) continues to run weekly (plus on demand) so advisories disclosed after a merge are still detected.
+Rust dependencies are pinned by `rust/Cargo.lock` and audited by
+`cargo deny check` (advisories, licenses, and sources) in CI. Accepted
+advisories and their reasons live in `rust/deny.toml`.
 
-Some advisories have no patched release to move to, and a gate that fails every run stops carrying information: a genuinely new advisory would look exactly like the standing one. `scripts/release/audit-exceptions.json` therefore records the accepted advisories, each with the package it affects, a reason, and a mandatory expiry date. The audit fails on any advisory not on that list, on an accepted advisory whose expiry has passed (so acceptance cannot quietly become permanent), and on a stale exception that no longer matches anything (so a suppression cannot outlive the advisory it covered). `tests/release-scripts.test.ts` additionally fails once a checked-in expiry is in the past, surfacing it in ordinary CI rather than only in the weekly job. Adding or extending an exception is a security-sensitive review item: prefer upgrading or overriding first.
+The npm dependency tree contains only development tooling (Vitest, Biome,
+TypeScript, `js-yaml`); there are no runtime npm dependencies, so the desktop
+application itself ships no JavaScript.
 
-Silent re-anchoring is guarded by `scripts/release/dependency-pins.json`: non-registry dependency `resolved` locations and `integrity` hashes from the lockfile are mirrored there, and executable bootstrap artifacts — the vendored npm archive — carry strict version/path/source/size/license/integrity metadata. Tests in `tests/release-scripts.test.ts` hash the actual `vendor/*.tgz` bytes, so a regenerated lockfile or a swapped tarball cannot pass CI without a matching, reviewable pin-file change in the same commit. To upgrade the vendored npm deliberately: obtain and verify the new official archive, replace it in `vendor/`, update the repository toolchain metadata, and mirror the new values into the pin file together.
+## Out of scope
+
+OMP packages, tools, terminals, configured MCP servers, and the optional
+computer-use driver execute with the user's OS permissions. The desktop boundary
+protects the app's own state and the Browser pane; it is not an OS sandbox for
+capabilities the user deliberately launches. Review projects, commands, and
+third-party integrations before granting access.

@@ -1,41 +1,60 @@
 # Contributing
 
-See the [source setup](README.md#run-from-source) and
+See the [build instructions](README.md#build-from-source) and
 [validation guide](docs/validation.md) for the supported toolchain and checks.
 
-## Local macOS development without release credentials
+## Local development
 
-You do not need access to the signing and notarization credentials for the
-production `app.ompdesktop.desktop` bundle. Use `npm run dev` while developing and
-run the relevant checks from the validation guide before submitting a change.
-
-To exercise the normal local packaging pipeline without release credentials,
-run:
+OMP Desktop is the Rust workspace in `rust/`:
 
 ```bash
-npm run package:mac:local-qa
+cd rust
+cargo run -p omp-desktop
 ```
 
-This creates unsigned, unnotarized local-QA artifacts. It does not establish
-that a build is ready for public distribution; `npm run package:mac` is reserved
-for maintainers with the release credentials.
-
-As an optional development convenience, use a separate app identity and
-Electron data directory when keeping a local package alongside OMP Desktop:
+Run the checks from the validation guide before submitting a change:
 
 ```bash
-npm run build
-npx electron-builder --mac dir --arm64 --publish never \
-  --config.mac.identity=null \
-  --config.mac.notarize=false \
-  --config.productName="OMP Desktop Dev" \
-  --config.appId=app.ompdesktop.desktop.localdev \
-  --config.extraMetadata.name=omp-desktop-local-dev \
-  --config.directories.output=release/local-dev
+cd rust
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
 ```
 
-Use `--x64` instead of `--arm64` on an Intel Mac. The `extraMetadata.name`
-override isolates Electron state under
-`~/Library/Application Support/omp-desktop-local-dev`; changing only the product
-name or bundle ID does not isolate it. These values are local examples and must
-not replace the production package metadata.
+The Node toolchain at the repository root only guards the release scripts and
+documentation:
+
+```bash
+npm ci
+npm run typecheck
+npm run check
+npm test
+```
+
+## Local packaging without release credentials
+
+You do not need the updater signing key to build a local package. cargo-packager
+builds an unsigned, unnotarized artifact:
+
+```bash
+cd rust
+cargo build -p omp-desktop --locked
+cd crates/omp-desktop
+cargo packager --formats app   # or deb / nsis
+```
+
+`--formats` must name the host's format: `app` is macOS-only, `deb` is
+Linux-only, and `nsis` is Windows-only. Local packages are for testing; they are
+not distribution builds. The release workflow adds the minisign signature with
+`RUST_UPDATER_SIGNING_KEY`, and a release without it fails closed.
+
+To verify a package actually boots, run it with the packaged-smoke marker:
+
+```bash
+"rust/dist/OMP Desktop.app/Contents/MacOS/omp-desktop" \
+  --packaged-smoke=/tmp/smoke.json --user-data-dir=/tmp/omp-rust
+cat /tmp/smoke.json
+```
+
+The marker is written only after the first real frame is drawn, so it proves the
+window rendered.

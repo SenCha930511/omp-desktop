@@ -10,26 +10,6 @@ on:
         description: Existing semantic version tag to publish (for example, v0.2.0)
         required: true
         type: string
-      include_mac_unsigned:
-        description: Legacy Electron only. Build ad-hoc signed macOS packages for free beta distribution (skips Developer ID signing and notarization)
-        required: false
-        default: false
-        type: boolean
-      include_windows:
-        description: Legacy Electron only. Build signed Windows packages (requires Authenticode secrets)
-        required: false
-        default: false
-        type: boolean
-      include_windows_unsigned:
-        description: Legacy Electron only. Build unsigned Windows packages for beta distribution (skips Authenticode signing)
-        required: false
-        default: false
-        type: boolean
-      include_legacy_electron:
-        description: Also build and publish the retired Electron application (legacy; the Rust application ships by default)
-        required: false
-        default: false
-        type: boolean
 
 permissions:
   contents: read
@@ -40,13 +20,6 @@ concurrency:
 
 env:
   RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-  # The Rust application is the shipping desktop app. The Electron jobs below
-  # are a source-only legacy tree: they are skipped unless a maintainer opts in.
-  RELEASE_ELECTRON_LEGACY_ENABLED: ${{ (github.event_name == 'workflow_dispatch' && inputs.include_legacy_electron) || (github.event_name == 'push' && vars.RELEASE_ELECTRON_ENABLED == 'true') }}
-  RELEASE_MAC_UNSIGNED_ENABLED: ${{ (github.event_name == 'workflow_dispatch' && inputs.include_mac_unsigned) || (github.event_name == 'push' && vars.RELEASE_MAC_UNSIGNED_ENABLED == 'true') }}
-  RELEASE_WINDOWS_SIGNED_ENABLED: ${{ (github.event_name == 'workflow_dispatch' && inputs.include_windows) || (github.event_name == 'push' && vars.RELEASE_WINDOWS_ENABLED == 'true') }}
-  RELEASE_WINDOWS_UNSIGNED_ENABLED: ${{ (github.event_name == 'workflow_dispatch' && inputs.include_windows_unsigned) || (github.event_name == 'push' && vars.RELEASE_WINDOWS_UNSIGNED_ENABLED == 'true') }}
-  RELEASE_WINDOWS_ENABLED: ${{ ((github.event_name == 'workflow_dispatch' && (inputs.include_windows || inputs.include_windows_unsigned)) || (github.event_name == 'push' && (vars.RELEASE_WINDOWS_ENABLED == 'true' || vars.RELEASE_WINDOWS_UNSIGNED_ENABLED == 'true'))) }}
 
 jobs:
   validate:
@@ -65,7 +38,7 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - run: npm run toolchain:bootstrap
-      - run: npm run release:preflight:toolchain
+      - run: npm run release:preflight
       - name: Validate tag and package versions
         run: node scripts/release/validate-release-tag.mjs --tag "$RELEASE_TAG"
       # fetch-depth: 0 above is what populates refs/remotes/origin/*; the check
@@ -77,24 +50,8 @@ jobs:
         id: resolve
         run: echo "sha=$(git rev-parse HEAD^{commit})" >> "$GITHUB_OUTPUT"
 
-  production-audit:
-    name: Production dependency audit
-    needs: validate
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          ref: ${{ needs.validate.outputs.sha }}
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-      - run: npm run toolchain:bootstrap
-      - run: npm run release:preflight:toolchain
-      - name: Apply named production dependency audit exceptions
-        run: npm run audit:production
-
   quality:
+    name: Release tooling
     needs: validate
     runs-on: ubuntu-22.04
     steps:
@@ -107,279 +64,18 @@ jobs:
           cache: npm
       - run: npm run toolchain:bootstrap
       - run: npm ci
-      - run: npm run release:preflight:toolchain
-      - run: npm run release:verify:package
-
-  conformance:
-    needs: validate
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-15
-          - runner: ubuntu-22.04
-          - runner: windows-2022
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          ref: ${{ needs.validate.outputs.sha }}
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-      - run: npm run toolchain:bootstrap
-      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
-        with:
-          path: |
-            ~/Library/Caches/electron
-            ~/.cache/electron
-            ~/Library/Caches/electron-builder
-            ~/.cache/electron-builder
-            ~/AppData/Local/electron/Cache
-            ~/AppData/Local/electron-builder/Cache
-          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-      - run: npm ci
-      - run: npm run release:preflight:toolchain
-      - run: npm run conformance:build-adapter
-      - run: npm run test:conformance
-
-  hermetic-e2e:
-    needs: validate
-    runs-on: macos-15
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          ref: ${{ needs.validate.outputs.sha }}
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-      - run: npm run toolchain:bootstrap
-      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
-        with:
-          path: |
-            ~/Library/Caches/electron
-            ~/.cache/electron
-            ~/Library/Caches/electron-builder
-            ~/.cache/electron-builder
-          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-      - run: npm ci
-      - run: npm run release:preflight:toolchain
-      - run: npm run build:bundle
-      - run: npm run test:e2e:hermetic
-
-  package:
-    # Legacy Electron packaging. The Rust packages ship by default, so these
-    # jobs only run when a maintainer opts back into the Electron build.
-    if: (github.event_name == 'workflow_dispatch' && inputs.include_legacy_electron) || (github.event_name == 'push' && vars.RELEASE_ELECTRON_ENABLED == 'true')
-    needs: [validate, production-audit, quality, conformance, hermetic-e2e]
-    strategy:
-      # Ship both mac architectures as separate DMG/ZIP builds. Each leg runs
-      # on a runner whose native architecture matches the target so
-      # install-app-deps never cross-compiles node-pty or zeromq, and one
-      # leg's failure never cancels the other's signed build.
-      fail-fast: false
-      matrix:
-        include:
-          - arch: arm64
-            runner: macos-15
-          - arch: x64
-            runner: macos-15-intel
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          ref: ${{ needs.validate.outputs.sha }}
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-      - run: npm run toolchain:bootstrap
-      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
-        with:
-          path: |
-            ~/Library/Caches/electron
-            ~/.cache/electron
-            ~/Library/Caches/electron-builder
-            ~/.cache/electron-builder
-          key: electron-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('package-lock.json') }}
-      - run: npm ci
-      - run: npm run release:preflight:toolchain
-      # Signed Developer ID builds stay the fail-closed default; the ad-hoc
-      # unsigned beta path must be explicitly selected via the dispatch input
-      # or the RELEASE_MAC_UNSIGNED_ENABLED repository variable.
-      - name: Fail closed unless every release credential is configured
-        if: env.RELEASE_MAC_UNSIGNED_ENABLED != 'true'
-        run: npm run release:preflight
-        env:
-          RELEASE_SIGNING_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          CSC_LINK: ${{ secrets.MAC_CERTIFICATE_P12_BASE64 }}
-          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      # CI runs the full typecheck/lint/test suite for this commit; the release
-      # job only builds the bundle, packages, and runs post-package verification.
-      - name: Build, sign, notarize, and verify release packages
-        if: env.RELEASE_MAC_UNSIGNED_ENABLED != 'true'
-        run: npm run package:mac -- --skip-verify --arch ${{ matrix.arch }}
-        env:
-          RELEASE_SIGNING_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          CSC_LINK: ${{ secrets.MAC_CERTIFICATE_P12_BASE64 }}
-          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      - name: Build ad-hoc signed macOS packages for beta distribution
-        if: env.RELEASE_MAC_UNSIGNED_ENABLED == 'true'
-        run: node scripts/release/package.mjs --qa --platform mac --skip-verify --arch ${{ matrix.arch }}
-      - name: Launch the packaged application
-        run: node scripts/release/smoke-packaged-app.mjs --platform mac --arch ${{ matrix.arch }}
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: failure()
-        with:
-          name: packaged-smoke-diagnostics-mac-${{ matrix.arch }}
-          path: release/mac/${{ matrix.arch }}/packaged-smoke-diagnostics.log
-          if-no-files-found: error
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: omp-desktop-public-macos-${{ matrix.arch }}
-          path: |
-            release/mac/${{ matrix.arch }}/*.dmg
-            release/mac/${{ matrix.arch }}/*.zip
-            release/mac/${{ matrix.arch }}/latest*.yml
-          if-no-files-found: error
-
-  package-linux:
-    # Legacy Electron packaging; see the `package` job gate.
-    if: (github.event_name == 'workflow_dispatch' && inputs.include_legacy_electron) || (github.event_name == 'push' && vars.RELEASE_ELECTRON_ENABLED == 'true')
-    needs: [validate, production-audit, quality, conformance, hermetic-e2e]
-    strategy:
-      # Ship both Linux architectures from native runners so npm install and
-      # electron-builder package node-pty and ZeroMQ for the matching ABI.
-      # Keep the legs independent so one architecture can never mask the
-      # other's artifact or updater-feed failure.
-      fail-fast: false
-      matrix:
-        include:
-          - arch: arm64
-            runner: ubuntu-24.04-arm
-            unpacked_dir: linux-arm64-unpacked
-          - arch: x64
-            runner: ubuntu-22.04
-            unpacked_dir: linux-unpacked
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          ref: ${{ needs.validate.outputs.sha }}
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-      - run: npm run toolchain:bootstrap
-      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
-        with:
-          path: |
-            ~/.cache/electron
-            ~/.cache/electron-builder
-          key: electron-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('package-lock.json') }}
-      - name: Install pacman packaging dependency
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes libarchive-tools
-      - run: npm ci
-      - run: npm run release:preflight:toolchain
-      - run: npm run package:linux -- --skip-verify --arch ${{ matrix.arch }}
-      # The Linux packages install chrome-sandbox setuid-root, so the smoke restores
-      # those shipped permissions rather than launching with the sandbox disabled.
-      - run: |
-          sudo chown root:root release/linux/${{ matrix.arch }}/${{ matrix.unpacked_dir }}/chrome-sandbox
-          sudo chmod 4755 release/linux/${{ matrix.arch }}/${{ matrix.unpacked_dir }}/chrome-sandbox
-      - name: Launch the packaged application
-        run: node scripts/release/smoke-packaged-app.mjs --platform linux --arch ${{ matrix.arch }}
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: failure()
-        with:
-          name: packaged-smoke-diagnostics-linux-${{ matrix.arch }}
-          path: release/linux/${{ matrix.arch }}/packaged-smoke-diagnostics.log
-          if-no-files-found: error
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: omp-desktop-public-linux-${{ matrix.arch }}
-          path: |
-            release/linux/${{ matrix.arch }}/*.AppImage
-            release/linux/${{ matrix.arch }}/*.deb
-            release/linux/${{ matrix.arch }}/*.rpm
-            release/linux/${{ matrix.arch }}/*.pacman
-            release/linux/${{ matrix.arch }}/latest*.yml
-          if-no-files-found: error
-
-  package-windows:
-    # Legacy Electron packaging; see the `package` job gate. The Windows
-    # signed/unsigned inputs only apply once the legacy Electron build is on.
-    if: >-
-      ((github.event_name == 'workflow_dispatch' && inputs.include_legacy_electron) || (github.event_name == 'push' && vars.RELEASE_ELECTRON_ENABLED == 'true')) &&
-      ((github.event_name == 'workflow_dispatch' && (inputs.include_windows || inputs.include_windows_unsigned)) || (github.event_name == 'push' && (vars.RELEASE_WINDOWS_ENABLED == 'true' || vars.RELEASE_WINDOWS_UNSIGNED_ENABLED == 'true')))
-    needs: [validate, production-audit, quality, conformance, hermetic-e2e]
-    runs-on: windows-2022
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          ref: ${{ needs.validate.outputs.sha }}
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-      - run: npm run toolchain:bootstrap
-      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
-        with:
-          path: |
-            ~/AppData/Local/electron/Cache
-            ~/AppData/Local/electron-builder/Cache
-          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-      - run: npm ci
-      - run: npm run release:preflight:toolchain
-      # Signed builds remain fail-closed and require the configured Authenticode identity.
-      - name: Build, Authenticode-sign, and verify Windows packages
-        if: (github.event_name == 'workflow_dispatch' && inputs.include_windows) || (github.event_name == 'push' && vars.RELEASE_WINDOWS_ENABLED == 'true')
-        run: node scripts/release/package.mjs --public --platform win --skip-verify
-        env:
-          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
-          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
-          GOOEYPI_WINDOWS_CERT_SUBJECT: ${{ vars.GOOEYPI_WINDOWS_CERT_SUBJECT }}
-          GOOEYPI_WINDOWS_CERT_THUMBPRINT: ${{ vars.GOOEYPI_WINDOWS_CERT_THUMBPRINT }}
-      - name: Build unsigned Windows packages for beta distribution
-        if: (github.event_name == 'workflow_dispatch' && inputs.include_windows_unsigned && !inputs.include_windows) || (github.event_name == 'push' && vars.RELEASE_WINDOWS_UNSIGNED_ENABLED == 'true' && vars.RELEASE_WINDOWS_ENABLED != 'true')
-        run: node scripts/release/package.mjs --qa --platform win --skip-verify
-      # Artifacts are only publishable once the packaged executable itself boots.
-      - name: Launch the packaged application
-        run: node scripts/release/smoke-packaged-app.mjs --platform win --arch x64
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: failure()
-        with:
-          name: packaged-smoke-diagnostics-win-x64
-          path: release/win/x64/packaged-smoke-diagnostics.log
-          if-no-files-found: error
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: omp-desktop-public-windows
-          path: |
-            release/win/**/*.exe
-            release/win/**/*.zip
-            release/win/**/*.appx
-            release/win/**/*.msix
-            release/win/**/latest*.yml
-          if-no-files-found: error
+      - run: npm run release:preflight
+      - run: npm run typecheck
+      - run: npm run check
+      - run: npm test
 
   package-rust:
-    # The Rust application is the shipping desktop app, so its signed packages
-    # are built on every release. Without RUST_UPDATER_SIGNING_KEY the signing
-    # step skips with a notice, and the release aggregate then fails closed
-    # instead of publishing a release with no Rust artifacts.
+    # The signed packages are built on every release. Without
+    # RUST_UPDATER_SIGNING_KEY the signing step skips with a notice, and the
+    # release aggregate then fails closed instead of publishing a release with
+    # no signed artifacts.
     name: Package the Rust application
-    needs: [validate, production-audit, quality, conformance, hermetic-e2e]
+    needs: [validate, quality]
     strategy:
       # cargo-packager archives the host binary, so every leg runs on a native
       # runner; a cross-compiled leg would publish the wrong architecture.
@@ -466,11 +162,10 @@ jobs:
           if-no-files-found: error
 
   release-packages:
-    needs: [validate, production-audit, package-rust, package, package-linux, package-windows]
+    needs: [validate, package-rust]
     # Always run the aggregate gate. A skipped job can satisfy a required check,
     # so failures are asserted by an explicit first step rather than encoded in
-    # the job-level condition. The signed Rust packages are required; the
-    # legacy Electron legs may legitimately be skipped.
+    # the job-level condition.
     if: always()
     runs-on: ubuntu-22.04
     permissions:
@@ -480,13 +175,9 @@ jobs:
     steps:
       - name: Fail if a release prerequisite did not succeed
         if: >-
-          always() && (needs.validate.result != 'success' || needs.production-audit.result != 'success' ||
-          needs.package-rust.result != 'success' ||
-          (needs.package.result != 'success' && needs.package.result != 'skipped') ||
-          (needs.package-linux.result != 'success' && needs.package-linux.result != 'skipped') ||
-          (needs.package-windows.result != 'success' && needs.package-windows.result != 'skipped'))
+          always() && (needs.validate.result != 'success' || needs.package-rust.result != 'success')
         run: |
-          echo "Release prerequisite results: validate=${{ needs.validate.result }}, production-audit=${{ needs.production-audit.result }}, package-rust=${{ needs.package-rust.result }}, package=${{ needs.package.result }}, package-linux=${{ needs.package-linux.result }}, package-windows=${{ needs.package-windows.result }}"
+          echo "Release prerequisite results: validate=${{ needs.validate.result }}, package-rust=${{ needs.package-rust.result }}"
           exit 1
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -496,25 +187,7 @@ jobs:
         with:
           node-version-file: .nvmrc
       - run: npm run toolchain:bootstrap
-      # This job holds contents/attestations write, so it installs only the
-      # runtime dependency tree the release script needs (js-yaml) instead of the
-      # full dev toolchain.
-      - name: Install release script dependencies
-        run: npm ci --omit=dev --ignore-scripts
-      - run: npm run release:preflight:toolchain
-      # The legacy Electron assets are only collected when a maintainer opts
-      # back into the Electron build.
-      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
-        if: env.RELEASE_ELECTRON_LEGACY_ENABLED == 'true'
-        with:
-          pattern: omp-desktop-public-*
-          path: downloaded-release-artifacts
-      - name: Select the legacy Electron release assets and generate SHA-256 checksums
-        if: env.RELEASE_ELECTRON_LEGACY_ENABLED == 'true'
-        run: |
-          platforms='mac,linux'
-          if [ "$RELEASE_WINDOWS_ENABLED" = 'true' ]; then platforms="$platforms,win"; fi
-          node scripts/release/prepare-github-release.mjs --input downloaded-release-artifacts --output release-assets --tag "$RELEASE_TAG" --platforms "$platforms"
+      - run: npm run release:preflight
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
           pattern: rust-package-*
@@ -578,12 +251,6 @@ jobs:
             echo "Release tag $RELEASE_TAG moved from validated commit ${{ needs.validate.outputs.sha }} to $tag_sha."
             exit 1
           fi
-          release_channel_args=(--latest)
-          # The unsigned beta channels belong to the legacy Electron build; a
-          # Rust-only release is signed and stays the latest release.
-          if [ "$RELEASE_ELECTRON_LEGACY_ENABLED" = 'true' ] && { [ "$RELEASE_MAC_UNSIGNED_ENABLED" = 'true' ] || [ "$RELEASE_WINDOWS_UNSIGNED_ENABLED" = 'true' ]; }; then
-            release_channel_args=(--prerelease)
-          fi
           existing=$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft 2>/dev/null || true)
           if [ "$existing" = 'false' ]; then
             echo "Release $RELEASE_TAG is already published and will not be replaced."
@@ -598,7 +265,7 @@ jobs:
               gh release delete-asset "$RELEASE_TAG" "$stale" --yes
             done < stale-assets.txt
             gh release upload "$RELEASE_TAG" release-assets/* --clobber
-            gh release edit "$RELEASE_TAG" --verify-tag --draft=false "${release_channel_args[@]}"
+            gh release edit "$RELEASE_TAG" --verify-tag --draft=false --latest
           else
             gh release create "$RELEASE_TAG" release-assets/* \
               --verify-tag \
@@ -606,7 +273,7 @@ jobs:
               --generate-notes \
               --notes "Every installer and archive is covered by SHA256SUMS.txt and GitHub build-provenance attestations." \
               --title "OMP Desktop ${RELEASE_TAG#v}" \
-              "${release_channel_args[@]}"
+              --latest
           fi
         env:
           GH_TOKEN: ${{ github.token }}
@@ -636,7 +303,7 @@ jobs:
         with:
           node-version-file: .nvmrc
       - run: npm run toolchain:bootstrap
-      - run: npm run release:preflight:toolchain
+      - run: npm run release:preflight
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
           pattern: rust-package-*
