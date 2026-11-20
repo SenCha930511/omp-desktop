@@ -84,7 +84,10 @@ export const COVERAGE_FAMILIES: readonly CoverageFamily[] = Object.freeze([
     root: 'assets/extensions',
     runtimeExtensions: COVERAGE_RUNTIME_EXTENSIONS,
     responsibility: 'Every first-party extension shipped as an Electron extra resource.',
-    thresholds: { statements: 59, branches: 45, functions: 54, lines: 63 },
+    // The browser and collaboration tool registrations moved to OMP host tools,
+    // leaving the shipped extensions as skills and commands only.
+    // Measured 57.2/50.77/43.05/60.3.
+    thresholds: { statements: 57, branches: 45, functions: 43, lines: 60 },
   },
 ])
 
