@@ -135,10 +135,20 @@ describe('inspector re-render containment', () => {
     expect(last.onNavigateAgentTab).toBe(first.onNavigateAgentTab)
     expect(last.onGrantProject).toBe(first.onGrantProject)
     expect(last.onOpenAutomation).toBe(first.onOpenAutomation)
+    expect(last.onOpenSchedules).toBe(first.onOpenSchedules)
+    expect(last.backgroundTasks).toBe(first.backgroundTasks)
     expect(last.onShowBrowserPreview).toBe(first.onShowBrowserPreview)
     // The Agents tab receives one memoized bundle, so unrelated App renders
     // never reopen the inspector through a fresh roster object.
     expect(last.subagents).toBe(first.subagents)
+  })
+
+  it('lists the full sample automation set on the Background Tasks tab', async () => {
+    await renderApp()
+    const tasksTab = [...container.querySelectorAll<HTMLButtonElement>('.inspector__tabs button')].find((button) => button.textContent === 'Background Tasks')
+    expect(tasksTab).toBeDefined()
+    await act(async () => { tasksTab?.click() })
+    expect(container.querySelector('#inspector-panel-tasks .background-tasks__list')?.textContent).toContain('Morning issue triage')
   })
 })
 
@@ -158,6 +168,7 @@ describe('summary tab data flow', () => {
         git={{ isRepo: false, files: [] }}
         automations={[]}
         onOpenAutomation={() => undefined}
+        onOpenSchedules={() => undefined}
         browserHome="about:blank"
         browserAnnotations={useBrowserAnnotations()}
         agentBrowserTabs={[]}

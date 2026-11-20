@@ -6,6 +6,7 @@ import { useI18n } from '@/lib/i18n'
 import type { AgentBrowserTabRecord, AutomationScheduleRecord, GitStatus, InspectorTab, ProjectRecord, RuntimeInfo } from '@/types/api'
 import type { AgentSlotRect } from './AgentBrowserLayer'
 import type { SubagentsTabPanelProps } from './inspector/SubagentsTabPanel'
+import { BackgroundTasksPanel } from './inspector/BackgroundTasksPanel'
 import { BrowserPanel } from './inspector/BrowserPanel'
 import { ChangesPanel } from './inspector/ChangesPanel'
 import { FilesPanel } from './inspector/FilesPanel'
@@ -28,7 +29,10 @@ export interface InspectorProps {
   summary: TranscriptSummary
   git: GitStatus
   automations: AutomationScheduleRecord[]
+  /** Every automation for the harness; the Background Tasks tab lists these unsliced. */
+  backgroundTasks?: AutomationScheduleRecord[]
   onOpenAutomation(id: string): void
+  onOpenSchedules(): void
   browserHome: string
   browserAnnotations: BrowserAnnotationsApi
   agentBrowserTabs: AgentBrowserTabRecord[]
@@ -51,7 +55,7 @@ export interface InspectorProps {
   overlay?: boolean
 }
 
-const tabIds: InspectorTab[] = ['summary', 'changes', 'browser', 'files', 'agents']
+const tabIds: InspectorTab[] = ['summary', 'changes', 'browser', 'files', 'agents', 'tasks']
 
 /** Memoized so transcript frames reach the shell only as the store's summary snapshot, and only on the Summary tab. */
 export const Inspector = memo(function Inspector({
@@ -66,7 +70,9 @@ export const Inspector = memo(function Inspector({
   summary,
   git,
   automations,
+  backgroundTasks,
   onOpenAutomation,
+  onOpenSchedules,
   browserHome,
   browserAnnotations,
   agentBrowserTabs,
@@ -157,6 +163,7 @@ export const Inspector = memo(function Inspector({
         ) : null}
         {activeTab === 'files' ? <FilesPanel project={project} git={git} onReveal={onRevealPath} /> : null}
         {activeTab === 'agents' && subagents ? <SubagentsTabPanel {...subagents} /> : null}
+        {activeTab === 'tasks' ? <BackgroundTasksPanel automations={backgroundTasks ?? automations} onOpenAutomation={onOpenAutomation} onOpenSchedules={onOpenSchedules} /> : null}
       </div>
     </aside>
   )
