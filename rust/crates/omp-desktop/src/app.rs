@@ -814,6 +814,7 @@ pub struct Workspace {
     selected_session: Option<usize>,
     collapsed_projects: HashSet<String>,
     expanded_thinking: HashSet<String>,
+    todo_open: bool,
     sidebar_search_open: bool,
     sidebar_filter: Entity<InputState>,
     _sidebar_filter_subscription: Subscription,
@@ -1110,6 +1111,7 @@ impl Workspace {
             selected_session: None,
             collapsed_projects: HashSet::new(),
             expanded_thinking: HashSet::new(),
+            todo_open: false,
             sidebar_search_open: false,
             sidebar_filter,
             _sidebar_filter_subscription: sidebar_filter_subscription,
@@ -2023,7 +2025,12 @@ impl Workspace {
                         .bg(colors.tab)
                         .text_size(px(12.5))
                         .text_color(colors.muted_foreground)
-                        .child(text),
+                        .child(text)
+                        .with_animation(
+                            "thinking-body",
+                            Animation::new(Duration::from_millis(160)),
+                            |element, delta| element.opacity(delta),
+                        ),
                 )
             })
             .into_any_element()
@@ -4700,6 +4707,137 @@ impl Workspace {
                     .text_color(colors.muted_foreground)
                     .child(format!("Subagents {}", self.agents.list().len())),
             );
+        let todo_phases = latest_todo_phases(&self.transcript);
+        let todo_total: usize = todo_phases.iter().map(|phase| phase.tasks.len()).sum();
+        let todo_done = todo_phases
+            .iter()
+            .flat_map(|phase| &phase.tasks)
+            .filter(|task| task.status == TodoStatus::Completed)
+            .count();
+        let todo_current = todo_phases
+            .iter()
+            .flat_map(|phase| &phase.tasks)
+            .find(|task| task.status == TodoStatus::InProgress)
+            .map(|task| task.content.clone());
+        let todo_hud = if todo_phases.is_empty() {
+            None
+        } else {
+            let panel = div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .children(todo_phases.iter().map(|phase| {
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_size(px(10.5))
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .text_color(colors.muted_foreground)
+                                .child(phase.name.clone()),
+                        )
+                        .children(phase.tasks.iter().map(|task| {
+                            let marker = match task.status {
+                                TodoStatus::Completed => div()
+                                    .text_color(colors.success)
+                                    .child(IconName::Check)
+                                    .into_any_element(),
+                                TodoStatus::InProgress => div()
+                                    .size(px(6.0))
+                                    .rounded(px(999.0))
+                                    .bg(colors.primary)
+                                    .with_animation(
+                                        "todo-pulse",
+                                        Animation::new(Duration::from_millis(1200)).repeat(),
+                                        |element, delta| {
+                                            element.opacity(
+                                                0.35 + 0.65 * (1.0 - (2.0 * delta - 1.0).abs()),
+                                            )
+                                        },
+                                    )
+                                    .into_any_element(),
+                                TodoStatus::Pending => div()
+                                    .size(px(8.0))
+                                    .rounded(px(999.0))
+                                    .border_1()
+                                    .border_color(colors.border)
+                                    .into_any_element(),
+                            };
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .text_size(px(11.5))
+                                .when(task.status == TodoStatus::Completed, |element| {
+                                    element.text_color(colors.muted_foreground)
+                                })
+                                .child(marker)
+                                .child(div().flex_1().child(task.content.clone()))
+                        }))
+                }));
+            Some(
+                div()
+                    .w_full()
+                    .max_w(px(960.0))
+                    .mx_auto()
+                    .px_6()
+                    .py_2()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .id("todo-hud")
+                                    .aria_label("Plan")
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .px_2()
+                                    .py_1()
+                                    .rounded(px(8.0))
+                                    .bg(colors.tab)
+                                    .text_size(px(11.5))
+                                    .text_color(colors.foreground)
+                                    .hover(|style| style.bg(colors.accent))
+                                    .child(IconName::ListTodo)
+                                    .child("Plan")
+                                    .child(
+                                        div()
+                                            .text_size(px(10.5))
+                                            .text_color(colors.muted_foreground)
+                                            .child(format!("{todo_done}/{todo_total} done")),
+                                    )
+                                    .when_some(todo_current, |element, current| {
+                                        element.child(
+                                            div()
+                                                .flex_1()
+                                                .overflow_hidden()
+                                                .text_ellipsis()
+                                                .text_size(px(11.0))
+                                                .text_color(colors.muted_foreground)
+                                                .child(current),
+                                        )
+                                    })
+                                    .child(div().flex_1())
+                                    .child(if self.todo_open {
+                                        IconName::ChevronDown
+                                    } else {
+                                        IconName::ChevronRight
+                                    })
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.todo_open = !this.todo_open;
+                                        cx.notify();
+                                    })),
+                            )
+                            .when(self.todo_open, |element| element.child(panel)),
+                    )
+                    .into_any_element(),
+            )
+        };
         let scroll = div()
             .id("transcript-scroll")
             .flex()
@@ -4829,6 +4967,7 @@ impl Workspace {
             .flex_1()
             .min_h(px(0.0))
             .child(status_row)
+            .when_some(todo_hud, |element, hud| element.child(hud))
             .child(scroll)
             .when(!self.transcript_at_bottom, |element| {
                 element.child(
@@ -8937,6 +9076,95 @@ fn transcript_role_label(message: &TranscriptMessage) -> String {
     }
 }
 
+/// One task in the harness's `todo` tool result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TodoTask {
+    content: String,
+    status: TodoStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TodoStatus {
+    Pending,
+    InProgress,
+    Completed,
+}
+
+/// One phase of the plan, in the order the harness printed it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TodoPhase {
+    name: String,
+    tasks: Vec<TodoTask>,
+}
+
+/// Parses the phase blocks of a `todo` tool result.
+///
+/// The harness prints a human-readable summary first and the structured phase
+/// blocks at the tail. Only the tail is authoritative; an unrecognized format
+/// yields no phases so the plain tool row stays visible instead of a guessed
+/// plan.
+fn parse_todo_tool_result(text: &str) -> Vec<TodoPhase> {
+    let mut phases: Vec<TodoPhase> = Vec::new();
+    let mut current: Option<usize> = None;
+    for raw in text.lines() {
+        let line = raw.trim_end_matches('\r');
+        if !line.starts_with("    ")
+            && let Some(name) = line
+                .strip_prefix("  ")
+                .and_then(|line| line.strip_suffix(':'))
+        {
+            phases.push(TodoPhase {
+                name: name.trim().to_string(),
+                tasks: Vec::new(),
+            });
+            current = Some(phases.len() - 1);
+            continue;
+        }
+        let Some(task) = line.strip_prefix("    - [") else {
+            continue;
+        };
+        let Some((mark, rest)) = task.split_at_checked(1) else {
+            continue;
+        };
+        let Some(rest) = rest.strip_prefix("] ") else {
+            continue;
+        };
+        let raw_content = rest.trim();
+        let in_progress = raw_content.ends_with("(in progress)");
+        let content = raw_content
+            .strip_suffix("(in progress)")
+            .unwrap_or(raw_content)
+            .trim()
+            .to_string();
+        let status = match mark {
+            "X" | "x" => TodoStatus::Completed,
+            _ if in_progress => TodoStatus::InProgress,
+            _ => TodoStatus::Pending,
+        };
+        if let Some(index) = current {
+            phases[index].tasks.push(TodoTask { content, status });
+        }
+    }
+    phases.retain(|phase| !phase.tasks.is_empty());
+    phases
+}
+
+/// The newest plan in the transcript: the last `todo` tool result with a
+/// parseable phase block wins, so a later update replaces the previous plan.
+fn latest_todo_phases(messages: &[TranscriptMessage]) -> Vec<TodoPhase> {
+    for message in messages.iter().rev() {
+        for part in &message.parts {
+            if part.kind == "toolResult" && part.name.as_deref() == Some("todo") {
+                let phases = parse_todo_tool_result(part.text.as_deref().unwrap_or(""));
+                if !phases.is_empty() {
+                    return phases;
+                }
+            }
+        }
+    }
+    Vec::new()
+}
+
 /// The text the transcript draws for one part: text and thinking as written,
 /// tool calls and results with their glyphs, compaction as its token counts.
 fn transcript_part_text(part: &TranscriptPart) -> String {
@@ -10093,16 +10321,16 @@ mod tests {
         DictationState, LIVE_TRANSCRIPT_LIMIT, LiveVoiceState, MODEL_PROVIDER_LIMIT, MathSegment,
         MathSegmentKind, RightPane, TERMINAL_EMPTY_SELECTION_STATUS, TERMINAL_MENU_ITEMS,
         TERMINAL_SELECTION_LABEL, TRANSCRIPT_BOTTOM_THRESHOLD, TerminalMenuAction, TerminalSession,
-        TerminalTabSpec, TerminalTabSpecs, UpdateCheckState, Workspace, WorkspaceData,
+        TerminalTabSpec, TerminalTabSpecs, TodoStatus, UpdateCheckState, Workspace, WorkspaceData,
         append_clipboard_text, append_composer_text, append_dictation_text, append_side_answer,
         apply_dictation_frame, apply_live_voice_event, ask_answers_ready, ask_cancel_payload,
         ask_submit_payload, base64_encode, capture_path, close_confirmation, compact_layout,
         composer_model_label, context_percent, context_usage_label, filter_models, group_digits,
         image_mime, math_plain_text, math_segments, model_key, parse_ask_questions,
-        parse_context_usage, parse_model_key, provider_chips, read_pending_image,
-        should_confirm_close, side_answer_delta, terminal_menu, terminal_menu_action,
-        terminal_selection_text_block, terminal_tab_bar, transcript_is_at_bottom,
-        transcript_part_text, updates, write_capture,
+        parse_context_usage, parse_model_key, parse_todo_tool_result, provider_chips,
+        read_pending_image, should_confirm_close, side_answer_delta, terminal_menu,
+        terminal_menu_action, terminal_selection_text_block, terminal_tab_bar,
+        transcript_is_at_bottom, transcript_part_text, updates, write_capture,
     };
     use omp_core::sessions::{TranscriptMessage, TranscriptPart};
 
@@ -12269,6 +12497,21 @@ mod tests {
 
     /// `$…$` and `$$…$$` become their own runs, display first, and joining the
     /// runs back puts every delimiter where the message had it.
+    #[test]
+    fn todo_tool_result_parses_phases_and_statuses() {
+        let text = "Remaining items (1):\n  - task2 [in_progress] (phase A)\nOverall: 1/3 done, 2 open.\nActive phase 1/2 \"phase A\" (1/2).\n  phase A:\n    - [X] task1\n    - [ ] task2 (in progress)\n  phase B:\n    - [ ] task3\n";
+        let phases = parse_todo_tool_result(text);
+        assert_eq!(phases.len(), 2);
+        assert_eq!(phases[0].name, "phase A");
+        assert_eq!(phases[0].tasks.len(), 2);
+        assert_eq!(phases[0].tasks[0].content, "task1");
+        assert_eq!(phases[0].tasks[0].status, TodoStatus::Completed);
+        assert_eq!(phases[0].tasks[1].content, "task2");
+        assert_eq!(phases[0].tasks[1].status, TodoStatus::InProgress);
+        assert_eq!(phases[1].name, "phase B");
+        assert_eq!(phases[1].tasks[0].status, TodoStatus::Pending);
+    }
+
     #[test]
     fn math_segments_split_inline_and_display_runs() {
         let text = "area is $x^2$ and $$y$$ wide";
