@@ -37,8 +37,8 @@ npm run toolchain:bootstrap
 
 # --- Project dependencies + native/Electron runtime ------------------------
 # `npm ci` runs the repo postinstall (electron platform download + native
-# dependency rebuild). node-pty is rebuilt for Electron; node-pty ships
-# vendored prebuilt binaries, so npm 12's default script blocking is fine.
+# dependency rebuild). No runtime dependency ships native code, so the ABI
+# rebuild has nothing to compile.
 npm ci
 
 echo "OMP Desktop Cloud Agent install complete: node $(node -v), npm $(npm -v)."

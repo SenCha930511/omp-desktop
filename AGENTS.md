@@ -4,7 +4,7 @@ Guidance for AI coding assistants working in this repository. OMP Desktop is an 
 
 ## Project Overview
 
-A cross-platform (macOS/Linux/Windows) desktop shell that gives the `omp` CLI a native UI: projects, persistent sessions, live transcripts, model/provider pickers, schedules, terminals, an agent-driven browser, and a Git/inspector workspace. The harness owns models, logins, and session files; this app owns the chrome. Single harness only — `requireHarness` accepts exactly `'omp'`.
+A cross-platform (macOS/Linux/Windows) desktop shell that gives the `omp` CLI a native UI: projects, persistent sessions, live transcripts, model/provider pickers, schedules, project setup/run scripts, an agent-driven browser, and a Git/inspector workspace. The harness owns models, logins, and session files; this app owns the chrome. Single harness only — `requireHarness` accepts exactly `'omp'`.
 
 ## Architecture & Data Flow
 
@@ -15,7 +15,7 @@ React renderer (src/) ── window.desktop (frozen DesktopApi, contextBridge)
                        └─ ipcRenderer.invoke('domain:action') + push subscriptions
 preload (electron/preload/index.ts) ── wraps each channel, Object.freeze per domain
 main (electron/main/*) ── registerIpc() wires every handler with sender verification
-                       └─ services: store, sessions, agent-rpc, git, terminal, voice, …
+                       └─ services: store, sessions, agent-rpc, git, project scripts, voice, …
 ```
 
 - **`src/types/api.ts` is the shared contract for all three processes** — record types, the `DesktopApi` interface, and `declare global { Window.desktop }`. Editing it changes main, preload, and renderer at once; channel names in `electron/main/ipc.ts` and preload wrappers must be kept in sync manually.
@@ -71,7 +71,7 @@ On Linux CI/Cloud-Agent VMs, wrap GUI commands with `xvfb-run -a` (e.g. `xvfb-ru
 
 ## Important Files
 
-- `src/App.tsx` — composition root (view state, lazy pages, terminal mounts)
+- `src/App.tsx` — composition root (view state, lazy pages, project script runner mounts)
 - `src/types/api.ts` — the cross-process contract
 - `electron/main/index.ts` — window lifecycle, `omp-desktop://` protocol with CSP, single-instance lock, service bootstrap
 - `electron/main/ipc.ts` — every IPC channel + sender authorization
@@ -86,7 +86,7 @@ On Linux CI/Cloud-Agent VMs, wrap GUI commands with `xvfb-run -a` (e.g. `xvfb-ru
 - **Node ≥24.15.0, npm ≥12.0.2** (`.nvmrc` pins 24.15.0; `engines` + `packageManager` must agree — `scripts/release/preflight.mjs` enforces this).
 - **npm only**, and the repo-pinned npm: run `npm run toolchain:bootstrap` (installs npm from the checksum-verified `vendor/` archive) before `npm ci` on a fresh machine.
 - A harness shell can be shadowed by another `node` on `PATH`; if `node -v` isn't `v24.15.0`: `export NVM_DIR="$HOME/.nvm"; . "$NVM_DIR/nvm.sh"; nvm use >/dev/null`.
-- **Runtime deps are deliberately minimal** (only `electron-updater`, `js-yaml`, `node-pty`, `rrule`); everything else is devDependencies. New runtime deps need audit/size-budget review (`audit:production`, `release:bundle-size`).
+- **Runtime deps are deliberately minimal** (only `electron-updater`, `js-yaml`, `rrule`, all pure JavaScript); everything else is devDependencies. New runtime deps need audit/size-budget review (`audit:production`, `release:bundle-size`).
 - `postinstall` runs `install-app-deps.mjs` (native rebuild) and `brand-dev-electron.mjs` (rebrands the dev Electron bundle as "OMP Desktop": name, unique bundle id, icon, ad-hoc re-sign, LaunchServices refresh). Don't rename the executable inside `node_modules/electron/dist/Electron.app` — `path.txt` and Electron's resource lookup depend on it.
 - Git remotes: `origin` = `SenCha930511/omp-desktop`, `upstream` = `am-will/gooey-pi`.
 
@@ -98,4 +98,4 @@ On Linux CI/Cloud-Agent VMs, wrap GUI commands with `xvfb-run -a` (e.g. `xvfb-ru
 - **Playwright Electron e2e** (`tests/e2e/app.spec.ts`): hermetic (temp `HOME`, fixture `OMP_BINARY`), serial (`workers: 1`), 75s timeout, retries 1 for the known macOS first-window flake. It fails on any renderer `pageerror`. Two known-flaky scenarios (`local OMP MCP servers`, `tray Quit`) pass on retry.
 - **Coverage**: `npm run test:coverage` enforces global thresholds plus per-family requirements from `scripts/release/coverage-inventory` (safety-critical modules like `ipc.ts`, `store.ts`, `preload/index.ts` must stay covered).
 - **CI gates** (`.github/workflows/ci.yml`): production audit, quality (typecheck+check+coverage+bundle+size), hermetic e2e (macOS), Windows state-migration, packaging smoke. All run `toolchain:bootstrap` + toolchain preflight + `npm ci`.
-- **Release verification is fail-closed**: `verify-package.mjs` (signing/entitlements/notarization/fuses/ASAR allowlist), `smoke-packaged-app.mjs` (packaged boot marker), `audit-production.mjs` (advisories; exceptions need reason + expiry). Adding an audit exception is a security-sensitive change.
+- **Release verification is fail-closed**: `verify-package.mjs` (signing/entitlements/notarization/fuses/ASAR allowlist, no unpacked native payload), `smoke-packaged-app.mjs` (packaged boot marker), `audit-production.mjs` (advisories; exceptions need reason + expiry). Adding an audit exception is a security-sensitive change.

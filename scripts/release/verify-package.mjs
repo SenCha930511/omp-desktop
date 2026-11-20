@@ -10,8 +10,8 @@ import {
   artifactArchitectures,
   assertAsarLayout,
   assertExactArchitectures,
+  assertNoUnpackedNativeFiles,
   assertPackagedExtensions,
-  assertUnpackedNativeLayout,
   parseArchitectures,
   parseTeamIdentifier,
   requireReleaseArtifacts,
@@ -95,9 +95,7 @@ async function verifyApp({ app, artifact, mode, expectedTeam }) {
 
   const appArchitectures = parseArchitectures(run('lipo', ['-archs', executable]))
   assertExactArchitectures(appArchitectures, artifactArchitectures(artifact), basename(artifact))
-  const unpacked = join(resources, 'app.asar.unpacked')
-  if (!existsSync(unpacked)) throw new Error(`${basename(artifact)} application must contain Resources/app.asar.unpacked`)
-  assertUnpackedNativeLayout(unpacked, appArchitectures, (path) => parseArchitectures(run('lipo', ['-archs', path])))
+  assertNoUnpackedNativeFiles(join(resources, 'app.asar.unpacked'))
   assertFuses(await getCurrentFuseWire(executable))
 
   if (mode === 'public') {
@@ -184,7 +182,7 @@ export async function verifyPackage({ mode, releaseDirectory = resolve('release'
 
   const packageJson = JSON.parse(readFileSync(resolve('package.json'), 'utf8'))
   console.log(
-    `Verified ${mode} DMG and ZIP for OMP Desktop ${packageJson.version}: archive integrity, contained application, exact native unpack allowlist and architectures, Electron fuses, and package size budgets (DMG payload: ${describeSizeMetrics(dmgMetrics)}; ZIP payload: ${describeSizeMetrics(zipMetrics)})${mode === 'public' ? ', signatures, microphone entitlements, notarization staples, and Gatekeeper' : ''}.`,
+    `Verified ${mode} DMG and ZIP for OMP Desktop ${packageJson.version}: archive integrity, contained application, application architectures, no unpacked native payload, Electron fuses, and package size budgets (DMG payload: ${describeSizeMetrics(dmgMetrics)}; ZIP payload: ${describeSizeMetrics(zipMetrics)})${mode === 'public' ? ', signatures, microphone entitlements, notarization staples, and Gatekeeper' : ''}.`,
   )
 }
 
