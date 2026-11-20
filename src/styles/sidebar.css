@@ -64,13 +64,10 @@
 .project-row__main:focus-visible { outline: none; }
 .project-row:has(.project-row__main:focus-visible)::after { content: ''; position: absolute; inset: 0; z-index: -1; border-radius: 7px; box-shadow: 0 0 0 2px var(--focus); }
 
-.session-row-wrap > .session-row { padding-right: 8px; transition: padding-right 140ms var(--ease-out); }
-.session-row-wrap:hover > .session-row, .session-row-wrap:focus-within > .session-row, .session-row-wrap:has(.session-row__more[aria-expanded="true"], .session-row__archive.is-confirming) > .session-row { padding-right: 61px; }
-/* A running row parks its spinner where the hover actions appear; reserve
-   the action zone at rest so the spinner never sits under the invisible
-   buttons (a click there would open the menu instead of selecting the
-   session) and hover does not shift the spinner sideways. */
-.session-row-wrap--running > .session-row { padding-right: 61px; }
+/* Every row reserves the hover-action zone at rest so the timestamp and
+   spinner never sit under the invisible buttons; hovering does not shift
+   the row content sideways. */
+.session-row-wrap > .session-row { padding-right: 61px; }
 .session-row__archive, .session-row__more { position: absolute; top: 6px; opacity: 0; transition: opacity 130ms var(--ease-out), color 130ms var(--ease-out), background 130ms var(--ease-out); }
 .session-row-wrap:hover .session-row__archive, .session-row-wrap:focus-within .session-row__archive, .session-row__archive.is-confirming, .session-row-wrap:hover .session-row__more, .session-row-wrap:focus-within .session-row__more, .session-row__more[aria-expanded="true"] { opacity: 1; }
 .session-row__archive { right: 32px; color: var(--text-tertiary); }

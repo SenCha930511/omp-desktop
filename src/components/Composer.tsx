@@ -735,7 +735,7 @@ export const Composer = memo(function Composer({
                   fileInputRef.current?.click()
                 },
               },
-              ...(commandCatalog.some((command) => command.source === 'skill')
+              ...(commandCatalog.some((command) => command.source === 'skill' && command.name.toLowerCase().startsWith('skill:'))
                 ? [{
                     key: 'skills',
                     label: t('composer.skills'),
