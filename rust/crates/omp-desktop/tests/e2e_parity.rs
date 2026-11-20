@@ -210,9 +210,15 @@ fn reduce_motion_setting_controls_gpui_and_reacts_to_changes(cx: &mut TestAppCon
     handle
         .update(cx, |workspace, _, cx| {
             workspace.update_setting(json!({ "reduceMotion": false }), cx);
+            assert!(!workspace.settings().reduce_motion);
         })
-        .expect("allow motion");
-    cx.update(|cx| assert!(!cx.reduce_motion()));
+        .expect("follow system motion");
+    cx.update(|cx| {
+        assert!(
+            cx.reduce_motion(),
+            "System preserves the last value until the test scheduler can supply an OS reading"
+        );
+    });
     handle
         .update(cx, |workspace, _, cx| {
             workspace.update_setting(json!({ "reduceMotion": true }), cx);
@@ -4827,7 +4833,7 @@ fn tray_quit_without_an_agent_run_quits(cx: &mut TestAppContext) {
 fn draw_frame(cx: &mut TestAppContext, window: gpui_kit::AnyWindowHandle) {
     cx.update(|cx| {
         cx.update_window(window, |_, window, cx| {
-            window.draw(cx).clear(cx);
+            window.render_frame(cx);
         })
         .expect("workspace frame");
     });
@@ -5028,6 +5034,20 @@ fn composer_send_while_running_queues_a_follow_up(cx: &mut TestAppContext) {
             );
         })
         .expect("streaming cue");
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.update_setting(json!({ "reduceMotion": true }), cx);
+        })
+        .expect("reduced streaming cue");
+    draw_frame(cx, handle.into());
+    handle
+        .update(cx, |_, window, _| {
+            assert!(
+                window.try_find("transcript-streaming-cue").is_some(),
+                "Reduced Motion keeps a static activity cue"
+            );
+        })
+        .expect("static streaming cue");
 
     // A fresh runtime for the same session is idle again.
     handle
@@ -5078,6 +5098,7 @@ fn composer_send_while_running_queues_a_follow_up(cx: &mut TestAppContext) {
         );
     };
     assert_eq!(echoed["running"], json!(false));
+    assert_eq!(echoed["streamFeedback"], json!("idle"));
     assert_eq!(echoed["queuedFollowUps"], json!([]));
     draw_frame(cx, handle.into());
     handle

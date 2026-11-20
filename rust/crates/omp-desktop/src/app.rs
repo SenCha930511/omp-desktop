@@ -37,6 +37,8 @@ use serde_json::{Value, json};
 
 #[path = "browser.rs"]
 mod browser;
+#[path = "interaction.rs"]
+mod interaction;
 #[path = "markdown.rs"]
 mod markdown;
 
@@ -1016,6 +1018,7 @@ impl Workspace {
         // `main` installs the guard before the window opens, so the close
         // handler and this view share one; a test without one gets its own.
         let close_guard = cx.try_global::<CloseGuard>().cloned().unwrap_or_default();
+        interaction::apply_reduce_motion(data.settings.reduce_motion, cx);
         let language = i18n::resolve(data.settings.locale);
         let composer = cx.new(|cx| {
             InputState::new(window, cx)
@@ -1940,6 +1943,14 @@ impl Workspace {
         // drawing the right pane as an overlay over the transcript.
         snapshot["compactLayout"] = json!(self.compact_layout);
         snapshot["detailsOpen"] = json!(self.compact_layout && self.details_open);
+        snapshot["streamFeedback"] = json!(match interaction::StreamFeedback::derive(
+            self.running,
+            self.streaming_index.is_some(),
+        ) {
+            interaction::StreamFeedback::Idle => "idle",
+            interaction::StreamFeedback::AwaitingFirstDelta => "awaitingFirstDelta",
+            interaction::StreamFeedback::Receiving => "receiving",
+        });
         // The toolbar badge's own count: unread notifications only, so a
         // scenario can watch it clear when the Activity pane opens.
         snapshot["unreadNotifications"] = json!(self.unread_notifications());
@@ -5299,6 +5310,46 @@ impl Workspace {
                         ),
                 )
             })
+            .when(
+                interaction::StreamFeedback::derive(self.running, self.streaming_index.is_some())
+                    != interaction::StreamFeedback::Idle,
+                |element| {
+                    element.child(
+                        div()
+                            .id("transcript-streaming-cue")
+                            .aria_label(self.t("transcript.streaming"))
+                            .absolute()
+                            .left(px(24.0))
+                            .bottom(px(16.0))
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .rounded(px(999.0))
+                            .border_1()
+                            .border_color(colors.border)
+                            .bg(colors.popover)
+                            .px_3()
+                            .py_1()
+                            .text_size(px(11.0))
+                            .text_color(colors.muted_foreground)
+                            .child(
+                                div()
+                                    .size(px(6.0))
+                                    .rounded(px(999.0))
+                                    .bg(colors.primary)
+                                    .with_animation(
+                                        "transcript-streaming-pulse",
+                                        Animation::new(Duration::from_millis(2200))
+                                            .repeat_synced()
+                                            .with_easing(ease_in_out),
+                                        |element, delta| element.opacity(0.45 + 0.55 * delta),
+                                    ),
+                            )
+                            .child(self.t("transcript.streaming"))
+                            .test_support(),
+                    )
+                },
+            )
             .into_any_element()
     }
 
@@ -6336,11 +6387,15 @@ impl Workspace {
     }
 
     pub fn update_setting(&mut self, patch: Value, cx: &mut Context<Self>) {
+        let previous_reduce_motion = self.settings.reduce_motion;
         if let Some(store) = self.store.clone() {
             let mut store = store.lock().expect("state lock");
             if let Ok(next) = store.update_settings(&patch) {
                 self.settings = next;
             }
+        }
+        if self.settings.reduce_motion != previous_reduce_motion {
+            interaction::apply_reduce_motion(self.settings.reduce_motion, cx);
         }
         cx.notify();
     }
