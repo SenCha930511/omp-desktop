@@ -126,9 +126,9 @@ jobs:
     needs: [validate, production-audit, quality, hermetic-e2e]
     strategy:
       # Ship both mac architectures as separate DMG/ZIP builds. Each leg runs
-      # on a runner whose native architecture matches the target so
-      # install-app-deps never cross-compiles node-pty or zeromq, and one
-      # leg's failure never cancels the other's signed build.
+      # on a runner whose native architecture matches the target so no native
+      # dependency is ever cross-compiled, and one leg's failure never cancels
+      # the other's signed build.
       fail-fast: false
       matrix:
         include:
@@ -197,7 +197,7 @@ jobs:
     needs: [validate, production-audit, quality, hermetic-e2e]
     strategy:
       # Ship both Linux architectures from native runners so npm install and
-      # electron-builder package node-pty and ZeroMQ for the matching ABI.
+      # electron-builder build for the matching ABI.
       # Keep the legs independent so one architecture can never mask the
       # other's artifact or updater-feed failure.
       fail-fast: false

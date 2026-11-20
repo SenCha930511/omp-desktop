@@ -137,7 +137,7 @@ async function settings(page, outDir) {
   await capture(page, outDir, 'settings-general')
   proofs.push('Settings opened -> "General" heading visible')
 
-  for (const section of ['Appearance', 'Terminal']) {
+  for (const section of ['Appearance', 'Privacy']) {
     await page.getByRole('button', { name: section, exact: true }).click()
     await page.getByRole('heading', { name: section, exact: true }).first().waitFor({ state: 'visible', timeout: 8_000 })
     await capture(page, outDir, `settings-${section.toLowerCase()}`)

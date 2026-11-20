@@ -44,7 +44,6 @@
   "dependencies": {
     "electron-updater": "^6.8.9",
     "js-yaml": "^5.3.0",
-    "node-pty": "^1.1.0",
     "rrule": "^2.8.1"
   },
   "overrides": {
@@ -60,9 +59,6 @@
     "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^5.2.0",
     "@vitest/coverage-v8": "^4.1.10",
-    "@xterm/addon-fit": "^0.11.0",
-    "@xterm/addon-web-links": "^0.12.0",
-    "@xterm/xterm": "^6.0.0",
     "electron": "^43.4.0",
     "electron-builder": "^26.15.7",
     "electron-vite": "^5.0.0",
@@ -105,10 +101,6 @@
         "NSMicrophoneUsageDescription": "OMP Desktop uses the microphone for dictation and realtime voice sessions you start."
       },
       "notarize": true,
-      "asarUnpack": [
-        "**/node_modules/node-pty/build/Release/pty.node",
-        "**/node_modules/node-pty/build/Release/spawn-helper"
-      ],
       "files": [
         "out/**/*",
         "package.json",
@@ -128,9 +120,6 @@
       ],
       "artifactName": "OMP-Desktop-${version}-linux-${arch}.${ext}",
       "icon": "assets/icon.png",
-      "asarUnpack": [
-        "**/node_modules/node-pty/build/Release/pty.node"
-      ],
       "files": [
         "out/**/*",
         "package.json",
@@ -146,15 +135,6 @@
       ],
       "artifactName": "OMP-Desktop-${version}-win-${arch}.${ext}",
       "icon": "assets/icon.png",
-      "asarUnpack": [
-        "**/node_modules/node-pty/prebuilds/win32-${arch}/pty.node",
-        "**/node_modules/node-pty/prebuilds/win32-${arch}/conpty.node",
-        "**/node_modules/node-pty/prebuilds/win32-${arch}/conpty_console_list.node",
-        "**/node_modules/node-pty/prebuilds/win32-${arch}/winpty-agent.exe",
-        "**/node_modules/node-pty/prebuilds/win32-${arch}/winpty.dll",
-        "**/node_modules/node-pty/prebuilds/win32-${arch}/conpty/OpenConsole.exe",
-        "**/node_modules/node-pty/prebuilds/win32-${arch}/conpty/conpty.dll"
-      ],
       "files": [
         "out/**/*",
         "package.json",
