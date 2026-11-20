@@ -121,6 +121,7 @@ export function GeneralSettings({ settings, onUpdate, platform }: SettingsSectio
             <option value="browser">{t('general.inspectorTab.browser')}</option>
             <option value="files">{t('general.inspectorTab.files')}</option>
             <option value="agents">{t('general.inspectorTab.agents')}</option>
+            <option value="tasks">{t('general.inspectorTab.tasks')}</option>
           </select>
         </label>
       </section>
