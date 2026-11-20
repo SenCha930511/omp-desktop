@@ -813,6 +813,7 @@ pub struct Workspace {
     context_usage: Option<ContextUsage>,
     selected_session: Option<usize>,
     collapsed_projects: HashSet<String>,
+    expanded_thinking: HashSet<String>,
     sidebar_search_open: bool,
     sidebar_filter: Entity<InputState>,
     _sidebar_filter_subscription: Subscription,
@@ -1108,6 +1109,7 @@ impl Workspace {
             context_usage: None,
             selected_session: None,
             collapsed_projects: HashSet::new(),
+            expanded_thinking: HashSet::new(),
             sidebar_search_open: false,
             sidebar_filter,
             _sidebar_filter_subscription: sidebar_filter_subscription,
@@ -1950,6 +1952,81 @@ impl Workspace {
                 .await;
             let _ = geometry.save(&path);
         }));
+    }
+
+    /// A collapsed thinking disclosure. The body is only built when the row
+    /// is open, so a long reasoning block does not dominate the transcript by
+    /// default; the Electron version starts folded too.
+    fn thinking_part_element(
+        &self,
+        part: &TranscriptPart,
+        message_id: &str,
+        colors: ThemeColor,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let key = format!("{message_id}:{}", part.id.clone().unwrap_or_default());
+        let expanded = self.expanded_thinking.contains(&key);
+        let text = part.text.clone().unwrap_or_default();
+        let preview: String = text
+            .lines()
+            .next()
+            .unwrap_or("")
+            .chars()
+            .take(120)
+            .collect();
+        let toggle_key = key.clone();
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .w_full()
+            .child(
+                div()
+                    .id(format!("thinking-{key}"))
+                    .aria_label("Thinking")
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_2()
+                    .py_1()
+                    .rounded(px(8.0))
+                    .bg(colors.tab)
+                    .text_size(px(11.5))
+                    .text_color(colors.muted_foreground)
+                    .hover(|style| style.bg(colors.accent))
+                    .child(if expanded {
+                        IconName::ChevronDown
+                    } else {
+                        IconName::ChevronRight
+                    })
+                    .child("Thinking")
+                    .child(
+                        div()
+                            .flex_1()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .child(if expanded { String::new() } else { preview }),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if !this.expanded_thinking.remove(&toggle_key) {
+                            this.expanded_thinking.insert(toggle_key.clone());
+                        }
+                        cx.notify();
+                    })),
+            )
+            .when(expanded, |element| {
+                element.child(
+                    div()
+                        .px_2()
+                        .py_1()
+                        .rounded(px(8.0))
+                        .bg(colors.tab)
+                        .text_size(px(12.5))
+                        .text_color(colors.muted_foreground)
+                        .child(text),
+                )
+            })
+            .into_any_element()
     }
 
     /// Builds the sidebar's project rows: granted projects first, then one
@@ -4670,7 +4747,13 @@ impl Workspace {
                         let parts: Vec<AnyElement> = message
                             .parts
                             .iter()
-                            .map(|part| transcript_part_element(part, &message.role, colors))
+                            .map(|part| {
+                                if part.kind == "thinking" {
+                                    self.thinking_part_element(part, &message.id, colors, cx)
+                                } else {
+                                    transcript_part_element(part, &message.role, colors)
+                                }
+                            })
                             .collect();
                         let body = if is_user {
                             div().flex().flex_col().items_end().w_full().child(
