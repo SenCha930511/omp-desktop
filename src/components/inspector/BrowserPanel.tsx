@@ -49,8 +49,6 @@ function normalizeUrl(value: string) {
 }
 
 interface BrowserPanelProps {
-  navigationRequest?: { id: number; url: string }
-  onNavigationRequestHandled?(id: number): void
   platform?: NodeJS.Platform
   home: string
   onOpenExternal(url: string): void
@@ -89,8 +87,6 @@ function agentTabLabel(tab: AgentBrowserTabRecord, t: (key: MessageKey) => strin
 
 export function BrowserPanel({
   home,
-  navigationRequest,
-  onNavigationRequestHandled,
   onOpenExternal,
   annotations,
   agentTabs = [],
@@ -158,7 +154,7 @@ export function BrowserPanel({
 
   // The agent webviews live in the always-mounted AgentBrowserLayer, not in
   // this panel; report where the layer should overlay while an agent tab is
-  // shown. The slot can move without resizing when the sidebar or terminal
+  // shown. The slot can move without resizing when the sidebar or inspector
   // changes the workspace geometry, so both the slot and its session
   // workspace are observed instead of polling.
   useEffect(() => {
@@ -335,11 +331,6 @@ export function BrowserPanel({
       if (!String(error).includes('ERR_ABORTED')) console.error('Browser navigation failed', error)
     })
   }, [])
-  useEffect(() => {
-    if (!navigationRequest || !domReady) return
-    navigate(navigationRequest.url)
-    onNavigationRequestHandled?.(navigationRequest.id)
-  }, [domReady, navigate, navigationRequest, onNavigationRequestHandled])
 
   const toggleAnnotation = () => {
     if (picking) {

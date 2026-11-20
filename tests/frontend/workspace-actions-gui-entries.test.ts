@@ -140,7 +140,6 @@ function fixture({ attachedRuntime = null, bridgeOverride }: FixtureOptions = {}
         bumpRecentSessionOpen: vi.fn(),
         refreshSchedules: vi.fn(),
         resetBrowserView: vi.fn(),
-        closeTerminalForSession: vi.fn(),
         clearSessionAttention: vi.fn(),
         reportError,
         onCommandStart: vi.fn(),

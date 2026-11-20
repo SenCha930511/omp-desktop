@@ -33,7 +33,7 @@ afterEach(async () => {
 const noop = () => undefined
 
 function palette(open: boolean, platform: NodeJS.Platform = 'darwin') {
-  return <CommandPalette open={open} platform={platform} onClose={noop} onNavigate={noop} onNewSession={noop} onToggleSidebar={noop} onToggleTerminal={noop} onOpenBrowser={noop} />
+  return <CommandPalette open={open} platform={platform} onClose={noop} onNavigate={noop} onNewSession={noop} onToggleSidebar={noop} onOpenBrowser={noop} />
 }
 
 describe('app shell overlay refcount', () => {

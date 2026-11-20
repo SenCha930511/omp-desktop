@@ -74,9 +74,6 @@
   .composer__actions .icon-button { display: none; }
   .worktree-picker__menu, .model-picker__popover { position: fixed; right: 9px; bottom: 58px; left: 9px; width: auto; }
   .composer-note { display: none; }
-  .terminal-drawer { height: var(--terminal-height, 46vh); flex-basis: var(--terminal-height, 46vh); }
-  .terminal-toolbar .icon-button { width: 32px; height: 32px; }
-  .terminal-actions .icon-button:nth-of-type(-n+2), .terminal-cwd { display: none; }
   .page-container, .settings-content__inner { padding: 25px 18px 55px; }
   .page-header { align-items: stretch; flex-direction: column; margin-bottom: 18px; }
   .page-header .button { align-self: flex-start; min-height: 38px; }

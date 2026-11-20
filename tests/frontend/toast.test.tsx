@@ -115,7 +115,6 @@ describe('CommandPalette keyboard looping', () => {
           onNavigate={noop}
           onNewSession={noop}
           onToggleSidebar={noop}
-          onToggleTerminal={noop}
           onOpenBrowser={noop}
         />,
       )

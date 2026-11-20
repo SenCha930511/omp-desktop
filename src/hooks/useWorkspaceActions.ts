@@ -68,7 +68,6 @@ export interface WorkspaceActionsDeps {
   setSubmitting: (value: boolean, kind?: 'prompt' | 'compact') => void
   refreshSchedules(): Promise<void>
   resetBrowserView(): void
-  closeTerminalForSession(sessionPath: string): void
   clearSessionAttention(session: SessionRecord): void
   /** 記錄「剛開啟」的 session,側欄把它排到所屬群組最上面。 */
   bumpRecentSessionOpen(sessionId: string): void
@@ -241,18 +240,6 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     }
     persistPanel({ inspectorOpen: next })
   }
-  const toggleTerminal = async () => {
-    const { settingsState, activeProject, reportError } = getDeps()
-    if (!settingsState.terminalOpen && activeProject?.inferred) {
-      try {
-        await grantProject(activeProject)
-      } catch (error) {
-        reportError(error)
-        return
-      }
-    }
-    persistPanel({ terminalOpen: !settingsState.terminalOpen })
-  }
   const selectProject = async (project: ProjectRecord) => {
     const { bridge, layout, settingsState, sessions, workspace, setSessions, setView, clearSessionAttention, bumpRecentSessionOpen, reportError } = getDeps()
     if (layout.compactLayout) {
@@ -274,7 +261,7 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     try {
       // Inferred projects come from the harness's global session history and
       // remain display-only until the user performs an action that needs a
-      // filesystem grant (starting work or opening a terminal).
+      // filesystem grant (starting work or running a project script).
       if (bridge && !project.inferred) await bridge.projects.touch(project.id, project.harness)
       await workspace.reconcileRuntime(generation)
     } catch (error) {
@@ -354,14 +341,11 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     }
   }
   const setSessionArchived = async (session: SessionRecord, archived: boolean) => {
-    const { bridge, workspace, setSessions, setToast, resetBrowserView, closeTerminalForSession, clearSessionAttention, reportError } = getDeps()
+    const { bridge, workspace, setSessions, setToast, resetBrowserView, clearSessionAttention, reportError } = getDeps()
     if (!bridge) return
     try {
       await bridge.sessions.archive(session.filePath, archived)
-      if (archived) {
-        clearSessionAttention(session)
-        closeTerminalForSession(session.filePath)
-      }
+      if (archived) clearSessionAttention(session)
       setSessions((items) => items.map((item) => (item.id === session.id ? { ...item, archived, unread: archived ? false : item.unread } : item)))
       if (archived && workspace.workspaceRef.current.session?.id === session.id) {
         resetBrowserView()
@@ -373,13 +357,12 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     }
   }
   const deleteSession = async (session: SessionRecord) => {
-    const { bridge, workspace, settingsState, setSessions, setToast, resetBrowserView, closeTerminalForSession, clearSessionAttention, reportError } = getDeps()
+    const { bridge, workspace, settingsState, setSessions, setToast, resetBrowserView, clearSessionAttention, reportError } = getDeps()
     if (!bridge) return
     const locale = resolveLocale(settingsState.settings.locale ?? 'system')
     try {
       if (!(await bridge.sessions.delete(session.filePath))) throw new Error(translate(locale, 'sessions.deleteFailed'))
       clearSessionAttention(session)
-      closeTerminalForSession(session.filePath)
       clearComposerDraft(`${workspace.workspaceRef.current.project?.id ?? 'no-project'}:${session.id}`)
       setSessions((items) => items.filter((item) => item.filePath !== session.filePath))
       if (workspace.workspaceRef.current.session?.filePath === session.filePath) {
@@ -452,7 +435,7 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     }
   }
   const removeProject = async (project: ProjectRecord) => {
-    const { bridge, projects, sessions, workspace, setProjects, setSessions, setToast, closeTerminalForSession, clearSessionAttention, reportError } = getDeps()
+    const { bridge, projects, sessions, workspace, setProjects, setSessions, setToast, clearSessionAttention, reportError } = getDeps()
     try {
       if (bridge && !(await bridge.projects.remove(project.id, project.harness))) throw new Error('This project could not be removed.')
       // The main process deleted the project's saved sessions with it; mirror
@@ -460,7 +443,6 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
       const doomed = sessions.filter((item) => projectContainsPath(project, item.projectPath))
       for (const item of doomed) {
         clearSessionAttention(item)
-        closeTerminalForSession(item.filePath)
         clearComposerDraft(`${project.id}:${item.id}`)
       }
       setProjects((items) => items.filter((item) => item.id !== project.id))
@@ -1564,7 +1546,6 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     persistPanel,
     toggleSidebar,
     toggleInspector,
-    toggleTerminal,
     selectProject,
     selectSession,
     newSession,

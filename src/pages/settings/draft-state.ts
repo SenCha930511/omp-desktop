@@ -156,14 +156,6 @@ export function normalizeBrowserHome(value: string): string {
   return new URL(value.trim()).toString()
 }
 
-export function terminalShellValidation(value: string, t: Translate = (key, values) => translate('en', key, values)): string {
-  if (value.length === 0) return t('terminalShell.required')
-  if (value.includes('\0')) return t('terminalShell.nul')
-  if (value.length > 4096) return t('terminalShell.tooLong')
-  if (!value.startsWith('/')) return t('terminalShell.absolute')
-  return ''
-}
-
 export function errorMessage(error: unknown): string {
   return error instanceof Error && error.message ? error.message : DRAFT_SAVE_ERROR
 }

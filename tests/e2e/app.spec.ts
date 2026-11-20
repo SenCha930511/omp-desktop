@@ -1546,7 +1546,7 @@ test.describe('OMP Desktop desktop smoke', () => {
       return { type: typeof bridge, groups: bridge ? Object.keys(bridge).sort() : [], voiceMethods: voice && typeof voice === 'object' ? Object.keys(voice).sort() : [] }
     })
     expect(bridge.type).toBe('object')
-      expect(bridge.groups).toEqual(['agent', 'app', 'browser', 'git', 'harnessUpdates', 'menu', 'plugins', 'projects', 'providers', 'schedules', 'sessions', 'settings', 'terminal', 'updates', 'voice'])
+      expect(bridge.groups).toEqual(['agent', 'app', 'browser', 'git', 'harnessUpdates', 'menu', 'plugins', 'projectScripts', 'projects', 'providers', 'schedules', 'sessions', 'settings', 'terminal', 'updates', 'voice'])
     expect(bridge.voiceMethods).toContain('testSelfHosted')
     const updateMenu = await app!.evaluate(({ Menu }) => {
       const parents = Menu.getApplicationMenu()?.items ?? []
@@ -1867,35 +1867,6 @@ test.describe('OMP Desktop desktop smoke', () => {
       return guest === undefined || guest.isDestroyed()
     }, guestId)).toBe(true)
     await expect.poll(() => preview.evaluate((node) => (node as HTMLElement & { getWebContentsId(): number }).getWebContentsId())).not.toBe(guestId)
-  })
-
-  test('stops a dev server launched from the thread terminal when deleted', async () => {
-    const sessionRow = page.locator('.project-group .session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' })
-    await sessionRow.locator('.session-row').click()
-    await page.getByLabel(/Toggle terminal/).click()
-    const terminal = page.locator('.terminal-drawer:not([hidden])')
-    const input = terminal.locator('.xterm-helper-textarea')
-    await expect(input).toBeVisible()
-    const pidFile = join(fixtureRoot, 'archived-dev-server.pid')
-    await input.click()
-    await page.keyboard.type(`/bin/sh -c 'echo $$ > ${pidFile}; while true; do /bin/sleep 1; done'`)
-    await page.keyboard.press('Enter')
-    await expect.poll(() => existsSync(pidFile)).toBe(true)
-    const serverPid = Number(readFileSync(pidFile, 'utf8').trim())
-    expect(serverPid).toBeGreaterThan(0)
-
-    try {
-      await sessionRow.getByTitle('Delete Hermetic desktop fixture').click()
-      await page.getByRole('button', { name: 'Delete permanently', exact: true }).click()
-
-      await expect(sessionRow).toHaveCount(0)
-      await expect(page.locator('.terminal-drawer')).toHaveCount(0)
-      await expect.poll(() => {
-        try { process.kill(serverPid, 0); return false } catch { return true }
-      }).toBe(true)
-    } finally {
-      try { process.kill(serverPid, 'SIGKILL') } catch { /* archive cleanup succeeded */ }
-    }
   })
 
   test('enforces the live preload and IPC frame boundaries', async () => {
@@ -2765,32 +2736,6 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(page.getByRole('combobox', { name: 'Message OMP' })).toHaveValue('')
   })
 
-  test('preserves a rejected shell draft while rolling back the committed setting', async () => {
-    await page.keyboard.press('Meta+,')
-    await page.getByRole('button', { name: 'Terminal', exact: true }).first().click()
-    const shell = page.getByLabel('Shell executable')
-    const rejectedDraft = '/definitely/not-an-executable'
-    await expect(shell).toHaveValue('/bin/zsh')
-    await shell.fill(rejectedDraft)
-    await expect(shell).toHaveValue(rejectedDraft)
-    await expect(page.getByRole('alert')).toHaveCount(0)
-
-    await shell.press('Enter')
-
-    const inlineError = page.getByRole('alert').filter({ hasText: /setting could not be saved/i })
-    await expect(inlineError).toBeVisible()
-    await expect(shell).toHaveAttribute('aria-invalid', 'true')
-    await expect(shell).toHaveAttribute('aria-describedby', await inlineError.getAttribute('id') ?? '')
-    await expect(page.locator('.toast')).toContainText(/shell is not executable/i)
-    await expect(shell).toHaveValue(rejectedDraft)
-    await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeDisabled()
-    await expect.poll(() => page.evaluate(() => window.desktop.settings.get().then((settings) => settings.terminalShell))).toBe('/bin/zsh')
-
-    await page.getByRole('button', { name: 'General', exact: true }).click()
-    await page.getByRole('button', { name: 'Terminal', exact: true }).first().click()
-    await expect(page.locator('.settings-content input.mono')).toHaveValue('/bin/zsh')
-  })
-
   test('uses overlay panels at the compact desktop breakpoint', async () => {
     await page.getByRole('button', { name: /^New session/ }).first().click()
     await page.setViewportSize({ width: 960, height: 700 })
@@ -3074,7 +3019,7 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(page.locator('.file-changes')).toContainText('No unstaged changes.')
   })
 
-  test('resizes the inspector horizontally and terminal vertically', async () => {
+  test('resizes the sidebar and inspector horizontally', async () => {
     await page.getByRole('button', { name: /^New session/ }).first().click()
 
     const sidebar = page.locator('.sidebar')
@@ -3113,189 +3058,6 @@ test.describe('OMP Desktop desktop smoke', () => {
     await inspectorHandle.focus()
     await page.keyboard.press('ArrowRight')
     expect((await inspector.boundingBox())!.width).toBeLessThan(inspectorAfter!.width)
-
-    await page.getByLabel(/Toggle terminal/).click()
-    const drawer = page.locator('.terminal-drawer')
-    const terminalHandle = page.getByRole('separator', { name: 'Resize terminal' })
-    await expect(terminalHandle).toBeVisible()
-    const terminalBefore = await drawer.boundingBox()
-    expect(terminalBefore).not.toBeNull()
-    await expect.poll(async () => Number(await terminalHandle.getAttribute('aria-valuemax'))).toBeGreaterThan(terminalBefore!.height + 44)
-    await terminalHandle.hover()
-    const terminalHandleBox = await terminalHandle.boundingBox()
-    expect(terminalHandleBox).not.toBeNull()
-    const terminalHandleCenter = {
-      x: terminalHandleBox!.x + terminalHandleBox!.width / 2,
-      y: terminalHandleBox!.y + terminalHandleBox!.height / 2,
-    }
-    await page.mouse.move(terminalHandleCenter.x, terminalHandleCenter.y)
-    await page.mouse.down()
-    await expect(terminalHandle).toHaveAttribute('data-resizing', 'true')
-    await page.mouse.move(terminalHandleCenter.x, terminalHandleCenter.y - 64, { steps: 5 })
-    await page.mouse.up()
-    const terminalAfter = await drawer.boundingBox()
-    expect(terminalAfter!.height).toBeGreaterThan(terminalBefore!.height + 44)
-    await terminalHandle.focus()
-    await page.keyboard.press('ArrowDown')
-    expect((await drawer.boundingBox())!.height).toBeLessThan(terminalAfter!.height)
-    await page.getByLabel('Close terminal', { exact: true }).click()
-  })
-
-  test('shuts down cleanly with an active terminal', async () => {
-    await page.getByLabel(/Toggle terminal/).click()
-    const drawer = page.locator('.terminal-drawer:not([hidden])')
-    const input = drawer.locator('.xterm-helper-textarea')
-    await expect(input).toBeVisible()
-    await input.click()
-    await page.keyboard.type('while true; do sleep 1; done')
-    await page.keyboard.press('Enter')
-    // Intentionally leave the PTY open. The shared teardown closes the
-    // Electron app and exercises the native node-pty shutdown path.
-  })
-
-  test('restores each session terminal without leaking it into another session', async () => {
-    await page.getByLabel(/Toggle terminal/).click()
-    const visibleDrawer = page.locator('.terminal-drawer:not([hidden])')
-    const input = visibleDrawer.locator('.xterm-helper-textarea')
-    await expect(input).toBeVisible()
-    await input.click()
-    await page.keyboard.type('echo secondary-session-state')
-    await page.keyboard.press('Enter')
-    await expect(visibleDrawer.locator('.xterm-rows')).toContainText('secondary-session-state', { timeout: 8_000 })
-
-    await page.locator('.project-group .session-row').filter({ hasText: 'Primary workspace fixture' }).click()
-    await expect(page.locator('.terminal-drawer:not([hidden])')).toHaveCount(0)
-    await page.getByLabel(/Toggle terminal/).click()
-    const primaryDrawer = page.locator('.terminal-drawer:not([hidden])')
-    const primaryInput = primaryDrawer.locator('.xterm-helper-textarea')
-    await expect(primaryInput).toBeVisible()
-    await primaryInput.click()
-    await page.keyboard.type('pwd')
-    await page.keyboard.press('Enter')
-    await expect(primaryDrawer.locator('.xterm-rows')).toContainText(/omp-desktop-e2e-[^/]+\/project/, { timeout: 8_000 })
-    await expect(primaryDrawer.locator('.xterm-rows')).not.toContainText('secondary-session-state')
-
-    await page.locator('.project-group .session-row').filter({ hasText: 'Hermetic desktop fixture' }).click()
-    await expect(page.locator('.terminal-drawer:not([hidden]) .xterm-rows')).toContainText('secondary-session-state')
-    await page.locator('.project-group .session-row').filter({ hasText: 'Primary workspace fixture' }).click()
-    await expect(page.locator('.terminal-drawer:not([hidden]) .xterm-rows')).toContainText(/omp-desktop-e2e-[^/]+\/project/)
-    await page.locator('.terminal-drawer:not([hidden])').getByLabel('Close terminal', { exact: true }).click()
-    await page.locator('.project-group .session-row').filter({ hasText: 'Hermetic desktop fixture' }).click()
-    await page.locator('.terminal-drawer:not([hidden])').getByLabel('Close terminal', { exact: true }).click()
-  })
-
-  test('opens independent terminal tabs inside the conversation column', async () => {
-    const project = await page.evaluate(async () => {
-      const projects = await window.desktop.projects.list('omp')
-      const selected = projects[0]
-      if (!selected) return null
-      return selected.inferred ? window.desktop.projects.grantInferred(selected.primaryFolder, 'omp') : selected
-    })
-    expect(project).not.toBeNull()
-    await page.getByRole('tab', { name: 'Summary' }).click()
-    await page.getByLabel(/Toggle terminal/).click()
-    await expect(page.locator('.terminal-drawer .xterm')).toBeVisible()
-    await expect(page.locator('.terminal-live-dot.is-connected')).toBeVisible()
-    const firstTerminalLine = () => page.locator('.terminal-surface:not([hidden]) .xterm-rows').evaluate((rows) =>
-      [...rows.children].map((row) => row.textContent?.trim() ?? '').find(Boolean) ?? '',
-    )
-    await expect.poll(firstTerminalLine).toMatch(/\S/)
-    expect(await firstTerminalLine()).not.toBe('%')
-    await expect(page.getByRole('tablist', { name: 'Terminal tabs' }).getByRole('tab')).toHaveCount(1)
-    const activeTerminal = page.locator('.terminal-surface:not([hidden]) .xterm-helper-textarea')
-    await activeTerminal.click()
-    await page.keyboard.type('echo first-terminal')
-    await page.keyboard.press('Enter')
-    await expect(page.locator('.terminal-surface:not([hidden]) .xterm-rows')).toContainText('first-terminal')
-
-    await page.getByLabel('New terminal').click()
-    await expect(page.getByRole('tablist', { name: 'Terminal tabs' }).getByRole('tab')).toHaveCount(2)
-    await activeTerminal.click()
-    await page.keyboard.type('echo second-terminal')
-    await page.keyboard.press('Enter')
-    await expect(page.locator('.terminal-surface:not([hidden]) .xterm-rows')).toContainText('second-terminal')
-
-    await page.getByRole('tab', { name: /zsh 1/ }).click()
-    await expect(page.locator('.terminal-surface:not([hidden]) .xterm-rows')).toContainText('first-terminal')
-    await expect(page.locator('.terminal-surface:not([hidden]) .xterm-rows')).not.toContainText('second-terminal')
-
-    await page.locator('.project-group .session-row').filter({ hasText: 'Primary workspace fixture' }).click()
-    await expect(page.locator('.terminal-drawer:not([hidden])')).toHaveCount(0)
-    await page.getByLabel(/Toggle terminal/).click()
-    await expect(page.getByRole('tablist', { name: 'Terminal tabs' }).getByRole('tab')).toHaveCount(1)
-    await expect(page.locator('.terminal-surface:not([hidden]) .xterm-rows')).not.toContainText(/first-terminal|second-terminal/)
-
-    await page.locator('.project-group .session-row').filter({ hasText: 'Hermetic desktop fixture' }).click()
-    await expect(page.getByRole('tablist', { name: 'Terminal tabs' }).getByRole('tab')).toHaveCount(2)
-    await page.getByRole('tab', { name: /zsh 1/ }).click()
-    await expect(page.locator('.terminal-surface:not([hidden]) .xterm-rows')).toContainText('first-terminal')
-
-    const geometry = await page.evaluate(() => {
-      const session = document.querySelector('.session-workspace')!.getBoundingClientRect()
-      const conversation = document.querySelector('.conversation-column')!.getBoundingClientRect()
-      const terminal = document.querySelector('.terminal-drawer')!.getBoundingClientRect()
-      const inspector = document.querySelector('.inspector')!.getBoundingClientRect()
-      return {
-        terminalRight: terminal.right,
-        conversationRight: conversation.right,
-        sessionTop: session.top,
-        sessionBottom: session.bottom,
-        inspectorTop: inspector.top,
-        inspectorBottom: inspector.bottom,
-      }
-    })
-    expect(Math.abs(geometry.terminalRight - geometry.conversationRight)).toBeLessThanOrEqual(1)
-    expect(Math.abs(geometry.inspectorTop - geometry.sessionTop)).toBeLessThanOrEqual(1)
-    expect(Math.abs(geometry.inspectorBottom - geometry.sessionBottom)).toBeLessThanOrEqual(1)
-
-    const drawer = page.locator('.terminal-drawer:not([hidden])')
-    const before = await drawer.evaluate((node) => node.getBoundingClientRect().height)
-    await drawer.getByLabel('Maximize terminal').click()
-    await expect(drawer).toHaveClass(/is-maximized/)
-    expect(await drawer.evaluate((node) => node.getBoundingClientRect().height)).toBeGreaterThan(before)
-    await drawer.getByLabel('Restore terminal').click()
-    await drawer.getByLabel('Close terminal', { exact: true }).click()
-  })
-
-  test('attaches and removes active terminal selection context', async () => {
-    await page.getByRole('tab', { name: 'Summary' }).click()
-    await page.getByLabel(/Toggle terminal/).click()
-    const input = page.locator('.terminal-surface:not([hidden]) .xterm-helper-textarea')
-    await input.click()
-    await page.keyboard.type("printf 'terminal-selection-marker\\n'")
-    await page.keyboard.press('Enter')
-    const outputLine = page.locator('.terminal-surface:not([hidden]) .xterm-rows > div').filter({ hasText: 'terminal-selection-marker' }).last()
-    await expect(outputLine).toBeVisible()
-    await expect(page.locator('.composer-attachment--terminal')).toHaveCount(0)
-
-    const selectOutput = async () => {
-      const box = await outputLine.boundingBox()
-      expect(box).not.toBeNull()
-      await page.mouse.move(box!.x + 2, box!.y + box!.height / 2)
-      await page.mouse.down()
-      // Drag to the row's right edge: a fixed pixel offset depends on the
-      // terminal font's cell width and can stop one character short.
-      await page.mouse.move(box!.x + box!.width - 4, box!.y + box!.height / 2, { steps: 5 })
-      await page.mouse.up()
-      await expect(page.getByLabel(/Inspect selected text from/)).toBeVisible()
-    }
-
-    await selectOutput()
-    const clearBox = await outputLine.boundingBox()
-    expect(clearBox).not.toBeNull()
-    await page.mouse.click(clearBox!.x + 2, clearBox!.y + clearBox!.height / 2)
-    await expect(page.getByLabel(/Inspect selected text from/)).toHaveCount(0)
-    await selectOutput()
-
-    const composer = page.getByRole('combobox', { name: 'Message OMP' })
-    await composer.fill('Explain the terminal output')
-    await composer.press('Enter')
-    await expect.poll(() => existsSync(join(fixtureRoot, 'prompt-args.json'))).toBe(true)
-    const prompt = JSON.parse(readFileSync(join(fixtureRoot, 'prompt-args.json'), 'utf8')) as { message: string }
-    expect(prompt.message).toContain('Explain the terminal output\n\n===== BEGIN TERMINAL SELECTION CONTEXT =====')
-    expect(prompt.message).toContain('--- Selected text ---')
-    expect(prompt.message).toContain('terminal-selection-marker')
-    expect(prompt.message).not.toContain('Terminal buffer')
   })
 
   test('closes immediately when no agent or schedule is active', async () => {

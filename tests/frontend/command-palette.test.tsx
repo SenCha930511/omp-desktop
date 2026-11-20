@@ -80,7 +80,6 @@ const expectedOrder = [
   'Open Scheduled',
   'Open Capabilities',
   'Toggle browser',
-  'Toggle terminal',
   'Toggle sidebar',
   'Open Settings',
 ]
