@@ -12,6 +12,22 @@
 .title-toolbar__identity { min-width: 0; flex: 1; display: flex; align-items: center; justify-content: flex-start; gap: 8px; }
 .title-toolbar__identity strong { max-width: 28vw; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 12.5px; font-weight: 540; }
 .title-toolbar__actions { justify-content: flex-end; }
+.title-toolbar__overview, .title-toolbar__more { position: relative; }
+.toolbar-overview, .toolbar-more { position: absolute; z-index: 90; top: calc(100% + 8px); right: 0; width: min(248px, calc(100vw - 24px)); display: grid; gap: 10px; padding: 10px; border: 1px solid var(--border-strong); border-radius: 10px; color: var(--text); background: var(--surface-raised); box-shadow: var(--shadow-popover); cursor: default; }
+/* A toolbar popover hangs below the 52px header, where the compact inspector
+   (z-index 80) would cover it; lift the header only while one is open. */
+.title-toolbar:has(.toolbar-overview, .toolbar-more) { z-index: 95; }
+.toolbar-overview__counts { display: grid; gap: 4px; margin: 0; }
+.toolbar-overview__counts > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.toolbar-overview__counts dt { color: var(--text-secondary); font-size: 12px; }
+.toolbar-overview__counts dd { margin: 0; font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.toolbar-overview__actions { display: grid; gap: 2px; padding-top: 8px; border-top: 1px solid var(--border); }
+.toolbar-more__actions { display: grid; gap: 2px; }
+.toolbar-overview__action, .toolbar-more__action { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 8px; border: 0; border-radius: 6px; color: var(--text); background: transparent; font: inherit; font-size: 12px; text-align: left; cursor: default; }
+.toolbar-overview__action:hover, .toolbar-more__action:hover { background: var(--surface-hover); }
+.toolbar-overview__action:focus-visible, .toolbar-more__action:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.toolbar-more__action.is-active { background: var(--surface-selected); }
+.toolbar-more__action svg { flex: 0 0 auto; }
 .toolbar-divider { width: var(--border-hairline, 1px); height: 16px; background: var(--border); margin: 0 5px; }
 .project-run-control { position: relative; margin-right: 3px; }
 .project-run-split { height: 28px; display: inline-flex; align-items: stretch; overflow: hidden; border: 1px solid transparent; border-radius: 7px; background: transparent; transition: border-color 130ms ease-out, background 130ms ease-out; }
