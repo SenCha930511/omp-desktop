@@ -5,8 +5,8 @@ This document is OMP Desktop's integration spec for its single agent harness: OM
 ## Product behavior
 
 - The product is **OMP Desktop** and the agent is **OMP**. Granted projects, the session catalog, the model catalog, and runtimes all belong to the single harness.
-- Streaming transcripts, steering/follow-ups, abort, model + thinking selection, compaction, session resume/switch/rename/fork(branch), and extension-UI dialogs (which is also how OMP surfaces **tool approval prompts**) run over the OMP RPC transport. The browser, git, and terminal capabilities are harness-agnostic surfaces around it.
-- Scheduled tasks run through OMP Desktop's local schedule service and executor. OMP scheduled tasks do not use heartbeat RPC commands: the injected extension calls a harness-scoped loopback broker, and due work is executed through OMP's normal prompt lifecycle.
+- Streaming transcripts, steering/follow-ups, abort, model + thinking selection, compaction, session resume/switch/rename/fork(branch), and extension-UI dialogs (which is also how OMP surfaces **tool approval prompts**) run over the OMP RPC transport.
+- Scheduled tasks run through OMP Desktop's own scheduler in `omp-core` and execute through OMP's normal prompt lifecycle.
 - OMP credentials remain CLI-owned. The desktop keeps only provider/model visibility toggles in its own state; they control which providers appear in the model picker and never change OMP's own configuration or authentication.
 - Capabilities use OMP's native plugin manager (`omp plugin install`), user/project plugin roots, `.omp/skills` plus shared `.agents/skills`, and OMP-native `mcp.json`.
 
@@ -18,82 +18,90 @@ This document is OMP Desktop's integration spec for its single agent harness: OM
   - model: `--model <provider>/<modelId>` (single flag)
   - thinking: `--thinking <off|minimal|low|medium|high|xhigh|max>`
   - approvals: `--approval-mode <always-ask|write|yolo>` — only passed when the user overrides the default in settings; otherwise OMP's own `~/.omp/agent/config.yml` governs.
-  - extensions: `-e <path>` for each injected capability extension. OMP Desktop injects scheduled-task, browser, and session-collaboration extensions, plus the ask-user extension when the universal **Ask user** capability is enabled. No `--skill <path>` flag exists; skills are discovery-based, so the browser *skill* is not injected — the OMP browser *extension* carries the tool surface. The bundled computer-use skill is delivered through the computer-use capability's own env contract (`GOOEYPI_CUA_DRIVER_PATH`, `GOOEYPI_COMPUTER_USE_SKILL_PATH`) instead.
+  - The Rust application does not pass `-e/--extension`: it ships no JavaScript extension files. Ask-user dialogs are enabled with `set_ask_dialog`, and app-owned surfaces (browser pane, terminal panel, schedules) stay in the app.
 - Paths: agent dir `~/.omp/agent/`; sessions `~/.omp/agent/sessions/<bucket>/<ISO-timestamp>_<uuid>.jsonl` (bucket = scope-basename-hash of cwd); settings `~/.omp/agent/config.yml`; extensions `~/.omp/agent/extensions/`; auth in `~/.omp/agent/agent.db` (SQLite — never read by OMP Desktop).
 - Plugins: `omp plugin install <target> --json` installs user-scoped packages under `~/.omp/plugins` by default; project packages live under `<project>/.omp/plugins`. Native skills are discovered from `~/.omp/skills`, project `.omp/skills`, and shared `.agents/skills`. Native MCP files are `~/.omp/agent/mcp.json` and project `.omp/mcp.json`.
 - Model catalog: `omp models --json` → `{ models: [{ provider, id, selector, name, contextWindow, maxTokens, reasoning, thinking: string[]|null, input: string[], cost }] }`. The CLI carries no per-model fast-mode metadata, so fast-mode support is derived from the model identity itself: OMP's `set_fast_mode` maps to OpenAI Codex service tiers, which exist for the `openai-codex` GPT-5.4/5.5/5.6 families.
-- The argv contract (`--mode rpc`, `--cwd`, `--resume`, `--model`, `--thinking`, `--approval-mode`, `--extension`) was verified live against omp 17.2.11: `omp --help` lists every long form, and the in-app validation run spawned a runtime with all of them accepted.
+- The argv contract (`--mode rpc`, `--cwd`, `--resume`, `--model`, `--thinking`, `--approval-mode`, `--extension`) was verified live against omp 17.2.11: `omp --help` lists every long form.
 
 ## Protocol: JSONL framing
 
-OMP RPC is newline-delimited JSON over stdio with a request/response envelope: requests carry `id`, responses are `{type:'response', id, command, success, data|error}`. `FramedRpcTransport`, `StrictJsonlDecoder`, write budgeting, correlation rules, and `AgentEventForwarder` implement it.
+OMP RPC is newline-delimited JSON over stdio with a request/response envelope: requests carry `id`, responses are `{type:'response', id, command, success, data|error}`. `rust/crates/omp-rpc` implements the transport: a strict LF JSONL decoder with a 16 MiB per-line bound, write budgeting, request/response correlation with per-command timeouts, event draining, and a bounded stderr tail for diagnostics.
 
-An OMP adapter inside `electron/main/agent-rpc/` owns everything harness-specific:
+The OMP adapter lives in `rust/crates/omp-core/src/agent.rs` and owns everything harness-specific.
 
 ### Handshake
+
 1. On start OMP pushes `{"type":"ready","protocolVersion":1,"supportedProtocolVersions":[1,2],...}`.
-2. We send `negotiate_protocol { protocolVersion: 2 }`.
-3. In v2, oversized frames arrive as base64 `rpc_chunk` sequences (`chunkId`, `index`, `count`, `data`); the OMP runtime reassembles them (bounded by the existing 16 MiB read limit) before normal dispatch.
-4. Then the shared handshake continues: `get_state` → `updateFromState` → `get_session_stats`.
-5. OMP also pushes `available_commands_update` (slash commands with metadata); forwarded to the renderer for future palette use, ignored by the reducer.
+2. The app sends `negotiate_protocol { protocolVersion: 2 }` and requires `success: true`.
+3. In v2, oversized frames arrive as base64 `rpc_chunk` sequences (`chunkId`, `index`, `count`, `data`); `omp-rpc` reassembles them (bounded by the existing 16 MiB read limit and chunk-count caps) before normal dispatch.
+4. When the session requested Fast mode, the app sends `set_fast_mode { enabled: true }`.
+5. When the universal Ask user setting is on, the app sends `set_ask_dialog { enabled: true }`.
+6. OMP then pushes state, session stats, and `available_commands_update` (slash commands with metadata); the workspace uses the command catalog for its palette.
 
-### Command mapping (renderer keeps speaking the existing vocabulary)
+### Command schema and mapping
 
-The renderer sends command objects validated against the fixed allowlist; the adapter translates where names differ:
+Every command object is validated against a fixed allowlist before it is sent. Names inherited from the removed Prime harness (`send_message`, the heartbeat family, `clone`, `observe`) are rejected with a clear error, and an unknown type is rejected rather than forwarded.
 
-| Renderer sends | OMP receives |
+| App sends | OMP receives |
 |---|---|
 | `fork {entryId}` | `branch {entryId}` |
 | `get_fork_messages` | `get_branch_messages` |
-| `set_service_tier {serviceTier}` | `set_fast_mode {enabled: serviceTier === 'priority'}` |
-| everything else | unchanged (`prompt`, `steer`, `follow_up`, `abort`, `new_session`, `get_state`, `set_model`, `set_thinking_level`, `switch_session`, `compact`, `set_auto_compaction`, `set_auto_retry`, `set_session_name`, `set_steering_mode`, `set_follow_up_mode`, `get_*`, `extension_ui_response`) |
+| `side_question {topicId}` | `btw {recordId}` |
+| `side_question_cancel {topicId}` | `btw_cancel {recordId}` |
+| `side_question_history {topicId}` | `get_btw_history {recordId}` |
+| everything else | unchanged (`prompt`, `steer`, `follow_up`, `abort`, `new_session`, `get_state`, `set_model`, `set_thinking_level`, `switch_session`, `compact`, `set_session_name`, `extension_ui_response`, …) |
 
-Commands inherited from the removed Prime harness (`send_message`, the heartbeat family, `clone`) are rejected by the command schema with a clear error. User-driven shell execution rides `bash {command}` (non-empty string ≤ 64 KiB) and its cancel counterpart `abort_bash {}` — both pass through unchanged; the composer `!` shorthand routes here (TUI parity). The response for `bash` is OMP's `BashResult` (`output`, `cancelled`, `truncated`, `exitCode?`, `timedOut?`, `artifactId?`/`artifactElidedBytes?`, `images?`) and renders as a transcript tool row; `bash` RPC runs on the upstream side channel, so it also works mid-turn, and its client timeout is 10 minutes because the response lands only when the command finishes. The wire has no `excludeFromContext`, so the TUI's `!!` variant is refused at the renderer; the `$`/`$$` Python shortcut has no RPC counterpart at all (documented gap, also refused rather than faked). `prompt` responses may carry `data.agentInvoked === false` (local slash command, no agent turn) and OMP may later push a standalone `prompt_result` frame. No dedicated renderer handling exists or is needed: interactive prompts never block on per-prompt turn completion, so a local-only prompt simply completes its request/response cycle, and `prompt_result` frames are forwarded as unknown events the reducer ignores.
+- `switch_session` and `new_session` paths are authorized against the OMP session root before the command is sent.
+- `prompt`, `steer`, and `follow_up` messages are rejected when they carry an MCP authentication command, so the app cannot be used to drive a provider login through a prompt.
+- User-driven shell execution rides `bash {command}` (non-empty string, size-capped) and `abort_bash {}`; the composer `!` shorthand routes here. The response is OMP's `BashResult` (`output`, `cancelled`, `truncated`, `exitCode?`, `timedOut?`, `images?`). `bash` runs on the upstream side channel, so it also works mid-turn, and its client timeout is ten minutes because the response lands only when the command finishes.
+- `extension_ui_response` answers OMP dialogs; question, option, title, message, and timeout fields are bounded before they are accepted.
 
-### Event normalization (main process, before forwarding)
+### Event normalization (in the app, before folding into the transcript)
 
 | OMP emits | Forwarded as |
 |---|---|
 | `auto_compaction_start` / `auto_compaction_end` | `compaction_start` / `compaction_end` |
-| `agent_end` with `isTerminal === false` | swallowed as a turn boundary (not finalized) |
-| `retry_fallback_applied` / `retry_fallback_succeeded` | unchanged; renderer renders a transcript notice from `applied` and a composer "Running on" chip from both; the persisted counterpart is the JSONL `model_change` entry with `resolvedModelIsFallback: true` |
-| `ready`, `available_commands_update`, `config_update`, `session_info_update`, `notice`, etc. | passed through (renderer reducer ignores unknown types) |
-| `live_phase` / `live_levels` / `live_transcript` / `live_end` | whitelist-validated, forwarded unchanged (values clamped/validated); consumed by `useLiveVoice` only, never the transcript store — see [live-voice-parity.md](live-voice-parity.md) |
-| everything else (`agent_start`, `turn_*`, `message_*`, `tool_execution_*`, `extension_ui_request`, `auto_retry_*`, `model_changed`, ...) | unchanged |
+| `agent_end` with `isTerminal !== true` | swallowed as a turn boundary (not finalized) |
+| `retry_fallback_applied` / `retry_fallback_succeeded` | unchanged; the workspace renders a transcript notice from `applied` and a "Running on" chip from both; the persisted counterpart is the JSONL `model_change` entry with `resolvedModelIsFallback: true` |
+| `ready`, `available_commands_update`, `config_update`, `session_info_update`, `notice`, etc. | passed through (the workspace ignores unknown types) |
+| `live_phase` / `live_levels` / `live_transcript` / `live_end` | whitelist-validated, forwarded unchanged (values clamped/validated); consumed by the live-voice panel only, never the transcript |
+| everything else (`agent_start`, `turn_*`, `message_*`, `tool_execution_*`, `extension_ui_request`, `auto_retry_*`, `model_changed`, …) | unchanged |
 
-Approvals: OMP has no permission frame; approval prompts arrive as `extension_ui_request` `select` dialogs ("Allow tool: …" with Approve/Deny) and are answered with the existing fire-and-forget `extension_ui_response`. The existing ask-user modal covers this; field shapes must be verified against `src/lib/extension-ui.ts` and normalized in the adapter if they drift.
+Approvals: OMP has no permission frame; approval prompts arrive as `extension_ui_request` `select` dialogs ("Allow tool: …" with Approve/Deny) and are answered with the existing fire-and-forget `extension_ui_response`. The ask-user modal covers this, and the dialog shapes are bounded in `omp-core::agent`.
 
 ## Architecture
 
-### Harness descriptor (`electron/main/harness.ts`)
+### Crates
 
-```
-HarnessId = 'omp'
-HarnessDescriptor {
-  id, productName ('OMP Desktop'), agentName ('OMP'),
-  executableName, binaryEnvVar ('OMP_BINARY'), candidateDirs,
-  agentDir (~/.omp/agent), sessionRoot,
-}
-```
-Discovery lives in `process-utils.ts` (`harnessExecutableCandidates`/`findHarnessExecutable`); see `docs/harness-discovery.md`. Persisted project/schedule records carry `harness: 'omp'`; legacy `'prime'`/`'pi'` markers map to `'omp'` on load.
+| Crate | Responsibility |
+|---|---|
+| `omp-core` | State store, settings, projects/grants, sessions, Git and checkouts, model catalog, plugins/MCP, schedules, collaboration envelopes, loopback brokers, URL policy, and the OMP adapter (`agent.rs`) |
+| `omp-rpc` | Blocking stdio JSON-RPC client, strict JSONL framing, v2 chunk reassembly |
+| `omp-conformance` | Conformance Protocol v1 adapter |
+| `omp-desktop` | GPUI shell: workspace view, terminal, browser, tray, updater, packaged smoke |
+
+### Discovery
+
+`main` resolves the harness executable from the settings override, `OMP_BINARY`, and the PATH snapshot (see `docs/harness-discovery.md`). Persisted project/schedule records carry `harness: 'omp'`; legacy `'prime'`/`'pi'` markers map to `'omp'` on load.
 
 ### Services
 
-- `AgentRpcManager` constructs the OMP adapter's argv builder, handshake steps, command schema, and event normalizer; `RuntimeInfo` carries `harness: 'omp'`.
-- `SessionService`: OMP-specific `catalogIo`/metadata/transcript readers (v3 JSONL: 256-byte `title` slot line, `session` header v3, entries with `id`/`parentId` forming a tree, `model_change.model` as a single `provider/id` string, entry types `message | model_change | thinking_level_change | compaction | branch_summary | custom_message | label | title_change | session_init | mode_change | ...`). Catalog scans one bucket level deep; ordering comes from the filename ISO-timestamp prefix instead of UUIDv7. No live-CLI overlay (OMP has no `list --json`); rename is done via RPC `set_session_name` when a runtime is live, else session files stay read-only and sidebar rename is disabled for offline sessions.
-- Model catalog: `OmpModelCatalogService` shells out to `omp models --json` (single-flight, TTL, byte-bounded) with every field validated; untrusted CLI output never reaches the renderer directly. Thinking levels mirror OMP's reported vocabulary (`off` implicit); fast-mode support is derived from the model identity (openai-codex GPT-5.4/5.5/5.6 families).
-- Providers: desktop-owned visibility toggles (disabled provider/model sets in desktop state) filter the catalog. Provider OAuth login/logout is driven through OMP's `login` / `get_login_providers` / `get_logout_accounts` / `logout` RPC (Capabilities provider accounts panel; the flow rides the existing `extension_ui` `open_url` + `input` surfaces with a 600-second window), while token custody stays entirely with OMP's own auth storage — the renderer holds only whitelisted `LoginProvider`/`LogoutAccount` fields and never receives, stores, or logs credentials (see `docs/security.md`).
-- Plugins: one `PluginService` routes discovery, installation, MCP paths, and reveal authorization through OMP. OMP package installs go through `omp plugin`; catalog discovery includes OMP-native skill/extension roots and enabled package trees. OMP Desktop edits OMP's native `mcp.json` (user `~/.omp/agent/mcp.json`, project `.omp/mcp.json`) with a structured editor validated against OMP's upstream mcp-schema (stdio ↔ command, http/sse ↔ URL, mutually exclusive) and the same pinned-directory, cooperative-lock, fingerprint-retry, atomic-replacement, and rollback safeguards; this is not filesystem compare-and-swap, so a same-user writer that ignores the lock can race the final fingerprint check and rename. Network definitions are HTTPS by default (plain HTTP only for loopback/private/link-local hosts with an explicit insecure-HTTP acknowledgement); `${VAR}` and `!command` values are stored verbatim and labeled as OMP-resolved—OMP expands them at load time, executing `!command` via shell with a 10s timeout. Editor replace-saves preserve harness-owned `auth`/`oauth` fields and unsupplied fields such as headers. The definition panel reads both mcp.json files with their source scope, shows effective state from the definition flag plus the `disabledServers`/`enabledServers` lists (denylist wins; toggles normalize the lists), surfaces `mcp.json.broken-*` quarantined configs as warnings, and offers `/mcp reload` + `/reload-plugins` buttons that forward the text prompt through the ordinary prompt pipeline (queued while busy) and refresh the catalog on the upstream `config_warnings_changed` event. OMP has no MCP management RPC, so reload is prompt forwarding, never a fabricated command; MCP definitions provided by installed packages remain visible but externally managed.
-- Capability bridges: the browser `CapabilityBridge` is reused; `assets/extensions/omp-work-browser.ts` speaks OMP's extension API (default export `(pi) => void`, `pi.registerTool`) against the same loopback broker env contract (`OMP_DESKTOP_BROWSER_URL`/`OMP_DESKTOP_BROWSER_TOKEN`). `assets/extensions/omp-work-schedules.ts` exposes list/create/update/manage tools through a separate scoped broker (`OMP_DESKTOP_SCHEDULE_URL`/`OMP_DESKTOP_SCHEDULE_TOKEN`). `assets/extensions/omp-work-collaboration.ts` provides app-owned bounded list/models/create/read/send/wait tools for same-working-directory top-level sessions (broker env keeps the compatibility names `GOOEYPI_COLLABORATION_URL`/`GOOEYPI_COLLABORATION_TOKEN`/`GOOEYPI_COLLABORATION_EXTENSION_PATH`, and the tool names remain `gooeypi_session_*`). When the universal capability is enabled, `assets/extensions/omp-work-ask-user.ts` asks focused multiple-choice questions in the app. Extension injection uses `OMP_DESKTOP_SCHEDULE_EXTENSION_PATH`, `OMP_DESKTOP_BROWSER_EXTENSION_PATH`, and `OMP_DESKTOP_ASK_USER_EXTENSION_PATH`; `GOOEYPI_MANAGES_ASK_USER` marks ask-user ownership.
+- Sessions: `omp-core::sessions` reads OMP's v3 JSONL (256-byte `title` slot line, `session` header v3, entries with `id`/`parentId` forming a tree, `model_change.model` as a single `provider/id` string, entry types `message | model_change | thinking_level_change | compaction | branch_summary | custom_message | label | title_change | session_init | mode_change | …`). Catalog scans one bucket level deep; ordering comes from the filename ISO-timestamp prefix. No live-CLI overlay (OMP has no `list --json`); rename uses RPC `set_session_name` when a runtime is live, and offline session files stay read-only.
+- Model catalog: `omp-core::models` shells out to `omp models --json` (single-flight, TTL, byte-bounded) with every field validated. Thinking levels mirror OMP's reported vocabulary (`off` implicit); fast-mode support is derived from the model identity (openai-codex GPT-5.4/5.5/5.6 families).
+- Providers: desktop-owned visibility toggles (disabled provider/model sets in desktop state) filter the catalog. Provider OAuth login/logout is driven through OMP's `login` / `get_login_providers` / `get_logout_accounts` / `logout` RPC, while token custody stays entirely with OMP's own auth storage; the app never receives, stores, or logs credentials (see `docs/security.md`).
+- Plugins: `omp-core::plugins` routes discovery, installation, MCP paths, and reveal authorization through OMP. OMP package installs go through `omp plugin`; catalog discovery includes OMP-native skill/extension roots and enabled package trees. OMP Desktop edits OMP's native `mcp.json` (user `~/.omp/agent/mcp.json`, project `.omp/mcp.json`) with a structured editor validated against OMP's upstream mcp-schema (stdio ↔ command, http/sse ↔ URL, mutually exclusive) and pinned-directory, cooperative-lock, fingerprint-retry, atomic-replacement, and rollback safeguards. Network definitions are HTTPS by default (plain HTTP only for loopback hosts).
+- Schedules: `omp-core::schedules` and `scheduler` persist durable automations in the app state store, revalidate the granted project (and canonical session path) on every run, and record missed occurrences as skipped rather than replaying them.
+- Collaboration: `omp-core::collaboration` implements the signed peer envelope and bounded peer reads; see `docs/session-collaboration.md`.
 
-### Renderer
+### Workspace
 
-- `App.tsx` scopes workspaces, sessions, projects, and the model catalog to the single harness. Title strings and the settings harness card follow it.
+- `rust/crates/omp-desktop/src/app.rs` scopes workspaces, sessions, projects, the model catalog, and every page to the single harness: Workspace, Schedules, Browser, Files, Subagents, Side Question, Settings, Extensions, Review, Summary.
 - Settings: the Agent section shows the OMP status card and an "Approval mode" select (Inherit config / Always ask / Write / YOLO → argv flag only when not Inherit). The Providers section lists OMP providers with desktop-owned visibility toggles that never touch OMP's own configuration; authentication remains owned by the omp CLI.
 
 ## Security invariants
 
-Same rules as `docs/security.md`: argv arrays only, sanitized child env, path canonicalization + containment for the OMP session root, session JSONL read-only, stderr swallowed, all transport/event limits identical, `~/.omp/agent/agent.db` (credentials) never read, IPC allowlist stays fixed and narrow with `harness` validated as the `'omp'` enum value.
+Same rules as `docs/security.md`: argv arrays only, sanitized child env, path canonicalization + containment for the OMP session root, session JSONL read-only, stderr swallowed, all transport/event limits identical, `~/.omp/agent/agent.db` (credentials) never read, and the command allowlist stays fixed and narrow with `harness` validated as the `'omp'` value.
 
 ## Non-goals
 

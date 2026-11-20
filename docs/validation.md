@@ -1,151 +1,146 @@
 # Validation guide
 
-This page explains how to reproduce and interpret OMP Desktop's validation gates. It is not a status report. A passing command or workflow is evidence only for the exact commit, runner, inputs, and credentials that produced it; do not infer that the current branch is green from this document.
+OMP Desktop ships as a native Rust application in [`rust/`](../rust/README.md). The
+Node toolchain at the repository root exists only for the release scripts, the
+conformance harness, and the documentation guards; it no longer builds a desktop
+application. Nothing in this guide launches a browser engine, a bundler, or a
+packaged JavaScript app.
 
-## Protected `main` validation contract
+## Local verification
 
-The repository's `main` branch protection must require pull requests and require status checks to pass with **Require branches to be up to date before merging** enabled (`required_status_checks.strict: true`). This strict latest-main requirement prevents a PR from merging on a newer base than the integration state validated by CI.
-
-The required checks are exactly the seven normal pull-request gates:
-
-- `production-audit`
-- `quality`
-- `hermetic-e2e`
-- `windows-state-migration`
-- `packaging-smoke (macos-14, mac, arm64, --config.mac.identity=null)`
-- `packaging-smoke (ubuntu-22.04, linux, x64)`
-- `packaging-smoke (windows-2022, win, x64)`
-
-Do not require `local-qa-package`: it is manual local QA, runs only through `workflow_dispatch`, and is intentionally excluded from pull-request validation.
-
-`Production dependency audit` is a seventh pull-request gate: it runs the exception-aware `npm run audit:production` evaluator against the exact PR head, and the release workflow runs the same evaluator against its validated immutable SHA before any package or publication job. After the check context first appears on a pull request, a repository administrator must add `Production dependency audit` to the required status checks on `main`. The scheduled [dependency-audit workflow](../.github/workflows/audit.yml) remains for advisories disclosed after merge.
-
-GitHub merge queues are not available to this public repository while it is owned by a personal account. Consequently, `merge_group` or a required merge queue cannot enforce this policy here; strict up-to-date branch protection is the supported latest-main control. If the repository moves to an organization, merge-queue support should be designed and tested separately before enabling it.
-
-An authorized maintainer can verify the active legacy branch protection and exact required-context set with:
-
-```sh
-gh api repos/SenCha930511/omp-desktop/branches/main/protection \
-  --jq '{strict: .required_status_checks.strict, contexts: .required_status_checks.contexts, reviews: .required_pull_request_reviews}'
-```
-
-## Sources of truth
-
-| Concern | Authoritative definition |
-|---|---|
-| Pull-request, `main`, and manual CI | [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) |
-| Tagged public releases | [`.github/workflows/release.yml`](../.github/workflows/release.yml) |
-| Scheduled production-dependency audit | [`.github/workflows/audit.yml`](../.github/workflows/audit.yml) |
-| Aggregate commands and toolchain policy | [`package.json`](../package.json) and [`.nvmrc`](../.nvmrc) |
-| Resolved dependency graph | [`package-lock.json`](../package-lock.json) |
-| Dependency-install lifecycle | [`package.json`](../package.json) and [`install-app-deps.mjs`](../scripts/release/install-app-deps.mjs) |
-| Package and post-package guarantees | [`scripts/release/package.mjs`](../scripts/release/package.mjs), [`verify-package.mjs`](../scripts/release/verify-package.mjs), and [`verify-cross-platform-package.mjs`](../scripts/release/verify-cross-platform-package.mjs) |
-| Audit policy and accepted risk | [`docs/security.md`](security.md), [`audit-production.mjs`](../scripts/release/audit-production.mjs), and [`audit-exceptions.json`](../scripts/release/audit-exceptions.json) |
-
-Read these files at the commit being validated. Job names, test inventory, dependency versions, budgets, and artifact matrices can change; copying their current values into a permanent pass/fail table would create another stale snapshot.
-
-## Reproducible setup
-
-The repository derives its Node and npm policy from checked-in metadata. `package.json#engines`, `package.json#packageManager`, and `.nvmrc` must agree; release entry points reject unsupported, malformed, or prerelease tool versions. With `nvm`, prepare a checkout as follows:
+Rust application (run from `rust/`):
 
 ```bash
-nvm install
-nvm use
-npm run toolchain:bootstrap
-npm ci
-npm run release:preflight:toolchain
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo deny check
+cargo test --workspace --locked
+cargo build -p omp-desktop --locked
 ```
 
-Run `toolchain:bootstrap` before installing project dependencies. It installs the `packageManager`-pinned npm into the invoked npm's validated global prefix, verifies the exact installed JavaScript CLI with the active Node executable, and publishes the matching shim directory to later GitHub Actions steps. This is necessary because the npm bundled by `actions/setup-node` can be older than the repository's npm floor.
+Release tooling and documentation guards (run from the repository root):
 
-`npm ci` runs the shared `postinstall` entry point. That entry point installs Electron's platform runtime synchronously before asking Electron Builder to rebuild native dependencies, so parallel test workers do not race Electron's lazy downloader. Installing with `--ignore-scripts` intentionally skips both operations; follow the recovery sequence in the [source setup instructions](../README.md#run-from-source) before running or packaging the application.
+```bash
+npm ci
+npm run typecheck
+npm run check
+npm test
+```
 
-Do not hard-code the current Node, npm, or Electron version in validation notes. Record the values observed for the tested commit instead.
+`npm test` runs the Vitest suites that guard the release scripts and the
+documentation: `tests/release-scripts.test.ts`,
+`tests/validation-documentation.test.ts`,
+`tests/security-policy-documentation.test.ts`, and
+`tests/omp-parity-script.test.ts`.
+
+The Node toolchain is bootstrapped from the vendored, pinned npm archive before
+any other command:
+
+```bash
+npm run toolchain:bootstrap
+npm run release:preflight
+```
+
+See the [security model](security.md) for why the npm archive is verified byte
+for byte, and [conformance-protocol.md](conformance-protocol.md) for the
+adapter protocol.
+
+## Conformance suite
+
+The cross-language suite in `tests/conformance/` drives the
+Conformance Protocol v1 adapter over stdio. The only adapter in this repository
+is the Rust one:
+
+```bash
+cd rust && cargo build -p omp-conformance --locked && cd ..
+OMP_CONFORMANCE_PARTIAL=1 \
+OMP_CONFORMANCE_REQUIRED_CAPABILITIES=state,projects,sessions,models,agent,git,checkouts,plugins,schedules,collaboration \
+OMP_CONFORMANCE_ADAPTER_ARGV='["rust/target/debug/omp-conformance"]' \
+npm run test:conformance
+```
+
+`terminal` is deliberately absent from the required capability set: the Rust
+application has no built-in PTY. An adapter can also be supplied through
+`OMP_CONFORMANCE_ADAPTER_CMD`. When neither variable is set, the harness uses
+`rust/target/debug/omp-conformance` (or `omp-conformance.exe` on Windows) and
+fails with build instructions if that binary is missing.
 
 ## Pull-request and branch CI
 
-The [CI workflow](../.github/workflows/ci.yml) runs on pull requests, pushes to `main`, and manual dispatch. Each Node job bootstraps the repository npm before `npm ci` and executes the toolchain-only release preflight after installation.
+[`ci.yml`](../.github/workflows/ci.yml) runs on every pull request, on pushes to
+`main`, and on manual dispatch.
 
-| Job | When it runs | What a pass establishes |
-|---|---|---|
-| `production-audit` | Pull request, `main`, manual dispatch | The exception-aware production dependency audit passes for the exact checked-out commit. |
-| `quality` | Pull request, `main`, manual dispatch | TypeScript checks; configured lint and format checks; the coverage suite and thresholds; production bundle creation; bundle-size budgets; coverage artifact upload. |
-| `hermetic-e2e` | Pull request, `main`, manual dispatch | The built application passes the Playwright Electron suite on the pinned macOS runner without relying on developer state. Failure artifacts are uploaded when available. |
-| `windows-state-migration` | Pull request, `main`, manual dispatch | The state migration suite passes on a real `windows-2022` runner, including the production-platform fresh-install, migration, restart, and update path. Simulating `platform: 'win32'` on another OS is useful unit coverage but is not a substitute for this job. |
-| `packaging-smoke` | Pull requests only | Native macOS arm64, Linux x64, and Windows x64 runners can build unpacked application directories. Linux and Windows additionally verify the ASAR layout and exact native-unpack allowlist. These are unsigned smoke builds, not public installers. |
-| `local-qa-package` | Manual dispatch only | Native runners create and verify installable local-QA artifacts for macOS, Linux, and Windows, then upload the configured artifact set. These artifacts are not represented as signed or notarized public releases. |
+| Job | What it proves |
+| --- | --- |
+| `release-scripts` | The pinned Node/npm toolchain installs, typechecks, lints, formats, and passes the Node test suites that guard the release scripts and documentation. |
+| `rust` | `cargo fmt`, `cargo clippy -D warnings`, `cargo deny`, and `cargo test --workspace --locked` pass on macOS, Linux, and Windows. The Windows leg is the state-migration gate: the `omp-core` tests replay the Windows tombstone, quarantine, and backup protocol there. |
+| `rust-conformance` | The conformance suite passes against the Rust adapter on macOS, Linux, and Windows, with the required capability set enforced and a capability/test-count summary uploaded. |
+| `rust-package-smoke` | cargo-packager builds the macOS `.app`, and the packaged binary draws its first GPUI frame and writes the readiness marker. |
+| `rust-package-smoke-linux` | cargo-packager builds the Linux `.deb`; the packaged binary draws its first frame under Xvfb. |
+| `rust-package-smoke-windows` | cargo-packager builds the NSIS installer; the silently installed binary draws its first frame and writes the marker. |
 
-Expected skips are part of this design:
+## Protected `main` validation contract
 
-- `local-qa-package` is expected to be skipped on pull requests and pushes to `main`.
-- `packaging-smoke` is expected to be skipped on pushes to `main` and manual dispatches because its condition is pull-request-only.
+Require these checks on `main`:
 
-`windows-state-migration` is required for every CI trigger listed above; a skip is not expected.
+- `Release tooling`
+- `Rust workspace (macos-15)`
+- `Rust workspace (ubuntu-22.04)`
+- `Rust workspace (windows-2022)`
+- `Rust conformance (macos-15)`
+- `Rust conformance (ubuntu-22.04)`
+- `Rust conformance (windows-2022)`
+- `Rust packaged smoke`
+- `Rust packaged smoke (Linux deb)`
+- `Rust packaged smoke (Windows nsis)`
 
-A green PR packaging matrix does not prove Developer ID signing, Apple notarization/stapling, Gatekeeper acceptance, Authenticode identity, installer integrity, or the complete public artifact matrix. Those belong to the release workflow.
-
-## Local aggregate commands
-
-Use focused tests while developing, then choose the aggregate that matches the claim you need to make. The command definitions in [`package.json`](../package.json) remain authoritative.
-
-| Command | Scope |
-|---|---|
-| `npm run release:verify:package` | Toolchain preflight, typecheck, configured code checks, coverage tests, production bundle, and bundle-size gate. It does not create an installer or run Electron E2E. |
-| `npm run release:verify` | The package-verification aggregate above plus the hermetic Electron E2E suite. |
-| `npm run test:e2e` | Builds the application, then runs the hermetic Electron E2E suite. |
-| `npm run audit:production` | Fetches npm's production audit report and applies the repository's high/critical advisory and exception policy. Network access is required. |
-| `npm run package:mac:local-qa` | On macOS, runs the relevant verification aggregate, creates unsigned/unnotarized DMG and ZIP artifacts, and applies macOS post-package checks in QA mode. |
-| `npm run package:linux:local-qa` | On Linux, runs the package-verification aggregate, creates the configured Linux artifacts, and verifies their runtime layout in QA mode. |
-| `npm run package:win:local-qa` | On Windows, runs the package-verification aggregate, creates the configured Windows artifacts, and verifies their runtime layout in QA mode. |
-
-Packaging is native: run each platform command on its matching operating system and architecture. The public `package:mac`, `package:linux`, and `package:win` commands use distribution mode; macOS and Windows distribution checks require their external signing configuration. A successful local-QA command must not be described as a public trust check.
-
-## Dependency audit policy
-
-The [dependency-audit workflow](../.github/workflows/audit.yml) runs weekly and on manual dispatch. It uses the repository toolchain and executes `npm run audit:production` against the production dependency graph. This scheduled job re-audits the production graph against a current advisory database so advisories disclosed after a merge are still detected.
-
-Ordinary PR CI validates the exception file and its expiry rules, but it does not replace the live registry-backed audit. Use the scheduled or manually dispatched audit workflow when making a current dependency-advisory claim.
-
-The project gate and raw npm output answer different questions:
-
-- `npm audit --omit=dev` is the underlying registry report for the production lock graph. Its output and exit status are diagnostic and can change as the advisory database changes.
-- `npm run audit:production` parses that report and fails on every unaccepted **high** or **critical** advisory.
-- [`audit-exceptions.json`](../scripts/release/audit-exceptions.json) can accept an exact advisory/package pair only with a reason and expiry. The gate also fails expired exceptions and stale exceptions that no longer match the report.
-- The ordinary release-script tests check exception structure and expiry, so an elapsed acceptance is visible in PR CI as well as in the weekly audit.
-
-A passing audit therefore does not mean the production graph carries no known advisory: the gate also passes while an advisory is accepted in [`audit-exceptions.json`](../scripts/release/audit-exceptions.json) with a reason and an unexpired date. Never restate a passing gate as "zero vulnerabilities". Read that file for the accepted-risk position at the commit under review, and treat adding or extending an exception as a security-sensitive change governed by the [dependency pinning and supply-chain policy](security.md#dependency-pinning-and-supply-chain).
+Do not require any job: the whole workflow also runs on manual dispatch, and a
+dispatch-only job would otherwise satisfy a required check that pull requests
+never exercise.
 
 ## Public release validation
 
-The [release workflow](../.github/workflows/release.yml) runs for a semantic-version tag or a manual request naming an existing tag. It first verifies that the tag matches both package manifests and resolves to a commit on `main`; downstream jobs check out the resulting immutable commit SHA.
+[`release.yml`](../.github/workflows/release.yml) publishes a release for a
+pushed `v*.*.*` tag or for an existing tag supplied to a manual dispatch. Every
+downstream job checks out the commit SHA resolved once by `validate`, so a tag
+moved mid-run cannot mix commits.
 
-| Release job | Responsibility |
-|---|---|
-| `validate` | Enforce the repository toolchain, validate tag/package versions and `main` ancestry, and expose the exact release SHA. |
-| `production-audit` | Apply the exception-aware production dependency audit to that immutable SHA before any package job. |
-| `quality` | Run `release:verify:package` for that SHA. |
-| `hermetic-e2e` | Build and run the Electron E2E suite for that SHA. |
-| `package` | Build both native macOS architectures. Credential preflight is fail-closed; public verification checks the signing identity, required microphone entitlements on the app and every Electron helper, the notarization staple on each packaged app, Gatekeeper, artifact integrity, fuses, native layout/architecture, and package budgets. |
-| `package-linux` | Build the configured Linux architectures on native runners and apply the Linux package/runtime verification path. |
-| `package-windows` | When explicitly enabled, build either Authenticode-signed public packages or unsigned beta packages. Signed mode requires signing secrets and the configured signer subject and/or thumbprint. |
-| `release-packages` | Reject failed prerequisites, collect the enabled platform artifacts, generate checksums, attest provenance, and publish or resume the GitHub Release with write permission scoped to this final job. |
+| Job | What it proves |
+| --- | --- |
+| `validate` | The tag matches `package.json` and `package-lock.json`, the tagged commit is an ancestor of `main`, and the run is pinned to one commit SHA. |
+| `quality` | The pinned toolchain typechecks, lints, formats, and passes the Node test suites for the exact release commit. |
+| `package-rust` | cargo-packager builds and minisign-signs the macOS arm64/x86_64, Linux x86_64, and Windows x86_64 packages on native runners. A missing `RUST_UPDATER_SIGNING_KEY` skips signing with a notice instead of publishing artifacts the updater would reject. |
+| `release-packages` | Fails closed unless every platform produced a `.sig`, then publishes one GitHub Release with every signed package, `SHA256SUMS.txt`, and build-provenance attestations. Stale draft assets are pruned before a resumed draft is published. |
+| `rust-update-feed` | Generates `updates.json` for the updater from the signed artifacts and uploads it to the published release. The feed version is the Rust workspace version, not the tag. |
 
-Native release jobs pass `--skip-verify` only after the same immutable SHA has passed the upstream quality and E2E jobs. That flag skips a duplicate pre-package test aggregate; it does not skip bundle creation or the platform-specific post-package verification.
+A release without the signing key is not publishable: the aggregate gate fails
+closed rather than publishing an unsigned set.
 
-Public macOS checks require external Developer ID and notarization credentials that are not present in ordinary PR CI. Signed Windows packaging is also conditional on repository configuration and secrets. If neither signed nor unsigned Windows release mode is enabled, `package-windows` is expected to be skipped and the aggregate release gate explicitly accepts that skip. Within an enabled Windows job, the signed and unsigned build steps are mutually exclusive, so one of them is normally skipped.
+## Rust updater feed
 
-An explicitly enabled unsigned Windows beta is not trust-ready and must be labelled as such. Ordinary PR smoke packages and manual local-QA artifacts do not replace any credentialed release check.
+`scripts/release/prepare-rust-update-feed.mjs` writes the
+cargo-packager-updater 0.2.3 feed. Every artifact must be a file with a matching
+`.sig` that decodes to a minisign signature box, the base URL must be HTTPS
+without credentials, query, or fragment, and platform names must be one of
+`macos-aarch64`, `macos-x86_64`, `linux-x86_64`, or `windows-x86_64`. The client
+verifies the feed with the public key baked in through `OMP_UPDATER_PUBKEY`.
 
-## Recording evidence
+Run it locally with `npm run release:rust-update-feed` and the same flags the
+workflow uses (`--version-file rust/Cargo.toml --base-url ... --artifacts ...
+--output ...`); `--check` validates without writing.
 
-Keep point-in-time results in the PR, release notes, or another commit-addressed record rather than updating this guide with a new "current status". Record at least:
+## Packaged smoke marker
 
-- the full commit SHA and whether the worktree was clean;
-- the workflow run URL or exact commands and exit status;
-- runner image or local OS/architecture, plus observed Node and npm versions;
-- workflow inputs and which conditional jobs or steps were skipped;
-- the audit exception file used for dependency-audit claims;
-- artifact names and checksums, and whether each artifact was unsigned, signed, notarized, stapled, or provenance-attested;
-- any failure, rerun, accepted limitation, or manual observation needed to interpret the result.
+Every packaged build accepts `--packaged-smoke=<absolute marker path>`. The
+application starts normally, and only after the real window draws its first
+frame does it write a size-capped JSON marker and quit. CI and the release smoke
+jobs require `{"event":"gooeypi-packaged-smoke-ready"}`. The flag grants no
+capability and is ignored outside packaged builds.
 
-Use test counts only inside that commit-addressed evidence. The durable claim is that the checked-in aggregate completed successfully, not that this guide remembers how many tests happened to exist at some earlier date.
+## Documentation guards
+
+`npm test` fails when this guide links a missing local file, names an
+`npm run` script that does not exist, or drifts from the job ids in
+[`ci.yml`](../.github/workflows/ci.yml) and
+[`release.yml`](../.github/workflows/release.yml). It also fails when the
+security policy or the security model links a missing file.

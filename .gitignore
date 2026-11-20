@@ -3,7 +3,8 @@ node_modules
 /dist/
 /release/
 /coverage/
-playwright-report
+/rust/target/
+/rust/dist/
 test-results
 .DS_Store
 .env
@@ -13,3 +14,5 @@ test-results
 .claude/worktrees/
 __pycache__/
 .claude/settings.local.json
+.agents/
+.cursor/

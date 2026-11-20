@@ -1,0 +1,27 @@
+{
+  "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+  "fromSessionId": "019fdf24-1111-7000-8000-000000000001",
+  "text": "Please review the diff",
+  "cases": [
+    {
+      "name": "v1",
+      "envelope": "===== BEGIN GOOEYPI AGENT MESSAGE =====\n{\"version\":1,\"from_session_id\":\"019fdf24-1111-7000-8000-000000000001\",\"from_title\":\"Legacy Peer\",\"from_harness\":\"prime\",\"nonce\":\"019fdf24-2222-4000-8000-000000000002\",\"sent_at\":\"2026-04-01T00:00:00.000Z\",\"signature\":\"dgKqX9oVDBFzOae4T1x6R57ZumX03r5-kvafmw9pZ6M\"}\n===== END GOOEYPI AGENT MESSAGE =====\n\nPlease review the diff"
+    },
+    {
+      "name": "v1-reply",
+      "envelope": "===== BEGIN GOOEYPI AGENT MESSAGE =====\n{\"version\":1,\"from_session_id\":\"019fdf24-1111-7000-8000-000000000001\",\"from_title\":\"Legacy Peer\",\"from_harness\":\"omp\",\"reply_with\":\"session_send\",\"nonce\":\"019fdf24-2222-4000-8000-000000000002\",\"sent_at\":\"2026-04-01T00:00:00.000Z\",\"signature\":\"0Glm-XO-tVv3QZHog6ZpZERzgIxYcRt54P0u8QuykLw\"}\n===== END GOOEYPI AGENT MESSAGE =====\n\nPlease review the diff"
+    },
+    {
+      "name": "v1-pi",
+      "envelope": "===== BEGIN GOOEYPI AGENT MESSAGE =====\n{\"version\":1,\"from_session_id\":\"019fdf24-1111-7000-8000-000000000001\",\"from_title\":\"Legacy Pi Peer\",\"from_harness\":\"pi\",\"nonce\":\"019fdf24-2222-4000-8000-000000000002\",\"sent_at\":\"2026-04-01T00:00:00.000Z\",\"signature\":\"OsM0m21eTh43pPslwa4SC_K0sl5kfTMV9f504NAhjH4\"}\n===== END GOOEYPI AGENT MESSAGE =====\n\nPlease review the diff"
+    },
+    {
+      "name": "v2",
+      "envelope": "===== BEGIN GOOEYPI AGENT MESSAGE =====\n{\"version\":2,\"from_session_id\":\"019fdf24-1111-7000-8000-000000000001\",\"reply_with\":\"session_send\",\"nonce\":\"019fdf24-2222-4000-8000-000000000002\",\"sent_at\":\"2026-04-01T00:00:00.000Z\",\"signature\":\"F4tenbDQtQFEEWFO0zewN1CoWpLwBTYvByXyBilVIk0\"}\n===== END GOOEYPI AGENT MESSAGE =====\n\nPlease review the diff"
+    },
+    {
+      "name": "v3",
+      "envelope": "===== BEGIN GOOEYPI AGENT MESSAGE =====\n{\"version\":3,\"from_session_id\":\"019fdf24-1111-7000-8000-000000000001\",\"reply_with\":\"gooeypi_session_send\",\"nonce\":\"019fdf24-2222-4000-8000-000000000002\",\"sent_at\":\"2026-04-01T00:00:00.000Z\",\"signature\":\"bUFoOsP2iUGcwZApUrBTw3iPfruHWqRJlqLsZcNXbas\"}\n===== END GOOEYPI AGENT MESSAGE =====\n\nPlease review the diff"
+    }
+  ]
+}

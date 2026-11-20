@@ -10,16 +10,6 @@ on:
         description: Existing semantic version tag to publish (for example, v0.2.0)
         required: true
         type: string
-      include_mac_unsigned:
-        description: Build ad-hoc signed macOS packages for free beta distribution (skips Developer ID signing and notarization)
-        required: false
-        default: false
-        type: boolean
-      include_windows:
-        description: Build signed Windows packages (requires Authenticode secrets)
-        required: false
-        default: false
-        type: boolean
 
 permissions:
   contents: read
@@ -30,10 +20,6 @@ concurrency:
 
 env:
   RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-  RELEASE_MAC_UNSIGNED_ENABLED: ${{ (github.event_name == 'workflow_dispatch' && inputs.include_mac_unsigned) || (github.event_name == 'push' && vars.RELEASE_MAC_UNSIGNED_ENABLED == 'true') }}
-  RELEASE_WINDOWS_SIGNED_ENABLED: ${{ (github.event_name == 'workflow_dispatch' && inputs.include_windows) || (github.event_name == 'push' && vars.RELEASE_WINDOWS_ENABLED == 'true') }}
-  RELEASE_WINDOWS_UNSIGNED_ENABLED: ${{ (github.event_name == 'workflow_dispatch' && inputs.include_windows_unsigned) || (github.event_name == 'push' && vars.RELEASE_WINDOWS_UNSIGNED_ENABLED == 'true') }}
-  RELEASE_WINDOWS_ENABLED: ${{ ((github.event_name == 'workflow_dispatch' && (inputs.include_windows || inputs.include_windows_unsigned)) || (github.event_name == 'push' && (vars.RELEASE_WINDOWS_ENABLED == 'true' || vars.RELEASE_WINDOWS_UNSIGNED_ENABLED == 'true'))) }}
 
 jobs:
   validate:
@@ -45,14 +31,14 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: ${{ env.RELEASE_REF }}
+          ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
           cache: npm
       - run: npm run toolchain:bootstrap
-      - run: npm run release:preflight:toolchain
+      - run: npm run release:preflight
       - name: Validate tag and package versions
         run: node scripts/release/validate-release-tag.mjs --tag "$RELEASE_TAG"
       # fetch-depth: 0 above is what populates refs/remotes/origin/*; the check
@@ -64,24 +50,8 @@ jobs:
         id: resolve
         run: echo "sha=$(git rev-parse HEAD^{commit})" >> "$GITHUB_OUTPUT"
 
-  production-audit:
-    name: Production dependency audit
-    needs: validate
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          ref: ${{ needs.validate.outputs.sha }}
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-      - run: npm run toolchain:bootstrap
-      - run: npm run release:preflight:toolchain
-      - name: Apply named production dependency audit exceptions
-        run: npm run audit:production
-
   quality:
+    name: Release tooling
     needs: validate
     runs-on: ubuntu-22.04
     steps:
@@ -94,226 +64,108 @@ jobs:
           cache: npm
       - run: npm run toolchain:bootstrap
       - run: npm ci
-      - run: npm run release:preflight:toolchain
-      - run: npm run release:verify:package
+      - run: npm run release:preflight
+      - run: npm run typecheck
+      - run: npm run check
+      - run: npm test
 
-  hermetic-e2e:
-    needs: validate
-    runs-on: macos-15
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          ref: ${{ needs.validate.outputs.sha }}
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-      - run: npm run toolchain:bootstrap
-      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
-        with:
-          path: |
-            ~/Library/Caches/electron
-            ~/.cache/electron
-            ~/Library/Caches/electron-builder
-            ~/.cache/electron-builder
-          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-      - run: npm ci
-      - run: npm run release:preflight:toolchain
-      - run: npm run build:bundle
-      - run: npm run test:e2e:hermetic
-
-  package:
-    needs: [validate, production-audit, quality, hermetic-e2e]
+  package-rust:
+    # The signed packages are built on every release. Without
+    # RUST_UPDATER_SIGNING_KEY the signing step skips with a notice, and the
+    # release aggregate then fails closed instead of publishing a release with
+    # no signed artifacts.
+    name: Package the Rust application
+    needs: [validate, quality]
     strategy:
-      # Ship both mac architectures as separate DMG/ZIP builds. Each leg runs
-      # on a runner whose native architecture matches the target so
-      # install-app-deps never cross-compiles node-pty or zeromq, and one
-      # leg's failure never cancels the other's signed build.
+      # cargo-packager archives the host binary, so every leg runs on a native
+      # runner; a cross-compiled leg would publish the wrong architecture.
       fail-fast: false
       matrix:
         include:
-          - arch: arm64
+          - platform: macos-aarch64
             runner: macos-15
-          - arch: x64
+            format: app
+          - platform: macos-x86_64
             runner: macos-15-intel
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          ref: ${{ needs.validate.outputs.sha }}
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-      - run: npm run toolchain:bootstrap
-      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
-        with:
-          path: |
-            ~/Library/Caches/electron
-            ~/.cache/electron
-            ~/Library/Caches/electron-builder
-            ~/.cache/electron-builder
-          key: electron-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('package-lock.json') }}
-      - run: npm ci
-      - run: npm run release:preflight:toolchain
-      # Signed Developer ID builds stay the fail-closed default; the ad-hoc
-      # unsigned beta path must be explicitly selected via the dispatch input
-      # or the RELEASE_MAC_UNSIGNED_ENABLED repository variable.
-      - name: Fail closed unless every release credential is configured
-        if: env.RELEASE_MAC_UNSIGNED_ENABLED != 'true'
-        run: npm run release:preflight
-        env:
-          RELEASE_SIGNING_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          CSC_LINK: ${{ secrets.MAC_CERTIFICATE_P12_BASE64 }}
-          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      # CI runs the full typecheck/lint/test suite for this commit; the release
-      # job only builds the bundle, packages, and runs post-package verification.
-      - name: Build, sign, notarize, and verify release packages
-        if: env.RELEASE_MAC_UNSIGNED_ENABLED != 'true'
-        run: npm run package:mac -- --skip-verify --arch ${{ matrix.arch }}
-        env:
-          RELEASE_SIGNING_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          CSC_LINK: ${{ secrets.MAC_CERTIFICATE_P12_BASE64 }}
-          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      - name: Build ad-hoc signed macOS packages for beta distribution
-        if: env.RELEASE_MAC_UNSIGNED_ENABLED == 'true'
-        run: node scripts/release/package.mjs --qa --platform mac --skip-verify --arch ${{ matrix.arch }}
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: omp-desktop-public-macos-${{ matrix.arch }}
-          path: |
-            release/mac/${{ matrix.arch }}/*.dmg
-            release/mac/${{ matrix.arch }}/*.zip
-            release/mac/${{ matrix.arch }}/latest*.yml
-          if-no-files-found: error
-
-  package-linux:
-    needs: [validate, production-audit, quality, hermetic-e2e]
-    strategy:
-      # Ship both Linux architectures from native runners so npm install and
-      # electron-builder package node-pty and ZeroMQ for the matching ABI.
-      # Keep the legs independent so one architecture can never mask the
-      # other's artifact or updater-feed failure.
-      fail-fast: false
-      matrix:
-        include:
-          - arch: arm64
-            runner: ubuntu-24.04-arm
-            unpacked_dir: linux-arm64-unpacked
-          - arch: x64
+            format: app
+          - platform: linux-x86_64
             runner: ubuntu-22.04
-            unpacked_dir: linux-unpacked
+            format: appimage
+          - platform: windows-x86_64
+            runner: windows-2022
+            format: nsis
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ needs.validate.outputs.sha }}
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-      - run: npm run toolchain:bootstrap
-      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
-        with:
-          path: |
-            ~/.cache/electron
-            ~/.cache/electron-builder
-          key: electron-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('package-lock.json') }}
-      - name: Install pacman packaging dependency
+      - name: Install the AppImage tooling dependencies
+        if: matrix.format == 'appimage'
         run: |
           sudo apt-get update
-          sudo apt-get install --yes libarchive-tools
-      - run: npm ci
-      - run: npm run release:preflight:toolchain
-      - run: npm run package:linux -- --skip-verify --arch ${{ matrix.arch }}
-      # The Linux packages install chrome-sandbox setuid-root, so the smoke restores
-      # those shipped permissions rather than launching with the sandbox disabled.
-      - run: |
-          sudo chown root:root release/linux/${{ matrix.arch }}/${{ matrix.unpacked_dir }}/chrome-sandbox
-          sudo chmod 4755 release/linux/${{ matrix.arch }}/${{ matrix.unpacked_dir }}/chrome-sandbox
-      - name: Launch the packaged application
-        run: node scripts/release/smoke-packaged-app.mjs --platform linux --arch ${{ matrix.arch }}
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: failure()
-        with:
-          name: packaged-smoke-diagnostics-linux-${{ matrix.arch }}
-          path: release/linux/${{ matrix.arch }}/packaged-smoke-diagnostics.log
-          if-no-files-found: error
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: omp-desktop-public-linux-${{ matrix.arch }}
-          path: |
-            release/linux/${{ matrix.arch }}/*.AppImage
-            release/linux/${{ matrix.arch }}/*.deb
-            release/linux/${{ matrix.arch }}/*.rpm
-            release/linux/${{ matrix.arch }}/*.pacman
-            release/linux/${{ matrix.arch }}/latest*.yml
-          if-no-files-found: error
-
-  package-windows:
-    if: (github.event_name == 'workflow_dispatch' && (inputs.include_windows || inputs.include_windows_unsigned)) || (github.event_name == 'push' && (vars.RELEASE_WINDOWS_ENABLED == 'true' || vars.RELEASE_WINDOWS_UNSIGNED_ENABLED == 'true'))
-    needs: [validate, production-audit, quality, hermetic-e2e]
-    runs-on: windows-2022
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          ref: ${{ needs.validate.outputs.sha }}
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-      - run: npm run toolchain:bootstrap
-      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
-        with:
-          path: |
-            ~/AppData/Local/electron/Cache
-            ~/AppData/Local/electron-builder/Cache
-          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-      - run: npm ci
-      - run: npm run release:preflight:toolchain
-      # Signed builds remain fail-closed and require the configured Authenticode identity.
-      - name: Build, Authenticode-sign, and verify Windows packages
-        if: (github.event_name == 'workflow_dispatch' && inputs.include_windows) || (github.event_name == 'push' && vars.RELEASE_WINDOWS_ENABLED == 'true')
-        run: node scripts/release/package.mjs --public --platform win --skip-verify
+          sudo apt-get install --yes libfuse2
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install 1.100.0 --profile minimal
+      - run: rustup default 1.100.0
+      - name: Install cargo-packager
+        run: cargo install cargo-packager --locked --version 0.11.8
+      - name: Build the release application
+        run: cargo build -p omp-desktop --release --locked
+        working-directory: rust
         env:
-          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
-          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
-          GOOEYPI_WINDOWS_CERT_SUBJECT: ${{ vars.GOOEYPI_WINDOWS_CERT_SUBJECT }}
-          GOOEYPI_WINDOWS_CERT_THUMBPRINT: ${{ vars.GOOEYPI_WINDOWS_CERT_THUMBPRINT }}
-      - name: Build unsigned Windows packages for beta distribution
-        if: (github.event_name == 'workflow_dispatch' && inputs.include_windows_unsigned && !inputs.include_windows) || (github.event_name == 'push' && vars.RELEASE_WINDOWS_UNSIGNED_ENABLED == 'true' && vars.RELEASE_WINDOWS_ENABLED != 'true')
-        run: node scripts/release/package.mjs --qa --platform win --skip-verify
-      # Artifacts are only publishable once the packaged executable itself boots.
-      - name: Launch the packaged application
-        run: node scripts/release/smoke-packaged-app.mjs --platform win --arch x64
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: failure()
+          # Baked in with option_env!. An empty value ships an app whose updater
+          # row reports "not configured" instead of trusting a feed.
+          OMP_UPDATER_PUBKEY: ${{ vars.RUST_UPDATER_PUBKEY }}
+      # The updater rejects unsigned artifacts, so a missing key skips packaging
+      # with a notice instead of publishing files no client can verify.
+      - name: Package and sign the application
+        id: package
+        shell: bash
+        working-directory: rust/crates/omp-desktop
+        env:
+          RUST_UPDATER_SIGNING_KEY: ${{ secrets.RUST_UPDATER_SIGNING_KEY }}
+          CARGO_PACKAGER_SIGN_PRIVATE_KEY: ${{ secrets.RUST_UPDATER_SIGNING_KEY }}
+        run: |
+          if [ -z "$RUST_UPDATER_SIGNING_KEY" ]; then
+            echo "::notice::RUST_UPDATER_SIGNING_KEY is not configured; skipping the signed Rust package and updater feed."
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          cargo packager --formats ${{ matrix.format }} --release --binaries-dir ../../target/release
+          echo "signed=true" >> "$GITHUB_OUTPUT"
+      - name: Upload the signed macOS application archive
+        if: steps.package.outputs.signed == 'true' && matrix.format == 'app'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: packaged-smoke-diagnostics-win-x64
-          path: release/win/x64/packaged-smoke-diagnostics.log
-          if-no-files-found: error
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: omp-desktop-public-windows
+          name: rust-package-${{ matrix.platform }}
           path: |
-            release/win/**/*.exe
-            release/win/**/*.zip
-            release/win/**/*.appx
-            release/win/**/*.msix
-            release/win/**/latest*.yml
+            rust/dist/*.app.tar.gz
+            rust/dist/*.sig
+          if-no-files-found: error
+      - name: Upload the signed Linux AppImage
+        if: steps.package.outputs.signed == 'true' && matrix.format == 'appimage'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rust-package-${{ matrix.platform }}
+          path: |
+            rust/dist/*.AppImage
+            rust/dist/*.sig
+          if-no-files-found: error
+      - name: Upload the signed Windows installer
+        if: steps.package.outputs.signed == 'true' && matrix.format == 'nsis'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rust-package-${{ matrix.platform }}
+          path: |
+            rust/dist/*-setup.exe
+            rust/dist/*.sig
           if-no-files-found: error
 
   release-packages:
-    needs: [validate, production-audit, package, package-linux, package-windows]
+    needs: [validate, package-rust]
     # Always run the aggregate gate. A skipped job can satisfy a required check,
     # so failures are asserted by an explicit first step rather than encoded in
-    # the job-level condition. Windows may legitimately be skipped.
+    # the job-level condition.
     if: always()
     runs-on: ubuntu-22.04
     permissions:
@@ -323,11 +175,9 @@ jobs:
     steps:
       - name: Fail if a release prerequisite did not succeed
         if: >-
-          always() && (needs.validate.result != 'success' || needs.production-audit.result != 'success' ||
-          needs.package.result != 'success' || needs.package-linux.result != 'success' ||
-          (needs.package-windows.result != 'success' && needs.package-windows.result != 'skipped'))
+          always() && (needs.validate.result != 'success' || needs.package-rust.result != 'success')
         run: |
-          echo "Release prerequisite results: validate=${{ needs.validate.result }}, production-audit=${{ needs.production-audit.result }}, package=${{ needs.package.result }}, package-linux=${{ needs.package-linux.result }}, package-windows=${{ needs.package-windows.result }}"
+          echo "Release prerequisite results: validate=${{ needs.validate.result }}, package-rust=${{ needs.package-rust.result }}"
           exit 1
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -337,27 +187,70 @@ jobs:
         with:
           node-version-file: .nvmrc
       - run: npm run toolchain:bootstrap
-      # This job holds contents/attestations write, so it installs only the
-      # runtime dependency tree the release script needs (js-yaml) instead of the
-      # full dev toolchain.
-      - name: Install release script dependencies
-        run: npm ci --omit=dev --ignore-scripts
-      - run: npm run release:preflight:toolchain
+      - run: npm run release:preflight
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
-          pattern: omp-desktop-public-*
-          path: downloaded-release-artifacts
-      - name: Select release assets and generate SHA-256 checksums
+          pattern: rust-package-*
+          path: rust-artifacts
+      # download-artifact extracts each artifact into a `rust-package-<os>-<arch>`
+      # directory; the updater feed and the release layout use `<os>-<arch>`.
+      - name: Lay the Rust packages out as <os>-<arch> platform directories
         run: |
-          platforms='mac,linux'
-          if [ "$RELEASE_WINDOWS_ENABLED" = 'true' ]; then platforms="$platforms,win"; fi
-          node scripts/release/prepare-github-release.mjs --input downloaded-release-artifacts --output release-assets --tag "$RELEASE_TAG" --platforms "$platforms"
+          shopt -s nullglob
+          for directory in rust-artifacts/rust-package-*; do
+            mv "$directory" "rust-artifacts/${directory##*rust-package-}"
+          done
+      - name: Fail closed unless every signed Rust package was produced
+        run: |
+          shopt -s nullglob
+          for platform in macos-aarch64 macos-x86_64 linux-x86_64 windows-x86_64; do
+            signatures=(rust-artifacts/"$platform"/*.sig)
+            if [ "${#signatures[@]}" -eq 0 ]; then
+              echo "Missing the signed $platform Rust package. The updater rejects unsigned artifacts, so the release is not publishable without RUST_UPDATER_SIGNING_KEY."
+              exit 1
+            fi
+          done
+      - name: Add the signed Rust packages to the release assets
+        run: |
+          mkdir -p release-assets
+          shopt -s nullglob
+          paths=(rust-artifacts/*/*)
+          names=()
+          for path in "${paths[@]}"; do
+            if [ -f "$path" ]; then names+=("${path##*/}"); fi
+          done
+          duplicates=$(printf '%s\n' "${names[@]}" | LC_ALL=C sort | uniq -d)
+          if [ -n "$duplicates" ]; then
+            echo "Two Rust packages publish the same asset name: $duplicates"
+            exit 1
+          fi
+          for path in "${paths[@]}"; do
+            if [ -f "$path" ]; then cp "$path" release-assets/; fi
+          done
+      - name: Write SHA-256 checksums for every published asset
+        run: |
+          cd release-assets
+          rm -f SHA256SUMS.txt
+          shopt -s nullglob
+          LC_ALL=C
+          files=(*)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No release asset was prepared for publication."
+            exit 1
+          fi
+          sha256sum -- "${files[@]}" > SHA256SUMS.txt
+          cat SHA256SUMS.txt
       - name: Attest release assets
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
         with:
           subject-path: release-assets/*
       - name: Publish GitHub Release
         run: |
+          tag_sha=$(gh api repos/${{ github.repository }}/commits/$RELEASE_TAG --jq .sha)
+          if [ "$tag_sha" != "${{ needs.validate.outputs.sha }}" ]; then
+            echo "Release tag $RELEASE_TAG moved from validated commit ${{ needs.validate.outputs.sha }} to $tag_sha."
+            exit 1
+          fi
           existing=$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft 2>/dev/null || true)
           if [ "$existing" = 'false' ]; then
             echo "Release $RELEASE_TAG is already published and will not be replaced."
@@ -386,5 +279,62 @@ jobs:
           GH_TOKEN: ${{ github.token }}
       - name: Add release link to the job summary
         run: echo "Published [$RELEASE_TAG]($(gh release view "$RELEASE_TAG" --json url --jq .url))" >> "$GITHUB_STEP_SUMMARY"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  rust-update-feed:
+    name: Publish the Rust updater feed
+    # The feed is attached to an existing release, so it runs after publication
+    # and only when every signed Rust package was produced. The release
+    # aggregate already fails when a package is missing, so this job never
+    # publishes a feed for an empty release.
+    needs: [validate, release-packages, package-rust]
+    if: >-
+      always() && needs.release-packages.result == 'success' && needs.package-rust.result == 'success'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.validate.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+      - run: npm run toolchain:bootstrap
+      - run: npm run release:preflight
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          pattern: rust-package-*
+          path: rust-artifacts
+      # download-artifact extracts each artifact into a `rust-package-<os>-<arch>`
+      # directory; the feed script reads `<os>-<arch>` directory names.
+      - name: Lay the artifacts out as <os>-<arch> platform directories
+        run: |
+          shopt -s nullglob
+          for directory in rust-artifacts/rust-package-*; do
+            mv "$directory" "rust-artifacts/${directory##*rust-package-}"
+          done
+      - name: Detect cargo-packager signatures
+        id: signatures
+        run: |
+          if [ -d rust-artifacts ] && find rust-artifacts -name '*.sig' -type f | grep -q .; then
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No cargo-packager signatures were published; skipping the Rust updater feed because the updater rejects unsigned artifacts."
+          fi
+      # The feed version is the Rust app's compiled version, which the updater
+      # compares against; the tag only names the release the URLs resolve to.
+      - name: Generate and upload the Rust updater feed
+        if: steps.signatures.outputs.signed == 'true'
+        run: |
+          node scripts/release/prepare-rust-update-feed.mjs \
+            --version-file rust/Cargo.toml \
+            --base-url "https://github.com/${{ github.repository }}/releases/download/$RELEASE_TAG/" \
+            --artifacts rust-artifacts \
+            --output rust-update-feed/updates.json
+          gh release upload "$RELEASE_TAG" rust-update-feed/updates.json --clobber
         env:
           GH_TOKEN: ${{ github.token }}

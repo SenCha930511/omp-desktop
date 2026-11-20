@@ -1,101 +1,155 @@
 # Repository Guidelines
 
-Guidance for AI coding assistants working in this repository. OMP Desktop is an Electron+React desktop workspace for the [OMP](https://github.com/can1357/oh-my-pi) coding-agent harness, forked from GooeyPi (see `README.md` → Attribution). It is a GUI app with no background services; there is nothing to auto-start.
+Guidance for AI coding assistants working in this repository. OMP Desktop is a
+native Rust desktop workspace for the [OMP](https://github.com/can1357/oh-my-pi)
+coding-agent harness, forked from GooeyPi (see `README.md` → Attribution). It is
+a GUI app with no background services; there is nothing to auto-start.
 
 ## Project Overview
 
-A cross-platform (macOS/Linux/Windows) desktop shell that gives the `omp` CLI a native UI: projects, persistent sessions, live transcripts, model/provider pickers, schedules, terminals, an agent-driven browser, and a Git/inspector workspace. The harness owns models, logins, and session files; this app owns the chrome. Single harness only — `requireHarness` accepts exactly `'omp'`.
+A cross-platform (macOS/Linux/Windows) desktop shell that gives the `omp` CLI a
+native UI: projects, persistent sessions, live transcripts, model/provider
+pickers, schedules, a terminal panel, an agent-driven browser, and a
+Git/inspector workspace. The harness owns models, logins, and session files;
+this app owns the chrome. Single harness only — `omp`.
 
 ## Architecture & Data Flow
 
-Two-process Electron app built with electron-vite; the renderer has **no direct Node access**:
+One native process (no JavaScript runtime, no web view for the app UI):
 
 ```
-React renderer (src/) ── window.desktop (frozen DesktopApi, contextBridge)
-                       └─ ipcRenderer.invoke('domain:action') + push subscriptions
-preload (electron/preload/index.ts) ── wraps each channel, Object.freeze per domain
-main (electron/main/*) ── registerIpc() wires every handler with sender verification
-                       └─ services: store, sessions, agent-rpc, git, terminal, voice, …
+omp-desktop (rust/crates/omp-desktop, GPUI + gpui-kit)
+  ├─ app.rs        Workspace view: pages, panes, composer, dialogs, event folding
+  ├─ terminal.rs   portable-pty shell panel (vt100 screen, panel-local)
+  ├─ browser.rs    wry webview tabs, one isolated profile per tab
+  ├─ tray.rs       native tray icon (macOS/Windows/Linux)
+  ├─ updates.rs    check-and-notify updater (minisign-verified feed)
+  └─ main.rs       window lifecycle, argv handling, packaged-smoke marker
+        │
+        ▼  stdio JSON-RPC (strict-LF JSONL)
+omp CLI (`omp --mode rpc`)  ── owns models, credentials, session .jsonl files
 ```
 
-- **`src/types/api.ts` is the shared contract for all three processes** — record types, the `DesktopApi` interface, and `declare global { Window.desktop }`. Editing it changes main, preload, and renderer at once; channel names in `electron/main/ipc.ts` and preload wrappers must be kept in sync manually.
-- **IPC security is fail-closed**: every handler verifies the sender's WebContents and exact renderer URL (`isTrustedRendererUrl`) and validates args with hand-rolled guards in `electron/main/validation.ts` (`requireString`, `requireRecord`, `requireWebUrl`, …). Adding an IPC surface means: handler in `ipc.ts` + preload wrapper + `DesktopApi` member — all three or the security tests fail.
-- **Data flow**: hooks (`useBootstrap`, `useWorkspaceRuntime`) fetch via bridge, then subscribe to push channels (`sessions:onChanged`, `agent:onEvent`, …). Agent events (`PrimeEventEnvelope`) are folded into `TranscriptMessage[]` by the pure, perf-critical reducer `replayPrimeEvents` (`src/lib/events/reduce.ts`) — don't make it allocate per event.
-- **Persistence**: one JSON state file (`omp-desktop-state-v4.json`) via `JsonStateStore` (`electron/main/store.ts`) with versioned schema migration and byte-exact backups. Session content belongs to OMP's own `.jsonl` files — this app only reads them.
-- **Harness integration**: `AgentRpcManager` (`electron/main/agent-rpc/manager.ts`) spawns `omp` per session, framed JSON-RPC over stdio; `harness-adapter.ts` is the single seam translating app vocabulary ↔ omp protocol.
-- **Renderer fallback**: without `window.desktop` (plain browser dev) the app seeds sample data — every bridge call must guard with `hasBridge()`.
+- **`omp-core`** owns everything persistent and testable without a window:
+  state store (`state.rs`), settings, projects and grants, sessions, Git and
+  checkouts, model catalog, plugins/MCP, schedules, collaboration, loopback
+  brokers (`broker.rs`), and URL policy (`url_policy.rs`). Put logic there when
+  it does not need GPUI.
+- **`omp-rpc`** is the blocking stdio JSON-RPC client, including protocol v2
+  base64 chunk reassembly. **`omp-conformance`** is the Conformance Protocol v1
+  adapter used by `tests/conformance/`.
+- **Persistence**: one JSON state file (`omp-desktop-state-v4.json`) with
+  versioned migration, Windows tombstone protocol, byte-exact backups, and a
+  read-only fail-closed path for unknown versions. Session content belongs to
+  OMP's own `.jsonl` files — this app only reads them.
+- **Capabilities**: app-owned agent tools reach the desktop through
+  random-token loopback brokers, never through a shell or a file-drop protocol.
 
 ## Key Directories
 
 | Path | Purpose |
 |---|---|
-| `src/` | React renderer: `App.tsx` composition root (no router), `pages/` full views, `components/` workspace widgets, `hooks/` domain logic, `lib/` pure logic |
-| `src/i18n/keys/` | Locale catalog fragments (`core`, `sidebar`, `workbench`, `transcript`, `settings`, `panels`) — one file per surface so parallel edits never conflict |
-| `src/types/api.ts` | The cross-process contract (see above) |
-| `electron/main/` | Main-process services, IPC wiring, validation, agent RPC, store |
-| `electron/preload/` | The contextBridge surface |
-| `assets/` | Icons, skills, extensions; `assets/extensions/*.ts` typechecked by `tsconfig.extensions.json` |
-| `scripts/release/` | Packaging/verification toolchain (see below) |
-| `tests/` | `backend/` main-process units, `frontend/` React tests, `unit/`, `e2e/app.spec.ts` |
-| `docs/` | `validation.md` (canonical commands), `security.md` (threat model) |
+| `rust/crates/omp-core/` | Persisted state, projects/grants, sessions, git, models, plugins, schedules, brokers |
+| `rust/crates/omp-desktop/` | GPUI shell: `app.rs` workspace, terminal, browser, tray, updates, packaged smoke |
+| `rust/crates/omp-rpc/` | stdio JSON-RPC client for `omp` |
+| `rust/crates/omp-conformance/` | Conformance adapter binary |
+| `rust/crates/omp-desktop/tests/e2e_parity.rs` | Parity suite that drives the real `Workspace` view |
+| `tests/conformance/` | Protocol-level conformance suite (adapter-agnostic) |
+| `scripts/release/` | Node release tooling: toolchain bootstrap, tag validation, updater feed |
+| `scripts/rust/` | Conformance summarizer and HMAC fixture generator |
+| `docs/` | `validation.md` (canonical commands + CI contract), `security.md` (threat model) |
+| `assets/` | App icons used by cargo-packager and the tray |
 
 ## Development Commands
 
+Rust application (from `rust/`):
+
 ```
-npm run dev                 # electron-vite dev (launch the app)
-npm run build               # typecheck (5 tsc projects) + electron-vite build → out/
-npm run typecheck           # tsc --noEmit for node/web/tests/scripts/extensions configs
-npm run check               # biome lint + format:check
-npm test                    # vitest run (all unit/frontend/backend)
-npx vitest run tests/frontend/toast.test.tsx   # single file
-npm run test:coverage       # vitest + v8 coverage with thresholds
-npm run test:e2e            # build + hermetic Playwright Electron e2e
-npm run test:e2e:hermetic   # playwright only (skip rebuild)
-npm run release:verify:package   # toolchain + typecheck + check + coverage + bundle + size
-npm run release:verify           # the above + hermetic e2e (pre-push aggregate)
-npm run package:mac|linux|win    # electron-builder packaging (see scripts/release/package.mjs)
+cargo build -p omp-desktop --locked   # build the app
+cargo run -p omp-desktop             # run it
+cargo fmt --all --check              # formatting gate
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked      # all crate + parity tests
+cargo deny check                     # advisories/licenses/sources
 ```
 
-On Linux CI/Cloud-Agent VMs, wrap GUI commands with `xvfb-run -a` (e.g. `xvfb-run -a npm run test:e2e:hermetic`); on macOS the e2e suite hides windows via `OMP_DESKTOP_E2E_HIDE_WINDOWS=1` instead.
+Node tooling (from the repository root; release scripts, conformance harness,
+documentation guards):
+
+```
+npm ci
+npm run typecheck        # tsc --noEmit for tests + scripts
+npm run check            # biome lint + format:check
+npm test                 # vitest: release scripts, docs guards, parity script
+npm run test:conformance # conformance suite (needs the Rust adapter)
+npm run release:rust-update-feed
+```
+
+On Linux CI/Cloud-Agent VMs, wrap GUI test runs with `xvfb-run -a`.
 
 ## Code Conventions & Common Patterns
 
-- **Formatting** (biome, `scripts/release/biome.json`): single quotes, no semicolons, 2-space indent, lineWidth 200. `npm run lint` covers all source; `format:check` only covers `scripts/release` + root configs + `tests/release-scripts.test.ts` — pass `--config-path=scripts/release/biome.json` when formatting manually.
-- **No state library**: plain hooks + prop drilling; context only for i18n and toasts. `useStableCallback` for latest-closure dispatch into memoized children; generation/request counters to discard stale async results.
-- **Dependency injection in main-process services**: constructors take collaborators and injectable seams (`watchDirectory`, `catalogIo`, fake fs/executable) — check `tests/backend/` before assuming a service needs a real Electron runtime.
-- **Error handling**: renderer errors go through `reportError`/toasts; subprocess ops return `ProcessOutcome { ok, output, reason }` instead of throwing; fire-and-forget is `void promise.catch(reportError)`.
-- **i18n**: user-facing strings go through `useI18n().t('key')` with keys in the per-surface fragments. The `en` catalog is the complete source of truth and its values are **exact** — tests assert them byte-for-byte; `zh-TW`/`zh-CN` are partial overlays falling back per key. Interpolation is `t('key', { name })` with `{name}` placeholders.
-- **File size**: keep handwritten production files ≤750 lines when practical (review threshold, not a hard rule); tests, generated, and vendored files are exempt.
-- **Naming**: PascalCase components/services, `useX` hooks, kebab-case files for non-component modules. The `Prime*` type prefix and state keys like `gooeyPiV4Migration` are deliberate pre-rebrand compatibility surfaces — don't rename them.
-- **Doc comments state invariants and rationale** on security gates, revision semantics, and perf-sensitive code — read them before touching.
+- **Rust style**: `cargo fmt` is authoritative. Keep handwritten files ≤750
+  lines when practical (review threshold, not a hard rule); tests, generated,
+  and vendored files are exempt.
+- **Doc comments state invariants and rationale** on security gates, migration
+  steps, and perf-sensitive code — read them before touching the code.
+- **Unknown JSON fields survive**: persisted structs use `#[serde(flatten)]` so
+  a newer build's data is not destroyed by an older one. Never drop fields
+  silently during migration.
+- **Compatibility names are deliberate**: `gooeyPiV4Migration`, the
+  `gooeypi-packaged-smoke-ready` marker event, `gooeypi_session_*` tool names,
+  and the `GOOEYPI_*` broker env vars are pre-rebrand contracts. Do not rename
+  them.
+- **JS/TS formatting** (biome, `scripts/release/biome.json`): single quotes, no
+  semicolons, 2-space indent, lineWidth 200. Pass
+  `--config-path=scripts/release/biome.json` when formatting manually.
+- **Release scripts** must stay dependency-free apart from Node builtins: they
+  run in jobs that install nothing (`js-yaml` is only used by tests).
 
 ## Important Files
 
-- `src/App.tsx` — composition root (view state, lazy pages, terminal mounts)
-- `src/types/api.ts` — the cross-process contract
-- `electron/main/index.ts` — window lifecycle, `omp-desktop://` protocol with CSP, single-instance lock, service bootstrap
-- `electron/main/ipc.ts` — every IPC channel + sender authorization
-- `electron/main/store.ts` — persisted state, schema migration, `defaultSettings()`
-- `src/lib/events/reduce.ts` — agent-event → transcript reducer
-- `electron.vite.config.ts` — main/preload/renderer build (manual vendor chunks)
+- `rust/crates/omp-desktop/src/app.rs` — the workspace view; page state, event
+  folding, dialogs, and the turn-changes card
+- `rust/crates/omp-desktop/src/main.rs` — window lifecycle, argv, smoke marker
+- `rust/crates/omp-core/src/state.rs` — persisted state, migration, backups
+- `rust/crates/omp-core/src/projects.rs` — project grants and cwd checks
+- `rust/crates/omp-core/src/broker.rs` — loopback broker tokens
+- `rust/crates/omp-desktop/src/updates.rs` — updater feed verification
+- `scripts/release/bootstrap-npm.mjs` — pinned npm bootstrap
+- `scripts/release/prepare-rust-update-feed.mjs` — updater feed
+- `docs/validation.md` — canonical command reference (don't restate versions
+  elsewhere)
 - `scripts/release/biome.json` — the effective lint/format config
-- `docs/validation.md` — canonical command reference (don't restate versions elsewhere)
 
 ## Runtime/Tooling Preferences
 
-- **Node ≥24.15.0, npm ≥12.0.2** (`.nvmrc` pins 24.15.0; `engines` + `packageManager` must agree — `scripts/release/preflight.mjs` enforces this).
-- **npm only**, and the repo-pinned npm: run `npm run toolchain:bootstrap` (installs npm from the checksum-verified `vendor/` archive) before `npm ci` on a fresh machine.
-- A harness shell can be shadowed by another `node` on `PATH`; if `node -v` isn't `v24.15.0`: `export NVM_DIR="$HOME/.nvm"; . "$NVM_DIR/nvm.sh"; nvm use >/dev/null`.
-- **Runtime deps are deliberately minimal** (only `electron-updater`, `js-yaml`, `node-pty`, `rrule`); everything else is devDependencies. New runtime deps need audit/size-budget review (`audit:production`, `release:bundle-size`).
-- `postinstall` runs `install-app-deps.mjs` (native rebuild) and `brand-dev-electron.mjs` (rebrands the dev Electron bundle as "OMP Desktop": name, unique bundle id, icon, ad-hoc re-sign, LaunchServices refresh). Don't rename the executable inside `node_modules/electron/dist/Electron.app` — `path.txt` and Electron's resource lookup depend on it.
-- Git remotes: `origin` = `SenCha930511/omp-desktop`, `upstream` = `am-will/gooey-pi`.
+- **Rust 1.100.0** (`rust-toolchain.toml`); CI installs it explicitly.
+- **Node ≥24.15.0, npm ≥12.0.2** (`.nvmrc` pins 24.15.0; `engines` +
+  `packageManager` must agree — `scripts/release/preflight.mjs` enforces this).
+- **npm only**, and the repo-pinned npm: run `npm run toolchain:bootstrap`
+  (installs npm from the checksum-verified `vendor/` archive) before `npm ci`
+  on a fresh machine.
+- **No runtime npm dependencies**: the desktop app ships no JavaScript. The npm
+  tree is development tooling only (Vitest, Biome, TypeScript, `js-yaml`).
+- Git remotes: `origin` = `SenCha930511/omp-desktop`, `upstream` =
+  `am-will/gooey-pi`.
 
 ## Testing & QA
 
-- **Vitest** for unit/frontend/backend (one config, `environment: node`); frontend files opt into jsdom with a first-line `// @vitest-environment jsdom` comment — omitting it silently fails. Frontend tests hand-roll `createRoot` + `act()` (no Testing Library) and mock the bridge via `Object.defineProperty(window, 'desktop', …)` or a `bridge` prop cast `as unknown as DesktopApi`.
-- **Backend tests** use real temp dirs (`mkdtempSync`) and inject fake fs/executable seams; IPC-security and preload-contract tests pin the exact channel surface.
-- **Tests assert exact UI English strings** — never reword `en` catalog values or visible copy without updating the tests. zh-TW uses Taiwan-standard terminology (專案/工作階段/設定/終端機/支援).
-- **Playwright Electron e2e** (`tests/e2e/app.spec.ts`): hermetic (temp `HOME`, fixture `OMP_BINARY`), serial (`workers: 1`), 75s timeout, retries 1 for the known macOS first-window flake. It fails on any renderer `pageerror`. Two known-flaky scenarios (`local OMP MCP servers`, `tray Quit`) pass on retry.
-- **Coverage**: `npm run test:coverage` enforces global thresholds plus per-family requirements from `scripts/release/coverage-inventory` (safety-critical modules like `ipc.ts`, `store.ts`, `preload/index.ts` must stay covered).
-- **CI gates** (`.github/workflows/ci.yml`): production audit, quality (typecheck+check+coverage+bundle+size), hermetic e2e (macOS), Windows state-migration, packaging smoke. All run `toolchain:bootstrap` + toolchain preflight + `npm ci`.
-- **Release verification is fail-closed**: `verify-package.mjs` (signing/entitlements/notarization/fuses/ASAR allowlist), `smoke-packaged-app.mjs` (packaged boot marker), `audit-production.mjs` (advisories; exceptions need reason + expiry). Adding an audit exception is a security-sensitive change.
+- **Rust tests** cover each crate plus the parity suite; state-migration tests
+  replay the Windows tombstone/quarantine protocol and the Node-generated
+  v1/v2/v3 fixtures. Run `cargo test --workspace --locked`.
+- **Conformance**: `tests/conformance/` drives whichever adapter
+  `OMP_CONFORMANCE_ADAPTER_ARGV` / `OMP_CONFORMANCE_ADAPTER_CMD` names, or the
+  Rust adapter at `rust/target/debug/omp-conformance`. `terminal` is not a
+  required capability because the Rust app has no built-in PTY.
+- **Node tests** guard the release scripts and documentation: links must
+  resolve, `npm run` references must exist, and the CI/release job tables must
+  equal the workflow job ids.
+- **CI gates** (`.github/workflows/ci.yml`): `release-scripts`, `rust` (fmt,
+  clippy, deny, tests on macOS/Linux/Windows), `rust-conformance`, and the three
+  packaged smoke jobs. All Node jobs run `toolchain:bootstrap` + preflight.
+- **Release is fail-closed**: `release-packages` fails unless every platform
+  produced a minisign `.sig`, and `rust-update-feed` only publishes a feed from
+  signed artifacts.

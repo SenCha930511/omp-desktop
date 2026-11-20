@@ -1,0 +1,40 @@
+name = "omp-desktop"
+productName = "OMP Desktop"
+version = "2.0.0"
+identifier = "com.omp.desktop.rust.dev"
+description = "A native workspace for OMP"
+authors = ["OMP Desktop contributors"]
+binaries = [{ path = "omp-desktop", main = true }]
+binariesDir = "../../target/debug"
+outDir = "../../dist"
+# `assets/icon.ico` is not checked in yet, so the NSIS installer falls back to
+# its default icon. Add the .ico here and set `[nsis] installer_icon` once a
+# Windows icon exists; cargo-packager 0.11.8 needs no other `[nsis]` keys
+# (current-user install mode is the default and it downloads its own NSIS).
+icons = ["../../../assets/icon.icns", "../../../assets/icon.png"]
+formats = ["app", "deb", "nsis"]
+
+# `app` is macOS-only, `deb` is Linux-only, and `nsis` is Windows-only, but
+# cargo-packager 0.11.8 only compiles `deb` out off Linux: it still attempts
+# `app` and `nsis` on every host. Pass `--formats` explicitly
+# (`cargo packager --formats app|deb|nsis`) to build only the native package.
+[deb]
+section = "devel"
+depends = [
+  "libc6",
+  "libegl1",
+  "libfontconfig1",
+  "libfreetype6",
+  "libayatana-appindicator3-1",
+  "libgl1",
+  "libgtk-3-0",
+  "libjavascriptcoregtk-4.1-0",
+  "libsoup-3.0-0",
+  "libvulkan1",
+  "libwebkit2gtk-4.1-0",
+  "libwayland-client0",
+  "libx11-6",
+  "libxcb1",
+  "libxkbcommon-x11-0",
+  "libxkbcommon0",
+]

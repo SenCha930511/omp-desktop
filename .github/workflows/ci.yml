@@ -15,25 +15,8 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  production-audit:
-    name: Production dependency audit
-    runs-on: ubuntu-latest
-    steps:
-      # pull_request defaults to a synthetic merge ref; audit the immutable PR
-      # head itself so this required status names the exact proposed lockfile.
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-      - run: npm run toolchain:bootstrap
-      - run: npm run release:preflight:toolchain
-      - name: Apply named production dependency audit exceptions
-        run: npm run audit:production
-
-  quality:
+  release-scripts:
+    name: Release tooling
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -42,190 +25,268 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - run: npm run toolchain:bootstrap
-      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
-        with:
-          path: |
-            ~/Library/Caches/electron
-            ~/.cache/electron
-            ~/Library/Caches/electron-builder
-            ~/.cache/electron-builder
-            ~/AppData/Local/electron/Cache
-            ~/AppData/Local/electron-builder/Cache
-          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - run: npm ci
-      - run: npm run release:preflight:toolchain
+      - run: npm run release:preflight
       - run: npm run typecheck
       - run: npm run check
-      - run: npm run test:coverage
-      - run: npm run build:bundle
-      - run: npm run release:bundle-size
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: coverage
-          path: coverage/
-          if-no-files-found: error
+      - run: npm test
 
-  hermetic-e2e:
-    runs-on: macos-14
+  rust:
+    name: Rust workspace
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+          - runner: ubuntu-22.04
+          - runner: windows-2022
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: rust-${{ runner.os }}-${{ hashFiles('rust/Cargo.lock') }}
+      - name: Install Linux GUI build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev libfontconfig1-dev libfreetype-dev libgl1-mesa-dev \
+            libwayland-dev libx11-xcb-dev libxcb1-dev libxcb-render0-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev pkg-config xvfb \
+            libgtk-3-dev libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev libayatana-appindicator3-1
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install 1.100.0 --profile minimal --component rustfmt,clippy
+      - run: rustup default 1.100.0
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked --version 0.21.0
+      - run: cargo deny check
+      - name: Run workspace tests
+        env:
+          RUST_MIN_STACK: '16777216'
+          RUST_TEST_THREADS: '1'
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            xvfb-run -a cargo test --workspace --locked
+          else
+            cargo test --workspace --locked
+          fi
+        shell: bash
+      - run: cargo build -p omp-conformance --locked
+
+  rust-conformance:
+    name: Rust conformance
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+          - runner: ubuntu-22.04
+          - runner: windows-2022
+    runs-on: ${{ matrix.runner }}
+    env:
+      OMP_CONFORMANCE_PARTIAL: '1'
+      OMP_CONFORMANCE_REQUIRED_CAPABILITIES: state,projects,sessions,models,agent,git,checkouts,plugins,schedules,collaboration
+      OMP_CONFORMANCE_INFO_FILE: conformance-adapter.json
+      OMP_CONFORMANCE_VITEST_JSON: conformance-vitest.json
+      OMP_CONFORMANCE_REPORT: conformance-summary.json
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
           cache: npm
-      - run: npm run toolchain:bootstrap
       - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: |
-            ~/Library/Caches/electron
-            ~/.cache/electron
-            ~/Library/Caches/electron-builder
-            ~/.cache/electron-builder
-            ~/AppData/Local/electron/Cache
-            ~/AppData/Local/electron-builder/Cache
-          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: rust-${{ runner.os }}-${{ hashFiles('rust/Cargo.lock') }}
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install 1.100.0 --profile minimal
+      - run: rustup default 1.100.0
+      - run: cargo build -p omp-conformance --locked
+        working-directory: rust
+      - name: Select the Rust adapter executable
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            echo 'OMP_CONFORMANCE_ADAPTER_ARGV=["rust/target/debug/omp-conformance.exe"]' >> "$GITHUB_ENV"
+          else
+            echo 'OMP_CONFORMANCE_ADAPTER_ARGV=["rust/target/debug/omp-conformance"]' >> "$GITHUB_ENV"
+          fi
+      - run: npm run toolchain:bootstrap
       - run: npm ci
-      - run: npm run release:preflight:toolchain
-      - run: npm run build:bundle
-      - run: npm run test:e2e:hermetic
+      - run: npm run release:preflight
+      - name: Run the conformance suite against the Rust adapter
+        run: node node_modules/vitest/vitest.mjs run --config vitest.conformance.config.ts --reporter=json --outputFile="${{ env.OMP_CONFORMANCE_VITEST_JSON }}"
+      - name: Summarize adapter capabilities and test counts
+        if: always()
+        run: node scripts/rust/summarize-conformance.mjs
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: failure()
+        if: always()
         with:
-          name: playwright-results
-          path: test-results/
+          name: rust-conformance-${{ matrix.runner }}
+          path: |
+            conformance-summary.json
+            conformance-adapter.json
+            conformance-vitest.json
           if-no-files-found: error
 
-  windows-state-migration:
+  rust-package-smoke:
+    name: Rust packaged smoke
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install 1.100.0 --profile minimal
+      - run: rustup default 1.100.0
+      - name: Install cargo-packager
+        run: cargo install cargo-packager --locked --version 0.11.8
+      - name: Build the native application
+        run: cargo build -p omp-desktop --locked
+        working-directory: rust
+      - name: Package the macOS application bundle
+        run: cargo packager --formats app
+        working-directory: rust/crates/omp-desktop
+      - name: Launch the packaged application and wait for the first frame
+        run: |
+          rm -f "$RUNNER_TEMP/rust-smoke.json"
+          "rust/dist/OMP Desktop.app/Contents/MacOS/omp-desktop" \
+            --packaged-smoke="$RUNNER_TEMP/rust-smoke.json" \
+            --user-data-dir="$RUNNER_TEMP/rust-user-data"
+          test -s "$RUNNER_TEMP/rust-smoke.json"
+          node -e "const m=require(process.env.RUNNER_TEMP + '/rust-smoke.json'); if (m.event !== 'gooeypi-packaged-smoke-ready') process.exit(1)"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rust-packaged-smoke
+          path: ${{ runner.temp }}/rust-smoke.json
+          if-no-files-found: error
+
+  rust-package-smoke-linux:
+    name: Rust packaged smoke (Linux deb)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install Linux GUI and headless rendering dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev libfontconfig1-dev libfreetype-dev libgl1-mesa-dev \
+            libwayland-dev libx11-xcb-dev libxcb1-dev libxcb-render0-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev pkg-config xauth xvfb \
+            libegl1 libgl1-mesa-dri libvulkan1 mesa-vulkan-drivers \
+            fonts-dejavu-core xkb-data \
+            libgtk-3-dev libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev libayatana-appindicator3-1
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install 1.100.0 --profile minimal
+      - run: rustup default 1.100.0
+      - name: Install cargo-packager
+        run: cargo install cargo-packager --locked --version 0.11.8
+      - name: Build the native application
+        run: cargo build -p omp-desktop --locked
+        working-directory: rust
+      - name: Package the Linux deb
+        run: cargo packager --formats deb
+        working-directory: rust/crates/omp-desktop
+      - name: Launch the packaged application under Xvfb and wait for the first frame
+        shell: bash
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          set -euo pipefail
+          deb="$(ls rust/dist/omp-desktop_*_amd64.deb)"
+          dpkg-deb -x "$deb" "$RUNNER_TEMP/rust-deb"
+          rm -f "$RUNNER_TEMP/rust-smoke.json"
+          timeout --signal=KILL 180 xvfb-run -a -s "-screen 0 1920x1080x24" \
+            "$RUNNER_TEMP/rust-deb/usr/bin/omp-desktop" \
+            --packaged-smoke="$RUNNER_TEMP/rust-smoke.json" \
+            --user-data-dir="$RUNNER_TEMP/rust-user-data"
+          test -s "$RUNNER_TEMP/rust-smoke.json"
+          node -e "const m=require(process.env.RUNNER_TEMP + '/rust-smoke.json'); if (m.event !== 'gooeypi-packaged-smoke-ready') process.exit(1)"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rust-packaged-smoke-linux
+          path: |
+            ${{ runner.temp }}/rust-smoke.json
+            rust/dist/omp-desktop_*_amd64.deb
+          if-no-files-found: error
+
+  rust-package-smoke-windows:
+    name: Rust packaged smoke (Windows nsis)
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-      - run: npm run toolchain:bootstrap
       - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: |
-            ~/AppData/Local/electron/Cache
-            ~/AppData/Local/electron-builder/Cache
-          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-      - run: npm ci
-      - run: npm run release:preflight:toolchain
-      - run: npm exec -- vitest run tests/backend/store-windows-migration.test.ts
-
-  packaging-smoke:
-    if: github.event_name == 'pull_request'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-14
-            target: mac
-            arch: arm64
-            extra_args: --config.mac.identity=null
-          - runner: ubuntu-22.04
-            target: linux
-            arch: x64
-            extra_args: ''
-          - runner: windows-2022
-            target: win
-            arch: x64
-            extra_args: ''
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-      - run: npm run toolchain:bootstrap
-      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
-        with:
-          path: |
-            ~/Library/Caches/electron
-            ~/.cache/electron
-            ~/Library/Caches/electron-builder
-            ~/.cache/electron-builder
-            ~/AppData/Local/electron/Cache
-            ~/AppData/Local/electron-builder/Cache
-          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-      - run: npm ci
-      - run: npm run release:preflight:toolchain
-      - run: npm run build:bundle
-      - run: node node_modules/electron-builder/cli.js --dir --${{ matrix.target }} --${{ matrix.arch }} --publish=never --config.directories.output=release/${{ matrix.target }}/${{ matrix.arch }} ${{ matrix.extra_args }}
-        env:
-          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-      - if: matrix.target != 'mac'
-        run: node scripts/release/verify-cross-platform-package.mjs --platform ${{ matrix.target }} --arch ${{ matrix.arch }} --unpacked-only
-      # The Linux packages install chrome-sandbox setuid-root, so the smoke restores
-      # those shipped permissions rather than launching with the sandbox disabled.
-      - if: matrix.target == 'linux'
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: rust-${{ runner.os }}-${{ hashFiles('rust/Cargo.lock') }}
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install 1.100.0 --profile minimal
+      - run: rustup default 1.100.0
+      - name: Install cargo-packager
+        run: cargo install cargo-packager --locked --version 0.11.8
+      - name: Build the native application
+        run: cargo build -p omp-desktop --locked
+        working-directory: rust
+      # cargo-packager 0.11.8 downloads its own pinned NSIS 3.09 toolchain on
+      # Windows, so no system NSIS install (`choco install nsis`) is required.
+      - name: Package the Windows NSIS installer
+        run: cargo packager --formats nsis
+        working-directory: rust/crates/omp-desktop
+      - name: Install the NSIS package silently
+        shell: pwsh
         run: |
-          sudo chown root:root release/linux/${{ matrix.arch }}/linux-unpacked/chrome-sandbox
-          sudo chmod 4755 release/linux/${{ matrix.arch }}/linux-unpacked/chrome-sandbox
-      - name: Launch the packaged application
-        if: matrix.target != 'mac'
-        run: node scripts/release/smoke-packaged-app.mjs --platform ${{ matrix.target }} --arch ${{ matrix.arch }}
+          $ErrorActionPreference = 'Stop'
+          $installer = Get-ChildItem -Path 'rust/dist' -Filter '*-setup.exe' | Select-Object -First 1
+          if (-not $installer) { throw 'cargo-packager produced no NSIS installer in rust/dist' }
+          $installDir = Join-Path $env:RUNNER_TEMP 'omp-nsis-install'
+          # `/S` installs silently, `/NS` skips the desktop and Start menu
+          # shortcuts, and `/D=` must be the last argument and unquoted.
+          # RUNNER_TEMP contains no spaces, so argument quoting cannot break it.
+          $process = Start-Process -FilePath $installer.FullName -ArgumentList '/S', '/NS', "/D=$installDir" -PassThru
+          if (-not $process.WaitForExit(180000)) {
+            taskkill /T /F /PID $process.Id
+            throw 'The NSIS installer did not finish within three minutes'
+          }
+          $process.WaitForExit()
+          if ($process.ExitCode -ne 0) { throw "The NSIS installer exited with $($process.ExitCode)" }
+          if (-not (Test-Path (Join-Path $installDir 'omp-desktop.exe'))) { throw "The installer did not place omp-desktop.exe in $installDir" }
+      - name: Launch the installed application and wait for the first frame
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installDir = Join-Path $env:RUNNER_TEMP 'omp-nsis-install'
+          $marker = Join-Path $env:RUNNER_TEMP 'rust-smoke.json'
+          $userData = Join-Path $env:RUNNER_TEMP 'rust-user-data'
+          Remove-Item -LiteralPath $marker -ErrorAction SilentlyContinue
+          $process = Start-Process -FilePath (Join-Path $installDir 'omp-desktop.exe') -ArgumentList "--packaged-smoke=$marker", "--user-data-dir=$userData" -PassThru
+          if (-not $process.WaitForExit(240000)) {
+            taskkill /T /F /PID $process.Id
+            throw 'The packaged application did not exit after drawing the first frame'
+          }
+          $process.WaitForExit()
+          if ($process.ExitCode -ne 0) { throw "The packaged application exited with $($process.ExitCode)" }
+          if (-not (Test-Path -LiteralPath $marker)) { throw 'The packaged application exited without writing the readiness marker' }
+          $markerJson = Get-Content -LiteralPath $marker -Raw | ConvertFrom-Json
+          if ($markerJson.event -ne 'gooeypi-packaged-smoke-ready') { throw "Unexpected marker event: $($markerJson.event)" }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: failure() && matrix.target != 'mac'
         with:
-          name: packaged-smoke-diagnostics-${{ matrix.target }}-${{ matrix.arch }}
-          path: release/${{ matrix.target }}/${{ matrix.arch }}/packaged-smoke-diagnostics.log
-          if-no-files-found: error
-
-  local-qa-package:
-    if: github.event_name == 'workflow_dispatch'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-14
-            package: npm run package:mac:local-qa
-            artifact: omp-desktop-local-qa-macos
-            # Installers only: never upload the unpacked application directory.
-            path: |
-              release/mac/**/*.dmg
-              release/mac/**/*.zip
-          - runner: ubuntu-22.04
-            package: npm run package:linux:local-qa
-            artifact: omp-desktop-local-qa-linux
-            path: |
-              release/linux/**/*.AppImage
-              release/linux/**/*.deb
-              release/linux/**/*.rpm
-              release/linux/**/*.pacman
-          - runner: windows-2022
-            package: npm run package:win:local-qa
-            artifact: omp-desktop-local-qa-windows
-            path: |
-              release/win/**/*.exe
-              release/win/**/*.zip
-              release/win/**/*.appx
-              release/win/**/*.msix
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-      - run: npm run toolchain:bootstrap
-      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
-        with:
+          name: rust-packaged-smoke-windows
           path: |
-            ~/Library/Caches/electron
-            ~/.cache/electron
-            ~/Library/Caches/electron-builder
-            ~/.cache/electron-builder
-            ~/AppData/Local/electron/Cache
-            ~/AppData/Local/electron-builder/Cache
-          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-      - run: npm ci
-      - run: npm run release:preflight:toolchain
-      - run: ${{ matrix.package }}
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: ${{ matrix.artifact }}
-          path: ${{ matrix.path }}
+            ${{ runner.temp }}/rust-smoke.json
+            rust/dist/*-setup.exe
           if-no-files-found: error

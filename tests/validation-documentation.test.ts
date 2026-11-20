@@ -51,15 +51,16 @@ function dispatchOnly(job: RecordValue): boolean {
 }
 
 function matrixContexts(jobId: string, job: RecordValue): string[] {
+  const displayName = typeof job.name === 'string' && job.name.trim() ? job.name : jobId
   const matrix = record(record(job.strategy).matrix)
   const include = matrix.include
-  if (!Array.isArray(include)) return [jobId]
+  if (!Array.isArray(include)) return [displayName]
 
   return include.map((entry) => {
     const values = Object.values(record(entry))
       .filter((value) => value !== '' && value !== null && value !== undefined)
       .map(String)
-    return values.length > 0 ? `${jobId} (${values.join(', ')})` : jobId
+    return values.length > 0 ? `${displayName} (${values.join(', ')})` : displayName
   })
 }
 
@@ -99,12 +100,25 @@ describe('validation guide structure', () => {
     expect(new Set(releaseTable)).toEqual(new Set(Object.keys(releaseJobs)))
   })
 
-  test('documents the scheduled audit workflow contract', () => {
-    const audit = workflow(resolve('.github/workflows/audit.yml'))
-    const triggers = record(audit.on)
-    expect(triggers).toHaveProperty('schedule')
-    expect(triggers).toHaveProperty('workflow_dispatch')
-    expect(runCommands(record(audit.jobs).audit)).toContain('npm run audit:production')
+  test('documents the Rust conformance adapter contract', () => {
+    const conformance = section(validation, 'Conformance suite')
+    expect(conformance).toContain('OMP_CONFORMANCE_ADAPTER_ARGV')
+    expect(conformance).toContain('OMP_CONFORMANCE_ADAPTER_CMD')
+    expect(conformance).toContain('rust/target/debug/omp-conformance')
+    expect(conformance).toContain('npm run test:conformance')
+    expect(packageManifest.scripts).toHaveProperty('test:conformance')
+  })
+
+  test('documents the Rust updater feed contract', () => {
+    const feed = section(validation, 'Rust updater feed')
+    expect(feed).toContain('prepare-rust-update-feed.mjs')
+    expect(feed).toContain('OMP_UPDATER_PUBKEY')
+    expect(feed).toContain('minisign')
+    expect(packageManifest.scripts).toHaveProperty('release:rust-update-feed')
+
+    const releaseWorkflow = workflowJobs(resolve('.github/workflows/release.yml'))
+    expect(Object.keys(releaseWorkflow)).toContain('rust-update-feed')
+    expect(runCommands(releaseWorkflow['rust-update-feed']).join('\n')).toContain('--version-file rust/Cargo.toml')
   })
 
   test('links every workflow file from the guide', () => {
@@ -131,7 +145,16 @@ describe('validation guide structure', () => {
     expect(new Set(requiredChecks)).toEqual(new Set(requiredContexts(ciJobs)))
   })
 
+  test('requires signed Rust packages before the release is published', () => {
+    const releaseRows = firstTableRows(section(validation, 'Public release validation'))
+    const packageRow = releaseRows.find(([job]) => job === '`package-rust`')
+    expect(packageRow?.[1]).toMatch(/macOS arm64\/x86_64.*Linux x86_64.*Windows x86_64/i)
+    expect(packageRow?.[1]).toMatch(/RUST_UPDATER_SIGNING_KEY/)
+    const aggregateRow = releaseRows.find(([job]) => job === '`release-packages`')
+    expect(aggregateRow?.[1]).toMatch(/fails closed unless every platform produced a `\.sig`/i)
+  })
+
   test('does not hard-code a suite count', () => {
-    expect(validation).not.toMatch(/\b\d+ (?:tests|Electron tests)\b/)
+    expect(validation).not.toMatch(/\b\d+ tests\b/)
   })
 })

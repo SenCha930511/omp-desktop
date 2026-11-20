@@ -1,4 +1,0 @@
-{
-  "comment": "Advisories that npm audit --omit dev may report without failing the build. Every entry needs an expiry so an unfixable advisory cannot silently become permanent; see docs/security.md, 'Dependency pinning and supply chain'.",
-  "exceptions": []
-}

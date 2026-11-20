@@ -1,0 +1,62 @@
+[package]
+name = "omp-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "omp_desktop"
+path = "src/lib.rs"
+
+[[bin]]
+name = "omp-desktop"
+path = "src/main.rs"
+
+[dependencies]
+# Update checks (src/updates.rs) only read the release feed and verify its minisign
+# signature; the app never downloads or installs from the updater. The default
+# feature is `rustls-tls`; both sides are spelled out so the TLS stack stays pinned
+# to rustls even if the crate's defaults change.
+cargo-packager-updater = { version = "0.2.3", default-features = false, features = ["rustls-tls"] }
+chrono.workspace = true
+gpui-kit = { version = "0.10", default-features = false, features = ["component", "assets", "gpui-fast", "test-support"] }
+# The Browser pane hosts a native webview. `gpui-webview`'s `gpui-fast` feature must
+# follow `gpui-kit`'s, which selects the GPUI backend (a mismatch fails to compile).
+gpui-webview = { version = "0.10", default-features = false, features = ["gpui-fast"] }
+omp-core = { version = "2.0.0", path = "../omp-core" }
+serde_json.workspace = true
+# `gpui-webview` builds from a `wry::WebViewBuilder`, which it does not re-export; this is
+# the same `lb-wry` fork and version it depends on.
+wry = { version = "0.53.3", package = "lb-wry", default-features = false }
+
+# The system tray (src/tray.rs) uses `tray-icon` on every desktop platform. Its
+# Linux backend loads libappindicator at runtime, so a missing tray host degrades
+# to a logged error instead of blocking startup. `default-features = false` drops
+# the `libxdo` feature; nothing in the tray uses its predefined clipboard items.
+tray-icon = { version = "0.21", default-features = false }
+# Tray/menu callbacks fire outside GPUI's update cycle; commands cross into the app
+# through this channel instead of touching GPUI state from the callback thread.
+async-channel = "2"
+# The tray icon is derived from the bundled app icon at runtime, so no separate
+# tray asset ships. Only the PNG decoder is needed.
+image = { version = "0.25", default-features = false, features = ["png"] }
+# Assistant transcript text is CommonMark; `src/markdown.rs` turns its events into
+# GPUI elements. Only the parser is used, so the default `html`/`getopts`
+# features (an HTML writer and a CLI) stay off.
+pulldown-cmark.workspace = true
+
+# The terminal panel (src/terminal.rs) runs the user's login shell in a real
+# pseudo terminal and parses its ANSI output into a screen buffer. `portable-pty`
+# has no build script: it uses the platform PTY (or ConPTY) directly, and its
+# default feature set is empty. `vt100` is a pure-Rust parser.
+portable-pty = { version = "0.9", default-features = false }
+vt100 = "0.16"
+
+# The Linux tray builds a GTK menu; GTK must be initialized before `muda` creates it.
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+
+[dev-dependencies]
+tempfile = "3"
+gpui-kit = { version = "0.10", default-features = false, features = ["component", "assets", "gpui-fast", "test-support"] }
