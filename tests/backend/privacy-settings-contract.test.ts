@@ -57,7 +57,7 @@ describe('legacy telemetry compatibility contract', () => {
   it.each(HARNESS_TELEMETRY_CASES)('durably persists telemetry=$telemetry for selected agent $harness', async ({ harness, telemetry }) => {
     const statePath = temporaryStatePath()
     const store = new JsonStateStore(statePath)
-    const settings = new SettingsService(store, () => '/bin/zsh')
+    const settings = new SettingsService(store)
     await settings.update({ activeHarness: harness, telemetry })
     await store.beginShutdown()
 

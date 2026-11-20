@@ -33,9 +33,9 @@ describe('extension capability registry', () => {
     expect(byId.get('window-title')?.status).toBe('unsupported')
   })
 
-  it('marks terminal-only surfaces as explicitly unsupported rather than absent', () => {
+  it('marks TUI-only surfaces as explicitly unsupported rather than absent', () => {
     const byId = new Map(EXTENSION_CAPABILITIES.map((capability) => [capability.id, capability]))
-    for (const id of ['custom-component', 'register-shortcut', 'composer-shape', 'thinking-renderer', 'terminal-input', 'editor-component']) {
+    for (const id of ['custom-component', 'register-shortcut', 'composer-shape', 'thinking-renderer', 'editor-component']) {
       expect(byId.get(id)?.status, `${id} must be explicitly listed as unsupported`).toBe('unsupported')
     }
   })

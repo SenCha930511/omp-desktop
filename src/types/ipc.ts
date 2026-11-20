@@ -77,18 +77,6 @@ export const IPC_CHANNELS = {
     transcribe: 'voice:transcribe',
     testSelfHosted: 'voice:test-self-hosted',
   },
-  terminal: {
-    create: 'terminal:create',
-    bindSession: 'terminal:bind-session',
-    input: 'terminal:input',
-    acknowledge: 'terminal:acknowledge',
-    resize: 'terminal:resize',
-    setActiveContext: 'terminal:set-active-context',
-    clearActiveContext: 'terminal:clear-active-context',
-    kill: 'terminal:kill',
-    onData: 'terminal:data',
-    onExit: 'terminal:exit',
-  },
   projectScripts: {
     start: 'project-scripts:start',
     stop: 'project-scripts:stop',

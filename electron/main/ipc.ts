@@ -15,7 +15,6 @@ import type { CheckoutService } from './checkouts'
 import type { SettingsService } from './settings-schedules'
 import type { AutomationService } from './schedules/service'
 import type { SessionService } from './sessions'
-import type { TerminalService } from './terminal'
 import type { ProjectScriptRunner } from './project-script-runner'
 import type { VoiceService } from './voice'
 import type { UpdateService } from './updates'
@@ -32,7 +31,6 @@ interface Services {
   checkouts: CheckoutService
   sessions: SessionService
   agents: AgentRpcManager
-  terminals: TerminalService
   projectScripts: ProjectScriptRunner
   git: GitService
   plugins: PluginService
@@ -176,7 +174,6 @@ export function registerIpc(services: Services, expectedRendererUrl: string): Ip
   }
   const authorized = new Map<number, WebContents>()
   const invokeChannels: string[] = []
-  const eventChannels: string[] = []
   let closed = false
   let announceRendererReady: (() => void) | null = null
   const whenRendererReady = new Promise<void>((resolve) => { announceRendererReady = resolve })
@@ -201,15 +198,6 @@ export function registerIpc(services: Services, expectedRendererUrl: string): Ip
     ipcMain.removeHandler(channel)
     ipcMain.handle(channel, (event, ...args) => { verify(event); return listener(event, ...args) })
     invokeChannels.push(channel)
-  }
-  const on = (channel: string, listener: (event: IpcMainEvent, ...args: unknown[]) => void): void => {
-    const wrapped = (event: IpcMainEvent, ...args: unknown[]) => {
-      try { verify(event); listener(event, ...args) } catch (error) { console.warn(`Rejected ${channel}:`, error instanceof Error ? error.message : error) }
-    }
-    // Symmetric with handle(): these are private fixed channels, so any prior listener is stale.
-    ipcMain.removeAllListeners(channel)
-    ipcMain.on(channel, wrapped)
-    eventChannels.push(channel)
   }
 
   /** Routes a session file through the OMP session service's canonicalizing path authorization. */
@@ -283,7 +271,6 @@ export function registerIpc(services: Services, expectedRendererUrl: string): Ip
         listSessions: () => services.sessions.list(undefined, true, true),
         deleteSession: (filePath) => services.sessions.delete(filePath),
         closeBrowserView: (filePath) => services.browser.closeForSession(filePath),
-        killTerminal: (filePath) => services.terminals.killForSession(filePath),
       }, await resolveProjectRoots(target.folders))
     }
     return true
@@ -308,7 +295,7 @@ export function registerIpc(services: Services, expectedRendererUrl: string): Ip
     const routed = await sessionsForPath(filePath)
     const result = await routed.service.delete(filePath)
     services.browser.closeForSession(filePath)
-    await Promise.all([services.terminals.killForSession(filePath), services.projectScripts.killForSession(filePath)])
+    await services.projectScripts.killForSession(filePath)
     return result
   })
   handle(IPC_CHANNELS.sessions.archive, async (_event, filePath, archived) => {
@@ -316,7 +303,7 @@ export function registerIpc(services: Services, expectedRendererUrl: string): Ip
     const result = await routed.service.archive(filePath, archived)
     if (archived === true) {
       services.browser.closeForSession(filePath)
-      await Promise.all([services.terminals.killForSession(filePath), services.projectScripts.killForSession(filePath)])
+      await services.projectScripts.killForSession(filePath)
     }
     return result
   })
@@ -355,15 +342,6 @@ export function registerIpc(services: Services, expectedRendererUrl: string): Ip
   handle(IPC_CHANNELS.voice.createRealtimeCall, (_event, request) => services.voice.createRealtimeCall(request))
   handle(IPC_CHANNELS.voice.transcribe, (_event, request) => services.voice.transcribe(request))
   handle(IPC_CHANNELS.voice.testSelfHosted, (_event, request) => services.voice.testSelfHosted(request))
-
-  handle(IPC_CHANNELS.terminal.create, (event, options) => services.terminals.create(event.sender, options))
-  handle(IPC_CHANNELS.terminal.bindSession, (event, terminalId, sessionPath) => services.terminals.bindSession(event.sender, terminalId, sessionPath))
-  on(IPC_CHANNELS.terminal.input, (event, terminalId, data) => services.terminals.input(event.sender, terminalId, data))
-  on(IPC_CHANNELS.terminal.acknowledge, (event, terminalId, consumedChars) => services.terminals.acknowledge(event.sender, terminalId, consumedChars))
-  on(IPC_CHANNELS.terminal.resize, (event, terminalId, cols, rows) => services.terminals.resize(event.sender, terminalId, cols, rows))
-  on(IPC_CHANNELS.terminal.setActiveContext, (event, terminalId, context) => services.terminals.setActiveContext(event.sender, terminalId, context))
-  on(IPC_CHANNELS.terminal.clearActiveContext, (event, terminalId) => services.terminals.clearActiveContext(event.sender, terminalId))
-  handle(IPC_CHANNELS.terminal.kill, (event, terminalId) => services.terminals.kill(event.sender, terminalId))
 
   handle(IPC_CHANNELS.projectScripts.start, (event, rawOptions) => {
     const options = requireRecord(rawOptions, 'project script options')
@@ -474,7 +452,6 @@ export function registerIpc(services: Services, expectedRendererUrl: string): Ip
     authorize(webContents) { if (!closed) authorized.set(webContents.id, webContents) },
     revoke(webContentsId) {
       authorized.delete(webContentsId)
-      void services.terminals.killOwner(webContentsId)
       void services.projectScripts.killOwner(webContentsId)
     },
     dispose() {
@@ -488,8 +465,6 @@ export function registerIpc(services: Services, expectedRendererUrl: string): Ip
       if (typeof unsubscribeBrowserPointer === 'function') unsubscribeBrowserPointer()
       if (typeof unsubscribeBrowserActivity === 'function') unsubscribeBrowserActivity()
       for (const channel of invokeChannels) ipcMain.removeHandler(channel)
-      // Event listeners are removed wholesale only for our private fixed channels.
-      for (const channel of eventChannels) ipcMain.removeAllListeners(channel)
     },
   }
   activeIpcRegistration = registration
