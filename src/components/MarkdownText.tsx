@@ -173,16 +173,16 @@ export interface StreamingParseState {
 
 /**
  * Decides how much of a streaming message to hand to the Markdown parser: the
- * boundary advances at most every STREAMING_PARSE_INTERVAL_MS, or immediately
- * when the unparsed tail crossed a newline; otherwise the caller keeps the
- * previous coherent snapshot visible and retries after `delayMs`.
+ * boundary advances at most every STREAMING_PARSE_INTERVAL_MS, so a burst of
+ * deltas (newlines included) keeps the previous coherent snapshot visible and
+ * retries after `delayMs`.
  */
-export function advanceStreamingParse(state: StreamingParseState, textLength: number, newlineInTail: boolean, now: number): { state: StreamingParseState; delayMs?: number } {
+export function advanceStreamingParse(state: StreamingParseState, textLength: number, now: number): { state: StreamingParseState; delayMs?: number } {
   if (state.boundary >= textLength) {
     return state.boundary === textLength ? { state } : { state: { boundary: textLength, lastParseAt: now } }
   }
   const elapsed = now - state.lastParseAt
-  if (newlineInTail || elapsed >= STREAMING_PARSE_INTERVAL_MS) {
+  if (elapsed >= STREAMING_PARSE_INTERVAL_MS) {
     return { state: { boundary: textLength, lastParseAt: now } }
   }
   return { state, delayMs: STREAMING_PARSE_INTERVAL_MS - elapsed }
@@ -203,8 +203,7 @@ export const MarkdownText = memo(function MarkdownText({ text, streaming = false
     }
     const decide = (): number | undefined => {
       const current = parseStateRef.current
-      const newlineInTail = text.indexOf('\n', Math.min(current.boundary, text.length)) !== -1
-      const result = advanceStreamingParse(current, text.length, newlineInTail, Date.now())
+      const result = advanceStreamingParse(current, text.length, Date.now())
       if (result.state !== current) {
         parseStateRef.current = result.state
         setParseRevision((revision) => revision + 1)

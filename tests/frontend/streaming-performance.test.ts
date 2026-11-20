@@ -527,26 +527,41 @@ describe('catalog tick session identity', () => {
 describe('streaming markdown parse throttling', () => {
   it('parses at most once per interval while holding the previous committed snapshot', async () => {
     const { advanceStreamingParse, STREAMING_PARSE_INTERVAL_MS } = await import('../../src/components/MarkdownText')
-    const first = advanceStreamingParse({ boundary: 0, lastParseAt: 0 }, 10, false, 1_000)
+    const first = advanceStreamingParse({ boundary: 0, lastParseAt: 0 }, 10, 1_000)
     expect(first.state).toEqual({ boundary: 10, lastParseAt: 1_000 })
     expect(first.delayMs).toBeUndefined()
 
     // More deltas inside the interval: keep the coherent old snapshot and retry later.
-    const throttled = advanceStreamingParse(first.state, 25, false, 1_040)
+    const throttled = advanceStreamingParse(first.state, 25, 1_040)
     expect(throttled.state).toBe(first.state)
     expect(throttled.delayMs).toBe(STREAMING_PARSE_INTERVAL_MS - 40)
 
-    // A newline in the unparsed tail commits immediately.
-    const newline = advanceStreamingParse(first.state, 25, true, 1_040)
-    expect(newline.state).toEqual({ boundary: 25, lastParseAt: 1_040 })
-
     // Once the interval elapses the boundary advances.
-    const elapsed = advanceStreamingParse(first.state, 25, false, 1_000 + STREAMING_PARSE_INTERVAL_MS)
+    const elapsed = advanceStreamingParse(first.state, 25, 1_000 + STREAMING_PARSE_INTERVAL_MS)
     expect(elapsed.state.boundary).toBe(25)
 
     // Unchanged text is a no-op; shrunk text re-parses from the new end.
-    expect(advanceStreamingParse(elapsed.state, 25, false, 2_000).state).toBe(elapsed.state)
-    expect(advanceStreamingParse(elapsed.state, 5, false, 2_000).state).toEqual({ boundary: 5, lastParseAt: 2_000 })
+    expect(advanceStreamingParse(elapsed.state, 25, 2_000).state).toBe(elapsed.state)
+    expect(advanceStreamingParse(elapsed.state, 5, 2_000).state).toEqual({ boundary: 5, lastParseAt: 2_000 })
+  })
+
+  it('holds a newline-heavy delta stream to the same 100ms parse cadence', async () => {
+    const { advanceStreamingParse, STREAMING_PARSE_INTERVAL_MS } = await import('../../src/components/MarkdownText')
+    // Start as if the last parse happened at t=1000, then feed 100 deltas one
+    // per 10ms. Code fences and bullet lists make most of the unparsed tail
+    // contain a newline, which must not buy an extra parse.
+    let state = { boundary: 0, lastParseAt: 1_000 }
+    let parses = 0
+    for (let step = 1; step <= 100; step += 1) {
+      const result = advanceStreamingParse(state, step, 1_000 + step * 10)
+      if (result.state !== state) {
+        parses += 1
+        state = result.state
+      }
+      if (step === 5) expect(state.boundary).toBe(0)
+    }
+    expect(parses).toBe(Math.floor(1_000 / STREAMING_PARSE_INTERVAL_MS))
+    expect(state.boundary).toBe(100)
   })
 
   it('summarizes the transcript in the store with one reverse walk', async () => {
