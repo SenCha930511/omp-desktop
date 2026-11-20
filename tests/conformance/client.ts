@@ -8,8 +8,7 @@ import { createOmpFixtureExecutable } from './fixtures/launcher'
 import { type AdapterInfo, CONFORMANCE_CAPABILITIES, CONFORMANCE_PROTOCOL_VERSION, type ConformanceCapability, type ConformanceErrorPayload, type ConformanceResponse } from './protocol'
 
 const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
-const DEFAULT_ADAPTER_PATH = join(PROJECT_ROOT, 'out', 'conformance', 'node-adapter.mjs')
-const BUILD_ADAPTER_SCRIPT = join(PROJECT_ROOT, 'scripts', 'conformance', 'build-node-adapter.mjs')
+const RUST_ADAPTER_PATH = join(PROJECT_ROOT, 'rust', 'target', 'debug', process.platform === 'win32' ? 'omp-conformance.exe' : 'omp-conformance')
 const MAX_STDERR_BYTES = 16 * 1024
 
 function splitCommandLine(command: string): string[] {
@@ -60,13 +59,12 @@ function resolveAdapterCommand(): { command: string; args: string[] } {
     const parts = splitCommandLine(rawCmd)
     return { command: parts[0], args: parts.slice(1) }
   }
-  if (!existsSync(DEFAULT_ADAPTER_PATH)) {
-    const built = spawnSync(process.execPath, [BUILD_ADAPTER_SCRIPT], { cwd: PROJECT_ROOT, encoding: 'utf8' })
-    if (built.status !== 0) {
-      throw new Error(`Failed to build reference node conformance adapter: ${built.stdout}\n${built.stderr}`)
-    }
+  if (!existsSync(RUST_ADAPTER_PATH)) {
+    throw new Error(
+      `No conformance adapter available. Build the Rust adapter with \`cargo build -p omp-conformance --locked\` in rust/, or set OMP_CONFORMANCE_ADAPTER_ARGV / OMP_CONFORMANCE_ADAPTER_CMD. Looked for ${RUST_ADAPTER_PATH}.`,
+    )
   }
-  return { command: process.execPath, args: [DEFAULT_ADAPTER_PATH] }
+  return { command: RUST_ADAPTER_PATH, args: [] }
 }
 
 export class ConformanceClientError extends Error {

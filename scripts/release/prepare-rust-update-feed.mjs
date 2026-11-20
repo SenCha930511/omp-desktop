@@ -83,7 +83,7 @@ export function validateUpdateVersion(version) {
  * Reads the version the packaged Rust application was built as from its
  * workspace manifest (`[workspace.package] version`). That is the value
  * compiled into `CARGO_PKG_VERSION` and compared against the feed, so the feed
- * must carry it instead of the Electron release tag.
+ * must carry it instead of the release tag.
  * @param {string} path
  * @returns {string}
  */

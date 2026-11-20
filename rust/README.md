@@ -1,6 +1,6 @@
 # OMP Desktop Rust workspace
 
-The v2 desktop application moved from Electron/React to Rust. This workspace is the shipping desktop application. The Electron tree at the repository root is legacy source: it keeps its pull-request CI but is retired from the release path.
+This workspace is the shipping desktop application. The repository root holds only the Node tooling for release scripts, the conformance harness, and documentation guards.
 
 ## Crates
 
@@ -11,7 +11,7 @@ The v2 desktop application moved from Electron/React to Rust. This workspace is 
 | `omp-conformance` | Conformance Protocol v1 adapter used by `tests/conformance/` |
 | `omp-desktop` | GPUI + `gpui-kit` native shell: first-frame geometry, three-pane workspace, toolbar, right-pane launcher, turn-only diff card, IME guard, packaged-smoke marker |
 
-The GPUI shell carries the full page set. `tests/e2e_parity.rs` drives the real `Workspace` view through 96 parity tests covering the 88 curated Electron scenarios.
+The GPUI shell carries the full page set. `tests/e2e_parity.rs` drives the real `Workspace` view through 96 parity tests covering the 88 curated UI retirement scenarios.
 
 ## Verification
 
@@ -38,7 +38,7 @@ npm run test:conformance
 
 ## State compatibility
 
-Every persisted struct keeps unknown JSON fields through `#[serde(flatten)]`. The state store preserves the Electron migration rules: v1-v3 migration, POSIX legacy retirement, Windows tombstones, downgrade quarantine, and byte-exact backups. `agent-message-signing.key` stays at the same path and the HMAC envelope keeps the Node field order; the Rust tests verify Node-generated v1/v2/v3 fixtures.
+Every persisted struct keeps unknown JSON fields through `#[serde(flatten)]`. The state store preserves the pre-rewrite migration rules: v1-v3 migration, POSIX legacy retirement, Windows tombstones, downgrade quarantine, and byte-exact backups. `agent-message-signing.key` stays at the same path and the HMAC envelope keeps the Node field order; the Rust tests verify Node-generated v1/v2/v3 fixtures.
 
 ## Native smoke and geometry checks
 
@@ -111,6 +111,6 @@ The release workflow runs these packaging steps on every release and uploads the
 - Terminal, live voice, dictation, and browser element annotations are present.
 - The workspace, Schedules, Browser, Files, Subagents, Side Question, Settings, Extensions, Review, and Summary are present.
 - The tray is present on macOS, Windows, and Linux; a Linux session without an AppIndicator host logs and continues.
-- The Electron cutover gate is closed: 96 parity tests map to about 88 distinct UI retirement scenarios, and this workspace is the shipping desktop application.
+- The cutover gate is closed: 96 parity tests map to about 88 distinct UI retirement scenarios, and this workspace is the only desktop application in the repository.
 - `release.yml` builds and cargo-packager-signs the macOS (arm64 and x86_64), Linux x86_64, and Windows x86_64 packages on every release, publishes them with `SHA256SUMS.txt`, and attaches `updates.json`. Signing requires `RUST_UPDATER_SIGNING_KEY`; the client reads `OMP_UPDATER_PUBKEY`.
-- The Electron tree at the repository root is legacy source. Its release jobs are opt-in (`include_legacy_electron` or `RELEASE_ELECTRON_ENABLED`) and off by default.
+- The release workflow is Rust-only: there is no second packaging path to opt into.

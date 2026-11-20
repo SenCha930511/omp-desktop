@@ -42,14 +42,12 @@ afterAll(async () => {
 })
 
 describe('conformance: architectural isolation, black-box fixture, & PTY terminal', () => {
-  it('keeps all conformance suites & fixtures completely decoupled from Electron/React source files', () => {
+  it('keeps all conformance suites & fixtures completely decoupled from application sources', () => {
     const files = collectTestFiles(CONFORMANCE_DIR)
     expect(files.length).toBeGreaterThanOrEqual(11)
     for (const file of files) {
       const content = readFileSync(file, 'utf8')
-      expect(content, `${file} must not import Electron runtime`).not.toMatch(/from\s+['"]electron['"]/)
-      expect(content, `${file} must not import electron/ sources`).not.toMatch(/from\s+['"][^'"]*electron\//)
-      expect(content, `${file} must not import src/ renderer sources`).not.toMatch(/from\s+['"][^'"]*src\//)
+      expect(content, `${file} must not import app UI sources`).not.toMatch(/from\s+['"][^'"]*\/src\//)
       expect(content, `${file} must not import scripts/ sources`).not.toMatch(/from\s+['"][^'"]*scripts\//)
     }
   })

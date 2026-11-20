@@ -1,27 +1,27 @@
 # Conformance & Black-Box Parity Protocol (v1)
 
-This specification defines the language- and UI-framework-agnostic test contract for OMP Desktop so the exact same validation suite runs against the current Electron/Node backend today and against a pure Rust native GUI implementation during and after rewrite.
+This specification defines the language- and UI-framework-agnostic test contract for OMP Desktop. The suite in `tests/conformance/` is the executable spec for the Rust application: any adapter that speaks this protocol is validated against the same behavioral requirements.
 
 ## Architecture Overview
 
-The harness decouples behavioral verification from Electron and React via two black-box interfaces:
+The harness decouples behavioral verification from the native UI through three black-box interfaces:
 
 1. **Stdio JSON-RPC Conformance Adapter Protocol v1** (`tests/conformance/`):
    - Tests spawn an adapter executable over stdio (`stdin`/`stdout`, strict LF-delimited JSONL).
-   - Default adapter: `out/conformance/node-adapter.mjs` (built by `npm run conformance:build-adapter` from [`tests/conformance/adapters/node-adapter.ts`](../tests/conformance/adapters/node-adapter.ts)).
-   - Custom / Rust adapter override:
+   - Default adapter: the Rust binary at `rust/target/debug/omp-conformance` (or `omp-conformance.exe` on Windows), built with `cargo build -p omp-conformance --locked`.
+   - Adapter override:
      - `OMP_CONFORMANCE_ADAPTER_CMD="/path/to/omp-desktop-conformance --flag"`
      - or `OMP_CONFORMANCE_ADAPTER_ARGV='["cargo","run","--quiet","-p","omp-conformance"]'`
    - Incremental bring-up mode: set `OMP_CONFORMANCE_PARTIAL=1` to skip capabilities not yet listed by `adapter.info` instead of failing immediately. In CI (`OMP_CONFORMANCE_PARTIAL` unset), every capability is mandatory.
 
-2. **Black-Box Compiled Binary Launch Smoke Contract** (`scripts/release/smoke-packaged-app.mjs` & `OMP_SMOKE_EXECUTABLE`):
-   - Launches the real packaged Electron binary or compiled Rust GUI executable with:
+2. **Black-Box Compiled Binary Launch Smoke Contract**:
+   - Launches the packaged binary with:
      `--packaged-smoke=<absolute-marker-path> --user-data-dir=<isolated-dir>`
    - Requires exit code `0` within `45s` and a UTF-8 JSON marker (`<= 4096` bytes):
      ```json
-     {"event":"gooeypi-packaged-smoke-ready","url":"omp-desktop://app/index.html","version":"1.3.17"}
+     {"event":"gooeypi-packaged-smoke-ready","url":"omp-desktop://app/index.html","version":"2.0.0"}
      ```
-     (Pure Rust native GUIs may report `"url": "omp-desktop://native/main"` or any valid URL.)
+   - The marker is written only after the first real frame is drawn, so it proves the window rendered. CI runs this for the macOS `.app`, the Linux `.deb` under Xvfb, and the silently installed Windows NSIS package.
 
 3. **Standalone Cross-Platform `omp` CLI Fixture** (`tests/conformance/fixtures/omp-fixture.mjs`):
    - Self-contained Node script wrapped by [`tests/conformance/fixtures/launcher.ts`](../tests/conformance/fixtures/launcher.ts) into a native `shell: false`-spawnable binary on macOS, Linux, and Windows (native `.exe` compiled via `csc.exe` on Windows).
@@ -71,7 +71,7 @@ Error response:
 ```json
 {
   "protocolVersion": 1,
-  "implementation": "electron-node",
+  "implementation": "rust-native",
   "platform": "darwin",
   "capabilities": ["state", "projects", "sessions", "models", "agent", "git", "checkouts", "plugins", "schedules", "collaboration", "terminal"]
 }
@@ -79,7 +79,7 @@ Error response:
 
 ---
 
-## Feature Parity Checklist for the Rust Rewrite
+## Feature Coverage Checklist
 
 | App Feature Area | Conformance Suite | Native/UI-Only Verification |
 |---|---|---|
@@ -91,7 +91,7 @@ Error response:
 | Skills/extensions/broken MCP discovery, `mcp.json` policy/locks/replace preservation, `omp plugin` | [`plugins-mcp.conformance.test.ts`](../tests/conformance/plugins-mcp.conformance.test.ts) | Capabilities UI, OAuth & ask-user modal |
 | RRULE schedule preview, CRUD, `/mcp reauth` blocking, loopback broker bearer + Origin gate | [`schedules-and-brokers.conformance.test.ts`](../tests/conformance/schedules-and-brokers.conformance.test.ts) | Tray/background menu-bar mode, `--background` |
 | HMAC peer message envelopes, same-cwd loopback collaboration broker | [`collaboration.conformance.test.ts`](../tests/conformance/collaboration.conformance.test.ts) | `@session` composer autocomplete |
-| PTY create/input/output/resize/kill, standalone `omp-fixture`, binary `--packaged-smoke` | [`terminal-and-blackbox.conformance.test.ts`](../tests/conformance/terminal-and-blackbox.conformance.test.ts) | Embedded browser webview, native theme/i18n/CJK IME, STT voice |
+| PTY adapter capability (not required by the Rust app), standalone `omp-fixture`, binary `--packaged-smoke` | [`terminal-and-blackbox.conformance.test.ts`](../tests/conformance/terminal-and-blackbox.conformance.test.ts) | Embedded browser webview, native theme/i18n/CJK IME, STT voice |
 
 ---
 
@@ -99,20 +99,21 @@ Error response:
 
 ### Local Verification
 ```bash
-# Build reference Node adapter and run full conformance suite:
-npm run conformance:build-adapter
+# Build the Rust adapter and run the full conformance suite:
+(cd rust && cargo build -p omp-conformance --locked)
 npm run test:conformance
 
-# Point the conformance suite at a Rust adapter binary during rewrite:
-OMP_CONFORMANCE_ADAPTER_CMD="/path/to/target/debug/omp-conformance" \
+# Run one suite against an explicit adapter binary:
+OMP_CONFORMANCE_ADAPTER_ARGV='["rust/target/debug/omp-conformance"]' \
 OMP_CONFORMANCE_PARTIAL=1 \
 npx vitest run --config vitest.conformance.config.ts tests/conformance/state-migration.conformance.test.ts
 
 # Smoke-test a compiled native executable:
-OMP_SMOKE_EXECUTABLE="/path/to/omp-desktop" node scripts/release/smoke-packaged-app.mjs
+"rust/dist/OMP Desktop.app/Contents/MacOS/omp-desktop" \
+  --packaged-smoke=/tmp/smoke.json --user-data-dir=/tmp/omp-rust
 ```
 
 ### GitHub Actions CI/CD
-- Every PR and push to `main` runs the `conformance` job in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) across `macos-14`, `ubuntu-22.04`, and `windows-2022`.
-- Manual `workflow_dispatch` accepts an optional `adapter_cmd` input (or repository variable `OMP_CONFORMANCE_ADAPTER_CMD`) to validate an alternate adapter on all three operating systems in CI.
-- Public releases in [`.github/workflows/release.yml`](../.github/workflows/release.yml) gate all 5 native distribution legs (`macOS arm64`, `macOS x64`, `Linux arm64`, `Linux x64`, `Windows x64`) behind `conformance`.
+- Every PR and push to `main` runs the `rust-conformance` job in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) across `macos-15`, `ubuntu-22.04`, and `windows-2022`. It builds the Rust adapter and sets `OMP_CONFORMANCE_ADAPTER_ARGV` for the runner's executable.
+- The job runs in partial mode with an explicit required capability set (`state,projects,sessions,models,agent,git,checkouts,plugins,schedules,collaboration`); a required capability is never skipped. `terminal` is not required because the Rust app has no built-in PTY.
+- Public releases in [`.github/workflows/release.yml`](../.github/workflows/release.yml) build the Rust packages on four native legs (`macOS arm64`, `macOS x86_64`, `Linux x86_64`, `Windows x86_64`). The release workflow validates the tag and re-runs the release-tooling checks; the conformance gates run in CI for the same commit.

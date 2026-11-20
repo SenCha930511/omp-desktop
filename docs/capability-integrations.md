@@ -46,22 +46,24 @@ managed directly in OMP. Bounded exact-definition removal remains available.
 Repository, local-path, and registry targets remain accepted where the OMP
 CLI accepts them.
 
-### Bundled capabilities
+### App-owned capabilities
 
-The catalog additionally lists the app-owned system capabilities, each backed
-by a bundled extension or skill in `assets/extensions/` / `assets/skills/`:
+The catalog additionally lists the app-owned system capabilities. The Rust
+application does not inject JavaScript extension files into OMP runtimes; these
+surfaces are implemented by the app itself:
 
-- **Scheduled tasks** (`omp-work-schedules`) — always enabled.
-- **Browser** (`omp-work-browser`) — drives this thread's in-app browser;
-  enabled with the desktop browser setting.
-- **Ask user** (`gooeypi-ask-user`) — asks focused multiple-choice questions
-  in the app; enabled with the universal Ask user setting.
-- **Computer Use | TryCUA** (`gooeypi-computer-use`) — drives native apps
-  through a separately installed TryCUA driver. It is disabled by default,
-  requires a runnable `cua-driver` before it can be enabled, and only exposes
-  the detected driver path plus bundled non-MCP integration guidance through
-  the `GOOEYPI_CUA_DRIVER_PATH`/`GOOEYPI_COMPUTER_USE_SKILL_PATH` contract.
-  It never writes MCP configuration.
+- **Scheduled tasks** — owned by the app's scheduler (`omp-core`), always
+  enabled, and executed through OMP's normal prompt lifecycle.
+- **Browser** — the app's own webview pane; enabled with the desktop browser
+  setting. Agent-driven navigation is limited to credential-free HTTP(S).
+- **Ask user** — an RPC dialog surface (`set_ask_dialog` plus
+  `extension_ui_request` questions) shown as a native modal; enabled with the
+  universal Ask user setting.
+- **Computer Use | TryCUA** — drives native apps through a separately installed
+  TryCUA driver. It is disabled by default, requires a runnable `cua-driver`
+  before it can be enabled, and never writes MCP configuration.
+- **Skills** — model-facing guidance discovered from OMP's native skill roots
+  and from the bundled `assets/skills/` directory.
 
 Historical note: the app previously carried Prime Agent capability
 integrations (including a bundled supabase package) and Pi adapter-based MCP
@@ -72,7 +74,7 @@ admission; both were removed with those harnesses.
 - Every install/remove command uses the detected fixed harness executable and
   an argv array; no shell interpolation is permitted.
 - Package, plugin, server, command, and argument inputs are bounded and
-  validated in the main process.
+  validated in `omp-core` before any harness call.
 - Standalone extensions must be absolute local JavaScript or TypeScript files.
   Project installs are re-authorized and their destination directories remain
   pinned against symlink replacement; existing OMP extension files are never
@@ -86,8 +88,8 @@ admission; both were removed with those harnesses.
   This is not a filesystem compare-and-swap: a same-user writer that ignores
   the lock can replace the file after the final fingerprint check and race the
   rename, so that writer's update may be overwritten.
-- The main-process RPC manager rejects harness authentication commands for
-  prompt, steer, and follow-up delivery, including every resume request.
+- The RPC adapter (`omp-core::agent`) rejects harness authentication commands
+  for prompt, steer, and follow-up delivery, including every resume request.
   Scheduled prompts are checked at create, update, resume, and run-now
   admission before project validation or queuing; startup blocks forbidden
   persisted active schedules before missed-run recovery and timer arming,

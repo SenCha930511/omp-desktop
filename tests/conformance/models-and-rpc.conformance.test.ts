@@ -249,8 +249,7 @@ describe('conformance: models & OMP RPC v2', () => {
 
   it('forwards dictation frames and the terminal stop text', async () => {
     if (!requireCapability(info, 'agent') || !requireCapability(info, 'projects')) return
-    // The Electron reference adapter predates RPC dictation and rejects the
-    // command; the Rust adapter owns this contract.
+    // Only the Rust adapter owns the RPC dictation contract.
     if (info.implementation !== 'rust-omp-core') return
     sandbox = createConformanceSandbox('omp-conf-dictation-')
     const projectDir = join(sandbox.rootDir, 'project')

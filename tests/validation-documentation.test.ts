@@ -155,6 +155,6 @@ describe('validation guide structure', () => {
   })
 
   test('does not hard-code a suite count', () => {
-    expect(validation).not.toMatch(/\b\d+ (?:tests|Electron tests)\b/)
+    expect(validation).not.toMatch(/\b\d+ tests\b/)
   })
 })
