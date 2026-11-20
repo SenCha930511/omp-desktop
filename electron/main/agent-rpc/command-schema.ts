@@ -260,6 +260,52 @@ export async function validateRpcCommand(raw: unknown, validateSessionPath: (pat
     rejectUnknownKeys(command, ['type', 'customInstructions'], 'command')
     return command.customInstructions === undefined ? { type } : { type, customInstructions: requireString(command.customInstructions, 'customInstructions', { max: 32_000 }) }
   }
+  if (type === 'set_host_tools') {
+    rejectUnknownKeys(command, ['type', 'tools'], 'command')
+    if (!Array.isArray(command.tools) || command.tools.length > 64) throw new TypeError('tools must be an array with at most 64 entries')
+    const names = new Set<string>()
+    const tools = command.tools.map((raw, index) => {
+      const tool = requireRecord(raw, `tools[${index}]`)
+      rejectUnknownKeys(tool, ['name', 'label', 'description', 'parameters', 'hidden', 'loadMode', 'readsSkillUris'], `tools[${index}]`)
+      const name = requireString(tool.name, `tools[${index}].name`, { min: 1, max: 128, trim: true })
+      if (!/^[A-Za-z0-9][A-Za-z0-9_.:-]*$/.test(name)) throw new TypeError(`tools[${index}].name contains invalid characters`)
+      if (names.has(name)) throw new TypeError(`tools[${index}].name is duplicated`)
+      names.add(name)
+      const result: RpcObject = {
+        name,
+        description: requireString(tool.description, `tools[${index}].description`, { min: 1, max: 4096 }),
+        parameters: requireRecord(tool.parameters, `tools[${index}].parameters`),
+      }
+      if (tool.label !== undefined) result.label = requireString(tool.label, `tools[${index}].label`, { max: 200 })
+      if (tool.hidden !== undefined) result.hidden = requireBoolean(tool.hidden, `tools[${index}].hidden`)
+      if (tool.loadMode !== undefined) {
+        if (tool.loadMode !== 'essential' && tool.loadMode !== 'discoverable') throw new TypeError(`tools[${index}].loadMode is invalid`)
+        result.loadMode = tool.loadMode
+      }
+      if (tool.readsSkillUris !== undefined) result.readsSkillUris = requireBoolean(tool.readsSkillUris, `tools[${index}].readsSkillUris`)
+      return result
+    })
+    return { type, tools }
+  }
+  if (type === 'set_host_uri_schemes') {
+    rejectUnknownKeys(command, ['type', 'schemes'], 'command')
+    if (!Array.isArray(command.schemes) || command.schemes.length > 64) throw new TypeError('schemes must be an array with at most 64 entries')
+    const seen = new Set<string>()
+    const schemes = command.schemes.map((raw, index) => {
+      const scheme = requireRecord(raw, `schemes[${index}]`)
+      rejectUnknownKeys(scheme, ['scheme', 'description', 'writable', 'immutable'], `schemes[${index}]`)
+      const name = requireString(scheme.scheme, `schemes[${index}].scheme`, { min: 1, max: 64, trim: true }).toLowerCase()
+      if (!/^[a-z][a-z0-9+.-]*$/.test(name)) throw new TypeError(`schemes[${index}].scheme is invalid`)
+      if (seen.has(name)) throw new TypeError(`schemes[${index}].scheme is duplicated`)
+      seen.add(name)
+      const result: RpcObject = { scheme: name }
+      if (scheme.description !== undefined) result.description = requireString(scheme.description, `schemes[${index}].description`, { max: 4096 })
+      if (scheme.writable !== undefined) result.writable = requireBoolean(scheme.writable, `schemes[${index}].writable`)
+      if (scheme.immutable !== undefined) result.immutable = requireBoolean(scheme.immutable, `schemes[${index}].immutable`)
+      return result
+    })
+    return { type, schemes }
+  }
   if (type === 'extension_ui_response') {
     const id = requireId(command.id, 'id')
     if (command.cancelled === true) {

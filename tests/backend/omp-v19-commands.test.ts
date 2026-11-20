@@ -44,4 +44,21 @@ describe('OMP v19 session commands', () => {
     await expect(validate({ type: 'handoff', customInstructions: 'summarize the session' })).resolves.toEqual({ type: 'handoff', customInstructions: 'summarize the session' })
     await expect(validate({ type: 'handoff' })).resolves.toEqual({ type: 'handoff' })
   })
+
+  it('validates set_host_tools definitions', async () => {
+    const tool = { name: 'echo_host', description: 'Echo a value', parameters: { type: 'object', properties: { message: { type: 'string' } } } }
+    await expect(validate({ type: 'set_host_tools', tools: [tool] })).resolves.toEqual({ type: 'set_host_tools', tools: [tool] })
+    await expect(validate({ type: 'set_host_tools', tools: [tool, tool] })).rejects.toThrow('duplicated')
+    await expect(validate({ type: 'set_host_tools', tools: [{ ...tool, name: 'bad name' }] })).rejects.toThrow('invalid characters')
+    await expect(validate({ type: 'set_host_tools', tools: [{ ...tool, loadMode: 'sometimes' }] })).rejects.toThrow('loadMode is invalid')
+  })
+
+  it('validates set_host_uri_schemes definitions', async () => {
+    await expect(validate({ type: 'set_host_uri_schemes', schemes: [{ scheme: 'DB', writable: true }] })).resolves.toEqual({
+      type: 'set_host_uri_schemes',
+      schemes: [{ scheme: 'db', writable: true }],
+    })
+    await expect(validate({ type: 'set_host_uri_schemes', schemes: [{ scheme: 'db' }, { scheme: 'db' }] })).rejects.toThrow('duplicated')
+    await expect(validate({ type: 'set_host_uri_schemes', schemes: [{ scheme: '1db' }] })).rejects.toThrow('invalid')
+  })
 })
