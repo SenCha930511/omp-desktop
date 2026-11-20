@@ -230,8 +230,8 @@ describe('sidebar project context menu', () => {
       )
     })
 
-    expect(container.querySelector('.sidebar__primary .lucide-notebook-pen')).not.toBeNull()
-    expect(container.querySelector('.project-row__new-session .lucide-notebook-pen')).not.toBeNull()
+    expect(container.querySelector('.sidebar__primary .lucide-square-pen')).not.toBeNull()
+    expect(container.querySelector('.project-row__new-session .lucide-square-pen')).not.toBeNull()
     expect(container.querySelector('.sidebar__section-heading .lucide-folder-plus')).not.toBeNull()
     expect(container.querySelector('.sidebar__primary button[title="New session (⌘N)"]')).not.toBeNull()
     expect(container.querySelector('[aria-label="New session in Project"][title="New session in Project"]')).not.toBeNull()

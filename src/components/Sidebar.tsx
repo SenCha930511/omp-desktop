@@ -13,13 +13,13 @@ import {
   ListFilter,
   LoaderCircle,
   MoreHorizontal,
-  NotebookPen,
   PackageOpen,
   PanelLeftClose,
   Pin,
   Plus,
   Search,
   Settings,
+  SquarePen,
   Trash2,
 } from 'lucide-react'
 import { memo, useEffect, useMemo, useState } from 'react'
@@ -455,7 +455,7 @@ function SidebarView({
         <div className="traffic-light-clearance" aria-hidden="true" />
         <div className="sidebar__title-actions no-drag">
           <IconButton label={t('sidebar.newSessionShortcut', { shortcut: newSessionShortcut })} onClick={() => onNewSession()}>
-            <NotebookPen size={16} />
+            <SquarePen size={16} />
           </IconButton>
           <IconButton label={t('sidebar.hideSidebar', { shortcut: sidebarShortcut })} onClick={onClose}>
             <PanelLeftClose size={16} />
@@ -465,7 +465,7 @@ function SidebarView({
 
       <nav className="sidebar__primary" aria-label={t('sidebar.primaryAria')}>
         <button type="button" title={t('sidebar.newSessionShortcut', { shortcut: newSessionShortcut })} onClick={() => onNewSession()}>
-          <NotebookPen size={15} />
+          <SquarePen size={15} />
           <span>{t('sidebar.newSession')}</span>
           <kbd>{newSessionShortcut}</kbd>
         </button>
@@ -611,7 +611,7 @@ function SidebarView({
                       onNewSession(project)
                   }}
                 >
-                  <NotebookPen size={13} />
+                  <SquarePen size={13} />
                 </IconButton>
                 {running && isCollapsed ? (
                   <span className="project-working" title={t('sidebar.agentWorking')}>
@@ -654,7 +654,7 @@ function SidebarView({
                               onNewSession(project)
                       }}
                     >
-                      <NotebookPen size={12} /> {t('sidebar.newSession')}
+                      <SquarePen size={12} /> {t('sidebar.newSession')}
                     </button>
                   ) : null}
                 </div>

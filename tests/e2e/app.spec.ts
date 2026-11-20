@@ -2335,8 +2335,8 @@ test.describe('OMP Desktop desktop smoke', () => {
   test('removes a project from the sidebar through its context menu', async () => {
     const projectRow = page.locator('.project-row').first()
     await expect(projectRow).toBeVisible()
-    await expect(page.locator('.sidebar__primary .lucide-notebook-pen')).toHaveCount(1)
-    await expect(page.locator('.project-row__new-session .lucide-notebook-pen')).toHaveCount(1)
+    await expect(page.locator('.sidebar__primary .lucide-square-pen')).toHaveCount(1)
+    await expect(page.locator('.project-row__new-session .lucide-square-pen')).toHaveCount(1)
     await expect(page.locator('.sidebar__section-heading .lucide-folder-plus')).toHaveCount(1)
     await expect(page.getByTitle('New session (⌘N)')).toHaveCount(2)
     await expect(page.getByTitle('Add project')).toHaveCount(1)
