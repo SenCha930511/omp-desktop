@@ -24,6 +24,12 @@ function logNavigationFailure(url: string, error: unknown): void {
 const MAX_TABS_PER_SESSION = 6
 const MAX_TABS_TOTAL = 24
 const ATTACH_TIMEOUT_MS = 15_000
+/**
+ * Synthetic input is the only reason the service attaches the DevTools
+ * protocol. Detaching after this much input silence releases the debugger
+ * (and the inspector session it keeps alive) without disturbing the page.
+ */
+const DEBUGGER_IDLE_MS = 15_000
 const LOAD_TIMEOUT_MS = 20_000
 const SETTLE_MS = 150
 const MAX_TYPE_CHARS = 8_000
@@ -99,8 +105,10 @@ export interface AgentBrowserServiceOptions {
   loadTimeoutMs?: number
   /** Deadline for a single guest call; also bounds the per-tab queue release. */
   actionTimeoutMs?: number
-  /** Grace after automation settles before restoring host-window background throttling. */
+  /** Grace after the acting guest settles before it is throttled again. */
   backgroundGraceMs?: number
+  /** Silence after the last CDP input before the debugger detaches. */
+  debuggerIdleMs?: number
 }
 
 function isAllowedTabUrl(raw: string): boolean {
@@ -145,16 +153,24 @@ export class AgentBrowserService {
   private readonly attachTimeoutMs: number
   private readonly loadTimeoutMs: number
   private readonly actionTimeoutMs: number
+  private readonly debuggerIdleMs: number
   private closed = false
   private readonly activityScope = new AsyncLocalStorage<() => void>()
   private activeCalls = 0
   private backgroundTimer: NodeJS.Timeout | null = null
-  private backgroundAllowed = true
+  /**
+   * The one guest currently receiving automation input. Electron keeps a
+   * single throttling lease per host window, so the service exempts exactly
+   * that guest and explicitly re-throttles every other background tab.
+   */
+  private automationGuestId: number | null = null
+  private readonly debuggerTimers = new Map<number, NodeJS.Timeout>()
 
   constructor(private readonly options: AgentBrowserServiceOptions) {
     this.attachTimeoutMs = options.attachTimeoutMs ?? ATTACH_TIMEOUT_MS
     this.loadTimeoutMs = options.loadTimeoutMs ?? LOAD_TIMEOUT_MS
     this.actionTimeoutMs = options.actionTimeoutMs ?? ACTION_TIMEOUT_MS
+    this.debuggerIdleMs = options.debuggerIdleMs ?? DEBUGGER_IDLE_MS
   }
 
   // ---- lifecycle -----------------------------------------------------------
@@ -164,6 +180,8 @@ export class AgentBrowserService {
     this.backgroundTimer = null
     this.setBackgroundAllowed(true)
     this.closed = true
+    for (const timer of this.debuggerTimers.values()) clearTimeout(timer)
+    this.debuggerTimers.clear()
     for (const tab of this.tabs.values()) this.releaseTab(tab)
     if (this.previewTab) this.revokeTab(this.previewTab)
     this.tabs.clear()
@@ -178,9 +196,12 @@ export class AgentBrowserService {
   approveGuest(contents: WebContents): void {
     if (this.closed) return
     this.approvedGuests.add(contents.id)
-    contents.setBackgroundThrottling(this.backgroundAllowed)
+    // Every guest starts throttled; only the one being driven is exempted.
+    contents.setBackgroundThrottling(true)
     contents.once('destroyed', () => {
       this.approvedGuests.delete(contents.id)
+      this.clearDebuggerTimer(contents.id)
+      if (this.automationGuestId === contents.id) this.automationGuestId = null
       if (this.previewTab?.webContentsId === contents.id) {
         this.revokeTab(this.previewTab)
         this.previewTab = null
@@ -232,7 +253,7 @@ export class AgentBrowserService {
     const action = requireString(actionValue, 'action', { min: 1, max: 16, trim: true })
     const guest = tab.webContentsId === null ? undefined : this.options.getGuest(tab.webContentsId)
     if (!guest || guest.isDestroyed()) return false
-    this.extendBackgroundActivity()
+    this.extendBackgroundActivity(guest)
     if (action === 'back') { if (guest.canGoBack()) guest.goBack() }
     else if (action === 'forward') { if (guest.canGoForward()) guest.goForward() }
     else if (action === 'reload') guest.reload()
@@ -258,7 +279,7 @@ export class AgentBrowserService {
     if (tab.unbindGuest) this.detachTab(tab, false)
     tab.webContentsId = webContentsId
     this.bindGuestEvents(tab, guest)
-    guest.setBackgroundThrottling(this.backgroundAllowed)
+    guest.setBackgroundThrottling(this.automationGuestId !== webContentsId)
     // A recreated webview (renderer reload) starts at about:blank; restore the
     // tab's last known location so the registry stays authoritative.
     if (tab.url && tab.url !== 'about:blank' && guest.getURL() !== tab.url) {
@@ -419,6 +440,7 @@ export class AgentBrowserService {
     try {
       return await this.withActivity(async () => {
         const guest = await this.waitForGuest(tab)
+        this.extendBackgroundActivity(guest)
         if (url !== 'about:blank') await this.loadAndSettle(guest, url)
         return { tabId: tab.tabId, ...await this.describe(tab, guest) }
       }, this.attachTimeoutMs + this.loadTimeoutMs + this.actionTimeoutMs)
@@ -692,6 +714,7 @@ export class AgentBrowserService {
     const run = tab.serial.tail.then(() => this.withActivity(async () => {
       this.assertActionAuthority(tab, sessionKey, generation)
       const guest = await this.waitForGuest(tab)
+      this.extendBackgroundActivity(guest)
       this.assertActionAuthority(tab, sessionKey, generation)
       if (tab.webContentsId !== guest.id || guest.isDestroyed()) throw new Error(ACTION_REVOKED_MESSAGE)
       // Revocation after this point does not attempt to cancel an operation
@@ -712,18 +735,28 @@ export class AgentBrowserService {
     return parseScriptJson(await this.guardGuest(guest, guest.executeJavaScript(script), this.actionTimeoutMs), label)
   }
 
-  /** Electron applies an unthrottled guest to its whole host window, so one owner manages all leases. */
+  /**
+   * Electron keeps one throttling lease per host window, so exempting a guest
+   * from background throttling affects the whole window. Only the guest that
+   * is actually receiving automation input is exempted; every other tab —
+   * including other sessions' agents — stays throttled.
+   */
   private setBackgroundAllowed(allowed: boolean): void {
-    if (this.backgroundAllowed === allowed) return
-    this.backgroundAllowed = allowed
+    if (allowed) this.automationGuestId = null
     for (const id of this.approvedGuests) {
       const guest = this.options.getGuest(id)
-      if (guest && !guest.isDestroyed()) guest.setBackgroundThrottling(allowed)
+      if (!guest || guest.isDestroyed()) continue
+      guest.setBackgroundThrottling(allowed || id !== this.automationGuestId)
     }
   }
 
-  private extendBackgroundActivity(): void {
+  /**
+   * Renews the throttle exemption for the acting guest (when known) and arms
+   * the grace timer that re-throttles it once automation settles.
+   */
+  private extendBackgroundActivity(guest?: WebContents): void {
     if (this.closed) return
+    if (guest && !guest.isDestroyed()) this.automationGuestId = guest.id
     this.setBackgroundAllowed(false)
     if (this.backgroundTimer) clearTimeout(this.backgroundTimer)
     this.backgroundTimer = null
@@ -808,7 +841,7 @@ export class AgentBrowserService {
     guest.on('did-navigate', sync)
     guest.on('did-navigate-in-page', sync)
     guest.on('page-title-updated', sync)
-    const activity = () => this.extendBackgroundActivity()
+    const activity = () => this.extendBackgroundActivity(guest)
     guest.on('did-start-loading', activity)
     guest.on('did-stop-loading', activity)
     tab.unbindGuest = () => {
@@ -821,6 +854,9 @@ export class AgentBrowserService {
   }
 
   private detachTab(tab: TabState, notify = true): void {
+    const guest = tab.webContentsId === null ? undefined : this.options.getGuest(tab.webContentsId)
+    if (guest) this.detachDebugger(guest)
+    if (tab.webContentsId !== null && this.automationGuestId === tab.webContentsId) this.automationGuestId = null
     tab.unbindGuest?.()
     tab.unbindGuest = null
     tab.webContentsId = null
@@ -832,6 +868,9 @@ export class AgentBrowserService {
   }
 
   private releaseTab(tab: TabState): void {
+    const guest = tab.webContentsId === null ? undefined : this.options.getGuest(tab.webContentsId)
+    if (guest) this.detachDebugger(guest)
+    else if (tab.webContentsId !== null) this.clearDebuggerTimer(tab.webContentsId)
     this.revokeTab(tab)
     tab.unbindGuest?.()
     tab.unbindGuest = null
@@ -973,7 +1012,41 @@ export class AgentBrowserService {
    */
   private async dispatchInput(guest: WebContents, method: string, params: Record<string, unknown>): Promise<void> {
     if (!guest.debugger.isAttached()) guest.debugger.attach('1.3')
-    await guest.debugger.sendCommand(method, params)
+    try {
+      await guest.debugger.sendCommand(method, params)
+    } finally {
+      this.scheduleDebuggerDetach(guest)
+    }
+  }
+
+  /**
+   * The debugger is only attached to dispatch synthetic input. Once no input
+   * arrives for the idle window it is detached again, so an idle agent tab
+   * does not hold an inspector session open indefinitely.
+   */
+  private scheduleDebuggerDetach(guest: WebContents): void {
+    if (this.closed || this.debuggerIdleMs <= 0 || guest.isDestroyed()) return
+    this.clearDebuggerTimer(guest.id)
+    const timer = setTimeout(() => {
+      this.debuggerTimers.delete(guest.id)
+      this.detachDebugger(guest)
+    }, this.debuggerIdleMs)
+    timer.unref?.()
+    this.debuggerTimers.set(guest.id, timer)
+  }
+
+  private clearDebuggerTimer(webContentsId: number): void {
+    const timer = this.debuggerTimers.get(webContentsId)
+    if (!timer) return
+    clearTimeout(timer)
+    this.debuggerTimers.delete(webContentsId)
+  }
+
+  private detachDebugger(guest: WebContents): void {
+    this.clearDebuggerTimer(guest.id)
+    try {
+      if (!guest.isDestroyed() && guest.debugger.isAttached()) guest.debugger.detach()
+    } catch { /* the guest may be tearing down */ }
   }
 
   private async sendKey(guest: WebContents, key: CdpKey, modifiers: string[]): Promise<void> {

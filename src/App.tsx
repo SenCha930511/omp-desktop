@@ -567,12 +567,19 @@ export default function App() {
   const [agentSlotRect, setAgentSlotRect] = useState<AgentSlotRect | null>(null)
   const activeRuntimeSessionFile = workspace.runtime?.sessionFile
   const activeSessionFilePath = activeSession?.filePath
+  // Both identities name the session the user is looking at (a path-only move
+  // changes the file before the runtime rebinds). The layer keeps those tabs'
+  // guests loaded and releases only background sessions' idle ones.
+  const activeAgentSessionFiles = useMemo(() => {
+    const keys: string[] = []
+    if (activeRuntimeSessionFile) keys.push(activeRuntimeSessionFile)
+    if (activeSessionFilePath && activeSessionFilePath !== activeRuntimeSessionFile) keys.push(activeSessionFilePath)
+    return keys
+  }, [activeRuntimeSessionFile, activeSessionFilePath])
   const activeAgentTabs = useMemo(() => {
-    const keys = new Set<string>()
-    if (activeRuntimeSessionFile) keys.add(activeRuntimeSessionFile)
-    if (activeSessionFilePath) keys.add(activeSessionFilePath)
+    const keys = new Set(activeAgentSessionFiles)
     return agentBrowser.tabs.filter((tab) => keys.has(tab.sessionFile))
-  }, [agentBrowser.tabs, activeRuntimeSessionFile, activeSessionFilePath])
+  }, [agentBrowser.tabs, activeAgentSessionFiles])
   const activeAgentTabId = activeAgentTabs.find((tab) => tab.active)?.tabId ?? activeAgentTabs[0]?.tabId ?? null
   // Every agent browser action in the active thread surfaces the Browser
   // panel: open the inspector, select the Browser tab, and show the tab being
@@ -1806,6 +1813,8 @@ export default function App() {
               rect={agentTabVisible ? agentSlotRect : null}
               pointerEvent={agentBrowser.pointerEvent}
               onAttach={agentBrowser.attach}
+              activeSessionFiles={activeAgentSessionFiles}
+              activityEvent={agentBrowser.activityEvent}
             />
           ) : null}
         </div>

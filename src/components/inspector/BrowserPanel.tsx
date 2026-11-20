@@ -158,8 +158,9 @@ export function BrowserPanel({
 
   // The agent webviews live in the always-mounted AgentBrowserLayer, not in
   // this panel; report where the layer should overlay while an agent tab is
-  // shown. Position can shift without a resize (sidebar toggle), so a slow
-  // poll backs up the observer.
+  // shown. The slot can move without resizing when the sidebar or terminal
+  // changes the workspace geometry, so both the slot and its session
+  // workspace are observed instead of polling.
   useEffect(() => {
     const publish = (next: AgentSlotRect | null) => {
       const previous = lastAgentSlotRectRef.current
@@ -176,6 +177,9 @@ export function BrowserPanel({
       return
     }
     const report = () => {
+      // A hidden document reports zeroed geometry and forces layout for
+      // nothing; the next observer callback or visibilitychange catches up.
+      if (document.hidden) return
       const slot = slotRef.current
       if (!slot) return
       const rect = slot.getBoundingClientRect()
@@ -183,13 +187,20 @@ export function BrowserPanel({
     }
     report()
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(report)
-    if (observer && slotRef.current) observer.observe(slotRef.current)
+    const workspace = slotRef.current?.closest('.session-workspace') ?? null
+    if (observer) {
+      if (slotRef.current) observer.observe(slotRef.current)
+      if (workspace) observer.observe(workspace)
+    }
+    const onVisibilityChange = () => {
+      if (!document.hidden) report()
+    }
     window.addEventListener('resize', report)
-    const interval = window.setInterval(report, 400)
+    document.addEventListener('visibilitychange', onVisibilityChange)
     return () => {
       observer?.disconnect()
       window.removeEventListener('resize', report)
-      window.clearInterval(interval)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
       publish(null)
     }
   }, [showAgentTab])

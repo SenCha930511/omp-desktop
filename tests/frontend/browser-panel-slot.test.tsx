@@ -55,6 +55,7 @@ const agentTab: AgentBrowserTabRecord = {
   canGoForward: false,
 }
 
+let workspace: HTMLDivElement
 let container: HTMLDivElement
 let root: Root
 let mounted: boolean
@@ -97,12 +98,6 @@ function latestObserver() {
   return observer
 }
 
-async function pollOnce() {
-  await act(async () => {
-    await vi.advanceTimersByTimeAsync(400)
-  })
-}
-
 beforeEach(() => {
   vi.useFakeTimers()
   ResizeObserverMock.instances = []
@@ -112,39 +107,62 @@ beforeEach(() => {
   vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
     return domRect(this.classList.contains('browser-agent-slot') ? currentRect : { left: 0, top: 0, width: 0, height: 0 })
   })
+  workspace = document.createElement('div')
+  workspace.className = 'session-workspace'
   container = document.createElement('div')
-  document.body.append(container)
+  workspace.append(container)
+  document.body.append(workspace)
   root = createRoot(container)
   mounted = true
 })
 
 afterEach(async () => {
   if (mounted) await act(async () => root.unmount())
-  container.remove()
+  workspace.remove()
   vi.useRealTimers()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
 
 describe('BrowserPanel agent slot measurement', () => {
-  it('emits the initial rounded rectangle once and suppresses steady polling updates', async () => {
+  it('emits the initial rounded rectangle once and never polls for layout', async () => {
+    const interval = vi.spyOn(window, 'setInterval')
     await renderPanel()
 
     expect(onAgentSlotRect.mock.calls).toEqual([[{ left: 10, top: 20, width: 100, height: 50 }]])
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(1_600)
+      await vi.advanceTimersByTimeAsync(5_000)
     })
 
     expect(onAgentSlotRect).toHaveBeenCalledTimes(1)
+    expect(interval).not.toHaveBeenCalled()
   })
 
-  it('keeps polling as the geometry fallback when ResizeObserver is unavailable', async () => {
+  it('observes the slot and its session workspace for geometry changes', async () => {
+    await renderPanel()
+    const observer = latestObserver()
+
+    expect(observer.observe.mock.calls.map(([target]) => (target as HTMLElement).className)).toEqual([
+      'browser-agent-slot',
+      'session-workspace',
+    ])
+
+    currentRect = { ...currentRect, top: 60 }
+    act(() => observer.fire())
+
+    expect(onAgentSlotRect.mock.calls).toEqual([
+      [{ left: 10, top: 20, width: 100, height: 50 }],
+      [{ left: 10, top: 60, width: 100, height: 50 }],
+    ])
+  })
+
+  it('still reports through the window resize listener when ResizeObserver is unavailable', async () => {
     vi.stubGlobal('ResizeObserver', undefined)
     await renderPanel()
 
     currentRect = { ...currentRect, top: 60 }
-    await pollOnce()
+    act(() => window.dispatchEvent(new Event('resize')))
 
     expect(ResizeObserverMock.instances).toHaveLength(0)
     expect(onAgentSlotRect.mock.calls).toEqual([
@@ -160,7 +178,7 @@ describe('BrowserPanel agent slot measurement', () => {
     currentRect = { ...currentRect, left: 10.49 }
     act(() => observer.fire())
     act(() => window.dispatchEvent(new Event('resize')))
-    await pollOnce()
+    act(() => document.dispatchEvent(new Event('visibilitychange')))
     expect(onAgentSlotRect).toHaveBeenCalledTimes(1)
 
     currentRect = { ...currentRect, left: 11.2 }
@@ -168,7 +186,6 @@ describe('BrowserPanel agent slot measurement', () => {
     expect(onAgentSlotRect).toHaveBeenLastCalledWith({ left: 11, top: 20, width: 100, height: 50 })
 
     act(() => window.dispatchEvent(new Event('resize')))
-    await pollOnce()
     expect(onAgentSlotRect).toHaveBeenCalledTimes(2)
 
     currentRect = { ...currentRect, top: 21.6 }
@@ -176,7 +193,7 @@ describe('BrowserPanel agent slot measurement', () => {
     expect(onAgentSlotRect).toHaveBeenLastCalledWith({ left: 11, top: 22, width: 100, height: 50 })
 
     currentRect = { ...currentRect, width: 101.6 }
-    await pollOnce()
+    act(() => observer.fire())
     expect(onAgentSlotRect).toHaveBeenLastCalledWith({ left: 11, top: 22, width: 102, height: 50 })
 
     currentRect = { ...currentRect, height: 51.6 }
@@ -186,8 +203,28 @@ describe('BrowserPanel agent slot measurement', () => {
 
     act(() => window.dispatchEvent(new Event('resize')))
     act(() => observer.fire())
-    await pollOnce()
     expect(onAgentSlotRect).toHaveBeenCalledTimes(5)
+  })
+
+  it('skips forced layout reads while the document is hidden and catches up when it is visible again', async () => {
+    await renderPanel()
+    const observer = latestObserver()
+    const reads = vi.mocked(HTMLElement.prototype.getBoundingClientRect)
+    reads.mockClear()
+    const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true)
+
+    currentRect = { ...currentRect, top: 70 }
+    act(() => observer.fire())
+    act(() => window.dispatchEvent(new Event('resize')))
+
+    expect(reads).not.toHaveBeenCalled()
+    expect(onAgentSlotRect).toHaveBeenCalledTimes(1)
+
+    hidden.mockReturnValue(false)
+    act(() => document.dispatchEvent(new Event('visibilitychange')))
+
+    expect(onAgentSlotRect).toHaveBeenLastCalledWith({ left: 10, top: 70, width: 100, height: 50 })
+    expect(onAgentSlotRect).toHaveBeenCalledTimes(2)
   })
 
   it('emits null once on hide and resets so re-show reports current geometry', async () => {
