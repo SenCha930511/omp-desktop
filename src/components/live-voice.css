@@ -1,0 +1,29 @@
+/* Host live-voice dialog: phase, the two level meters, and the running
+   transcript. The modal shell supplies the frame; this file only styles the
+   session view inside .modal__body. */
+
+.live-voice { display: flex; flex-direction: column; gap: 14px; font-size: 12.5px; }
+
+.live-voice__status { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.live-voice__phase { flex: 0 0 auto; display: inline-flex; align-items: center; padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; letter-spacing: 0.02em; background: var(--surface-hover); color: var(--text-secondary); }
+.live-voice__phase[data-phase='connecting'], .live-voice__phase[data-phase='working'] { background: var(--surface-hover); color: var(--text); }
+.live-voice__phase[data-phase='listening'], .live-voice__phase[data-phase='speaking'] { background: color-mix(in srgb, var(--prime) 16%, transparent); color: var(--prime); }
+.live-voice__phase[data-phase='muted'] { color: var(--text-tertiary); }
+.live-voice__phase[data-phase='error'] { background: var(--danger-soft); color: var(--danger); }
+.live-voice__hint { min-width: 0; color: var(--text-tertiary); font-size: 11.5px; line-height: 1.5; }
+
+.live-voice__levels { display: flex; flex-direction: column; gap: 8px; }
+.live-voice__level-row { display: flex; align-items: center; gap: 10px; }
+.live-voice__level-label { flex: 0 0 auto; width: 96px; color: var(--text-tertiary); font-size: 11.5px; }
+.live-voice__level { flex: 1 1 auto; height: 6px; border-radius: 999px; background: var(--surface-hover); overflow: hidden; }
+.live-voice__level-fill { display: block; height: 100%; border-radius: inherit; background: var(--text-secondary); transition: width 90ms linear; }
+
+.live-voice__transcript { display: flex; flex-direction: column; gap: 10px; min-height: 120px; max-height: min(42vh, 320px); overflow-y: auto; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-subtle); }
+.live-voice__empty { margin: auto; color: var(--text-tertiary); text-align: center; font-size: 12px; }
+.live-voice__entry { display: flex; flex-direction: column; gap: 2px; }
+.live-voice__entry-role { color: var(--text-tertiary); font-size: 10.5px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+.live-voice__entry[data-role='assistant'] .live-voice__entry-role { color: var(--prime); }
+.live-voice__entry-text { margin: 0; color: var(--text); font-size: 12.5px; line-height: 1.55; overflow-wrap: anywhere; }
+.live-voice__entry[data-final='false'] .live-voice__entry-text { color: var(--text-secondary); }
+
+.live-voice__error { margin: 0; color: var(--danger); font-size: 12px; line-height: 1.5; }

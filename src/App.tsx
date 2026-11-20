@@ -12,11 +12,13 @@ import { useCommandOutput } from '@/hooks/useCommandOutput'
 import { ConversationToolbar } from '@/components/ConversationToolbar'
 import { conversationExecution } from '@/lib/execution-state'
 import { useSideQuestions } from '@/hooks/useSideQuestions'
+import { useLiveVoice } from '@/hooks/useLiveVoice'
 import { useSubagents, type SubagentPanelState } from '@/hooks/useSubagents'
 import { NoHarnessPrompt } from '@/components/NoHarnessPrompt'
 import type { ProjectScriptKind } from '@/components/ProjectRunControl'
 import { ResizeHandle } from '@/components/ResizeHandle'
 import { SessionTreeDialog } from '@/components/SessionTreeDialog'
+import { LiveVoicePanel } from '@/components/LiveVoicePanel'
 import { Sidebar } from '@/components/Sidebar'
 import { TitleToolbar } from '@/components/TitleToolbar'
 import { useAgentBrowserTabs } from '@/hooks/useAgentBrowserTabs'
@@ -132,6 +134,7 @@ export default function App() {
   const [submittingSince, setSubmittingSince] = useState<number | undefined>(undefined)
   const [restorePrompt, setRestorePrompt] = useState<{ owner: number; id: number; text: string }>()
   const [sessionTreeOpen, setSessionTreeOpen] = useState(false)
+  const [liveVoiceOpen, setLiveVoiceOpen] = useState(false)
   const submissionGenerationRef = useRef<number | undefined>(undefined)
   const { toast, toastTone, setToast, setToastHovered } = useToast()
   const [changesCardDismissed, setChangesCardDismissed] = useState(false)
@@ -158,6 +161,8 @@ export default function App() {
     setToast(errorMessage(error), 'error')
   }, [])
   const openSessionTree = useCallback(() => setSessionTreeOpen(true), [])
+  const openLiveVoice = useCallback(() => setLiveVoiceOpen(true), [])
+  const closeLiveVoice = useCallback(() => setLiveVoiceOpen(false), [])
   // The shell handlers answer with false instead of rejecting, so the refusal
   // reaches the user as a toast rather than disappearing into a dropped result.
   const openExternal = useCallback(
@@ -273,6 +278,7 @@ export default function App() {
   const sideChatSessionId = workspace.activeSessionId ?? workspace.runtime?.sessionId ?? null
   const sideQuestions = useSideQuestions(bridge, sideChatSessionId, workspace.runtime?.runtimeId ?? null)
   const [sideChatOpen, setSideChatOpen] = useState(false)
+  const liveVoice = useLiveVoice(bridge, workspace.runtime?.runtimeId ?? null)
   const [btwHint, setBtwHint] = useState(false)
   const activeSideChat = sideChatSessionId ? sideQuestions.session(sideChatSessionId) : undefined
   // The /btw-without-runtime hint lives in the conversation; the first real
@@ -1395,6 +1401,7 @@ export default function App() {
               onToggleInspector={toggleInspectorPanel}
               onOpenBrowser={openBrowser}
               onOpenSessionTree={view === 'session' ? openSessionTree : undefined}
+              onOpenLiveVoice={openLiveVoice}
               onNewSession={newSession}
               projectCount={projects.length}
               sessionCount={sessions.length}
@@ -1673,6 +1680,20 @@ export default function App() {
               onClose={() => setSessionTreeOpen(false)}
               onToast={(text) => setToast(text)}
               onPrefillPrompt={(text) => setRestorePrompt({ owner: workspace.workspaceGeneration, id: Date.now(), text })}
+            />
+          ) : null}
+          {liveVoiceOpen ? (
+            <LiveVoicePanel
+              phase={liveVoice.phase}
+              inputLevel={liveVoice.inputLevel}
+              outputLevel={liveVoice.outputLevel}
+              transcript={liveVoice.transcript}
+              error={liveVoice.error}
+              busy={liveVoice.busy}
+              ready={Boolean(workspace.runtime)}
+              onStart={liveVoice.start}
+              onStop={liveVoice.stop}
+              onClose={closeLiveVoice}
             />
           ) : null}
           {harnessUpdatePromptOpen && harnessUpdates.state.phase === 'available' ? (

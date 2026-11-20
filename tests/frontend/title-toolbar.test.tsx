@@ -127,6 +127,23 @@ describe('title toolbar session actions', () => {
     expect(onOpenBrowser).toHaveBeenCalledTimes(1)
   })
 
+  it('opens live voice from the More menu and closes it', async () => {
+    const onOpenLiveVoice = vi.fn()
+    await renderToolbar({ onOpenLiveVoice })
+    await click(container.querySelector('button[aria-label="More"]'))
+    const action = container.querySelector('[role="dialog"] button[aria-label="Live voice"]')
+    expect(action).not.toBeNull()
+    await click(action)
+    expect(onOpenLiveVoice).toHaveBeenCalledTimes(1)
+    expect(container.querySelector('[role="dialog"]')).toBeNull()
+  })
+
+  it('hides the live voice action when the app does not provide it', async () => {
+    await renderToolbar()
+    await click(container.querySelector('button[aria-label="More"]'))
+    expect(container.querySelector('[role="dialog"] button[aria-label="Live voice"]')).toBeNull()
+  })
+
   it('marks the inspector action active while the inspector is open', async () => {
     await renderToolbar({ inspectorOpen: true })
     await click(container.querySelector('button[aria-label="More"]'))

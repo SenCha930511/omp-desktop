@@ -1,4 +1,4 @@
-import { GitBranch, LayoutDashboard, ListTree, MoreHorizontal, PanelLeft, PanelRight, PanelRightClose, Settings, SquarePen } from 'lucide-react'
+import { GitBranch, LayoutDashboard, ListTree, Mic, MoreHorizontal, PanelLeft, PanelRight, PanelRightClose, Settings, SquarePen } from 'lucide-react'
 import { memo, useEffect, useId, useRef, useState, type MouseEvent, type RefObject } from 'react'
 import { type MessageKey, useI18n } from '@/lib/i18n'
 import { shortcutLabel } from '@/lib/platform-shortcuts'
@@ -65,6 +65,8 @@ export interface TitleToolbarProps {
   onOpenBrowser(): void
   /** Opens the session tree dialog; only rendered in the session view. */
   onOpenSessionTree?(): void
+  /** Opens the live voice panel (host microphone/speaker session). */
+  onOpenLiveVoice?(): void
   /** Starts a fresh session in the active project; only rendered in the session view. */
   onNewSession?(): void
   /** Workspace totals shown in the Overview popover. */
@@ -95,6 +97,7 @@ function TitleToolbarView({
   onToggleInspector,
   onOpenBrowser,
   onOpenSessionTree,
+  onOpenLiveVoice,
   onNewSession,
   projectCount = 0,
   sessionCount = 0,
@@ -244,6 +247,20 @@ function TitleToolbarView({
                     >
                       <ListTree size={15} />
                       <span>{t('toolbar.sessionTree')}</span>
+                    </button>
+                  ) : null}
+                  {onOpenLiveVoice ? (
+                    <button
+                      type="button"
+                      className="toolbar-more__action"
+                      aria-label={t('toolbar.liveVoice')}
+                      onClick={() => {
+                        setMoreOpen(false)
+                        onOpenLiveVoice()
+                      }}
+                    >
+                      <Mic size={15} />
+                      <span>{t('toolbar.liveVoice')}</span>
                     </button>
                   ) : null}
                   <button
