@@ -18,7 +18,8 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use omp_core::agent::AgentManager;
 use omp_core::geometry::{
-    CENTER_MIN_WIDTH, ResolvedLayout, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, UiGeometry,
+    CENTER_MIN_WIDTH, CollapsedPane, ResolvedLayout, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH,
+    UiGeometry,
 };
 use omp_core::git::{self, GitStatus};
 use omp_core::models::{self, CliContext, ModelCatalog, ModelDescriptor};
@@ -924,9 +925,8 @@ pub struct Workspace {
     // the bounds in `new` and refreshed by `track_bounds`. The right pane then
     // collapses into the toolbar's Details toggle.
     compact_layout: bool,
-    // Whether the compact layout draws the right pane as an overlay. Only
-    // meaningful while `compact_layout`; a wide window clears it.
-    details_open: bool,
+    // Compact windows keep at most one sidebar or right-pane drawer open.
+    active_drawer: Option<CollapsedPane>,
     // Live voice is RPC-driven: the harness owns the microphone and the pane only
     // mirrors the normalized `live_*` events plus the commands it sent.
     live_phase: String,
@@ -1198,7 +1198,7 @@ impl Workspace {
             notification_counter: 0,
             right_pane: RightPane::Launcher,
             compact_layout: compact_layout(width),
-            details_open: false,
+            active_drawer: None,
             live_phase: "idle".to_string(),
             live_levels: 0.0,
             live_transcript: Vec::new(),
@@ -1608,10 +1608,12 @@ impl Workspace {
         // The pane only draws while the geometry docks it, so asking for a pane
         // opens it first, exactly like the toolbar's panel button.
         self.geometry.right_pane_open = true;
+        self.reflow_panes();
         // A compact window has no docked column to put the pane in, so asking
         // for one raises the same overlay the toolbar's Details toggle draws.
-        if self.compact_layout {
-            self.details_open = true;
+        if self.right_drawer_layout() {
+            self.active_drawer = Some(CollapsedPane::RightPane);
+            self.geometry.compact_restore = Some("rightPane".to_string());
         }
         if let Some(bounds) = self.last_bounds {
             self.layout = self.geometry.resolve(bounds.2 as f64);
@@ -1942,7 +1944,13 @@ impl Workspace {
         // The render's breakpoint decision and whether the compact layout is
         // drawing the right pane as an overlay over the transcript.
         snapshot["compactLayout"] = json!(self.compact_layout);
-        snapshot["detailsOpen"] = json!(self.compact_layout && self.details_open);
+        snapshot["detailsOpen"] =
+            json!(self.compact_layout && self.active_drawer == Some(CollapsedPane::RightPane));
+        snapshot["drawer"] = json!(match self.active_drawer {
+            Some(CollapsedPane::Sidebar) => "sidebar",
+            Some(CollapsedPane::RightPane) => "rightPane",
+            None => "none",
+        });
         snapshot["streamFeedback"] = json!(match interaction::StreamFeedback::derive(
             self.running,
             self.streaming_index.is_some(),
@@ -1979,14 +1987,17 @@ impl Workspace {
         if self.last_bounds == Some(current) {
             return;
         }
+        let first_bounds = self.last_bounds.is_none();
+        let was_compact = self.compact_layout;
         self.last_bounds = Some(current);
         self.compact_layout = compact_layout(current.2);
-        // Widening the window docks the right pane again; a compact overlay
-        // left open would be drawn nowhere, so it closes with the breakpoint.
-        if !self.compact_layout {
-            self.details_open = false;
+        self.reflow_panes();
+        if !self.layout.right_pane_docked
+            && (first_bounds || !was_compact)
+            && self.geometry.right_pane_open
+        {
+            self.geometry.compact_restore = Some("rightPane".to_string());
         }
-        self.layout = self.geometry.resolve(current.2 as f64);
         self.resize_terminal();
         self.geometry.window_bounds = Some(omp_core::geometry::WindowBounds {
             x: current.0 as f64,
@@ -2392,10 +2403,16 @@ impl Workspace {
             })
             .collect();
         div()
+            .id("sidebar")
+            .test_support()
             .flex()
             .flex_col()
             .h_full()
-            .w(px(self.layout.sidebar_width as f32))
+            .w(px(if self.layout.sidebar_docked {
+                self.layout.sidebar_width
+            } else {
+                omp_core::geometry::clamp_sidebar(self.geometry.sidebar_width)
+            } as f32))
             // The resolved width is already clamped; the bounds make the
             // sidebar's floor and ceiling explicit in the layout itself.
             .min_w(px(SIDEBAR_MIN_WIDTH as f32))
@@ -2845,11 +2862,42 @@ impl Workspace {
         i18n::t(self.language(), key)
     }
 
-    pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
-        self.geometry.sidebar_open = !self.geometry.sidebar_open;
+    fn reflow_panes(&mut self) {
         if let Some(bounds) = self.last_bounds {
             self.layout = self.geometry.resolve(bounds.2 as f64);
         }
+        if self.layout.right_pane_docked {
+            if self.active_drawer == Some(CollapsedPane::RightPane) {
+                self.active_drawer = None;
+            }
+            self.geometry.compact_restore = None;
+        }
+        if self.layout.sidebar_docked && self.active_drawer == Some(CollapsedPane::Sidebar) {
+            self.active_drawer = None;
+        }
+    }
+
+    fn right_drawer_layout(&self) -> bool {
+        self.compact_layout || self.layout.overlay.as_deref() == Some("rightPane")
+    }
+
+    pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
+        let small = self
+            .last_bounds
+            .is_some_and(|bounds| bounds.2 <= omp_core::geometry::SMALL_BREAKPOINT as f32);
+        if small {
+            if self.active_drawer == Some(CollapsedPane::Sidebar) {
+                self.active_drawer = None;
+                self.geometry.sidebar_open = false;
+            } else {
+                self.active_drawer = Some(CollapsedPane::Sidebar);
+                self.geometry.sidebar_open = true;
+                self.geometry.compact_restore = Some("sidebar".to_string());
+            }
+        } else {
+            self.geometry.sidebar_open = !self.geometry.sidebar_open;
+        }
+        self.reflow_panes();
         self.schedule_geometry_save(cx);
         cx.notify();
     }
@@ -2858,17 +2906,29 @@ impl Workspace {
     /// in a compact one. The toolbar button and the parity test both call this
     /// path, so the control and its test cannot drift apart.
     pub fn toggle_details(&mut self, cx: &mut Context<Self>) {
-        if self.compact_layout {
-            self.details_open = !self.details_open;
+        if self.right_drawer_layout() {
+            if self.active_drawer == Some(CollapsedPane::RightPane) {
+                self.active_drawer = None;
+            } else {
+                self.active_drawer = Some(CollapsedPane::RightPane);
+                self.geometry.right_pane_open = true;
+                self.geometry.compact_restore = Some("rightPane".to_string());
+            }
+            self.reflow_panes();
+            self.schedule_geometry_save(cx);
         } else {
             self.geometry.right_pane_open = !self.geometry.right_pane_open;
-            if let Some(bounds) = self.last_bounds {
-                self.layout = self.geometry.resolve(bounds.2 as f64);
-            }
+            self.reflow_panes();
             self.resize_terminal();
             self.schedule_geometry_save(cx);
         }
         cx.notify();
+    }
+
+    pub fn close_drawer(&mut self, cx: &mut Context<Self>) {
+        if self.active_drawer.take().is_some() {
+            cx.notify();
+        }
     }
 
     fn toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2886,8 +2946,8 @@ impl Workspace {
                     .find(|project| session_path_is_inside(&session.project_path, project))
             })
             .and_then(|project| project.git_branch.clone());
-        let panel_active = if self.compact_layout {
-            self.details_open
+        let panel_active = if self.right_drawer_layout() {
+            self.active_drawer == Some(CollapsedPane::RightPane)
         } else {
             self.geometry.right_pane_open
         };
@@ -2921,7 +2981,7 @@ impl Workspace {
             .px_3()
             .border_b_1()
             .border_color(colors.border)
-            .when(!self.geometry.sidebar_open, |element| {
+            .when(!self.layout.sidebar_docked, |element| {
                 element.child(self.toolbar_icon(
                     "sidebar-toggle",
                     IconName::PanelLeft,
@@ -8156,13 +8216,11 @@ impl Workspace {
             .h_full()
             // A compact window always draws the pane over the transcript at
             // its preferred width, never at the docked column's resolved one.
-            .w(px(
-                if self.layout.right_pane_docked && !self.compact_layout {
-                    self.layout.right_pane_width
-                } else {
-                    omp_core::geometry::clamp_right_pane(self.geometry.right_pane_width)
-                } as f32,
-            ))
+            .w(px(if self.layout.right_pane_docked {
+                self.layout.right_pane_width
+            } else {
+                omp_core::geometry::clamp_right_pane(self.geometry.right_pane_width)
+            } as f32))
             .bg(colors.background)
             .border_l_1()
             .border_color(colors.border)
@@ -8319,22 +8377,88 @@ impl Workspace {
         div()
             .absolute()
             .top_0()
-            .right_0()
-            .h_full()
-            .flex()
-            .w(px(
-                omp_core::geometry::clamp_right_pane(self.geometry.right_pane_width) as f32,
-            ))
-            .child(self.right_pane(cx))
-            .with_animation(
-                "details-overlay",
-                interaction::motion_spec(interaction::Motion::DetailsOverlay).animation(),
-                |element, delta| {
-                    element
-                        .opacity(delta)
-                        .relative()
-                        .left(px(8.0 * (1.0 - delta)))
-                },
+            .left_0()
+            .size_full()
+            .child(
+                div()
+                    .id("details-scrim")
+                    .test_support()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .bg(black().opacity(0.24))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.close_drawer(cx);
+                        cx.stop_propagation();
+                    }))
+                    .with_animation(
+                        "details-scrim",
+                        interaction::motion_spec(interaction::Motion::DetailsOverlay).animation(),
+                        |element, delta| element.opacity(delta),
+                    ),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .right_0()
+                    .h_full()
+                    .flex()
+                    .w(px(
+                        omp_core::geometry::clamp_right_pane(self.geometry.right_pane_width) as f32,
+                    ))
+                    .child(self.right_pane(cx))
+                    .with_animation(
+                        "details-overlay",
+                        interaction::motion_spec(interaction::Motion::DetailsOverlay).animation(),
+                        |element, delta| {
+                            element
+                                .opacity(delta)
+                                .relative()
+                                .left(px(8.0 * (1.0 - delta)))
+                        },
+                    ),
+            )
+    }
+
+    fn sidebar_overlay(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .child(
+                div()
+                    .id("sidebar-scrim")
+                    .test_support()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .bg(black().opacity(0.24))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.close_drawer(cx);
+                        cx.stop_propagation();
+                    })),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .h_full()
+                    .child(self.sidebar(cx))
+                    .with_animation(
+                        "sidebar-overlay",
+                        interaction::motion_spec(interaction::Motion::DetailsOverlay).animation(),
+                        |element, delta| {
+                            element
+                                .opacity(delta)
+                                .relative()
+                                .right(px(8.0 * (1.0 - delta)))
+                        },
+                    ),
             )
     }
 
@@ -10714,11 +10838,9 @@ impl Render for Workspace {
         self.track_bounds(window, cx);
         let colors = cx.theme().colors;
         let show_sidebar = self.layout.sidebar_docked;
-        // A wide window docks the right pane as before. Below the render's
-        // breakpoint that column is gone and the same pane is an overlay the
-        // toolbar's Details toggle raises over the transcript.
-        let show_right = self.layout.right_pane_docked && !self.compact_layout;
-        let show_details = self.compact_layout && self.details_open;
+        let show_right = self.layout.right_pane_docked;
+        let show_details = self.active_drawer == Some(CollapsedPane::RightPane);
+        let show_sidebar_overlay = self.active_drawer == Some(CollapsedPane::Sidebar);
         // A native webview keeps its last frame when the pane stops rendering, and on Windows
         // it covers everything in its bounds, so it is shown only while the pane is on screen
         // and no confirmation is covering it.
@@ -10836,6 +10958,9 @@ impl Render for Workspace {
             .when(show_right, |element| element.child(self.right_pane(cx)))
             .when(show_details, |element| {
                 element.child(self.details_overlay(cx))
+            })
+            .when(show_sidebar_overlay, |element| {
+                element.child(self.sidebar_overlay(cx))
             })
             .when(self.overview_open && !browser_visible, |element| {
                 element.child(self.overview_popover(cx))

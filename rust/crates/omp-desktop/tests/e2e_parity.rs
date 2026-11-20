@@ -252,6 +252,140 @@ fn width_1000_keeps_the_right_pane_docked(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn wide_sidebar_keeps_the_right_pane_available_as_a_drawer(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let mut data = test_data(root);
+    data.geometry.sidebar_width = 480.0;
+    let handle = cx.open_window(size(px(1000.0), px(800.0)), |window, cx| {
+        Workspace::new(window, cx, data)
+    });
+    let window: gpui_kit::AnyWindowHandle = handle.into();
+    draw_frame(cx, window);
+    handle
+        .update(cx, |workspace, window, cx| {
+            let layout = snapshot(workspace, cx);
+            assert_eq!(layout["layout"]["rightPaneDocked"], json!(false));
+            assert_eq!(layout["layout"]["overlay"], json!("rightPane"));
+            assert!(window.try_find("right-pane").is_none());
+        })
+        .expect("constrained right pane");
+    handle
+        .update(cx, |workspace, _, cx| workspace.toggle_details(cx))
+        .expect("open constrained drawer");
+    draw_frame(cx, window);
+    handle
+        .update(cx, |_, window, _| {
+            assert!(window.try_find("right-pane").is_some());
+            assert!(window.try_find("details-scrim").is_some());
+            assert!(window.try_find("sidebar").is_some());
+        })
+        .expect("drawer above the wide sidebar");
+}
+
+#[gpui_kit::test]
+fn closing_sidebar_docks_open_right_drawer_when_space_allows(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let handle = cx.open_window(size(px(900.0), px(800.0)), |window, cx| {
+        Workspace::new(window, cx, test_data(root))
+    });
+    let window: gpui_kit::AnyWindowHandle = handle.into();
+    draw_frame(cx, window);
+    handle
+        .update(cx, |workspace, _, cx| workspace.toggle_details(cx))
+        .expect("open right drawer");
+    draw_frame(cx, window);
+    handle
+        .update(cx, |workspace, _, cx| workspace.toggle_sidebar(cx))
+        .expect("close docked sidebar");
+    draw_frame(cx, window);
+    handle
+        .update(cx, |workspace, window, cx| {
+            let layout = snapshot(workspace, cx);
+            assert_eq!(layout["layout"]["rightPaneDocked"], json!(true));
+            assert_eq!(layout["detailsOpen"], json!(false));
+            assert!(window.try_find("right-pane").is_some());
+            assert!(window.try_find("details-scrim").is_none());
+            assert!(window.try_find("sidebar").is_none());
+        })
+        .expect("right pane promotes to docked");
+}
+
+#[gpui_kit::test]
+fn small_window_drawers_are_mutually_exclusive_and_dismiss_from_the_scrim(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let data = test_data(root);
+    let handle = cx.open_window(size(px(700.0), px(760.0)), |window, cx| {
+        Workspace::new(window, cx, data)
+    });
+    let window: gpui_kit::AnyWindowHandle = handle.into();
+    draw_frame(cx, window);
+    handle
+        .update(cx, |_, window, _| {
+            assert!(window.try_find("sidebar").is_none());
+            assert!(window.try_find("right-pane").is_none());
+        })
+        .expect("small initial frame");
+    handle
+        .update(cx, |workspace, _, cx| workspace.toggle_details(cx))
+        .expect("open right drawer");
+    draw_frame(cx, window);
+    handle
+        .update(cx, |_, window, _| {
+            assert!(window.try_find("right-pane").is_some());
+            assert!(window.try_find("details-scrim").is_some());
+        })
+        .expect("right drawer");
+    handle
+        .update(cx, |workspace, _, cx| workspace.toggle_sidebar(cx))
+        .expect("open sidebar drawer");
+    draw_frame(cx, window);
+    handle
+        .update(cx, |_, window, _| {
+            assert!(window.try_find("sidebar").is_some());
+            assert!(window.try_find("sidebar-scrim").is_some());
+            assert!(window.try_find("right-pane").is_none());
+        })
+        .expect("sidebar drawer");
+    handle
+        .update(cx, |workspace, _, cx| workspace.toggle_details(cx))
+        .expect("swap back to right drawer");
+    draw_frame(cx, window);
+    handle
+        .update(cx, |_, window, _| {
+            assert!(window.try_find("right-pane").is_some());
+            assert!(window.try_find("sidebar").is_none());
+        })
+        .expect("right drawer again");
+    cx.executor().advance_clock(Duration::from_millis(160));
+    draw_frame(cx, window);
+    cx.update(|cx| {
+        cx.update_window(window, |_, window, cx| window.click("details-scrim", cx))
+            .expect("dismiss scrim");
+    });
+    draw_frame(cx, window);
+    handle
+        .update(cx, |workspace, window, cx| {
+            assert!(window.try_find("right-pane").is_none());
+            assert_eq!(snapshot(workspace, cx)["detailsOpen"], json!(false));
+        })
+        .expect("all drawers dismissed");
+    cx.simulate_window_resize(window, size(px(1000.0), px(760.0)));
+    draw_frame(cx, window);
+    handle
+        .update(cx, |_, window, _| {
+            assert!(window.try_find("right-pane").is_some());
+            assert!(window.try_find("sidebar").is_some());
+        })
+        .expect("docked after widening");
+}
+
+#[gpui_kit::test]
 fn catalog_order_drives_session_selection(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let dir = tempfile::TempDir::new().expect("temp dir");
