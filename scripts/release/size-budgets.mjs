@@ -13,6 +13,8 @@ const MIB = 1024 * KIB
  * bundle-size creep still fails the release build.
  */
 export const BUNDLE_SIZE_BUDGETS = Object.freeze({
+  // 2026-11-21 OMP v19 session lease guard with the CLI fallback.
+  // Measured 557,635 bytes → next 8 KiB multiple.
   // 2026-11-20 project script runner: headless setup/run execution, IPC, and
   // process-group lifecycle. Measured 555,115 bytes → next 8 KiB multiple.
   // 2026-11-20 P0 hot-path pass: event-driven scheduled waits, prepared
@@ -23,7 +25,7 @@ export const BUNDLE_SIZE_BUDGETS = Object.freeze({
   // 驗證（fork/branch/queue/goal/login/logout/live voice/subagent 控制等）、
   // MCP mcp.json 編輯器驗證、live_* 事件 adapter、session 設定與 OAuth
   // custody 驗證。量測 533,785 bytes → 依協定升至下一個 8 KiB 倍數。
-  mainBytes: 544 * KIB,
+  mainBytes: 552 * KIB,
   // 2026-10-27 parity 檔期：renderer 新增 live voice 面板、provider 帳號
   // 面板、子代理控制/歷史游標、session 設定、extension 能力徽章、MCP
   // 編輯器與非文字內容資料視圖。量測 1,343,617 bytes → 依協定升至下一個

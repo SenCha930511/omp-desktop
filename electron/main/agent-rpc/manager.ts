@@ -1,8 +1,9 @@
+import { basename, extname } from 'node:path'
 import type { PrimeEventEnvelope, PrimeModelCatalog, PrimeModelDescriptor, RuntimeInfo } from '../../../src/types/api'
 import { readLatestCompactionRecord, type ManualCompactionReader } from './manual-compaction'
 import { assertNoMcpAuthenticationCommand } from '../../../src/lib/mcp-policy'
 import { parseSessionActionSnapshot, streamingBehaviorForIntent } from '../../../src/lib/session-actions'
-import { resolveExecutable, type ExecutableSource } from '../process-utils'
+import { resolveExecutable, runProcess, type ExecutableSource } from '../process-utils'
 import { canonicalSessionPath } from '../session-paths'
 import { isPathWithin, isRecord, rejectUnknownKeys, requireId, requireRecord, requireString } from '../validation'
 import { isThinkingLevel, validateRpcCommand } from './command-schema'
@@ -26,6 +27,13 @@ export interface RuntimeRetentionOptions { idleMs?: number; warmCount?: number }
 /** Settings-backed source so the idle window follows the live preference. */
 export type RuntimeRetentionSource = RuntimeRetentionOptions | (() => RuntimeRetentionOptions)
 const RETENTION_EVENTS = new Set(['agent_start', 'agent_end', 'runtime_state', 'session_action_update', 'compaction_start', 'compaction_end', 'auto_retry_end', 'prompt_result', 'runtime_exit', 'session_settled', 'extension_ui_request'])
+
+const SESSION_LEASE_ID_PATTERN = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i
+
+export function sessionLeaseId(sessionPath: string): string {
+  const match = SESSION_LEASE_ID_PATTERN.exec(sessionPath)
+  return match?.[1] ?? basename(sessionPath, extname(sessionPath))
+}
 
 export class AgentRpcManager {
   private readonly runtimes = new Map<string, RpcRuntime>()
@@ -137,6 +145,7 @@ export class AgentRpcManager {
       const existing = this.getForSession(sessionPath)
       if (existing && this.sessionMutations.has(existing.runtimeId)) throw new Error('Session identity is being changed')
       if (existing && !this.retiringRuntimes.has(existing.runtimeId)) return existing
+      await this.assertSessionLeaseAvailable(sessionPath)
     }
     let selectedModel: PrimeModelDescriptor | undefined
     let modelId: string | undefined
@@ -357,6 +366,42 @@ export class AgentRpcManager {
     if (this.quarantinedRuntimes.has(runtime.runtimeId)) throw new Error('Runtime is quarantined after a session identity change')
     if (this.sessionMutations.has(runtime.runtimeId)) throw new Error('Session identity is being changed')
     return runtime.refreshState()
+  }
+
+  async getSessionLease(runtimeId: unknown, sessionIds: string[]): Promise<{ held: string[]; unknown: string[] }> {
+    this.requireOpen()
+    const runtime = this.requireRuntime(runtimeId)
+    if (this.retiringRuntimes.has(runtime.runtimeId)) throw new Error('Runtime is being retired')
+    if (this.quarantinedRuntimes.has(runtime.runtimeId)) throw new Error('Runtime is quarantined after a session identity change')
+    const response = await runtime.command({ type: 'get_session_lease', sessionIds })
+    if (response.success !== true) throw new Error(typeof response.error === 'string' ? response.error : 'OMP could not read session leases')
+    const data = requireRecord(response.data, 'get_session_lease data')
+    const read = (value: unknown): string[] => Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+    return { held: read(data.held), unknown: read(data.unknown) }
+  }
+
+  private async assertSessionLeaseAvailable(sessionPath: string): Promise<void> {
+    const leaseId = sessionLeaseId(sessionPath)
+    const probe = [...this.runtimes.values()].find((runtime) => !this.startingRuntimes.has(runtime.runtimeId)
+      && !this.retiringRuntimes.has(runtime.runtimeId)
+      && !this.quarantinedRuntimes.has(runtime.runtimeId))
+    const lease = probe
+      ? await this.getSessionLease(probe.runtimeId, [leaseId])
+      : await this.readSessionLeaseFromCli(leaseId)
+    if (lease.held.includes(leaseId)) throw new Error('Another OMP process owns this session. Close it there before opening it here.')
+    if (lease.unknown.includes(leaseId)) throw new Error('Could not verify whether another OMP process owns this session.')
+  }
+
+  private async readSessionLeaseFromCli(leaseId: string): Promise<{ held: string[]; unknown: string[] }> {
+    const executable = resolveExecutable(this.executable)
+    if (!executable) throw new Error('OMP executable was not found')
+    const result = await runProcess(executable, ['session', 'lease', '--json', '--', leaseId], { timeoutMs: 10_000, maxBytes: 64 * 1024 })
+    if (result.code !== 0 || result.timedOut || result.outputExceeded) throw new Error('Could not verify whether another OMP process owns this session.')
+    let parsed: unknown
+    try { parsed = JSON.parse(result.stdout) } catch { throw new Error('Could not verify whether another OMP process owns this session.') }
+    if (!isRecord(parsed)) throw new Error('Could not verify whether another OMP process owns this session.')
+    const read = (value: unknown): string[] => Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+    return { held: read(parsed.held), unknown: read(parsed.unknown) }
   }
 
   private async dispatchCommand(runtimeId: unknown, rawCommand: unknown): Promise<RpcObject> {

@@ -52,6 +52,9 @@ interface FakeOmpOptions {
   usageLimit?: 'low_priority' | 'wrap_up'
   /** When false the ready frame omits supportsBashExcludeFromContext. */
   bashExcludeFromContext?: boolean
+  /** Session ids the fake reports as leased or unprobeable. */
+  heldSessionIds?: string[]
+  unknownSessionIds?: string[]
 }
 
 function fakeOmpAgent(options: FakeOmpOptions = {}): { cwd: string; executable: string } {
@@ -66,6 +69,7 @@ function fakeOmpAgent(options: FakeOmpOptions = {}): { cwd: string; executable: 
   writeFileSync(executable, `#!/usr/bin/env node
 if (process.argv[2] === '--version') { process.stdout.write('omp/1.2.3\\n'); process.exit(0) }
 if (process.argv[2] === 'models' && process.argv[3] === '--json') { process.stdout.write(${JSON.stringify(JSON.stringify({ models: options.catalogModels ?? [] }))}); process.exit(0) }
+if (process.argv[2] === 'session' && process.argv[3] === 'lease') { process.stdout.write(JSON.stringify({ held: ${JSON.stringify(options.heldSessionIds ?? [])}, unknown: ${JSON.stringify(options.unknownSessionIds ?? [])} })); process.exit(0) }
 const readline = require('node:readline')
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
 const sessionActions = ${JSON.stringify(options.sessionActions)}
@@ -108,6 +112,8 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     } })
   } else if (command.type === 'get_session_stats') {
     send({ id: command.id, type: 'response', command: 'get_session_stats', success: true, data: { contextUsage: { tokens: 12000, contextWindow: 200000, percent: 6 }, tokens: { input: 9000, output: 3000, cacheRead: 0, cacheWrite: 0, total: 12000 } } })
+  } else if (command.type === 'get_session_lease') {
+    send({ id: command.id, type: 'response', command: 'get_session_lease', success: true, data: { held: ${JSON.stringify(options.heldSessionIds ?? [])}, unknown: ${JSON.stringify(options.unknownSessionIds ?? [])} } })
   } else if (command.type === 'get_tree') {
     // Compaction leaf diagnostics: answer immediately so the compact path does
     // not wait out the 5s readLeafId deadline.
@@ -568,6 +574,42 @@ describe('OMP RPC command translation', () => {
     expect(revoked.mock.calls[0]?.[0]).toMatchObject({ PARITY_CAPABILITY_TOKEN: 'source-only-token' })
   })
 
+  it('reads held and unknown session leases from the runtime', async () => {
+    const fake = fakeOmpAgent({ heldSessionIds: ['held-session'], unknownSessionIds: ['unknown-session'] })
+    const manager = ompManager(fake.executable)
+    const runtime = await manager.start({ cwd: fake.cwd })
+    await expect(manager.getSessionLease(runtime.runtimeId, ['held-session', 'unknown-session'])).resolves.toEqual({
+      held: ['held-session'],
+      unknown: ['unknown-session'],
+    })
+  })
+
+  it('refuses to open a session leased by another OMP process', async () => {
+    const leaseId = '01a1f480-0547-72ca-8139-26773e2fa9a8'
+    const source = join(tmpdir(), `2026-11-19T15-49-53-095Z_${leaseId}.jsonl`)
+    const fake = fakeOmpAgent({ heldSessionIds: [leaseId] })
+    const manager = ompManager(fake.executable)
+    await manager.start({ cwd: fake.cwd })
+    await expect(manager.start({ cwd: fake.cwd, sessionPath: source })).rejects.toThrow(/another OMP process/i)
+  })
+
+  it('refuses to open a session whose lease cannot be probed', async () => {
+    const leaseId = '01a1f480-0547-72ca-8139-26773e2fa9a8'
+    const source = join(tmpdir(), `2026-11-19T15-49-53-095Z_${leaseId}.jsonl`)
+    const fake = fakeOmpAgent({ unknownSessionIds: [leaseId] })
+    const manager = ompManager(fake.executable)
+    await manager.start({ cwd: fake.cwd })
+    await expect(manager.start({ cwd: fake.cwd, sessionPath: source })).rejects.toThrow(/could not verify/i)
+  })
+
+  it('refuses a leased session without a resident runtime', async () => {
+    const leaseId = '01a1f480-0547-72ca-8139-26773e2fa9a8'
+    const source = join(tmpdir(), `2026-11-19T15-49-53-095Z_${leaseId}.jsonl`)
+    const fake = fakeOmpAgent({ heldSessionIds: [leaseId] })
+    const manager = ompManager(fake.executable)
+    await expect(manager.start({ cwd: fake.cwd, sessionPath: source })).rejects.toThrow(/another OMP process/i)
+  })
+
   it('binds a fresh runtime once its first durable session path is materialized', async () => {
     const target = join(tmpdir(), 'parity-first-durable.jsonl')
     const fake = fakeOmpAgent({ promptScript: `sessionFileVar = ${JSON.stringify(target)}` })
@@ -764,6 +806,7 @@ function capabilityRollAgent(options: CapabilityRollOptions = {}): { cwd: string
   const fileB = join(cwd, 'lineage-b.jsonl')
   const executable = join(cwd, 'capability-roll-agent.cjs')
   writeFileSync(executable, `#!/usr/bin/env node
+if (process.argv[2] === 'session' && process.argv[3] === 'lease') { process.stdout.write('{"held":[],"unknown":[]}'); process.exit(0) }
 const readline = require('node:readline')
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
 const fileA = ${JSON.stringify(fileA)}
@@ -789,6 +832,8 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
       sessionFile = afterCompact.sessionFile
     }
     send({ id: command.id, type: 'response', command: 'compact', success: true, data: { agentInvoked: false } })
+  } else if (command.type === 'get_session_lease') {
+    send({ id: command.id, type: 'response', command: 'get_session_lease', success: true, data: { held: [], unknown: [] } })
   } else {
     // 其餘選用命令(set_subagent_subscription / set_ask_dialog 等)一律成功,不讓測試等逾時。
     send({ id: command.id, type: 'response', command: command.type, success: true })
