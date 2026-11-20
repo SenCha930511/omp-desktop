@@ -164,8 +164,8 @@ export function applyCompactionEvent(messages: TranscriptMessage[], raw: Record<
   if (part.status !== 'running') {
     for (let index = messages.length - 1; index >= 0; index -= 1) {
       const existing = messages[index].parts.find((candidate): candidate is CompactionPart =>
-        candidate.type === 'compaction' && candidate.status !== 'running' && candidate.status !== 'sync_pending')
-      if (!existing || !sameCompactionResult(existing, part)) continue
+        candidate.type === 'compaction' && candidate.status !== 'running' && candidate.status !== 'sync_pending' && sameCompactionResult(candidate, part))
+      if (!existing) continue
       const enriched = withMissingResult(existing, part)
       if (enriched === existing) return messages
       return messages.map((message, position) => position === index
