@@ -104,6 +104,20 @@ export interface ProjectRecord {
   scripts?: ProjectScripts
 }
 
+export type ProjectScriptKind = 'setup' | 'run'
+/** One headless setup/run script, identified by the renderer so exit events match before start resolves. */
+export interface ProjectScriptStartOptions {
+  runId: string
+  projectId: string
+  kind: ProjectScriptKind
+  cwd: string
+  command: string
+  /** Thread whose deletion stops the run; omitted when no thread is open. */
+  sessionPath?: string
+}
+export interface ProjectScriptOutputEvent { runId: string; data: string }
+export interface ProjectScriptExitEvent { runId: string; exitCode: number; cancelled: boolean }
+
 export interface SessionRecord {
   id: string
   /** Agent harness that owns this session; populated by the owning session service. */
@@ -934,6 +948,12 @@ export interface DesktopApi {
     kill(terminalId: string): Promise<boolean>
     onData(callback: (event: TerminalDataEvent) => void): () => void
     onExit(callback: (event: TerminalExitEvent) => void): () => void
+  }
+  projectScripts: {
+    start(options: ProjectScriptStartOptions): Promise<{ runId: string }>
+    stop(runId: string): Promise<boolean>
+    onOutput(callback: (event: ProjectScriptOutputEvent) => void): () => void
+    onExit(callback: (event: ProjectScriptExitEvent) => void): () => void
   }
   git: { status(cwd: string): Promise<GitStatus>; diff(cwd: string, path?: string, staged?: boolean): Promise<GitDiff>; stage(cwd: string, paths: string[]): Promise<boolean>; unstage(cwd: string, paths: string[]): Promise<boolean>; restore(cwd: string, paths: string[]): Promise<boolean>; commit(cwd: string, message: string): Promise<ProcessOutcome> }
   plugins: {

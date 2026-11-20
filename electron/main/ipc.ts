@@ -3,7 +3,7 @@ import { ipcMain, Menu, shell, type IpcMainEvent, type IpcMainInvokeEvent, type 
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { readModelPresets } from './model-presets'
-import type { ApplicationMenuName, AppMeta, AppSettings, HarnessId, NativeMenuItem, SessionChangeEvent, ThemeMode } from '../../src/types/api'
+import type { ApplicationMenuName, AppMeta, AppSettings, HarnessId, NativeMenuItem, ProjectScriptKind, SessionChangeEvent, ThemeMode } from '../../src/types/api'
 import type { AgentRpcManager } from './agent-rpc'
 import type { GitService } from './git'
 import type { CuaDriverService } from './cua-driver'
@@ -16,10 +16,11 @@ import type { SettingsService } from './settings-schedules'
 import type { AutomationService } from './schedules/service'
 import type { SessionService } from './sessions'
 import type { TerminalService } from './terminal'
+import type { ProjectScriptRunner } from './project-script-runner'
 import type { VoiceService } from './voice'
 import type { UpdateService } from './updates'
 import type { AgentBrowserService } from './browser/agent-service'
-import { rejectUnknownKeys, requireBoolean, requireExistingPath, requireRecord, requireString, requireWebUrl } from './validation'
+import { rejectUnknownKeys, requireBoolean, requireExistingPath, requireId, requireRecord, requireString, requireWebUrl } from './validation'
 import { deleteProjectSessions, resolveProjectRoots } from './project-sessions'
 
 interface Services {
@@ -32,6 +33,7 @@ interface Services {
   sessions: SessionService
   agents: AgentRpcManager
   terminals: TerminalService
+  projectScripts: ProjectScriptRunner
   git: GitService
   plugins: PluginService
   catalog: ModelCatalogProvider
@@ -50,6 +52,12 @@ interface Services {
 function requireHarness(value: unknown): HarnessId {
   if (value === undefined || value === 'omp') return 'omp'
   throw new TypeError('Invalid harness')
+}
+
+/** Strict gate for the project setup/run script kind. */
+function requireProjectScriptKind(value: unknown): ProjectScriptKind {
+  if (value === 'setup' || value === 'run') return value
+  throw new TypeError('Invalid project script kind')
 }
 
 function requireApplicationMenu(value: unknown): ApplicationMenuName {
@@ -300,7 +308,7 @@ export function registerIpc(services: Services, expectedRendererUrl: string): Ip
     const routed = await sessionsForPath(filePath)
     const result = await routed.service.delete(filePath)
     services.browser.closeForSession(filePath)
-    await services.terminals.killForSession(filePath)
+    await Promise.all([services.terminals.killForSession(filePath), services.projectScripts.killForSession(filePath)])
     return result
   })
   handle(IPC_CHANNELS.sessions.archive, async (_event, filePath, archived) => {
@@ -308,7 +316,7 @@ export function registerIpc(services: Services, expectedRendererUrl: string): Ip
     const result = await routed.service.archive(filePath, archived)
     if (archived === true) {
       services.browser.closeForSession(filePath)
-      await services.terminals.killForSession(filePath)
+      await Promise.all([services.terminals.killForSession(filePath), services.projectScripts.killForSession(filePath)])
     }
     return result
   })
@@ -356,6 +364,20 @@ export function registerIpc(services: Services, expectedRendererUrl: string): Ip
   on(IPC_CHANNELS.terminal.setActiveContext, (event, terminalId, context) => services.terminals.setActiveContext(event.sender, terminalId, context))
   on(IPC_CHANNELS.terminal.clearActiveContext, (event, terminalId) => services.terminals.clearActiveContext(event.sender, terminalId))
   handle(IPC_CHANNELS.terminal.kill, (event, terminalId) => services.terminals.kill(event.sender, terminalId))
+
+  handle(IPC_CHANNELS.projectScripts.start, (event, rawOptions) => {
+    const options = requireRecord(rawOptions, 'project script options')
+    rejectUnknownKeys(options, ['runId', 'projectId', 'kind', 'cwd', 'command', 'sessionPath'], 'project script options')
+    return services.projectScripts.start(event.sender, {
+      runId: requireId(options.runId, 'runId'),
+      projectId: requireId(options.projectId, 'projectId'),
+      kind: requireProjectScriptKind(options.kind),
+      cwd: requireString(options.cwd, 'cwd', { min: 1, max: 4096 }),
+      command: requireString(options.command, 'command', { min: 1, max: 64 * 1024 }),
+      sessionPath: options.sessionPath === undefined ? undefined : requireString(options.sessionPath, 'sessionPath', { min: 1, max: 4096 }),
+    })
+  })
+  handle(IPC_CHANNELS.projectScripts.stop, (event, runId) => services.projectScripts.stop(event.sender, runId))
 
   handle(IPC_CHANNELS.git.status, (_event, cwd) => services.git.status(cwd))
   handle(IPC_CHANNELS.git.diff, (_event, cwd, path, staged) => services.git.diff(cwd, path, staged))
@@ -450,7 +472,11 @@ export function registerIpc(services: Services, expectedRendererUrl: string): Ip
   const registration: IpcRegistration = {
     whenRendererReady,
     authorize(webContents) { if (!closed) authorized.set(webContents.id, webContents) },
-    revoke(webContentsId) { authorized.delete(webContentsId); void services.terminals.killOwner(webContentsId) },
+    revoke(webContentsId) {
+      authorized.delete(webContentsId)
+      void services.terminals.killOwner(webContentsId)
+      void services.projectScripts.killOwner(webContentsId)
+    },
     dispose() {
       if (closed) return
       closed = true

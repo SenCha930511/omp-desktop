@@ -35,6 +35,7 @@ import { SessionService } from './sessions'
 import { ompSessionServiceOptions } from './sessions/omp'
 import { type JsonStateStore, openDesktopStateStore, StateCompatibilityError, StateMigrationError } from './store'
 import { TerminalService } from './terminal'
+import { ProjectScriptRunner } from './project-script-runner'
 import { RepositoryUseGate } from './repository-use-gate'
 import { LEGACY_USER_DATA_DIR_NAME, migrateLegacyUserData } from './user-data-migration'
 import { VoiceService, voiceSecretStorageStatus } from './voice'
@@ -55,6 +56,7 @@ let mainWindow: BrowserWindow | null = null
 let ipc: IpcRegistration | null = null
 let agents: AgentRpcManager | null = null
 let terminals: TerminalService | null = null
+let projectScripts: ProjectScriptRunner | null = null
 let downloads: BrowserDownloadGuard | null = null
 let updateService: UpdateService | null = null
 let store: JsonStateStore | null = null
@@ -644,13 +646,21 @@ async function bootstrap(): Promise<void> {
     (path) => sessions.requireSessionPath(path),
     (cwd, owner) => repositoryUseGate.beginWorkspaceUse(cwd, owner),
   )
+  // Project setup/run scripts are headless: same authorization and repository
+  // gate as the terminal, but piped stdio and a bounded output surface.
+  projectScripts = new ProjectScriptRunner(
+    (cwd) => projects.authorizeCwd(cwd),
+    () => stateStore.getSettings().terminalShell,
+    (path) => sessions.requireSessionPath(path),
+    (cwd, owner) => repositoryUseGate.beginWorkspaceUse(cwd, owner),
+  )
   projects.bindProviders({
     sessions: listCatalogSessions,
     branch: (cwd) => git.branch(cwd),
     stopProjectProcesses: async (roots) => {
       plugins.evictProjects(roots)
       sessions.evictProjectPaths(roots)
-      await Promise.all([ompManager.stopForProjectRoots(roots), terminals!.killForProjectRoots(roots)])
+      await Promise.all([ompManager.stopForProjectRoots(roots), terminals!.killForProjectRoots(roots), projectScripts!.killForProjectRoots(roots)])
     },
   })
   downloads = new BrowserDownloadGuard(isAllowedBrowserUrl, app.getPath('downloads'))
@@ -842,7 +852,7 @@ async function bootstrap(): Promise<void> {
   // the trusted document the cached exact URL pair skips both URL parses.
   const isTrustedForwardTarget = createTrustedRendererUrlCache(trustedRendererUrl)
   ipc = registerIpc({
-    meta, refreshHarnesses, projects, checkouts, sessions, agents: ompManager, terminals, git, plugins, catalog, settings, updates, harnessUpdates, cuaDriver, schedules, browser: browserService, voice,
+    meta, refreshHarnesses, projects, checkouts, sessions, agents: ompManager, terminals, projectScripts, git, plugins, catalog, settings, updates, harnessUpdates, cuaDriver, schedules, browser: browserService, voice,
     popupApplicationMenu, setTitleBarTheme,
     applyInterfaceZoom,
   }, trustedRendererUrl)
@@ -1008,6 +1018,7 @@ app.on('before-quit', (event) => {
     agentCollaborationBridge?.stop() ?? Promise.resolve(),
     automation?.stop() ?? Promise.resolve(),
     terminals?.killAll() ?? Promise.resolve(),
+    projectScripts?.killAll() ?? Promise.resolve(),
     agents?.stopAll() ?? Promise.resolve(),
     stopChildProcesses(),
   ]).then(async () => {

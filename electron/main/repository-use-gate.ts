@@ -4,6 +4,7 @@ import type { HarnessId } from '../../src/types/api'
 export type WorkspaceUseOwner =
   | { kind: 'agent'; harness: HarnessId; runtimeId: string }
   | { kind: 'terminal'; terminalId: string }
+  | { kind: 'script'; scriptId: string }
 
 export interface WorkspaceUseLease {
   release(): void
@@ -11,9 +12,11 @@ export interface WorkspaceUseLease {
 
 function describeOwners(owners: readonly WorkspaceUseOwner[]): string {
   const terminals = owners.filter((owner) => owner.kind === 'terminal')
+  const scripts = owners.filter((owner) => owner.kind === 'script')
   const agents = owners.filter((owner) => owner.kind === 'agent')
   const details: string[] = []
   if (terminals.length) details.push(`${terminals.length} terminal${terminals.length === 1 ? '' : 's'}`)
+  if (scripts.length) details.push(`${scripts.length} project script${scripts.length === 1 ? '' : 's'}`)
   if (agents.length) {
     const harnesses = [...new Set(agents.map((owner) => owner.harness))]
     details.push(`${agents.length} agent${agents.length === 1 ? '' : 's'} (${harnesses.join(', ')})`)
@@ -25,13 +28,12 @@ export class RepositoryUseError extends Error {
   readonly code = 'active-work'
 
   constructor(readonly owners: readonly WorkspaceUseOwner[]) {
-    const hasTerminal = owners.some((owner) => owner.kind === 'terminal')
-    const hasAgent = owners.some((owner) => owner.kind === 'agent')
-    const hint = hasTerminal && hasAgent
-      ? 'Close the terminal or wait for the agent to finish.'
-      : hasTerminal
-        ? 'Close the terminal.'
-        : 'Wait for the agent to finish.'
+    const actions: string[] = []
+    if (owners.some((owner) => owner.kind === 'terminal')) actions.push('close the terminal')
+    if (owners.some((owner) => owner.kind === 'script')) actions.push('stop the project script')
+    if (owners.some((owner) => owner.kind === 'agent')) actions.push('wait for the agent to finish')
+    const sentence = actions.join(' or ')
+    const hint = `${sentence.charAt(0).toUpperCase()}${sentence.slice(1)}.`
     super(`Branch checkout is unavailable while ${describeOwners(owners)} ${owners.length === 1 ? 'is' : 'are'} using this folder. ${hint}`)
     this.name = 'RepositoryUseError'
   }
