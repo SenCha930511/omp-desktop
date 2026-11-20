@@ -6,11 +6,25 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { CODE_BLOCK_COPY_RESET_MS, MarkdownText } from '../../src/components/MarkdownText'
 import * as clipboard from '../../src/lib/clipboard'
 
+// Counts real tokenizer work: the code block must serve an unchanged line from
+// its cache instead of re-tokenizing it on every Markdown re-parse.
+const observed = vi.hoisted(() => ({ tokenizeCalls: 0 }))
+vi.mock('../../src/lib/syntax-text', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/lib/syntax-text')>()
+  return {
+    ...actual,
+    tokenizeSyntaxText(text: string) {
+      observed.tokenizeCalls += 1
+      return actual.tokenizeSyntaxText(text)
+    },
+  }
+})
 describe('MarkdownCodeBlock', () => {
   let container: HTMLDivElement
   let root: Root
 
   beforeEach(() => {
+    observed.tokenizeCalls = 0
     vi.useFakeTimers()
     globalThis.IS_REACT_ACT_ENVIRONMENT = true
     container = document.createElement('div')
@@ -102,5 +116,34 @@ describe('MarkdownCodeBlock', () => {
     expect(article?.textContent).toBe('Intro paragraph.\nconst clean = true')
     expect(article?.textContent).not.toContain('Copy')
     expect(article?.textContent).not.toContain('ts')
+  })
+
+  it('re-tokenizes nothing when the surrounding Markdown re-parses unchanged code', () => {
+    const code = ['```json', '{"cacheProbe": true}', '{"cacheProbeTwo": 2}', '```'].join('\n')
+    const render = (text: string) => act(() => root.render(createElement(MarkdownText, { text })))
+
+    render(code)
+    expect(observed.tokenizeCalls).toBe(2)
+    expect(container.querySelector('.markdown-code-block .syntax-key')?.textContent).toBe('"cacheProbe"')
+
+    observed.tokenizeCalls = 0
+    // New prose re-parses the whole document; the block's own code is unchanged.
+    render(`${code}\n\nAppended prose.`)
+
+    expect(container.textContent).toContain('Appended prose.')
+    expect(container.querySelector('.markdown-code-block .syntax-key')?.textContent).toBe('"cacheProbe"')
+    expect(observed.tokenizeCalls).toBe(0)
+
+    // A remount re-runs the component with empty memos; the bounded cache still
+    // has to serve the lines instead of tokenizing them again.
+    act(() => root.unmount())
+    container.remove()
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    render(`${code}\n\nAppended prose.`)
+
+    expect(container.querySelector('.markdown-code-block .syntax-key')?.textContent).toBe('"cacheProbe"')
+    expect(observed.tokenizeCalls).toBe(0)
   })
 })

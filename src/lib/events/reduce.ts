@@ -16,6 +16,14 @@ export interface PrimeEventReplayStats {
   transcriptCopies: number
 }
 
+export interface PrimeEventReplayOptions {
+  /**
+   * Tail-delta fast path. Production always runs it; the replay equivalence
+   * test turns it off to compare both paths on the same batch.
+   */
+  tailFastPath?: boolean
+}
+
 interface PartNode {
   part: MessagePart
   previous?: PartNode
@@ -103,12 +111,95 @@ export function createSteerRetractEvent(prompt: Pick<QueuedPrompt, 'id'>): Recor
   return { type: 'omp_desktop_steer_retract', prompt, [LOCAL_STEER_RETRACT]: true }
 }
 
+/**
+ * The only `message_update` shape the tail fast path may apply: a text or
+ * thinking delta that appends to the part list. Every other delta type
+ * (`toolcall_end` and future ones) needs the full reducer.
+ */
+function tailDeltaPart(raw: Record<string, unknown>): { type: 'text' | 'thinking'; text: string } | undefined {
+  if ((string(raw.type) ?? string(raw.event)) !== 'message_update') return undefined
+  const delta = record(raw.assistantMessageEvent) ?? record(raw.delta)
+  const deltaType = string(delta?.type)
+  if (deltaType !== 'text_delta' && deltaType !== 'thinking_delta') return undefined
+  const text = string(delta?.delta)
+  if (!text) return undefined
+  return { type: deltaType === 'text_delta' ? 'text' : 'thinking', text }
+}
+
+/**
+ * Fast path for the sustained frame batches of a streaming turn: every event
+ * is a text/thinking delta for the assistant message that is already
+ * streaming, so nothing can reorder parts, touch a tool row, or change the
+ * message shape. Merging into the tail part then costs one parts copy instead
+ * of rebuilding the whole part list and its tool index.
+ *
+ * Returns undefined — the caller runs the full reducer — when the batch holds
+ * any other event, when the delta has to open the streaming message (no
+ * streaming assistant to target), or when a delta carries no text (the full
+ * reducer treats that as a no-op).
+ */
+function replayTailDeltaBatch(
+  messages: TranscriptMessage[],
+  events: Record<string, unknown>[],
+  stats?: PrimeEventReplayStats,
+): TranscriptMessage[] | undefined {
+  if (!events.length) return undefined
+  const deltas: { type: 'text' | 'thinking'; text: string }[] = []
+  for (const raw of events) {
+    const delta = tailDeltaPart(raw)
+    if (!delta) return undefined
+    deltas.push(delta)
+  }
+  // The full reducer streams into the last streaming assistant; reading
+  // backwards finds that same message without walking the rest of the
+  // transcript. No streaming assistant means a structural event is due
+  // (append or reopen a turn), which stays on the full path.
+  let target = -1
+  let scanned = 0
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    scanned += 1
+    const message = messages[index]
+    if (message.streaming && message.role === 'assistant') {
+      target = index
+      break
+    }
+  }
+  if (target < 0) return undefined
+  const message = messages[target]
+  const parts = message.parts.slice()
+  for (const delta of deltas) {
+    const tail = parts.at(-1)
+    switch (delta.type) {
+      case 'text':
+        if (tail?.type === 'text') parts[parts.length - 1] = { ...tail, text: tail.text + delta.text }
+        else parts.push(withPartId({ type: 'text', text: delta.text }))
+        break
+      case 'thinking':
+        if (tail?.type === 'thinking') parts[parts.length - 1] = { ...tail, text: tail.text + delta.text }
+        else parts.push(withPartId({ type: 'thinking', text: delta.text }))
+    }
+  }
+  const next = messages.slice()
+  next[target] = { ...message, parts }
+  if (stats) {
+    stats.messageScans += scanned
+    stats.eventScans += events.length
+    stats.transcriptCopies += 1
+  }
+  return next
+}
+
 export function replayPrimeEvents(
   messages: TranscriptMessage[],
   events: Record<string, unknown>[],
   stats?: PrimeEventReplayStats,
+  options: PrimeEventReplayOptions = {},
 ): TranscriptMessage[] {
   if (!events.length) return messages
+  if (options.tailFastPath !== false) {
+    const tailBatch = replayTailDeltaBatch(messages, events, stats)
+    if (tailBatch) return tailBatch
+  }
   let base = messages
   let next = base
   let copiedMessages = false

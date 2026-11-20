@@ -32,6 +32,33 @@ export function tokenizeSyntax(text: string): SyntaxToken[] {
   return bounded
 }
 
+/**
+ * Bounded LRU of per-line tokens. A streaming re-parse rebuilds every code
+ * block's element, so without this each already-finished block re-tokenizes
+ * all of its lines on every parse. Tokenization is a pure function of the
+ * line text (the language only picks the badge), so the line is the whole
+ * key; the cap keeps a long transcript from pinning unbounded memory.
+ */
+export const SYNTAX_LINE_CACHE_LIMIT = 2_000
+const lineTokenCache = new Map<string, SyntaxToken[]>()
+
+export function tokenizeSyntaxLine(line: string): SyntaxToken[] {
+  const cached = lineTokenCache.get(line)
+  if (cached) {
+    // Re-insert so the eviction order stays least-recently-used.
+    lineTokenCache.delete(line)
+    lineTokenCache.set(line, cached)
+    return cached
+  }
+  const tokens = tokenizeSyntax(line)
+  if (lineTokenCache.size >= SYNTAX_LINE_CACHE_LIMIT) {
+    const oldest = lineTokenCache.keys().next()
+    if (!oldest.done) lineTokenCache.delete(oldest.value)
+  }
+  lineTokenCache.set(line, tokens)
+  return tokens
+}
+
 export const SyntaxText = memo(function SyntaxText({ text }: { text: string }) {
   return (
     <>

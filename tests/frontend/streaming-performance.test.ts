@@ -427,15 +427,101 @@ describe('linear event batches', () => {
       const stats: PrimeEventReplayStats = { messageScans: 0, eventScans: 0, partScans: 0, transcriptCopies: 0 }
       const next = replayPrimeEvents(state, events, stats)
       commits += 1
-      expect(stats.messageScans).toBe(500)
+      // The tail-delta fast path reads only the streaming message it appends
+      // to and never rebuilds a part list or its tool index.
+      expect(stats.messageScans).toBe(1)
       expect(stats.eventScans).toBe(200)
-      expect(stats.partScans).toBeLessThanOrEqual(2)
+      expect(stats.partScans).toBe(0)
       expect(stats.transcriptCopies).toBe(1)
       expect(next[0]).toBe(state[0])
       state = next
     }
     expect(commits).toBe(50)
     expect(transcriptText([state[499]])).toHaveLength(10_000)
+  })
+})
+
+describe('tail delta fast path', () => {
+  const streamingAssistant = (parts: TranscriptMessage['parts']): TranscriptMessage[] => [
+    { id: 'user-1', role: 'user', timestamp: 1, parts: [{ type: 'text', text: 'go' }] },
+    { id: 'assistant-1', role: 'assistant', timestamp: 2, streaming: true, parts },
+  ]
+  const thinking = (text: string): Record<string, unknown> => ({
+    type: 'message_update',
+    assistantMessageEvent: { type: 'thinking_delta', delta: text },
+  })
+  const stats = (): PrimeEventReplayStats => ({ messageScans: 0, eventScans: 0, partScans: 0, transcriptCopies: 0 })
+
+  it('matches the full reducer for text and thinking batches, including the parts it has to open', () => {
+    const cases: { name: string; messages: TranscriptMessage[]; events: Record<string, unknown>[]; scans: number }[] = [
+      { name: 'merges into the streaming tail', messages: streamingAssistant([{ type: 'text', text: 'loaded:' }]), events: [delta(' one'), delta(' two')], scans: 1 },
+      { name: 'opens a thinking part, then a text part', messages: streamingAssistant([{ type: 'text', text: 'loaded:' }]), events: [thinking('plan'), thinking(' more'), delta('answer')], scans: 1 },
+      { name: 'opens the first part of an empty turn', messages: streamingAssistant([]), events: [thinking('plan'), delta('answer')], scans: 1 },
+      {
+        name: 'targets the streaming assistant above a later row',
+        messages: [...streamingAssistant([{ type: 'text', text: 'loaded:' }]), { id: 'system-1', role: 'system', timestamp: 3, parts: [{ type: 'text', text: 'notice' }] }],
+        events: [delta(' more')],
+        scans: 2,
+      },
+    ]
+    for (const { name, messages, events, scans } of cases) {
+      const before = structuredClone(messages)
+      const counts = stats()
+      resetTranscriptIdsForTests()
+      const fast = replayPrimeEvents(messages, events, counts)
+      resetTranscriptIdsForTests()
+      const slow = replayPrimeEvents(messages, events, undefined, { tailFastPath: false })
+      resetTranscriptIdsForTests()
+      const sequential = events.reduce((current, event) => applyPrimeEvent(current, event), messages)
+
+      expect(fast, name).toEqual(slow)
+      expect(fast, name).toEqual(sequential)
+      // The fast path ran: it probes the tail message and never scans the part list.
+      expect(counts.messageScans, name).toBe(scans)
+      expect(counts.partScans, name).toBe(0)
+      // The fast path reads the input without writing to it.
+      expect(messages, name).toEqual(before)
+    }
+  })
+
+  it('keeps untouched parts and earlier messages by identity', () => {
+    const base = streamingAssistant([
+      { type: 'text', text: 'earlier', partId: 'part-a' },
+      { type: 'toolCall', id: 'tool-1', name: 'Read', partId: 'part-b' },
+      { type: 'text', text: 'tail' },
+    ])
+    const next = replayPrimeEvents(base, [delta('+more')])
+
+    expect(next).not.toBe(base)
+    expect(next[0]).toBe(base[0])
+    expect(next[1]).not.toBe(base[1])
+    expect(next[1]?.streaming).toBe(true)
+    expect(next[1]?.parts).not.toBe(base[1]?.parts)
+    expect(next[1]?.parts[0]).toBe(base[1]?.parts[0])
+    expect(next[1]?.parts[1]).toBe(base[1]?.parts[1])
+    expect(next[1]?.parts[2]).toMatchObject({ type: 'text', text: 'tail+more' })
+    expect(base[1]?.parts[2]).toMatchObject({ type: 'text', text: 'tail' })
+  })
+
+  it('leaves tool, message-end, and structural batches on the full reducer', () => {
+    const messages = streamingAssistant([{ type: 'text', text: 'loaded:' }])
+    const batches: Record<string, unknown>[][] = [
+      [delta('x'), { type: 'tool_execution_start', toolCallId: 'tool-1', toolName: 'Read' }],
+      [delta('x'), { type: 'message_update', assistantMessageEvent: { type: 'toolcall_end', toolCall: { id: 'tool-1', name: 'Read' } } }],
+      [delta('x'), { type: 'agent_end' }],
+      [{ type: 'turn_start' }, delta('x')],
+    ]
+    for (const events of batches) {
+      const counts = stats()
+      resetTranscriptIdsForTests()
+      const batched = replayPrimeEvents(messages, events, counts)
+      resetTranscriptIdsForTests()
+      const sequential = events.reduce((current, event) => applyPrimeEvent(current, event), messages)
+
+      expect(batched).toEqual(sequential)
+      // The full reducer scans the whole transcript; the tail probe reads one message.
+      expect(counts.messageScans).toBe(messages.length)
+    }
   })
 })
 

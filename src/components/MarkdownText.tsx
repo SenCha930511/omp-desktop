@@ -13,7 +13,7 @@ import { writeClipboardText } from '@/lib/clipboard'
 import { rehypeKatexCjkClass } from '@/lib/katex-cjk'
 import { openExternalUrl } from '@/lib/desktop-actions'
 import { useI18n } from '@/lib/i18n'
-import { tokenizeSyntax } from './transcript/syntax'
+import { type SyntaxToken, tokenizeSyntaxLine } from './transcript/syntax'
 
 interface MarkdownTextProps {
   text: string
@@ -71,7 +71,12 @@ function extractCodeText(node: ReactNode): string {
   return ''
 }
 
-function MarkdownCodeBlock({ node: _node, children, ...props }: ComponentPropsWithoutRef<'pre'> & ExtraProps) {
+interface CodeLine {
+  text: string
+  tokens: SyntaxToken[]
+}
+
+const MarkdownCodeBlock = memo(function MarkdownCodeBlock({ node: _node, children, ...props }: ComponentPropsWithoutRef<'pre'> & ExtraProps) {
   const { t } = useI18n()
   const [copied, setCopied] = useState(false)
   const resetTimerRef = useRef<number | undefined>(undefined)
@@ -84,7 +89,13 @@ function MarkdownCodeBlock({ node: _node, children, ...props }: ComponentPropsWi
   const language = languageMatch?.[1]?.toLowerCase() ?? 'text'
   const rawCode = extractCodeText(codeElement ? codeElement.props.children : children)
   const codeText = rawCode.replace(/\n$/, '')
-  const lines = useMemo(() => codeText.split('\n'), [codeText])
+  // The language only labels the badge: tokens are a pure function of the line
+  // text, so the memo and the shared cache both key on the code alone and an
+  // unchanged block keeps its tokens across parses.
+  const lines = useMemo(
+    () => codeText.split('\n').map((text): CodeLine => ({ text, tokens: tokenizeSyntaxLine(text) })),
+    [codeText],
+  )
   const copyLabel = t(copied ? 'transcript.copied.label' : 'transcript.copy.label')
 
   const handleCopy = () => {
@@ -110,8 +121,8 @@ function MarkdownCodeBlock({ node: _node, children, ...props }: ComponentPropsWi
       <pre {...props} dir="ltr">
         <code className={codeClassName} dir="ltr">
           {lines.map((line, lineIndex) => (
-            <Fragment key={`${lineIndex}-${line.slice(0, 12)}`}>
-              {tokenizeSyntax(line).map((token, tokenIndex) =>
+            <Fragment key={`${lineIndex}-${line.text.slice(0, 12)}`}>
+              {line.tokens.map((token, tokenIndex) =>
                 token.kind === 'plain' ? (
                   <Fragment key={`${tokenIndex}-${token.text.slice(0, 8)}`}>{token.text}</Fragment>
                 ) : (
@@ -127,7 +138,7 @@ function MarkdownCodeBlock({ node: _node, children, ...props }: ComponentPropsWi
       </pre>
     </div>
   )
-}
+})
 
 const markdownPlugins: PluggableList = [[remarkGfm, { singleTilde: false }], remarkMath]
 /** Theme-matched KaTeX rendering: errors reuse the danger color, and unusual
