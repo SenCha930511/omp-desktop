@@ -545,7 +545,7 @@ export default function App() {
     } finally {
       if (checkoutRequestRef.current === requestId) setCheckoutsLoading(false)
     }
-  }, [activeProject, bridge, reportError, settingsState.settings.checkoutStrategy])
+  }, [activeProject, bridge, reportError, settingsState.checkoutStrategyRevision, settingsState.settings.checkoutStrategy])
   useEffect(() => {
     void refreshCheckouts()
     return () => {
