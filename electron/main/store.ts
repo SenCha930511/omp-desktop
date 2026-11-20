@@ -454,6 +454,13 @@ export class JsonStateStore {
   private incompatibility: StateCompatibilityError | null = null
   private initializationFailure: Error | null = null
   private closed = false
+  /**
+   * Exact bytes last known to be published at `filePath`, or null when the
+   * on-disk content is unknown (fresh install, legacy migration, recovery) or
+   * a write failed. Ordinary updates compare against it to skip redundant
+   * temp-file writes, fsyncs, and renames.
+   */
+  private persistedContent: string | null = null
 
   constructor(
     private readonly filePath: string,
@@ -499,6 +506,9 @@ export class JsonStateStore {
       }
       const parsed = parseState(serializedState, sourcePath)
       this.state = parsed.state
+      // Only the authoritative current file may seed the cache: legacy bytes
+      // are retired after migration and never represent `filePath` content.
+      if (sourceKind === 'current') this.persistedContent = rawState.toString('utf8')
       if (this.platform === 'win32' && legacyFilePath) {
         if (sourceKind === 'legacy') this.scheduleWindowsLegacyMigration(rawState)
         else this.scheduleWindowsLegacyProtection()
@@ -954,11 +964,16 @@ export class JsonStateStore {
   }
 
   private async persist(state: DesktopState, requireDirectorySync = false): Promise<void> {
+    const serialized = `${JSON.stringify(state, null, 2)}\n`
+    // Ordinary updates skip the temp file, fsyncs, and rename when the bytes
+    // already published match exactly. Authority migration and recovery paths
+    // pass `requireDirectorySync` and always rewrite.
+    if (!requireDirectorySync && this.persistedContent === serialized) return
     const temp = `${this.filePath}.${process.pid}.${randomUUID()}.tmp`
     try {
       const file = await this.fileSystem.open(temp, 'w', 0o600)
       try {
-        await file.writeFile(`${JSON.stringify(state, null, 2)}\n`, { encoding: 'utf8' })
+        await file.writeFile(serialized, { encoding: 'utf8' })
         await file.sync()
       } finally {
         await file.close()
@@ -967,6 +982,12 @@ export class JsonStateStore {
       await this.fileSystem.rename(temp, this.filePath)
 
       await this.syncParentDirectory(this.filePath, requireDirectorySync)
+      this.persistedContent = serialized
+    } catch (error) {
+      // A failed attempt (even one whose rename already landed) leaves the
+      // cache unknown so the next update rewrites instead of skipping.
+      this.persistedContent = null
+      throw error
     } finally {
       await this.fileSystem.unlink(temp).catch((error: unknown) => {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error

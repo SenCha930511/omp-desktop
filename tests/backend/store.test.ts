@@ -41,6 +41,24 @@ const realFileSystem: JsonStateStoreFileSystem = {
   unlink,
 }
 
+/** Records every durable-write operation the store performs through its fs seam. */
+function recordingFileSystem(events: string[]): JsonStateStoreFileSystem {
+  return {
+    open: async (path, flags, mode) => {
+      const kind = flags === 'w' ? 'file' : 'directory'
+      events.push(`${kind}-open`)
+      const handle = await realFileSystem.open(path, flags, mode)
+      return {
+        writeFile: (data, options) => { events.push(`${kind}-write`); return handle.writeFile(data, options) },
+        sync: () => { events.push(`${kind}-sync`); return handle.sync() },
+        close: () => { events.push(`${kind}-close`); return handle.close() },
+      }
+    },
+    rename: async (oldPath, newPath) => { events.push('rename'); await realFileSystem.rename(oldPath, newPath) },
+    unlink: async (path) => { events.push('unlink'); await realFileSystem.unlink(path) },
+  }
+}
+
 describe('JsonStateStore', () => {
   it('returns isolated field snapshots without exposing mutable state', async () => {
     const store = new JsonStateStore(join(makeDirectory(), 'state.json'))
@@ -325,6 +343,85 @@ describe('JsonStateStore', () => {
     await store.update((state) => { state.archivedSessions.push('succeeded') })
     expect(store.snapshot().archivedSessions).toEqual(['succeeded'])
     expect(JSON.parse(readFileSync(path, 'utf8')).archivedSessions).toEqual(['succeeded'])
+  })
+
+  it('skips the temp write and fsyncs when an update leaves the serialized state unchanged', async () => {
+    const dir = makeDirectory()
+    const path = join(dir, 'state.json')
+    await new JsonStateStore(path).update((state) => { state.archivedSessions.push('/sessions/one.jsonl') })
+    const persisted = readFileSync(path, 'utf8')
+
+    const events: string[] = []
+    const store = new JsonStateStore(path, recordingFileSystem(events))
+    const result = await store.update((state) => {
+      state.archivedSessions = [...state.archivedSessions]
+      return 'unchanged'
+    })
+
+    expect(result).toBe('unchanged')
+    expect(events).toEqual([])
+    expect(readFileSync(path, 'utf8')).toBe(persisted)
+    expect(store.snapshot().archivedSessions).toEqual(['/sessions/one.jsonl'])
+    expect(readdirSync(dir).filter((name) => name.endsWith('.tmp'))).toEqual([])
+  })
+
+  it('writes and fsyncs the temp file, rename, and directory when an update changes the state', async () => {
+    const dir = makeDirectory()
+    const path = join(dir, 'state.json')
+    await new JsonStateStore(path).update((state) => { state.archivedSessions.push('/sessions/one.jsonl') })
+
+    const events: string[] = []
+    const store = new JsonStateStore(path, recordingFileSystem(events))
+    await store.update((state) => { state.archivedSessions.push('/sessions/two.jsonl') })
+
+    expect(events).toEqual([
+      'file-open',
+      'file-write',
+      'file-sync',
+      'file-close',
+      'rename',
+      'directory-open',
+      'directory-sync',
+      'directory-close',
+      'unlink',
+    ])
+    expect(JSON.parse(readFileSync(path, 'utf8')).archivedSessions).toEqual(['/sessions/one.jsonl', '/sessions/two.jsonl'])
+  })
+
+  it('retries the same bytes after a failed write instead of trusting the cached content', async () => {
+    const dir = makeDirectory()
+    const path = join(dir, 'state.json')
+    await new JsonStateStore(path).update((state) => { state.archivedSessions.push('/sessions/one.jsonl') })
+
+    const events: string[] = []
+    const recording = recordingFileSystem(events)
+    let failNextSync = true
+    const store = new JsonStateStore(path, {
+      ...recording,
+      open: async (openedPath, flags, mode) => {
+        const handle = await recording.open(openedPath, flags, mode)
+        if (flags !== 'w' || !failNextSync) return handle
+        failNextSync = false
+        return {
+          writeFile: handle.writeFile,
+          sync: async () => { throw new Error('injected file sync failure') },
+          close: handle.close,
+        }
+      },
+    })
+
+    await expect(store.update((state) => { state.archivedSessions.push('/sessions/two.jsonl') })).rejects.toThrow('injected file sync failure')
+    expect(store.snapshot().archivedSessions).toEqual(['/sessions/one.jsonl'])
+    expect(JSON.parse(readFileSync(path, 'utf8')).archivedSessions).toEqual(['/sessions/one.jsonl'])
+    expect(readdirSync(dir).filter((name) => name.endsWith('.tmp'))).toEqual([])
+
+    const retryStart = events.length
+    await store.update((state) => { state.archivedSessions.push('/sessions/two.jsonl') })
+    expect(events.slice(retryStart)).toContain('file-open')
+    expect(events.slice(retryStart)).toContain('file-sync')
+    expect(events.slice(retryStart)).toContain('rename')
+    expect(store.snapshot().archivedSessions).toEqual(['/sessions/one.jsonl', '/sessions/two.jsonl'])
+    expect(JSON.parse(readFileSync(path, 'utf8')).archivedSessions).toEqual(['/sessions/one.jsonl', '/sessions/two.jsonl'])
   })
 
   it('creates private state files and directories', async () => {
