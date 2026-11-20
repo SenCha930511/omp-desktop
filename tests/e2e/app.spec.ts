@@ -331,6 +331,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   } else if (command.type === 'get_session_lease') {
     send({ id: command.id, type: 'response', command: command.type, success: true, data: { held: [], unknown: [] } })
   } else if (command.type === 'set_host_tools') {
+    fs.writeFileSync(marker('set-host-tools.json'), JSON.stringify(command.tools.map((tool) => tool.name)))
     send({ id: command.id, type: 'response', command: command.type, success: true, data: { toolNames: command.tools.map((tool) => tool.name) } })
   } else if (command.type === 'set_host_uri_schemes') {
     send({ id: command.id, type: 'response', command: command.type, success: true, data: { schemes: command.schemes.map((scheme) => scheme.scheme) } })
@@ -3040,6 +3041,17 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(page.getByRole('tab', { name: 'Files' })).toHaveAttribute('aria-selected', 'true')
     await page.keyboard.press('ArrowRight')
     await expect(page.getByRole('tab', { name: 'Agents' })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  test('advertises browser host tools when a runtime starts', async () => {
+    await page.locator('.project-group .session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
+    const composer = page.getByRole('combobox', { name: 'Message OMP' })
+    await composer.fill('Start the runtime for host tools')
+    await composer.press('Enter')
+    const markerPath = join(fixtureRoot, 'set-host-tools.json')
+    await expect.poll(() => existsSync(markerPath)).toBe(true)
+    const names = JSON.parse(readFileSync(markerPath, 'utf8')) as string[]
+    expect(names).toEqual(expect.arrayContaining(['browser_tabs', 'browser_navigate']))
   })
 
   test('binds Git to a secondary workspace and clears stale paths during a folder switch', async () => {
