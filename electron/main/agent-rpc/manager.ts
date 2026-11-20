@@ -137,6 +137,7 @@ export class AgentRpcManager {
       const existing = this.getForSession(sessionPath)
       if (existing && this.sessionMutations.has(existing.runtimeId)) throw new Error('Session identity is being changed')
       if (existing && !this.retiringRuntimes.has(existing.runtimeId)) return existing
+      await this.assertSessionLeaseAvailable(sessionPath)
     }
     let selectedModel: PrimeModelDescriptor | undefined
     let modelId: string | undefined
@@ -357,6 +358,28 @@ export class AgentRpcManager {
     if (this.quarantinedRuntimes.has(runtime.runtimeId)) throw new Error('Runtime is quarantined after a session identity change')
     if (this.sessionMutations.has(runtime.runtimeId)) throw new Error('Session identity is being changed')
     return runtime.refreshState()
+  }
+
+  async getSessionLease(runtimeId: unknown, sessionIds: string[]): Promise<{ held: string[]; unknown: string[] }> {
+    this.requireOpen()
+    const runtime = this.requireRuntime(runtimeId)
+    if (this.retiringRuntimes.has(runtime.runtimeId)) throw new Error('Runtime is being retired')
+    if (this.quarantinedRuntimes.has(runtime.runtimeId)) throw new Error('Runtime is quarantined after a session identity change')
+    const response = await runtime.command({ type: 'get_session_lease', sessionIds })
+    if (response.success !== true) throw new Error(typeof response.error === 'string' ? response.error : 'OMP could not read session leases')
+    const data = requireRecord(response.data, 'get_session_lease data')
+    const read = (value: unknown): string[] => Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+    return { held: read(data.held), unknown: read(data.unknown) }
+  }
+
+  private async assertSessionLeaseAvailable(sessionPath: string): Promise<void> {
+    const probe = [...this.runtimes.values()].find((runtime) => !this.startingRuntimes.has(runtime.runtimeId)
+      && !this.retiringRuntimes.has(runtime.runtimeId)
+      && !this.quarantinedRuntimes.has(runtime.runtimeId))
+    if (!probe) return
+    const lease = await this.getSessionLease(probe.runtimeId, [sessionPath])
+    if (lease.held.includes(sessionPath)) throw new Error('Another OMP process owns this session. Close it there before opening it here.')
+    if (lease.unknown.includes(sessionPath)) throw new Error('Could not verify whether another OMP process owns this session.')
   }
 
   private async dispatchCommand(runtimeId: unknown, rawCommand: unknown): Promise<RpcObject> {

@@ -328,6 +328,8 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     send({ id: command.id, type: 'response', command: command.type, success: true, data: { agentInvoked: false } })
   } else if (command.type === 'get_session_stats') {
     send({ id: command.id, type: 'response', command: command.type, success: true, data: { contextUsage: { tokens: 12000, contextWindow: 100000, percent: 12 }, cost: 0.42, tokens: { input: 10000, output: 2000, cacheRead: 0, cacheWrite: 0, total: 12000 } } })
+  } else if (command.type === 'get_session_lease') {
+    send({ id: command.id, type: 'response', command: command.type, success: true, data: { held: [], unknown: [] } })
   } else if (command.type === 'set_subagent_subscription') {
     send({ id: command.id, type: 'response', command: command.type, success: true, data: { level: command.level } })
     send({ type: 'available_commands_update', commands: [{ name: 'compact', description: 'Compact the conversation context' }, { name: 'context', description: 'Show runtime context' }, { name: 'effort', subcommands: [{ name: 'high', description: 'Deep reasoning' }] }, { name: 'modelpreset', source: 'builtin', subcommands: [{ name: 'list', description: 'List presets' }] }] })

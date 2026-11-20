@@ -372,6 +372,8 @@ input.on('line', (line) => {
     send(${stateResponse ?? "{ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'session-1', thinkingLevel: 'medium', isStreaming: false, isSettled: true, hasPendingAsyncWork: false } }"})
   } else if (command.type === 'get_session_stats') {
     send({ id: command.id, type: 'response', command: 'get_session_stats', success: true, data: { contextUsage: { tokens: 25000, contextWindow: 100000, percent: 25 } } })
+  } else if (command.type === 'get_session_lease') {
+    send({ id: command.id, type: 'response', command: 'get_session_lease', success: true, data: { held: [], unknown: [] } })
   } else if (command.type === 'prompt') {
     send(${promptResponse})
   } else if (command.type === 'abort') {
