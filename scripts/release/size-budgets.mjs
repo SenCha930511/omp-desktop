@@ -14,8 +14,9 @@ const MIB = 1024 * KIB
  */
 export const BUNDLE_SIZE_BUDGETS = Object.freeze({
   // 2026-11-20 P0 hot-path pass: event-driven scheduled waits, prepared
-  // session catalog reuse, path/Git/plugin/store caches, and OMP 19 capability
-  // checks. Measured 542,749 bytes → next 8 KiB multiple.
+  // session catalog reuse, path/Git/plugin/store caches, OMP 19 capability
+  // checks, and the compaction/reducer follow-ups. Measured 545,144 bytes on
+  // the final branch build → next 8 KiB multiple.
   // 2026-10-27 parity 檔期：main-process 新增 12+ 個上游 RPC 指令的 schema
   // 驗證（fork/branch/queue/goal/login/logout/live voice/subagent 控制等）、
   // MCP mcp.json 編輯器驗證、live_* 事件 adapter、session 設定與 OAuth
