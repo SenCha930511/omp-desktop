@@ -549,16 +549,38 @@ describe('streaming markdown parse throttling', () => {
     expect(advanceStreamingParse(elapsed.state, 5, false, 2_000).state).toEqual({ boundary: 5, lastParseAt: 2_000 })
   })
 
-  it('summarizes the transcript with a single reverse walk that stops at the first text part', async () => {
-    const { summarizeTranscript } = await import('../../src/components/inspector/SummaryPanel')
+  it('summarizes the transcript in the store with one reverse walk', async () => {
+    const { createTranscriptStore } = await import('../../src/app/transcript-store')
     const messages: TranscriptMessage[] = [
       { id: 'user-1', role: 'user', timestamp: 1, parts: [{ type: 'text', text: 'ask' }] },
       { id: 'assistant-1', role: 'assistant', timestamp: 2, parts: [{ type: 'toolCall', id: 'a', name: 'Read' }, { type: 'text', text: 'first answer' }] },
       { id: 'assistant-2', role: 'assistant', timestamp: 3, parts: [{ type: 'text', text: 'final answer' }, { type: 'toolCall', id: 'b', name: 'Write' }] },
       { id: 'tool-1', role: 'tool', timestamp: 4, parts: [{ type: 'toolResult', name: 'Write', text: 'done' }] },
     ]
-    expect(summarizeTranscript(messages)).toEqual({ toolCount: 2, lastText: 'final answer' })
-    expect(summarizeTranscript([])).toEqual({ toolCount: 0, lastText: undefined })
+    expect(createTranscriptStore(messages).getSummary()).toMatchObject({ count: 4, toolCount: 2, lastText: 'final answer' })
+    expect(createTranscriptStore([]).getSummary()).toMatchObject({ count: 0, toolCount: 0, lastText: undefined })
+    // The newest assistant text wins, but a newer assistant turn without text falls back to the previous reply.
+    const fallback = createTranscriptStore([messages[1]!, { ...messages[2]!, parts: [{ type: 'toolCall', id: 'b', name: 'Write' }] }])
+    expect(fallback.getSummary().lastText).toBe('first answer')
+  })
+
+  it('publishes streamed reply text to summary subscribers without waking execution subscribers', async () => {
+    const { createTranscriptStore } = await import('../../src/app/transcript-store')
+    const store = createTranscriptStore([{ id: 'live', role: 'assistant', timestamp: 1, streaming: true, parts: [{ type: 'text', text: 'Answer:' }] }])
+    const summaryNotifies = vi.fn()
+    const executionNotifies = vi.fn()
+    const messageNotifies = vi.fn()
+    const offSummary = store.subscribeSummary(summaryNotifies)
+    const offExecution = store.subscribeExecutionSummary(executionNotifies)
+    const offMessages = store.subscribe(messageNotifies)
+    try {
+      store.update((current) => [{ ...current[0]!, parts: [{ type: 'text', text: 'Answer: x' }] }])
+      expect(summaryNotifies).toHaveBeenCalledOnce()
+      expect(messageNotifies).toHaveBeenCalledOnce()
+      // The workspace owner renders the transcript itself, so only execution semantics may wake it.
+      expect(executionNotifies).not.toHaveBeenCalled()
+      expect(store.getExecutionSummary()).not.toHaveProperty('lastText')
+    } finally { offSummary(); offExecution(); offMessages() }
   })
 })
 

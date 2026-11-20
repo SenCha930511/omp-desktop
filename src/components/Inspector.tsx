@@ -1,8 +1,9 @@
 import { memo } from 'react'
+import type { TranscriptSummary } from '@/app/transcript-store'
 import type { StampedPointerEvent } from '@/hooks/useAgentBrowserTabs'
 import type { BrowserAnnotationsApi } from '@/hooks/useBrowserAnnotations'
 import { useI18n } from '@/lib/i18n'
-import type { AgentBrowserTabRecord, AutomationScheduleRecord, GitStatus, InspectorTab, ProjectRecord, RuntimeInfo, TranscriptMessage } from '@/types/api'
+import type { AgentBrowserTabRecord, AutomationScheduleRecord, GitStatus, InspectorTab, ProjectRecord, RuntimeInfo } from '@/types/api'
 import type { AgentSlotRect } from './AgentBrowserLayer'
 import { BrowserPanel } from './inspector/BrowserPanel'
 import { ChangesPanel } from './inspector/ChangesPanel'
@@ -22,7 +23,7 @@ export interface InspectorProps {
   project?: ProjectRecord
   cwd?: string
   runtime?: RuntimeInfo | null
-  messages: TranscriptMessage[]
+  summary: TranscriptSummary
   git: GitStatus
   automations: AutomationScheduleRecord[]
   onOpenAutomation(id: string): void
@@ -50,7 +51,7 @@ export interface InspectorProps {
 
 const tabIds: InspectorTab[] = ['summary', 'changes', 'browser', 'files']
 
-/** Memoized so streaming transcript updates (which this component no longer consumes outside the Summary tab) do not re-render the inspector shell. */
+/** Memoized so transcript frames reach the shell only as the store's summary snapshot, and only on the Summary tab. */
 export const Inspector = memo(function Inspector({
   activeTab,
   onTabChange,
@@ -60,7 +61,7 @@ export const Inspector = memo(function Inspector({
   project,
   cwd,
   runtime,
-  messages,
+  summary,
   git,
   automations,
   onOpenAutomation,
@@ -129,7 +130,7 @@ export const Inspector = memo(function Inspector({
       </div>
       <div id={`inspector-panel-${activeTab}`} className="inspector__body" role="tabpanel" aria-labelledby={`inspector-tab-${activeTab}`} tabIndex={0}>
         {activeTab === 'summary' ? (
-          <SummaryPanel agentName={agentName} shortName={shortName} project={project} runtime={runtime} messages={messages} git={git} automations={automations} onOpenAutomation={onOpenAutomation} />
+          <SummaryPanel agentName={agentName} shortName={shortName} project={project} runtime={runtime} summary={summary} git={git} automations={automations} onOpenAutomation={onOpenAutomation} />
         ) : null}
         {activeTab === 'changes' ? (
           <ChangesPanel key={cwd ?? 'no-workspace'} cwd={cwd} git={git} readOnly={project?.readOnly === true} onGrantProject={onGrantProject} onRefreshGit={onRefreshGit} />

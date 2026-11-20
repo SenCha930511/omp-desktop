@@ -82,7 +82,8 @@ export function useWorkspaceRuntime({
   reportError,
 }: UseWorkspaceRuntimeOptions) {
   const [transcriptStore] = useState(() => createTranscriptStore(initialMessages))
-  const transcriptSummary = useSyncExternalStore(transcriptStore.subscribeSummary, transcriptStore.getSummary)
+  // Only execution semantics may re-render the workspace owner; streamed reply text stays in the store summary.
+  const transcriptSummary = useSyncExternalStore(transcriptStore.subscribeExecutionSummary, transcriptStore.getExecutionSummary)
   const setMessages = transcriptStore.update
   const [restoredQueues] = useState(readPendingQueues)
   const initialOwner = queuedPromptOwner(initialProject, initialSession, undefined, 0)

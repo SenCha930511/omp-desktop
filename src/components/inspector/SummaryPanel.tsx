@@ -1,9 +1,10 @@
 import { CalendarClock, Check, CircleDot, GitBranch, LoaderCircle } from 'lucide-react'
-import { memo, useMemo } from 'react'
+import { memo } from 'react'
+import type { TranscriptSummary } from '@/app/transcript-store'
 import { formatRelative } from '@/lib/data'
 import { formatSessionCost, formatSessionTokens } from '@/lib/format-cost'
 import { useI18n } from '@/lib/i18n'
-import type { AutomationScheduleRecord, GitStatus, ProjectRecord, RuntimeInfo, TranscriptMessage } from '@/types/api'
+import type { AutomationScheduleRecord, GitStatus, ProjectRecord, RuntimeInfo } from '@/types/api'
 import { MarkdownText } from '../MarkdownText'
 
 interface SummaryPanelProps {
@@ -13,41 +14,15 @@ interface SummaryPanelProps {
   shortName?: string
   project?: ProjectRecord
   runtime?: RuntimeInfo | null
-  messages: TranscriptMessage[]
+  summary: TranscriptSummary
   git: GitStatus
   automations: AutomationScheduleRecord[]
   onOpenAutomation(id: string): void
 }
 
-export interface TranscriptSummary {
-  toolCount: number
-  lastText?: string
-}
-
-/** One pass for the tool count; one reverse walk that stops at the first text part. */
-export function summarizeTranscript(messages: TranscriptMessage[]): TranscriptSummary {
-  let toolCount = 0
-  for (const message of messages) {
-    for (const part of message.parts) if (part.type === 'toolCall') toolCount += 1
-  }
-  let lastText: string | undefined
-  for (let index = messages.length - 1; index >= 0 && lastText === undefined; index -= 1) {
-    if (messages[index].role !== 'assistant') continue
-    const parts = messages[index].parts
-    for (let cursor = parts.length - 1; cursor >= 0; cursor -= 1) {
-      const part = parts[cursor]
-      if (part.type === 'text') {
-        lastText = part.text
-        break
-      }
-    }
-  }
-  return { toolCount, lastText }
-}
-
-export const SummaryPanel = memo(function SummaryPanel({ agentName = 'OMP', shortName = 'OMP', project, runtime, messages, git, automations, onOpenAutomation }: SummaryPanelProps) {
+export const SummaryPanel = memo(function SummaryPanel({ agentName = 'OMP', shortName = 'OMP', project, runtime, summary, git, automations, onOpenAutomation }: SummaryPanelProps) {
   const { t } = useI18n()
-  const { toolCount, lastText } = useMemo(() => summarizeTranscript(messages), [messages])
+  const { toolCount, lastText } = summary
   const active = Boolean(runtime?.isStreaming || runtime?.isCompacting)
   const sessionCost = formatSessionCost(runtime?.sessionUsage)
   const sessionTokens = formatSessionTokens(runtime?.sessionUsage)
@@ -59,7 +34,12 @@ export const SummaryPanel = memo(function SummaryPanel({ agentName = 'OMP', shor
           {runtime?.isCompacting ? t('inspector.state.compacting') : active ? t('inspector.state.working', { name: shortName }) : t('inspector.state.ready')}
         </span>
         <h2>{runtime?.isCompacting ? t('inspector.title.compacting') : active ? t('inspector.title.working') : t('inspector.title.overview')}</h2>
-        {lastText !== undefined ? <><h3>{t('inspector.summary.latestReply')}</h3><MarkdownText text={lastText.length > 220 ? `${lastText.slice(0, 220)}…` : lastText} /></> : <MarkdownText text={t('inspector.summary.empty')} />}
+        {lastText !== undefined ? (
+          <>
+            <h3>{t('inspector.summary.latestReply')}</h3>
+            <MarkdownText streaming={active} text={lastText.length > 220 ? `${lastText.slice(0, 220)}…` : lastText} />
+          </>
+        ) : <MarkdownText text={t('inspector.summary.empty')} />}
       </section>
       <section className="summary-section">
         <h3>{t('inspector.summary.workspace')}</h3>
