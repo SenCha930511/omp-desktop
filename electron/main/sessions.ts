@@ -21,6 +21,17 @@ const MAX_SESSION_FILES = 5_000
 const MAX_SESSION_WATCH_DIRECTORIES = 512
 const MAX_CONCURRENT_TRANSCRIPT_READS = 2
 const MAX_PENDING_TRANSCRIPT_READS = 32
+// Every listed session carries its project path, and a project's sessions all
+// resolve the same directory. A successful `realpath` + directory check is
+// therefore reused for a short window; a miss always revalidates against the
+// filesystem and a failure is never cached.
+const PROJECT_PATH_CACHE_TTL_MS = 5_000
+const MAX_CACHED_PROJECT_PATHS = 1_024
+
+interface ProjectPathCacheEntry {
+  canonical: string
+  expiresAt: number
+}
 
 type TranscriptReader = (filePath: string, isStreaming: boolean) => Promise<TranscriptMessage[]>
 
@@ -102,6 +113,7 @@ export class SessionService {
   private changeTimer: NodeJS.Timeout | null = null
   private readonly changedNames = new Set<string>()
   private catalogOnlyChange = false
+  private readonly projectPathCache = new Map<string, ProjectPathCacheEntry>()
 
   constructor(
     private readonly store: JsonStateStore,
@@ -518,9 +530,52 @@ export class SessionService {
   private async readMetadata(filePath: string, knownStat?: Stats): Promise<SessionMetadata> {
     const metadata = await this.metadataReader(filePath, knownStat)
     if (metadata.projectPath) {
-      try { metadata.projectPath = await requireExistingDirectory(metadata.projectPath, 'session project path') }
-      catch { if (metadata.projectPath.startsWith('/')) metadata.projectPath = resolve(metadata.projectPath) }
+      try { metadata.projectPath = await this.canonicalProjectPath(metadata.projectPath) }
+      catch {
+        // Fail closed: the lexical path stays visible, and the failed entry is
+        // dropped so the next read revalidates instead of trusting a negative.
+        this.projectPathCache.delete(resolve(metadata.projectPath))
+        if (metadata.projectPath.startsWith('/')) metadata.projectPath = resolve(metadata.projectPath)
+      }
     }
     return metadata
+  }
+
+  /**
+   * Canonical project path for a session record. Only successful validations
+   * are cached, keyed by the lexical path, and each entry expires so a project
+   * that disappears stops being reported as canonical shortly after; a miss or
+   * an expired entry runs the full `realpath` + directory check.
+   */
+  private async canonicalProjectPath(projectPath: string): Promise<string> {
+    const key = resolve(projectPath)
+    const now = Date.now()
+    const cached = this.projectPathCache.get(key)
+    if (cached && cached.expiresAt > now) {
+      // Delete-then-set keeps insertion order as LRU order for bounded eviction.
+      this.projectPathCache.delete(key)
+      this.projectPathCache.set(key, cached)
+      return cached.canonical
+    }
+    const canonical = await requireExistingDirectory(projectPath, 'session project path')
+    this.projectPathCache.delete(key)
+    this.projectPathCache.set(key, { canonical, expiresAt: now + PROJECT_PATH_CACHE_TTL_MS })
+    while (this.projectPathCache.size > MAX_CACHED_PROJECT_PATHS) {
+      const oldest = this.projectPathCache.keys().next().value
+      if (oldest === undefined) break
+      this.projectPathCache.delete(oldest)
+    }
+    return canonical
+  }
+
+  /** Drops cached project-path validations for projects that were removed or changed. */
+  evictProjectPaths(roots: readonly string[]): void {
+    if (!roots.length) return
+    const removed = roots.map((root) => resolve(root))
+    for (const [key, entry] of this.projectPathCache) {
+      if (removed.some((root) => key === root || isPathWithin(root, key) || isPathWithin(root, entry.canonical))) {
+        this.projectPathCache.delete(key)
+      }
+    }
   }
 }

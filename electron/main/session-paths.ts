@@ -15,14 +15,25 @@ const MAX_CANONICAL_CACHE = 1_024
 export function canonicalSessionPath(pathValue: string): string {
   const resolved = resolve(pathValue)
   const cached = canonicalCache.get(resolved)
-  if (cached !== undefined) return cached
+  if (cached !== undefined) {
+    // Refresh recency so eviction drops the coldest entry instead of the whole
+    // map: a burst of distinct paths must not cost a re-stat avalanche.
+    canonicalCache.delete(resolved)
+    canonicalCache.set(resolved, cached)
+    return cached
+  }
   let canonical: string
   try {
     canonical = realpathSync(resolved)
   } catch {
     try { return join(realpathSync(dirname(resolved)), basename(resolved)) } catch { return resolved }
   }
-  if (canonicalCache.size >= MAX_CANONICAL_CACHE) canonicalCache.clear()
+  canonicalCache.delete(resolved)
   canonicalCache.set(resolved, canonical)
+  while (canonicalCache.size > MAX_CANONICAL_CACHE) {
+    const oldest = canonicalCache.keys().next().value
+    if (oldest === undefined) break
+    canonicalCache.delete(oldest)
+  }
   return canonical
 }

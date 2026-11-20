@@ -649,6 +649,7 @@ async function bootstrap(): Promise<void> {
     branch: (cwd) => git.branch(cwd),
     stopProjectProcesses: async (roots) => {
       plugins.evictProjects(roots)
+      sessions.evictProjectPaths(roots)
       await Promise.all([ompManager.stopForProjectRoots(roots), terminals!.killForProjectRoots(roots)])
     },
   })
