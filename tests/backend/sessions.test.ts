@@ -172,7 +172,10 @@ describe('SessionService catalog scaling', () => {
     await service.list()
     expect(readMetadata).toHaveBeenCalledTimes(1)
     writeSession(file, project, 'one-expanded', '2025-02-01T00:00:00.000Z')
-    expect((await service.list())[0]?.id).toBe('one-expanded')
+    // An unchanged revision serves the prepared snapshot, so the caller that
+    // rewrote the file refreshes it explicitly; only the changed mtime/size
+    // fingerprint misses the metadata cache.
+    expect((await service.list(project, false, true))[0]?.id).toBe('one-expanded')
     expect(readMetadata).toHaveBeenCalledTimes(2)
   })
 
@@ -297,12 +300,15 @@ describe('SessionService catalog scaling', () => {
     // Root plus one call per newly discovered entry.
     expect(canonicalize).toHaveBeenCalledTimes(3)
 
+    // A watch-driven invalidation is what asks for a rescan.
+    catalog.invalidateLiveCatalog()
     await catalog.all()
     // Unchanged identities reuse the cached canonical paths.
     expect(canonicalize).toHaveBeenCalledTimes(4)
     expect(canonicalize.mock.calls.slice(3).flat()).toEqual([root])
 
     identities.set('b.jsonl', { dev: 1, ino: 12 })
+    catalog.invalidateLiveCatalog()
     await catalog.all()
     expect(canonicalize).toHaveBeenCalledTimes(6)
     expect(canonicalize.mock.calls.slice(4).flat().sort()).toEqual([root, `${root}/b.jsonl`])
