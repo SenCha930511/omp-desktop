@@ -13,11 +13,14 @@ const MIB = 1024 * KIB
  * bundle-size creep still fails the release build.
  */
 export const BUNDLE_SIZE_BUDGETS = Object.freeze({
+  // 2026-11-20 P0 hot-path pass: event-driven scheduled waits, prepared
+  // session catalog reuse, path/Git/plugin/store caches, and OMP 19 capability
+  // checks. Measured 542,749 bytes → next 8 KiB multiple.
   // 2026-10-27 parity 檔期：main-process 新增 12+ 個上游 RPC 指令的 schema
   // 驗證（fork/branch/queue/goal/login/logout/live voice/subagent 控制等）、
   // MCP mcp.json 編輯器驗證、live_* 事件 adapter、session 設定與 OAuth
   // custody 驗證。量測 533,785 bytes → 依協定升至下一個 8 KiB 倍數。
-  mainBytes: 528 * KIB,
+  mainBytes: 536 * KIB,
   // 2026-10-27 parity 檔期：renderer 新增 live voice 面板、provider 帳號
   // 面板、子代理控制/歷史游標、session 設定、extension 能力徽章、MCP
   // 編輯器與非文字內容資料視圖。量測 1,343,617 bytes → 依協定升至下一個
