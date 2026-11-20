@@ -100,6 +100,7 @@ describe('manual compact synthesis', () => {
     writeFileSync(sessionFile, `${JSON.stringify({ type: 'session', id: 'session-1', cwd, timestamp: '2026-08-07T00:00:00.000Z' })}\n`)
     const executable = join(cwd, 'compact-agent.cjs')
     writeFileSync(executable, `#!/usr/bin/env node
+if (process.argv[2] === 'session' && process.argv[3] === 'lease') { process.stdout.write('{"held":[],"unknown":[]}'); process.exit(0) }
 const fs = require('node:fs')
 const readline = require('node:readline')
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
@@ -151,6 +152,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     writeFileSync(parentFile, `${JSON.stringify({ type: 'session', id: 'parent-session', cwd, timestamp: '2026-08-07T00:00:00.000Z' })}\n`)
     const executable = join(cwd, 'path-change-agent.cjs')
     writeFileSync(executable, `#!/usr/bin/env node
+if (process.argv[2] === 'session' && process.argv[3] === 'lease') { process.stdout.write('{"held":[],"unknown":[]}'); process.exit(0) }
 const fs = require('node:fs')
 const readline = require('node:readline')
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
@@ -218,6 +220,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     writeFileSync(siblingFile, `${JSON.stringify({ type: 'session', version: 3, id: 'sibling-session', timestamp: '2026-08-07T00:02:00.000Z', cwd, parentSession: 'parent-session' })}\n`)
     const executable = join(cwd, 'parked-agent.cjs')
     writeFileSync(executable, `#!/usr/bin/env node
+if (process.argv[2] === 'session' && process.argv[3] === 'lease') { process.stdout.write('{"held":[],"unknown":[]}'); process.exit(0) }
 const readline = require('node:readline')
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
 const parentFile = ${JSON.stringify(parentFile)}
@@ -264,6 +267,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     writeFileSync(sessionFile, '')
     const executable = join(cwd, 'sync-agent.cjs')
     writeFileSync(executable, `#!/usr/bin/env node
+if (process.argv[2] === 'session' && process.argv[3] === 'lease') { process.stdout.write('{"held":[],"unknown":[]}'); process.exit(0) }
 const readline = require('node:readline')
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
 let compacted = false
@@ -298,6 +302,7 @@ describe('agent RPC exit details', () => {
     dirs.push(cwd)
     const executable = join(cwd, 'exit-agent.cjs')
     writeFileSync(executable, `#!/usr/bin/env node
+if (process.argv[2] === 'session' && process.argv[3] === 'lease') { process.stdout.write('{"held":[],"unknown":[]}'); process.exit(0) }
 ${body}
 `)
     chmodSync(executable, 0o755)
@@ -360,6 +365,7 @@ function fakeAgent(promptResponse: string, stateResponse?: string, exitDelayMs =
   dirs.push(cwd)
   const executable = join(cwd, 'fake-agent.cjs')
   writeFileSync(executable, `#!/usr/bin/env node
+if (process.argv[2] === 'session' && process.argv[3] === 'lease') { process.stdout.write('{"held":[],"unknown":[]}'); process.exit(0) }
 const readline = require('node:readline')
 const input = readline.createInterface({ input: process.stdin })
 let stateCalls = 0
@@ -545,6 +551,7 @@ describe('agent RPC prompt admission capabilities', () => {
     const executable = join(cwd, 'fake-agent.cjs')
     const wirePath = join(cwd, 'wire-command.json')
     writeFileSync(executable, `#!/usr/bin/env node
+if (process.argv[2] === 'session' && process.argv[3] === 'lease') { process.stdout.write('{"held":[],"unknown":[]}'); process.exit(0) }
 const fs = require('node:fs')
 const readline = require('node:readline')
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
@@ -602,6 +609,7 @@ describe('agent RPC responses', () => {
     dirs.push(cwd)
     const executable = join(cwd, 'context-agent.cjs')
     writeFileSync(executable, `#!/usr/bin/env node
+if (process.argv[2] === 'session' && process.argv[3] === 'lease') { process.stdout.write('{"held":[],"unknown":[]}'); process.exit(0) }
 const readline = require('node:readline')
 let stats = 0
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
@@ -642,6 +650,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     dirs.push(cwd)
     const executable = join(cwd, 'tps-agent.cjs')
     writeFileSync(executable, `#!/usr/bin/env node
+if (process.argv[2] === 'session' && process.argv[3] === 'lease') { process.stdout.write('{"held":[],"unknown":[]}'); process.exit(0) }
 const readline = require('node:readline')
 let turns = 0
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
@@ -679,6 +688,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     dirs.push(cwd)
     const executable = join(cwd, 'queue-fold-agent.cjs')
     writeFileSync(executable, `#!/usr/bin/env node
+if (process.argv[2] === 'session' && process.argv[3] === 'lease') { process.stdout.write('{"held":[],"unknown":[]}'); process.exit(0) }
 const readline = require('node:readline')
 let delivered = false
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
@@ -725,6 +735,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     dirs.push(cwd)
     const executable = join(cwd, 'tps-race-agent.cjs')
     writeFileSync(executable, `#!/usr/bin/env node
+if (process.argv[2] === 'session' && process.argv[3] === 'lease') { process.stdout.write('{"held":[],"unknown":[]}'); process.exit(0) }
 const readline = require('node:readline')
 let states = 0
 let prompted = false
@@ -766,6 +777,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     dirs.push(cwd)
     const executable = join(cwd, 'queue-midturn-agent.cjs')
     writeFileSync(executable, `#!/usr/bin/env node
+if (process.argv[2] === 'session' && process.argv[3] === 'lease') { process.stdout.write('{"held":[],"unknown":[]}'); process.exit(0) }
 const readline = require('node:readline')
 let streaming = false
 let held = 0
@@ -810,6 +822,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     dirs.push(cwd)
     const executable = join(cwd, 'slash-agent.cjs')
     writeFileSync(executable, `#!/usr/bin/env node
+if (process.argv[2] === 'session' && process.argv[3] === 'lease') { process.stdout.write('{"held":[],"unknown":[]}'); process.exit(0) }
 const readline = require('node:readline')
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
 readline.createInterface({ input: process.stdin }).on('line', (line) => {
@@ -854,6 +867,7 @@ let started = false
     dirs.push(cwd)
     const executable = join(cwd, 'live-context-agent.cjs')
     writeFileSync(executable, `#!/usr/bin/env node
+if (process.argv[2] === 'session' && process.argv[3] === 'lease') { process.stdout.write('{"held":[],"unknown":[]}'); process.exit(0) }
 const readline = require('node:readline')
 let contextTokens = 40000
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
@@ -925,6 +939,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     dirs.push(cwd)
     const executable = join(cwd, 'trailing-context-agent.cjs')
     writeFileSync(executable, `#!/usr/bin/env node
+if (process.argv[2] === 'session' && process.argv[3] === 'lease') { process.stdout.write('{"held":[],"unknown":[]}'); process.exit(0) }
 const readline = require('node:readline')
 let statsRequests = 0
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
@@ -974,6 +989,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     dirs.push(cwd)
     const executable = join(cwd, 'compaction-agent.cjs')
     writeFileSync(executable, `#!/usr/bin/env node
+if (process.argv[2] === 'session' && process.argv[3] === 'lease') { process.stdout.write('{"held":[],"unknown":[]}'); process.exit(0) }
 const readline = require('node:readline')
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
 readline.createInterface({ input: process.stdin }).on('line', (line) => {
@@ -1019,6 +1035,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     dirs.push(cwd)
     const executable = join(cwd, 'retry-agent.cjs')
     writeFileSync(executable, `#!/usr/bin/env node
+if (process.argv[2] === 'session' && process.argv[3] === 'lease') { process.stdout.write('{"held":[],"unknown":[]}'); process.exit(0) }
 const readline = require('node:readline')
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
 readline.createInterface({ input: process.stdin }).on('line', (line) => {
@@ -1131,6 +1148,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     dirs.push(cwd)
     const executable = join(cwd, 'natural-exit-agent.cjs')
     writeFileSync(executable, `#!/usr/bin/env node
+if (process.argv[2] === 'session' && process.argv[3] === 'lease') { process.stdout.write('{"held":[],"unknown":[]}'); process.exit(0) }
 const readline = require('node:readline')
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
 readline.createInterface({ input: process.stdin }).on('line', (line) => {
@@ -1336,6 +1354,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     const executable = join(cwd, 'overflow-agent.cjs')
     const pidFile = join(cwd, 'pid')
     writeFileSync(executable, `#!/usr/bin/env node
+if (process.argv[2] === 'session' && process.argv[3] === 'lease') { process.stdout.write('{"held":[],"unknown":[]}'); process.exit(0) }
 const fs = require('node:fs')
 const readline = require('node:readline')
 fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid))
@@ -1420,6 +1439,7 @@ setInterval(() => {}, 1000)
     dirs.push(cwd)
     const executable = join(cwd, 'sleepy-agent.cjs')
     writeFileSync(executable, `#!/usr/bin/env node
+if (process.argv[2] === 'session' && process.argv[3] === 'lease') { process.stdout.write('{"held":[],"unknown":[]}'); process.exit(0) }
 const readline = require('node:readline')
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
 readline.createInterface({ input: process.stdin }).on('line', (line) => {
@@ -1492,6 +1512,7 @@ describe('compaction watchdog', () => {
     dirs.push(cwd)
     const executable = join(cwd, `${name}.cjs`)
     writeFileSync(executable, `#!/usr/bin/env node
+if (process.argv[2] === 'session' && process.argv[3] === 'lease') { process.stdout.write('{"held":[],"unknown":[]}'); process.exit(0) }
 const readline = require('node:readline')
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
 let compacting = false
@@ -1699,6 +1720,7 @@ describe('session held elsewhere detection', () => {
     dirs.push(cwd)
     const executable = join(cwd, 'conflict-agent.cjs')
     writeFileSync(executable, `#!/usr/bin/env node
+if (process.argv[2] === 'session' && process.argv[3] === 'lease') { process.stdout.write('{"held":[],"unknown":[]}'); process.exit(0) }
 const readline = require('node:readline')
 const rl = readline.createInterface({ input: process.stdin })
 rl.on('line', (line) => {
@@ -1794,6 +1816,7 @@ describe('streaming silence watchdog', () => {
     dirs.push(cwd)
     const executable = join(cwd, `${name}.cjs`)
     writeFileSync(executable, `#!/usr/bin/env node
+if (process.argv[2] === 'session' && process.argv[3] === 'lease') { process.stdout.write('{"held":[],"unknown":[]}'); process.exit(0) }
 const readline = require('node:readline')
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
 let compacting = false
@@ -1861,6 +1884,7 @@ describe('idle queue snapshot reconciliation', () => {
     dirs.push(cwd)
     const executable = join(cwd, 'silent-drain.cjs')
     writeFileSync(executable, `#!/usr/bin/env node
+if (process.argv[2] === 'session' && process.argv[3] === 'lease') { process.stdout.write('{"held":[],"unknown":[]}'); process.exit(0) }
 const readline = require('node:readline')
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
 let streaming = false

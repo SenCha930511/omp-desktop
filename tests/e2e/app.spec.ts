@@ -227,6 +227,7 @@ const args = process.argv.slice(2)
 const fixtureRoot = ${JSON.stringify(fixtureRoot)}
 const marker = (name) => path.join(fixtureRoot, name)
 if (args.includes('--version')) { process.stdout.write('omp/17.2.15\\n'); process.exit(0) }
+if (args[0] === 'session' && args[1] === 'lease') { process.stdout.write('{"held":[],"unknown":[]}'); process.exit(0) }
 if (args[0] === 'update' && args.includes('--check')) {
   if (process.env.OMP_FIXTURE_UPDATE_AVAILABLE) { process.stdout.write('Current version: 17.2.15\\nNew version available: ' + process.env.OMP_FIXTURE_UPDATE_AVAILABLE + '\\n') }
   else { process.stdout.write('Current version: 17.2.15\\n✔ Already up to date\\n') }
@@ -1449,8 +1450,8 @@ test.describe('OMP Desktop desktop smoke', () => {
     const composer = page.getByRole('combobox', { name: 'Message OMP' })
     await composer.fill('Start a turn to fork')
     await composer.press('Enter')
+    await expect.poll(() => page.evaluate(() => window.desktop.agent.list())).toHaveLength(1)
     const runtimes = await page.evaluate(() => window.desktop.agent.list())
-    expect(runtimes).toHaveLength(1)
     await page.evaluate((runtimeId) => window.desktop.agent.command(runtimeId, { type: 'fork', entryId: 'fixture-goal-summary' }), runtimes[0].runtimeId)
     const marker = join(fixtureRoot, 'branch-args.json')
     await expect.poll(() => existsSync(marker)).toBe(true)

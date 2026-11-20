@@ -69,6 +69,7 @@ function fakeOmpAgent(options: FakeOmpOptions = {}): { cwd: string; executable: 
   writeFileSync(executable, `#!/usr/bin/env node
 if (process.argv[2] === '--version') { process.stdout.write('omp/1.2.3\\n'); process.exit(0) }
 if (process.argv[2] === 'models' && process.argv[3] === '--json') { process.stdout.write(${JSON.stringify(JSON.stringify({ models: options.catalogModels ?? [] }))}); process.exit(0) }
+if (process.argv[2] === 'session' && process.argv[3] === 'lease') { process.stdout.write(JSON.stringify({ held: ${JSON.stringify(options.heldSessionIds ?? [])}, unknown: ${JSON.stringify(options.unknownSessionIds ?? [])} })); process.exit(0) }
 const readline = require('node:readline')
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
 const sessionActions = ${JSON.stringify(options.sessionActions)}
@@ -584,19 +585,29 @@ describe('OMP RPC command translation', () => {
   })
 
   it('refuses to open a session leased by another OMP process', async () => {
-    const source = join(tmpdir(), 'parity-leased.jsonl')
-    const fake = fakeOmpAgent({ heldSessionIds: [source] })
+    const leaseId = '01a1f480-0547-72ca-8139-26773e2fa9a8'
+    const source = join(tmpdir(), `2026-11-19T15-49-53-095Z_${leaseId}.jsonl`)
+    const fake = fakeOmpAgent({ heldSessionIds: [leaseId] })
     const manager = ompManager(fake.executable)
     await manager.start({ cwd: fake.cwd })
     await expect(manager.start({ cwd: fake.cwd, sessionPath: source })).rejects.toThrow(/another OMP process/i)
   })
 
   it('refuses to open a session whose lease cannot be probed', async () => {
-    const source = join(tmpdir(), 'parity-unknown-lease.jsonl')
-    const fake = fakeOmpAgent({ unknownSessionIds: [source] })
+    const leaseId = '01a1f480-0547-72ca-8139-26773e2fa9a8'
+    const source = join(tmpdir(), `2026-11-19T15-49-53-095Z_${leaseId}.jsonl`)
+    const fake = fakeOmpAgent({ unknownSessionIds: [leaseId] })
     const manager = ompManager(fake.executable)
     await manager.start({ cwd: fake.cwd })
     await expect(manager.start({ cwd: fake.cwd, sessionPath: source })).rejects.toThrow(/could not verify/i)
+  })
+
+  it('refuses a leased session without a resident runtime', async () => {
+    const leaseId = '01a1f480-0547-72ca-8139-26773e2fa9a8'
+    const source = join(tmpdir(), `2026-11-19T15-49-53-095Z_${leaseId}.jsonl`)
+    const fake = fakeOmpAgent({ heldSessionIds: [leaseId] })
+    const manager = ompManager(fake.executable)
+    await expect(manager.start({ cwd: fake.cwd, sessionPath: source })).rejects.toThrow(/another OMP process/i)
   })
 
   it('binds a fresh runtime once its first durable session path is materialized', async () => {
@@ -795,6 +806,7 @@ function capabilityRollAgent(options: CapabilityRollOptions = {}): { cwd: string
   const fileB = join(cwd, 'lineage-b.jsonl')
   const executable = join(cwd, 'capability-roll-agent.cjs')
   writeFileSync(executable, `#!/usr/bin/env node
+if (process.argv[2] === 'session' && process.argv[3] === 'lease') { process.stdout.write('{"held":[],"unknown":[]}'); process.exit(0) }
 const readline = require('node:readline')
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
 const fileA = ${JSON.stringify(fileA)}

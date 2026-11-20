@@ -53,6 +53,7 @@ function retentionFakeAgent(options: RetentionFakeOptions): { cwd: string; execu
   const stallNever = options.stallStateAfterHandshake === true
   const stallRelease = options.stallStateUntilRelease === true
   writeFileSync(executable, `#!/usr/bin/env node
+if (process.argv[2] === 'session' && process.argv[3] === 'lease') { process.stdout.write('{"held":[],"unknown":[]}'); process.exit(0) }
 const readline = require('node:readline')
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
 let stateCalls = 0
