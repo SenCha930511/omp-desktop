@@ -128,6 +128,12 @@ beforeEach(() => {
       onPointer: vi.fn(() => () => undefined),
       onActivity: vi.fn(() => () => undefined),
     },
+    projectScripts: {
+      start: vi.fn(async () => ({ runId: 'run-1' })),
+      stop: vi.fn(async () => true),
+      onOutput: vi.fn(() => () => undefined),
+      onExit: vi.fn(() => () => undefined),
+    },
     schedules: {
       list: vi.fn(async () => []),
       create: vi.fn(async () => undefined),
