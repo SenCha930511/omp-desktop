@@ -99,9 +99,12 @@ describe('omp-work-browser extension', () => {
     expect(tools).toHaveLength(0)
   })
 
-  it('registers only terminal_read now that the browser tools are host tools', async () => {
+  it('registers only terminal_read now that browser and session tools are host tools', async () => {
     const { tools } = await fixture()
     expect(tools.map((candidate) => candidate.name)).toEqual(['terminal_read'])
+    // Session collaboration moved to host tools too; no extension registers
+    // gooeypi_session_* names anymore.
+    expect(tools.some((candidate) => candidate.name.startsWith('gooeypi_session_'))).toBe(false)
     for (const candidate of tools) {
       expect(candidate.label.length).toBeGreaterThan(0)
       expect(candidate.description.length).toBeGreaterThan(0)
