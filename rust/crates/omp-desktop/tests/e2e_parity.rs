@@ -705,9 +705,9 @@ fn pinning_a_session_persists_without_reordering_the_catalog(cx: &mut TestAppCon
     data.sessions = catalog;
     let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
     handle
-        .update(cx, |workspace, _, cx| {
+        .update(cx, |workspace, window, cx| {
             workspace.select_session(1, cx);
-            workspace.session_menu_action("Pin", cx);
+            workspace.session_menu_action("Pin", window, cx);
             // Pinning must not clear the open transcript.
             assert_eq!(transcript_text(workspace), ["older prompt", "older reply"]);
             // The refreshed catalog keeps the pinned session at the same index.
@@ -742,9 +742,9 @@ fn archiving_a_session_persists_and_leaves_the_catalog(cx: &mut TestAppContext) 
     data.sessions = catalog;
     let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
     handle
-        .update(cx, |workspace, _, cx| {
+        .update(cx, |workspace, window, cx| {
             workspace.select_session(1, cx);
-            workspace.session_menu_action("Archive", cx);
+            workspace.session_menu_action("Archive", window, cx);
             // Archiving hides the session, so the catalog now starts with Newer.
             workspace.select_session(0, cx);
             assert_eq!(transcript_text(workspace), ["newer prompt", "newer reply"]);
@@ -765,50 +765,431 @@ fn archiving_a_session_persists_and_leaves_the_catalog(cx: &mut TestAppContext) 
     assert!(older.exists(), "archiving keeps the JSONL file");
 }
 
+#[cfg(unix)]
 #[gpui_kit::test]
 fn deleting_a_session_removes_the_file_and_clears_the_transcript(cx: &mut TestAppContext) {
+    use omp_core::projects;
+
     cx.update(gpui_kit::init);
     let dir = tempfile::TempDir::new().expect("temp dir");
     let root = dir.path();
     let home = root.join("home");
+    let project = root.join("project");
+    let fixture = install_fixture_omp(root);
+    for folder in [&home, &project, &root.join("user-data")] {
+        std::fs::create_dir_all(folder).expect("dir");
+    }
+    let project_file = project.join("keep.txt");
+    std::fs::write(&project_file, "project data survives").expect("project file");
+    let project = project.canonicalize().expect("project path");
+    let mut store = open_store(root);
+    projects::grant_project(
+        &mut store,
+        &home,
+        Platform::current(),
+        project.to_str().expect("project path"),
+    )
+    .expect("grant");
+    drop(store);
+
     let bucket = home.join(".omp/agent/sessions/-omp-project");
-    let session = write_session(
+    let doomed = write_session(
         &bucket,
         "2026-04-01T00-00-00-000Z_019fdf24-cccc-7000-8000-000000000003.jsonl",
         "Doomed",
         "2026-04-01T00:00:01.000Z",
         "doomed prompt",
         "doomed reply",
-        &root.join("project"),
+        &project,
     );
-
+    let survivor = write_session(
+        &bucket,
+        "2026-04-02T00-00-00-000Z_019fdf24-cccc-7000-8000-000000000004.jsonl",
+        "Survivor",
+        "2026-04-02T00:00:01.000Z",
+        "survivor prompt",
+        "survivor reply",
+        &project,
+    );
     let store = open_store(root);
     let catalog = omp_core::sessions::list_sessions(&store, &home, false, None);
+    drop(store);
+    assert_eq!(catalog.len(), 2);
+
+    let mut data = test_data(root);
+    data.home_dir = home.clone();
+    data.omp_executable = fixture;
+    data.sessions = catalog;
+    let doomed_index = data
+        .sessions
+        .iter()
+        .position(|session| session.title == "Doomed")
+        .expect("Doomed session index");
+    let survivor_index = data
+        .sessions
+        .iter()
+        .position(|session| session.title == "Survivor")
+        .expect("Survivor session index");
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    let before = handle
+        .update(cx, |workspace, window, cx| {
+            workspace.select_session(doomed_index, cx);
+            workspace.update_setting(json!({ "locale": "en" }), cx);
+            assert!(doomed.exists() && survivor.exists());
+            let before = snapshot(workspace, cx);
+            assert_eq!(before["liveVoice"]["runtime"], json!(true));
+            assert_eq!(before["sessionMenu"]["deleteConfirmation"], json!(null));
+
+            // The first Delete only arms a confirmation for the captured id.
+            workspace.session_menu_action("Delete", window, cx);
+            before
+        })
+        .expect("delete arming");
+    draw_frame(cx, handle.into());
+    handle
+        .update(cx, |_, window, _| {
+            assert!(window.try_find("delete-session-confirmation").is_some());
+        })
+        .expect("delete confirmation frame");
+    handle
+        .update(cx, |workspace, window, cx| {
+            let armed = snapshot(workspace, cx);
+            assert_eq!(armed["selectedSession"], before["selectedSession"]);
+            assert_eq!(armed["liveVoice"]["runtime"], json!(true));
+            assert_eq!(armed["transcript"], before["transcript"]);
+            assert_eq!(
+                armed["sessionMenu"]["deleteConfirmation"]["sessionId"],
+                "Doomed"
+            );
+            assert!(doomed.exists(), "arming Delete never removes the JSONL");
+
+            // Cancel dismisses only the question and leaves all session state live.
+            workspace.cancel_delete_session(cx);
+            let cancelled = snapshot(workspace, cx);
+            assert_eq!(cancelled["selectedSession"], before["selectedSession"]);
+            assert_eq!(cancelled["liveVoice"]["runtime"], json!(true));
+            assert_eq!(cancelled["transcript"], before["transcript"]);
+            assert_eq!(cancelled["sessionMenu"]["deleteConfirmation"], json!(null));
+            assert!(doomed.exists());
+
+            // Changing the selection invalidates the captured confirmation too.
+            workspace.session_menu_action("Delete", window, cx);
+            workspace.select_session(survivor_index, cx);
+            assert_eq!(
+                snapshot(workspace, cx)["sessionMenu"]["deleteConfirmation"],
+                json!(null)
+            );
+            workspace.confirm_delete_session(cx);
+            assert!(doomed.exists() && survivor.exists());
+            assert_eq!(
+                snapshot(workspace, cx)["selectedSession"],
+                json!(survivor_index)
+            );
+
+            // Confirming the recaptured id performs the only destructive step.
+            workspace.select_session(doomed_index, cx);
+            workspace.session_menu_action("Delete", window, cx);
+            workspace.confirm_delete_session(cx);
+            let deleted = snapshot(workspace, cx);
+            assert_eq!(deleted["selectedSession"], json!(null));
+            assert!(
+                deleted["transcript"]
+                    .as_array()
+                    .expect("transcript")
+                    .is_empty()
+            );
+            assert_eq!(deleted["liveVoice"]["runtime"], json!(false));
+            assert!(
+                deleted["subagents"]
+                    .as_array()
+                    .expect("runtimes")
+                    .is_empty()
+            );
+            assert_eq!(deleted["terminal"]["session"], json!(false));
+            assert_eq!(deleted["terminal"]["tabs"], json!(0));
+            assert_eq!(deleted["sessionActionStatus"], "Deleted session");
+            assert_eq!(deleted["sessions"].as_array().map(Vec::len), Some(1));
+            assert!(!doomed.exists(), "only the confirmed JSONL is removed");
+            assert!(
+                survivor.exists(),
+                "the next session is neither selected nor deleted"
+            );
+        })
+        .expect("workspace window");
+
+    assert!(
+        std::fs::read_to_string(project_file).expect("project file") == "project data survives"
+    );
+    let store = open_store(root);
+    let records = omp_core::sessions::list_sessions(&store, &home, true, None);
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].title, "Survivor");
+}
+
+#[gpui_kit::test]
+fn delete_rejects_an_unauthorized_path_without_clearing_selection(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let safe_home = root.join("safe-home");
+    let other_home = root.join("other-home");
+    let project = root.join("project");
+    std::fs::create_dir_all(safe_home.join(".omp/agent/sessions")).expect("safe root");
+    let outside = write_session(
+        &other_home.join(".omp/agent/sessions/-omp-project"),
+        "2026-04-03T00-00-00-000Z_019fdf24-cccc-7000-8000-000000000005.jsonl",
+        "Outside",
+        "2026-04-03T00:00:01.000Z",
+        "outside prompt",
+        "outside reply",
+        &project,
+    );
+    let store = open_store(root);
+    let catalog = omp_core::sessions::list_sessions(&store, &other_home, false, None);
     drop(store);
     assert_eq!(catalog.len(), 1);
 
     let mut data = test_data(root);
-    data.home_dir = home.clone();
+    data.home_dir = safe_home;
     data.sessions = catalog;
     let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
     handle
-        .update(cx, |workspace, _, cx| {
+        .update(cx, |workspace, window, cx| {
             workspace.select_session(0, cx);
+            workspace.update_setting(json!({ "locale": "en" }), cx);
+            workspace.session_menu_action("Delete", window, cx);
+            workspace.confirm_delete_session(cx);
+            let rejected = snapshot(workspace, cx);
+            let error = rejected["sessionMenu"]["deleteConfirmation"]["error"]
+                .as_str()
+                .expect("visible authorization failure");
+            assert!(error.contains("Could not delete the session"), "{error}");
+            assert!(
+                error.contains("outside the OMP session directory"),
+                "{error}"
+            );
+            assert_eq!(rejected["selectedSession"], json!(0));
+            assert_eq!(rejected["liveVoice"]["runtime"], json!(false));
+            assert!(outside.exists(), "a rejected target is never removed");
+
+            workspace.cancel_delete_session(cx);
+            assert!(outside.exists());
+            assert_eq!(snapshot(workspace, cx)["selectedSession"], json!(0));
+        })
+        .expect("workspace window");
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn rename_validates_input_and_refreshes_after_live_runtime_response(cx: &mut TestAppContext) {
+    use omp_core::projects;
+
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let home = root.join("home");
+    let project = root.join("project");
+    let fixture = install_fixture_omp(root);
+    for folder in [&home, &project, &root.join("user-data")] {
+        std::fs::create_dir_all(folder).expect("dir");
+    }
+    let project = project.canonicalize().expect("project path");
+    let mut store = open_store(root);
+    projects::grant_project(
+        &mut store,
+        &home,
+        Platform::current(),
+        project.to_str().expect("project path"),
+    )
+    .expect("grant");
+    drop(store);
+
+    let session = write_session(
+        &home.join(".omp/agent/sessions/-omp-project"),
+        "2026-04-04T00-00-00-000Z_019fdf24-dddd-7000-8000-000000000006.jsonl",
+        "Original",
+        "2026-04-04T00:00:01.000Z",
+        "rename prompt",
+        "rename reply",
+        &project,
+    );
+    let store = open_store(root);
+    let catalog = omp_core::sessions::list_sessions(&store, &home, false, None);
+    drop(store);
+    let mut data = test_data(root);
+    data.home_dir = home.clone();
+    data.omp_executable = fixture;
+    data.sessions = catalog;
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    handle
+        .update(cx, |workspace, window, cx| {
+            workspace.select_session(0, cx);
+            workspace.update_setting(json!({ "locale": "en" }), cx);
+            workspace.session_menu_action("Rename", window, cx);
+        })
+        .expect("open rename editor");
+    draw_frame(cx, handle.into());
+    handle
+        .update(cx, |_, window, _| {
+            assert!(window.try_find("session-rename-editor").is_some());
+        })
+        .expect("rename editor frame");
+    handle
+        .update(cx, |workspace, window, cx| {
+            let input = workspace
+                .rename_session_entity()
+                .expect("inline rename input");
+            assert_eq!(input.read(cx).value(), "Original");
+            assert_eq!(
+                snapshot(workspace, cx)["sessionMenu"]["rename"]["sessionId"],
+                "Original"
+            );
+
+            // A redraw localizes the existing entity but does not reset typed text.
+            input.update(cx, |input, cx| input.set_value("   ", window, cx));
+        })
+        .expect("invalid rename draft");
+    draw_frame(cx, handle.into());
+    handle
+        .update(cx, |workspace, window, cx| {
+            let input = workspace
+                .rename_session_entity()
+                .expect("preserved inline rename input");
+            assert_eq!(input.read(cx).value(), "   ");
+            workspace.submit_rename_session(window, cx);
+            let invalid = snapshot(workspace, cx);
+            assert_eq!(
+                invalid["sessionMenu"]["rename"]["error"],
+                "Session name cannot be empty."
+            );
+            assert_eq!(invalid["sessionMenu"]["rename"]["name"], "   ");
+            assert!(
+                fixture_commands(root)
+                    .iter()
+                    .all(|command| command["type"] != "set_session_name")
+            );
+        })
+        .expect("empty-name validation");
+    draw_frame(cx, handle.into());
+    handle
+        .update(cx, |_, window, _| {
+            assert!(window.try_find("session-rename-error").is_some());
+        })
+        .expect("empty-name error frame");
+    handle
+        .update(cx, |workspace, window, cx| {
+            let input = workspace
+                .rename_session_entity()
+                .expect("rename input after an error");
+            input.update(cx, |input, cx| {
+                input.set_value("  Renamed safely  ", window, cx)
+            });
+        })
+        .expect("valid rename draft");
+    draw_frame(cx, handle.into());
+    handle
+        .update(cx, |workspace, window, cx| {
+            let input = workspace
+                .rename_session_entity()
+                .expect("preserved valid rename input");
+            assert_eq!(input.read(cx).value(), "  Renamed safely  ");
+            workspace.submit_rename_session(window, cx);
+
+            let renamed = snapshot(workspace, cx);
+            assert_eq!(renamed["sessionMenu"]["rename"], json!(null));
+            assert_eq!(renamed["sessionActionStatus"], "Renamed session");
+            assert_eq!(renamed["selectedSession"], json!(0));
+            assert_eq!(renamed["liveVoice"]["runtime"], json!(true));
+            assert_eq!(renamed["sessions"][0]["title"], "Renamed safely");
             assert_eq!(
                 transcript_text(workspace),
-                ["doomed prompt", "doomed reply"]
+                ["rename prompt", "rename reply"]
             );
-            workspace.session_menu_action("Delete", cx);
-            assert!(workspace.transcript_messages().is_empty());
-            // Nothing is left to select, so the transcript stays empty.
-            workspace.select_session(0, cx);
-            assert!(workspace.transcript_messages().is_empty());
+
+            let commands = fixture_commands(root);
+            let renames: Vec<&Value> = commands
+                .iter()
+                .filter(|command| command["type"] == "set_session_name")
+                .collect();
+            assert_eq!(renames.len(), 1, "whitespace never reaches the runtime");
+            assert_eq!(renames[0]["name"], "Renamed safely");
+            assert!(
+                std::fs::read_to_string(&session)
+                    .expect("renamed JSONL")
+                    .contains("\"title\":\"Renamed safely\"")
+            );
+
+            // Cancelling a later edit sends nothing and leaves the saved title alone.
+            workspace.session_menu_action("Rename", window, cx);
+            let input = workspace.rename_session_entity().expect("second editor");
+            input.update(cx, |input, cx| input.set_value("Unsaved", window, cx));
+            workspace.cancel_rename_session(window, cx);
+            assert!(workspace.rename_session_entity().is_none());
+            assert_eq!(
+                snapshot(workspace, cx)["sessions"][0]["title"],
+                "Renamed safely"
+            );
+            assert_eq!(
+                fixture_commands(root)
+                    .iter()
+                    .filter(|command| command["type"] == "set_session_name")
+                    .count(),
+                1
+            );
         })
         .expect("workspace window");
 
-    assert!(!session.exists(), "the JSONL file is removed");
     let store = open_store(root);
-    assert!(omp_core::sessions::list_sessions(&store, &home, true, None).is_empty());
+    let records = omp_core::sessions::list_sessions(&store, &home, false, None);
+    assert_eq!(records[0].title, "Renamed safely");
+}
+
+#[gpui_kit::test]
+fn offline_rename_reports_live_runtime_requirement_without_editing_jsonl(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let home = root.join("home");
+    let session = write_session(
+        &home.join(".omp/agent/sessions/-omp-project"),
+        "2026-04-05T00-00-00-000Z_019fdf24-dddd-7000-8000-000000000007.jsonl",
+        "Offline",
+        "2026-04-05T00:00:01.000Z",
+        "offline prompt",
+        "offline reply",
+        &root.join("project"),
+    );
+    let before = std::fs::read_to_string(&session).expect("original JSONL");
+    let store = open_store(root);
+    let catalog = omp_core::sessions::list_sessions(&store, &home, false, None);
+    drop(store);
+    let mut data = test_data(root);
+    data.home_dir = home;
+    data.sessions = catalog;
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    handle
+        .update(cx, |workspace, window, cx| {
+            workspace.select_session(0, cx);
+            workspace.update_setting(json!({ "locale": "en" }), cx);
+            assert_eq!(
+                snapshot(workspace, cx)["liveVoice"]["runtime"],
+                json!(false)
+            );
+            workspace.session_menu_action("Rename", window, cx);
+            let offline = snapshot(workspace, cx);
+            assert!(workspace.rename_session_entity().is_none());
+            assert_eq!(
+                offline["sessionActionStatus"],
+                "Open the session with a live OMP runtime before renaming it."
+            );
+            assert_eq!(offline["selectedSession"], json!(0));
+            assert_eq!(offline["sessions"][0]["title"], "Offline");
+        })
+        .expect("workspace window");
+    assert_eq!(
+        std::fs::read_to_string(session).expect("offline JSONL"),
+        before
+    );
 }
 
 #[gpui_kit::test]
@@ -4125,16 +4506,16 @@ fn session_menu_pin_toggles_off_without_reordering(cx: &mut TestAppContext) {
     data.sessions = catalog;
     let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
     handle
-        .update(cx, |workspace, _, cx| {
+        .update(cx, |workspace, window, cx| {
             workspace.select_session(1, cx);
-            workspace.session_menu_action("Pin", cx);
+            workspace.session_menu_action("Pin", window, cx);
             let pinned = snapshot(workspace, cx);
             assert_eq!(pinned["sessions"][0]["title"], "Newer");
             assert_eq!(pinned["sessions"][1]["title"], "Older");
             assert_eq!(pinned["sessions"][1]["pinned"], json!(true));
             assert_eq!(pinned["selectedSession"], json!(1));
 
-            workspace.session_menu_action("Pin", cx);
+            workspace.session_menu_action("Pin", window, cx);
             let unpinned = snapshot(workspace, cx);
             assert_eq!(unpinned["sessions"][0]["title"], "Newer");
             assert_eq!(unpinned["sessions"][1]["title"], "Older");
@@ -4589,6 +4970,36 @@ fn copy_transcript_writes_the_visible_text_and_no_ops_when_empty(cx: &mut TestAp
     );
 }
 
+#[gpui_kit::test]
+fn copy_session_uuid_writes_the_selected_record_id_to_the_native_clipboard(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let (home, _older, _newer) = seed_two_sessions(root);
+    let store = open_store(root);
+    let catalog = omp_core::sessions::list_sessions(&store, &home, false, None);
+    drop(store);
+    assert_eq!(catalog[1].id, "Older");
+    let mut data = test_data(root);
+    data.home_dir = home;
+    data.sessions = catalog;
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.select_session(1, cx);
+            workspace.copy_session_uuid(cx);
+        })
+        .expect("workspace window");
+    assert_eq!(
+        cx.read_from_clipboard()
+            .and_then(|item| item.text())
+            .as_deref(),
+        Some("Older")
+    );
+}
+
 /// A message carrying `$x^2$` and `$$y$$` draws as its prose plus math spans,
 /// and the frame builds with them: the snapshot counts the two math runs, and
 /// the copied text is still the message as written, delimiters included.
@@ -5007,11 +5418,11 @@ fn archiving_hides_a_session_from_the_snapshot_catalog(cx: &mut TestAppContext) 
     data.sessions = catalog;
     let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
     handle
-        .update(cx, |workspace, _, cx| {
+        .update(cx, |workspace, window, cx| {
             workspace.select_session(1, cx);
             assert_eq!(transcript_text(workspace), ["older prompt", "older reply"]);
 
-            workspace.session_menu_action("Archive", cx);
+            workspace.session_menu_action("Archive", window, cx);
             let state = snapshot(workspace, cx);
             let sessions = state["sessions"].as_array().expect("sessions");
             assert_eq!(sessions.len(), 1);
@@ -5058,7 +5469,7 @@ fn catalog_order_is_stable_when_a_non_selected_session_updates(cx: &mut TestAppC
     data.sessions = catalog;
     let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
     handle
-        .update(cx, |workspace, _, cx| {
+        .update(cx, |workspace, window, cx| {
             workspace.select_session(0, cx);
             assert_eq!(transcript_text(workspace), ["newer prompt", "newer reply"]);
 
@@ -5075,7 +5486,7 @@ fn catalog_order_is_stable_when_a_non_selected_session_updates(cx: &mut TestAppC
             std::fs::write(&older, body).expect("append reply");
 
             // Pin re-lists the catalog from disk, so the refresh is observable.
-            workspace.session_menu_action("Pin", cx);
+            workspace.session_menu_action("Pin", window, cx);
             let refreshed = snapshot(workspace, cx);
             assert_eq!(refreshed["selectedSession"], json!(0));
             let sessions = refreshed["sessions"].as_array().expect("sessions");
@@ -5087,7 +5498,7 @@ fn catalog_order_is_stable_when_a_non_selected_session_updates(cx: &mut TestAppC
             assert_eq!(sessions[0]["pinned"], json!(true));
             assert_eq!(transcript_text(workspace), ["newer prompt", "newer reply"]);
 
-            workspace.session_menu_action("Pin", cx);
+            workspace.session_menu_action("Pin", window, cx);
             let unpinned = snapshot(workspace, cx);
             let titles: Vec<&str> = unpinned["sessions"]
                 .as_array()
@@ -8093,14 +8504,7 @@ fn session_menu_fork_sends_one_command_and_follows_the_refresh(cx: &mut TestAppC
             let menu = snapshot(workspace, cx)["sessionMenu"].clone();
             assert_eq!(
                 menu["actions"],
-                json!([
-                    "Rename",
-                    "Pin",
-                    "Archive",
-                    "Delete",
-                    "Fork session",
-                    "Remote Control",
-                ])
+                json!(["Rename", "Pin", "Archive", "Delete", "Fork session",])
             );
 
             // A draft is the composer's, not the session's: a fork keeps it.
@@ -8109,7 +8513,7 @@ fn session_menu_fork_sends_one_command_and_follows_the_refresh(cx: &mut TestAppC
                 state.set_value("draft after fork", window, cx);
             });
 
-            workspace.session_menu_action("Fork session", cx);
+            workspace.session_menu_action("Fork session", window, cx);
             let forked = snapshot(workspace, cx);
             assert_eq!(forked["forkStatus"], "Forked session");
             // The fixture wrote no file, so the catalog did not change and the
@@ -8144,7 +8548,7 @@ fn session_menu_fork_sends_one_command_and_follows_the_refresh(cx: &mut TestAppC
             );
             assert!(fork_file.exists(), "the out-of-band fork file");
 
-            workspace.session_menu_action("Fork session", cx);
+            workspace.session_menu_action("Fork session", window, cx);
             let continued = snapshot(workspace, cx);
             assert_eq!(continued["forkStatus"], "Forked session");
             assert_eq!(continued["sessions"][0]["title"], "Fork");
@@ -8224,7 +8628,7 @@ fn cancelled_fork_changes_nothing(cx: &mut TestAppContext) {
             });
             let before = snapshot(workspace, cx);
 
-            workspace.session_menu_action("Fork session", cx);
+            workspace.session_menu_action("Fork session", window, cx);
             let after = snapshot(workspace, cx);
             assert_eq!(after["forkStatus"], json!(null), "a cancel claims nothing");
             assert_eq!(after["selectedSession"], before["selectedSession"]);

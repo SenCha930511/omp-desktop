@@ -276,6 +276,26 @@ rl.on('line', (line) => {
       break
     }
     case 'set_session_name': {
+      if (sessionFile) {
+        mkdirSync(dirname(sessionFile), { recursive: true })
+        const title = JSON.stringify({
+          type: 'title',
+          v: 1,
+          title: String(command.name ?? ''),
+          updatedAt: new Date().toISOString(),
+        })
+        let lines = ['']
+        try {
+          lines = readFileSync(sessionFile, 'utf8').split('\n')
+        } catch {}
+        try {
+          if (JSON.parse(lines[0]).type === 'title') lines[0] = title
+          else lines.unshift(title)
+        } catch {
+          lines.unshift(title)
+        }
+        writeFileSync(sessionFile, lines.join('\n'), 'utf8')
+      }
       replySuccess(command, { name: command.name })
       break
     }

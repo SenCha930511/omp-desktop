@@ -876,14 +876,25 @@ const MENTION_EMPTY_STATUS: &str = "No sessions to mention yet.";
 /// The session menu's actionable rows, in draw order. `debug_snapshot` reads
 /// this list, so a scenario can prove a new row is wired and drawn without
 /// measuring the popover.
-const SESSION_MENU_ACTIONS: [&str; 6] = [
-    "Rename",
-    "Pin",
-    "Archive",
-    "Delete",
-    "Fork session",
-    "Remote Control",
-];
+const SESSION_MENU_ACTIONS: [&str; 5] = ["Rename", "Pin", "Archive", "Delete", "Fork session"];
+
+#[derive(Clone)]
+struct PendingSessionDelete {
+    session_id: String,
+    file_path: String,
+    title: String,
+    error: Option<String>,
+}
+
+#[derive(Clone)]
+struct SessionRenameState {
+    session_id: String,
+    file_path: String,
+    runtime_id: String,
+    input: Entity<InputState>,
+    previous_focus: Option<FocusHandle>,
+    error: Option<String>,
+}
 
 /// How the Extensions page runs a plugin install.
 ///
@@ -974,6 +985,8 @@ pub struct Workspace {
     // short notice `Forked session` here; a failed one is an error and lands in
     // `runtime_error`, so the two never share the banner.
     fork_status: Option<String>,
+    // The last non-error session menu outcome, including offline rename help.
+    session_action_status: Option<String>,
     // The harness's last `get_session_stats` reading. It is cleared on a
     // session switch, so the dial never shows another session's fill.
     context_usage: Option<ContextUsage>,
@@ -1115,6 +1128,12 @@ pub struct Workspace {
     // paths, so this is recomputed after each of them and read by the launcher.
     attention_count: usize,
     menu_open: bool,
+    // Delete is armed against one captured record until Cancel or Confirm.
+    pending_delete: Option<PendingSessionDelete>,
+    // Rename keeps its own input entity so redraws never reset typed text.
+    session_rename: Option<SessionRenameState>,
+    rename_subscription: Option<Subscription>,
+    rename_submit_requested: bool,
     model_menu_open: bool,
     // Which project row has its menu open. One at a time: the row's ellipsis
     // button toggles it, and every menu row closes it again.
@@ -1310,6 +1329,7 @@ impl Workspace {
             transcript_task: None,
             runtime_error: None,
             fork_status: None,
+            session_action_status: None,
             context_usage: None,
             selected_session: None,
             collapsed_projects: HashSet::new(),
@@ -1388,6 +1408,10 @@ impl Workspace {
             overview_pinned: false,
             attention_count: 0,
             menu_open: false,
+            pending_delete: None,
+            session_rename: None,
+            rename_subscription: None,
+            rename_submit_requested: false,
             model_menu_open: false,
             project_menu: None,
             turn_changes: TurnChanges::default(),
@@ -1450,6 +1474,17 @@ impl Workspace {
             return;
         }
         cx.write_to_clipboard(ClipboardItem::new_string(text));
+    }
+
+    /// Copies the selected catalog record's stable session id unchanged.
+    pub fn copy_session_uuid(&self, cx: &mut Context<Self>) {
+        let Some(session) = self
+            .selected_session
+            .and_then(|index| self.sessions.get(index))
+        else {
+            return;
+        };
+        cx.write_to_clipboard(ClipboardItem::new_string(session.id.clone()));
     }
 
     /// Re-pins the transcript to its newest message.
@@ -1768,6 +1803,9 @@ impl Workspace {
         if let Some(search) = &self.transcript_search {
             inputs.push(&search.input);
         }
+        if let Some(rename) = &self.session_rename {
+            inputs.push(&rename.input);
+        }
         inputs
             .into_iter()
             .find(|input| input.read(cx).focus_handle(cx) == focused)
@@ -2031,6 +2069,14 @@ impl Workspace {
             self.cancel_ask(cx);
             return true;
         }
+        if self.pending_delete.is_some() {
+            self.cancel_delete_session(cx);
+            return true;
+        }
+        if self.session_rename.is_some() {
+            self.cancel_rename_session(window, cx);
+            return true;
+        }
         if self.command_palette.is_some() {
             self.close_command_palette(window, cx);
             return true;
@@ -2165,7 +2211,8 @@ impl Workspace {
             }
             return;
         }
-        if self.close_prompt.is_some() || self.ask_dialog.is_some() {
+        if self.close_prompt.is_some() || self.ask_dialog.is_some() || self.pending_delete.is_some()
+        {
             return;
         }
         cx.stop_propagation();
@@ -2453,6 +2500,7 @@ impl Workspace {
             // The composer banner's last fork notice: `Forked session` until
             // the next fork. A fork failure is a `runtimeError` instead.
             "forkStatus": self.fork_status,
+
             // The session menu's actionable rows, in draw order, and whether
             // it is open: a scenario proves a new action is both wired and
             // drawn without measuring a popover's pixels.
@@ -2633,6 +2681,21 @@ impl Workspace {
         });
         // The render's breakpoint decision and whether the compact layout is
         // drawing the right pane as an overlay over the transcript.
+        snapshot["sessionActionStatus"] = json!(self.session_action_status);
+        snapshot["sessionMenu"]["deleteConfirmation"] =
+            json!(self.pending_delete.as_ref().map(|pending| json!({
+                "sessionId": pending.session_id,
+                "filePath": pending.file_path,
+                "title": pending.title,
+                "error": pending.error,
+            })));
+        snapshot["sessionMenu"]["rename"] =
+            json!(self.session_rename.as_ref().map(|rename| json!({
+                "sessionId": rename.session_id,
+                "filePath": rename.file_path,
+                "name": rename.input.read(cx).value(),
+                "error": rename.error,
+            })));
         snapshot["overviewBadges"] = json!({
             "review": self.review_status
                 .as_ref()
@@ -2820,6 +2883,7 @@ impl Workspace {
                 || self.active_drawer == Some(CollapsedPane::RightPane))
             && self.right_pane == RightPane::Browser
             && self.close_prompt.is_none()
+            && self.pending_delete.is_none()
             && self.command_palette.is_none()
             && self.transcript_search.is_none()
     }
@@ -3751,6 +3815,14 @@ impl Workspace {
                 state.set_placeholder(placeholder, window, cx);
             });
         }
+        if let Some(rename) = &self.session_rename {
+            let placeholder = i18n::t(language, "session.rename.placeholder");
+            if rename.input.read(cx).presentation().placeholder().as_str() != placeholder {
+                rename.input.update(cx, |state, cx| {
+                    state.set_placeholder(placeholder, window, cx);
+                });
+            }
+        }
     }
 
     fn right_pane_title(&self) -> &'static str {
@@ -3937,6 +4009,14 @@ impl Workspace {
             )
     }
 
+    fn toggle_session_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.menu_open && self.session_rename.is_some() {
+            self.cancel_rename_session(window, cx);
+        }
+        self.menu_open = !self.menu_open;
+        cx.notify();
+    }
+
     fn toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.theme().colors;
         let selected = self
@@ -4061,9 +4141,8 @@ impl Workspace {
                 "session-menu",
                 IconName::EllipsisVertical,
                 colors.foreground,
-                cx.listener(|this, _, _, cx| {
-                    this.menu_open = !this.menu_open;
-                    cx.notify();
+                cx.listener(|this, _, window, cx| {
+                    this.toggle_session_menu(window, cx);
                 }),
             ))
             .child(self.toolbar_icon(
@@ -4683,6 +4762,11 @@ impl Workspace {
 
     pub fn select_session(&mut self, index: usize, cx: &mut Context<Self>) {
         self.reset_transcript_search(cx);
+        self.pending_delete = None;
+        self.session_rename = None;
+        self.rename_subscription = None;
+        self.rename_submit_requested = false;
+        self.session_action_status = None;
         if let Some(runtime_id) = self.runtime_id.take() {
             self.agents.stop(&runtime_id);
         }
@@ -4814,6 +4898,11 @@ impl Workspace {
     /// instead of deleting them.
     pub fn remove_project(&mut self, id: &str, cx: &mut Context<Self>) {
         self.project_menu = None;
+        self.pending_delete = None;
+        self.session_rename = None;
+        self.rename_subscription = None;
+        self.rename_submit_requested = false;
+        self.session_action_status = None;
         let Some(store) = self.store.clone() else {
             self.transcript_error = Some("The desktop state store is unavailable.".to_string());
             cx.notify();
@@ -4957,6 +5046,11 @@ impl Workspace {
 
     fn start_new_session(&mut self, project: ProjectRecord, cx: &mut Context<Self>) {
         self.reset_transcript_search(cx);
+        self.pending_delete = None;
+        self.session_rename = None;
+        self.rename_subscription = None;
+        self.rename_submit_requested = false;
+        self.session_action_status = None;
         if let Some(runtime_id) = self.runtime_id.take() {
             self.agents.stop(&runtime_id);
         }
@@ -7235,8 +7329,9 @@ impl Workspace {
             .or_else(|| self.image_error.clone())
             .map(|error| (error, colors.danger))
             .or_else(|| {
-                self.fork_status
+                self.session_action_status
                     .clone()
+                    .or_else(|| self.fork_status.clone())
                     .map(|status| (status, colors.muted_foreground))
             });
         let model_label = if self.settings.last_selected_model().is_empty() {
@@ -9889,9 +9984,8 @@ impl Workspace {
                             "right-pane-menu",
                             IconName::EllipsisVertical,
                             colors.foreground,
-                            cx.listener(|this, _, _, cx| {
-                                this.menu_open = !this.menu_open;
-                                cx.notify();
+                            cx.listener(|this, _, window, cx| {
+                                this.toggle_session_menu(window, cx);
                             }),
                         )),
                 )
@@ -12242,7 +12336,259 @@ impl Workspace {
         }
     }
 
-    pub fn session_menu_action(&mut self, action: &str, cx: &mut Context<Self>) {
+    /// Opens the inline editor for the selected record without starting an
+    /// offline runtime or writing its JSONL locally.
+    pub fn open_rename_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(session) = self
+            .selected_session
+            .and_then(|index| self.sessions.get(index))
+            .cloned()
+        else {
+            return;
+        };
+        self.pending_delete = None;
+        self.runtime_error = None;
+        self.session_action_status = None;
+        let Some(runtime_id) = self.runtime_id.clone() else {
+            self.menu_open = false;
+            self.session_action_status = Some(self.t("session.rename.offline").to_string());
+            cx.notify();
+            return;
+        };
+        let previous_focus = window.focused(cx);
+        let input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(self.t("session.rename.placeholder"))
+                .submit_on_enter(true)
+        });
+        input.update(cx, |input, cx| {
+            input.set_value(session.title, window, cx);
+            input.select_all(window, cx);
+            let focus = input.focus_handle(cx);
+            window.focus(&focus, cx);
+        });
+        self.rename_subscription =
+            Some(
+                cx.subscribe(&input, |this, _, event: &InputEvent, cx| match event {
+                    InputEvent::PressEnter { .. } => {
+                        this.rename_submit_requested = true;
+                        cx.notify();
+                    }
+                    InputEvent::Change => cx.notify(),
+                    _ => {}
+                }),
+            );
+        self.rename_submit_requested = false;
+        self.session_rename = Some(SessionRenameState {
+            session_id: session.id,
+            file_path: session.file_path,
+            runtime_id,
+            input,
+            previous_focus,
+            error: None,
+        });
+        self.menu_open = true;
+        cx.notify();
+    }
+
+    /// Dismisses only the editor. No command is sent and typed state is dropped.
+    pub fn cancel_rename_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(rename) = self.session_rename.take() else {
+            return;
+        };
+        self.rename_subscription = None;
+        self.rename_submit_requested = false;
+        let focus = rename
+            .previous_focus
+            .unwrap_or_else(|| self.workspace_focus.clone());
+        window.focus(&focus, cx);
+        cx.notify();
+    }
+
+    /// Sends exactly one live `set_session_name` after validating the captured
+    /// selection and runtime. The synchronous response completes before the
+    /// catalog is refreshed or a success notice is shown.
+    pub fn submit_rename_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.rename_submit_requested = false;
+        let Some(rename) = self.session_rename.clone() else {
+            return;
+        };
+        let name = rename.input.read(cx).value().trim().to_string();
+        if name.is_empty() {
+            let message = self.t("session.rename.empty").to_string();
+            if let Some(rename) = self.session_rename.as_mut() {
+                rename.error = Some(message);
+            }
+            cx.notify();
+            return;
+        }
+        let same_selection = self
+            .selected_session
+            .and_then(|index| self.sessions.get(index))
+            .is_some_and(|session| {
+                session.id == rename.session_id && session.file_path == rename.file_path
+            });
+        if !same_selection || self.runtime_id.as_deref() != Some(rename.runtime_id.as_str()) {
+            let message = self.t("session.rename.offline").to_string();
+            if let Some(rename) = self.session_rename.as_mut() {
+                rename.error = Some(message);
+            }
+            cx.notify();
+            return;
+        }
+        let response = match self.agents.command(
+            &rename.runtime_id,
+            &json!({ "type": "set_session_name", "name": name }),
+        ) {
+            Ok(response) => response,
+            Err(error) => {
+                let message = format!("{}: {}", self.t("session.rename.failed"), error.message);
+                if let Some(rename) = self.session_rename.as_mut() {
+                    rename.error = Some(message);
+                }
+                cx.notify();
+                return;
+            }
+        };
+        if response.get("success").and_then(Value::as_bool) != Some(true) {
+            let message = response
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .or_else(|| response.get("error").and_then(Value::as_str))
+                .unwrap_or("OMP rejected the rename");
+            let failure = format!("{}: {message}", self.t("session.rename.failed"));
+            if let Some(rename) = self.session_rename.as_mut() {
+                rename.error = Some(failure);
+            }
+            cx.notify();
+            return;
+        }
+
+        self.refresh_sessions();
+        if let Some(index) = self
+            .sessions
+            .iter()
+            .position(|session| session.file_path == rename.file_path)
+        {
+            self.selected_session = Some(index);
+        }
+        self.runtime_error = None;
+        self.session_action_status = Some(self.t("session.rename.success").to_string());
+        self.session_rename = None;
+        self.rename_subscription = None;
+        self.rename_submit_requested = false;
+        self.menu_open = false;
+        let focus = rename
+            .previous_focus
+            .unwrap_or_else(|| self.workspace_focus.clone());
+        window.focus(&focus, cx);
+        cx.notify();
+    }
+
+    /// Test and keyboard access to the persistent inline editor entity.
+    pub fn rename_session_entity(&self) -> Option<Entity<InputState>> {
+        self.session_rename
+            .as_ref()
+            .map(|rename| rename.input.clone())
+    }
+
+    /// Cancel only disarms the captured deletion target.
+    pub fn cancel_delete_session(&mut self, cx: &mut Context<Self>) {
+        if self.pending_delete.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// Deletes only the record captured by the first Delete click. Selection,
+    /// runtime and transcript remain intact until the filesystem call succeeds.
+    pub fn confirm_delete_session(&mut self, cx: &mut Context<Self>) {
+        let Some(pending) = self.pending_delete.clone() else {
+            return;
+        };
+        let same_selection = self
+            .selected_session
+            .and_then(|index| self.sessions.get(index))
+            .is_some_and(|session| {
+                session.id == pending.session_id && session.file_path == pending.file_path
+            });
+        if !same_selection {
+            self.pending_delete = None;
+            self.session_action_status = None;
+            self.runtime_error = Some(self.t("session.delete.changed").to_string());
+            cx.notify();
+            return;
+        }
+        let Some(store) = self.store.clone() else {
+            let message = self.t("session.delete.failed").to_string();
+            if let Some(pending) = self.pending_delete.as_mut() {
+                pending.error = Some(message);
+            }
+            cx.notify();
+            return;
+        };
+        let root = sessions::session_root(&self.home_dir);
+        let result = {
+            let mut store = store.lock().expect("state lock");
+            sessions::delete_session(&mut store, &root, &pending.file_path)
+        };
+        if let Err(error) = result {
+            let message = format!("{}: {}", self.t("session.delete.failed"), error.message);
+            if let Some(pending) = self.pending_delete.as_mut() {
+                pending.error = Some(message);
+            }
+            cx.notify();
+            return;
+        }
+
+        self.pending_delete = None;
+        self.runtime_error = None;
+        self.reset_transcript_search(cx);
+        let stopped_runtime = self.runtime_id.take();
+        if let Some(runtime_id) = &stopped_runtime {
+            self.agents.stop(runtime_id);
+        }
+        if self
+            .ask_dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.runtime_id == stopped_runtime)
+        {
+            self.close_ask_dialog();
+        }
+        self.sync_close_guard();
+        self.reset_live_voice();
+        self.reset_dictation();
+        self.streaming_index = None;
+        self.running = false;
+        self.queued_follow_ups.clear();
+        self.terminal_specs.remove(&pending.session_id);
+        self.terminals.clear();
+        self.terminal_tasks.clear();
+        self.active_terminal = 0;
+        self.terminal_error = None;
+        self.terminal_status = None;
+        self.terminal_menu_open = false;
+        self.selected_session = None;
+        self.clear_transcript();
+        self.transcript_error = None;
+        self.transcript_at_bottom = true;
+        self.clear_turn_state();
+        self.context_usage = None;
+        self.refresh_sessions();
+        self.session_action_status = Some(self.t("session.delete.success").to_string());
+        self.menu_open = false;
+        cx.notify();
+    }
+
+    pub fn session_menu_action(
+        &mut self,
+        action: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if action == "Rename" {
+            self.open_rename_session(window, cx);
+            return;
+        }
         // A fork needs neither a catalog write nor a selection index: the
         // harness owns the new session file and the runtime is the only thing
         // it talks to, so it is dispatched before the store-backed actions.
@@ -12254,34 +12600,37 @@ impl Workspace {
         let Some(index) = self.selected_session else {
             return;
         };
+        let Some(session) = self.sessions.get(index).cloned() else {
+            return;
+        };
+        if action == "Delete" {
+            if self.session_rename.is_some() {
+                self.cancel_rename_session(window, cx);
+            }
+            self.runtime_error = None;
+            self.session_action_status = None;
+            self.pending_delete = Some(PendingSessionDelete {
+                session_id: session.id,
+                file_path: session.file_path,
+                title: session.title,
+                error: None,
+            });
+            self.menu_open = false;
+            cx.notify();
+            return;
+        }
         let Some(store) = self.store.clone() else {
             return;
         };
-        let file = self.sessions[index].file_path.clone();
-        let id = self.sessions[index].id.clone();
-        let pinned = self.sessions[index].pinned;
         let root = sessions::session_root(&self.home_dir);
         let mut store = store.lock().expect("state lock");
         match action {
             "Pin" => {
-                let _ = sessions::set_pinned(&mut store, &root, &file, !pinned);
+                let _ =
+                    sessions::set_pinned(&mut store, &root, &session.file_path, !session.pinned);
             }
             "Archive" => {
-                let _ = sessions::set_archived(&mut store, &root, &file, true);
-            }
-            "Delete" => {
-                let _ = sessions::delete_session(&mut store, &root, &file);
-                // The deleted session's shells cannot outlive it: stop the live
-                // ones and drop the spec that would reopen them.
-                self.terminal_specs.remove(&id);
-                self.terminals.clear();
-                self.terminal_tasks.clear();
-                self.active_terminal = 0;
-                self.selected_session = None;
-                self.clear_transcript();
-                self.clear_turn_state();
-                // Nothing is selected any more, so nothing has a window to report.
-                self.context_usage = None;
+                let _ = sessions::set_archived(&mut store, &root, &session.file_path, true);
             }
             _ => {}
         }
@@ -12424,11 +12773,12 @@ impl Workspace {
 
     fn session_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.theme().colors;
+        let rename_open = self.session_rename.is_some();
         div()
             .absolute()
             .top(px(48.0))
             .right(px(12.0))
-            .w(px(220.0))
+            .w(px(280.0))
             .rounded(px(10.0))
             .border_1()
             .border_color(colors.border)
@@ -12438,32 +12788,117 @@ impl Workspace {
             .flex()
             .flex_col()
             .text_sm()
+            .when_some(self.session_rename.clone(), |element, rename| {
+                element.child(
+                    div()
+                        .id("session-rename-editor")
+                        .test_support()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .p_1()
+                        .child(Input::new(&rename.input).aria_label(self.t("common.rename")))
+                        .when_some(rename.error, |element, error| {
+                            element.child(
+                                div()
+                                    .id("session-rename-error")
+                                    .test_support()
+                                    .text_xs()
+                                    .text_color(colors.danger)
+                                    .child(error),
+                            )
+                        })
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .justify_end()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .id("session-rename-cancel")
+                                        .aria_label(self.t("common.cancel"))
+                                        .px_2()
+                                        .py_1()
+                                        .rounded(px(6.0))
+                                        .border_1()
+                                        .border_color(colors.border)
+                                        .child(self.t("common.cancel"))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.cancel_rename_session(window, cx);
+                                        })),
+                                )
+                                .child(
+                                    div()
+                                        .id("session-rename-save")
+                                        .aria_label(self.t("common.save"))
+                                        .px_2()
+                                        .py_1()
+                                        .rounded(px(6.0))
+                                        .bg(colors.primary)
+                                        .text_color(colors.primary_foreground)
+                                        .child(self.t("common.save"))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.submit_rename_session(window, cx);
+                                        })),
+                                ),
+                        ),
+                )
+            })
             // The rows are the same list `debug_snapshot` reports, so the
             // harness can never assert an action the menu does not draw.
-            .children(SESSION_MENU_ACTIONS.into_iter().map(|label| {
-                div()
-                    .id(format!("session-action-{label}"))
-                    .aria_label(label)
-                    .px_2()
-                    .py_1()
-                    .rounded(px(6.0))
-                    .hover(|style| style.bg(colors.accent))
-                    .child(label)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.session_menu_action(label, cx);
-                    }))
-            }))
+            .children(
+                SESSION_MENU_ACTIONS
+                    .into_iter()
+                    .filter(|label| !rename_open || *label != "Rename")
+                    .map(|label| {
+                        let text = match label {
+                            "Rename" => self.t("common.rename"),
+                            "Pin" => self.t("common.pin"),
+                            "Archive" => self.t("common.archive"),
+                            "Delete" => self.t("common.delete"),
+                            "Fork session" => self.t("session.fork"),
+                            _ => label,
+                        };
+                        div()
+                            .id(format!("session-action-{label}"))
+                            .aria_label(text)
+                            .px_2()
+                            .py_1()
+                            .rounded(px(6.0))
+                            .hover(|style| style.bg(colors.accent))
+                            .child(text)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.session_menu_action(label, window, cx);
+                            }))
+                    }),
+            )
             .child(div().h(px(1.0)).my_1().bg(colors.border))
             .child(
                 div()
                     .id("menu-copy-transcript")
-                    .aria_label("Copy transcript")
+                    .aria_label(self.t("session.copyTranscript"))
                     .px_2()
                     .py_1()
                     .rounded(px(6.0))
                     .hover(|style| style.bg(colors.accent))
-                    .child("Copy transcript")
+                    .child(self.t("session.copyTranscript"))
                     .on_click(cx.listener(|this, _, _, cx| this.copy_transcript(cx))),
+            )
+            .child(
+                div()
+                    .id("menu-copy-session-uuid")
+                    .aria_label(self.t("session.copyUuid"))
+                    .px_2()
+                    .py_1()
+                    .rounded(px(6.0))
+                    .hover(|style| style.bg(colors.accent))
+                    .child(self.t("session.copyUuid"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.copy_session_uuid(cx);
+                        this.menu_open = false;
+                        cx.notify();
+                    })),
             )
             .child(
                 div()
@@ -12508,6 +12943,99 @@ impl Workspace {
                         .relative()
                         .top(px(-5.0 * (1.0 - delta)))
                 },
+            )
+    }
+
+    fn delete_confirmation(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = cx.theme().colors;
+        let pending = self
+            .pending_delete
+            .as_ref()
+            .expect("delete confirmation requires a target")
+            .clone();
+        div()
+            .id("delete-session-confirmation")
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(black().opacity(0.32))
+            .on_click(|_, _, _| {})
+            .test_support()
+            .child(
+                div()
+                    .id("delete-session-confirmation-card")
+                    .w(px(420.0))
+                    .rounded(px(12.0))
+                    .border_1()
+                    .border_color(colors.border)
+                    .bg(colors.background)
+                    .p_4()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .child(
+                        div().text_base().child(
+                            self.t("session.delete.title")
+                                .replace("{name}", &pending.title),
+                        ),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(colors.muted_foreground)
+                            .child(self.t("session.delete.warning")),
+                    )
+                    .when_some(pending.error, |element, error| {
+                        element.child(
+                            div()
+                                .id("delete-session-error")
+                                .text_sm()
+                                .text_color(colors.danger)
+                                .child(error),
+                        )
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .justify_end()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .id("delete-session-cancel")
+                                    .aria_label(self.t("common.cancel"))
+                                    .px_3()
+                                    .py_1()
+                                    .rounded(px(6.0))
+                                    .border_1()
+                                    .border_color(colors.border)
+                                    .text_sm()
+                                    .child(self.t("common.cancel"))
+                                    .hover(|style| style.bg(colors.accent))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.cancel_delete_session(cx);
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .id("delete-session-confirm")
+                                    .aria_label(self.t("session.delete.confirm"))
+                                    .px_3()
+                                    .py_1()
+                                    .rounded(px(6.0))
+                                    .bg(colors.danger)
+                                    .text_color(colors.primary_foreground)
+                                    .text_sm()
+                                    .child(self.t("session.delete.confirm"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.confirm_delete_session(cx);
+                                    })),
+                            ),
+                    ),
             )
     }
 
@@ -13697,6 +14225,7 @@ impl Render for Workspace {
             self.side_submit_requested = false;
             self.terminal_submit_requested = false;
             self.plugin_submit_requested = false;
+            self.rename_submit_requested = false;
             let _ = self.browser.take_navigate_request();
         }
         if self.plugin_submit_requested {
@@ -13719,6 +14248,12 @@ impl Render for Workspace {
             self.terminal_submit_requested = false;
             cx.defer_in(window, |this, window, cx| {
                 this.send_terminal_line(window, cx);
+            });
+        }
+        if self.rename_submit_requested {
+            self.rename_submit_requested = false;
+            cx.defer_in(window, |this, window, cx| {
+                this.submit_rename_session(window, cx);
             });
         }
         // The Browser pane's picker hands its annotation over here, where a window is
@@ -13813,6 +14348,9 @@ impl Render for Workspace {
                 })
                 .when(close_prompt, |element| {
                     element.child(self.close_confirmation(cx))
+                })
+                .when(self.pending_delete.is_some(), |element| {
+                    element.child(self.delete_confirmation(cx))
                 });
         }
         if self.view == AppView::Plugins {
@@ -13837,6 +14375,9 @@ impl Render for Workspace {
                 })
                 .when(close_prompt, |element| {
                     element.child(self.close_confirmation(cx))
+                })
+                .when(self.pending_delete.is_some(), |element| {
+                    element.child(self.delete_confirmation(cx))
                 });
         }
         if self.view == AppView::Schedules {
@@ -13861,6 +14402,9 @@ impl Render for Workspace {
                 })
                 .when(close_prompt, |element| {
                     element.child(self.close_confirmation(cx))
+                })
+                .when(self.pending_delete.is_some(), |element| {
+                    element.child(self.delete_confirmation(cx))
                 });
         }
         div()
@@ -13947,6 +14491,9 @@ impl Render for Workspace {
             })
             .when(close_prompt, |element| {
                 element.child(self.close_confirmation(cx))
+            })
+            .when(self.pending_delete.is_some(), |element| {
+                element.child(self.delete_confirmation(cx))
             })
     }
 }
@@ -16485,9 +17032,9 @@ mod tests {
             )
         });
         handle
-            .update(&mut cx, |workspace, _, cx| {
+            .update(&mut cx, |workspace, window, cx| {
                 // Nothing is selected, so there is no runtime to fork on.
-                workspace.session_menu_action("Fork session", cx);
+                workspace.session_menu_action("Fork session", window, cx);
                 let error = workspace.runtime_error.as_deref().expect("status error");
                 assert!(
                     error.starts_with("OMP could not fork the session:"),
@@ -16501,7 +17048,7 @@ mod tests {
                 // A runtime id with no process behind it fails the way the
                 // unavailable API does, and the banner says the same thing.
                 workspace.runtime_id = Some("omp-missing".to_string());
-                workspace.session_menu_action("Fork session", cx);
+                workspace.session_menu_action("Fork session", window, cx);
                 let error = workspace.runtime_error.as_deref().expect("status error");
                 assert!(
                     error.starts_with("OMP could not fork the session:"),

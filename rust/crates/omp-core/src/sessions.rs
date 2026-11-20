@@ -516,16 +516,23 @@ pub fn set_archived(
 
 pub fn delete_session(store: &mut StateStore, root: &Path, file_path: &str) -> Result<bool> {
     let safe = authorize_session_path_under(root, Path::new(file_path))?;
-    fs::remove_file(&safe)
-        .map_err(|error| CoreError::io("Could not delete the session file", error))?;
+    // Persist before unlinking: a metadata failure must not leave the UI
+    // preserving a runtime and transcript whose backing file is already gone.
     store.update(|state| {
         state.archived_sessions.retain(|path| {
             crate::paths::canonicalize(path)
                 .map(|path| path != safe)
                 .unwrap_or(true)
         });
+        state.pinned_sessions.retain(|path| {
+            crate::paths::canonicalize(path)
+                .map(|path| path != safe)
+                .unwrap_or(true)
+        });
         Ok(())
     })?;
+    fs::remove_file(&safe)
+        .map_err(|error| CoreError::io("Could not delete the session file", error))?;
     Ok(true)
 }
 
@@ -892,5 +899,42 @@ mod tests {
             timestamp.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
             "2026-03-01T00:00:00.000Z"
         );
+    }
+
+    #[test]
+    fn delete_preserves_file_on_metadata_failure_and_clears_both_flags() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let root = dir.path();
+        let home = root.join("home");
+        let sessions_root = session_root(&home);
+        let bucket = sessions_root.join("-omp-project");
+        fs::create_dir_all(&bucket).expect("session bucket");
+        let file = bucket.join("target.jsonl");
+        let original = b"{\"type\":\"title\",\"v\":1,\"title\":\"Target\"}\n".to_vec();
+        fs::write(&file, &original).expect("session file");
+        let state_path = root.join("state.json");
+        let mut store =
+            StateStore::open(state_path.clone(), None, crate::state::Platform::current())
+                .expect("isolated state store");
+        let path = file.to_str().expect("session path").to_string();
+        set_pinned(&mut store, &sessions_root, &path, true).expect("pin");
+        set_archived(&mut store, &sessions_root, &path, true).expect("archive");
+        let before = store.snapshot();
+
+        fs::remove_file(&state_path).expect("replace state file");
+        fs::create_dir(&state_path).expect("failed state destination");
+        assert!(delete_session(&mut store, &sessions_root, &path).is_err());
+        assert_eq!(fs::read(&file).expect("preserved JSONL"), original);
+        let after = store.snapshot();
+        assert_eq!(after.archived_sessions, before.archived_sessions);
+        assert_eq!(after.pinned_sessions, before.pinned_sessions);
+
+        fs::remove_dir(&state_path).expect("restore state destination");
+        store.persist_current().expect("restore metadata store");
+        assert!(delete_session(&mut store, &sessions_root, &path).expect("delete"));
+        assert!(!file.exists());
+        let after = store.snapshot();
+        assert!(after.archived_sessions.is_empty());
+        assert!(after.pinned_sessions.is_empty());
     }
 }
