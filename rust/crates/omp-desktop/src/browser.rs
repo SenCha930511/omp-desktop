@@ -558,6 +558,14 @@ impl BrowserPane {
         std::mem::take(&mut self.navigate_requested)
     }
 
+    pub fn address_input(&self) -> &Entity<InputState> {
+        &self.address
+    }
+
+    pub fn navigation_pending(&self) -> bool {
+        self.navigate_requested
+    }
+
     /// Add an about:blank tab, make it active and build its webview.
     pub fn new_tab(&mut self, window: &mut Window, cx: &mut Context<Workspace>) {
         self.push_tab();

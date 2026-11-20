@@ -113,6 +113,8 @@ fn lookup(language: Language, key: &'static str) -> Option<&'static str> {
             "rightPane.back" => "‹ Back",
             "composer.placeholder" => "Ask OMP…",
             "commandPalette.placeholder" => "Type a command…",
+            "commandPalette.toggleSidebar" => "Toggle sidebar",
+            "commandPalette.noMatch" => "No matching commands",
             "composer.note" => {
                 "OMP can make mistakes. Review commands and changes before submitting."
             }
@@ -218,6 +220,8 @@ fn lookup(language: Language, key: &'static str) -> Option<&'static str> {
             "rightPane.back" => "‹ 返回",
             "composer.placeholder" => "詢問 OMP 任何問題,@ 提及工作階段與技能,/ 使用命令",
             "commandPalette.placeholder" => "輸入命令…",
+            "commandPalette.toggleSidebar" => "切換側欄",
+            "commandPalette.noMatch" => "沒有符合的命令",
             "composer.note" => "OMP 可能會犯錯。提交前請先檢查命令與變更。",
             "composer.reasoning" => "推理",
             "composer.model" => "模型",
@@ -321,6 +325,8 @@ fn lookup(language: Language, key: &'static str) -> Option<&'static str> {
             "rightPane.back" => "‹ 返回",
             "composer.placeholder" => "询问 OMP 任何问题,@ 提及会话与技能,/ 使用命令",
             "commandPalette.placeholder" => "输入命令…",
+            "commandPalette.toggleSidebar" => "切换侧栏",
+            "commandPalette.noMatch" => "没有匹配的命令",
             "composer.note" => "OMP 可能会犯错。提交前请先检查命令与变更。",
             "composer.reasoning" => "推理",
             "composer.model" => "模型",

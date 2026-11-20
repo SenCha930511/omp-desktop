@@ -5,10 +5,11 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Utc};
 
+use crate::ime::CompositionGuard;
 use gpui_kit::InteractiveElement as _;
 use gpui_kit::StatefulInteractiveElement as _;
 use gpui_kit::assets::IconName;
@@ -792,7 +793,19 @@ fn default_plugin_installer() -> PluginInstaller {
     Arc::new(|context, source| plugins::install(context, source).map_err(|error| error.message))
 }
 
+struct CommandPaletteState {
+    input: Entity<InputState>,
+    active: usize,
+    previous_focus: Option<FocusHandle>,
+}
+
 pub struct Workspace {
+    command_palette: Option<CommandPaletteState>,
+    palette_subscription: Option<Subscription>,
+    workspace_focus: FocusHandle,
+    ime_guard: CompositionGuard,
+    last_seen_composing: bool,
+    keystroke_subscription: Option<Subscription>,
     geometry: UiGeometry,
     geometry_path: PathBuf,
     home_dir: PathBuf,
@@ -1124,7 +1137,14 @@ impl Workspace {
         Theme::change(theme_mode, Some(window), cx);
         apply_electron_palette(cx, &data.settings.accent_color);
         let browser = BrowserPane::new(window, cx);
+        let workspace_focus = cx.focus_handle();
         let mut workspace = Self {
+            command_palette: None,
+            palette_subscription: None,
+            workspace_focus,
+            ime_guard: CompositionGuard::default(),
+            last_seen_composing: false,
+            keystroke_subscription: None,
             geometry: data.geometry,
             geometry_path: data.geometry_path,
             home_dir: data.home_dir,
@@ -1248,6 +1268,8 @@ impl Workspace {
             close_guard,
             close_prompt: None,
         };
+        workspace.keystroke_subscription =
+            Some(cx.observe_keystrokes(|this, _, window, cx| this.poll_composition(window, cx)));
         workspace.refresh_notifications();
         workspace.close_guard.attach(cx.weak_entity());
         workspace.sync_close_guard();
@@ -1571,6 +1593,293 @@ impl Workspace {
             self.close_guard.clear_approval();
             cx.notify();
         }
+    }
+
+    fn focused_input(&self, window: &Window, cx: &App) -> Option<Entity<InputState>> {
+        let focused = window.focused(cx)?;
+        let mut inputs = vec![
+            &self.composer,
+            &self.sidebar_filter,
+            &self.right_pane_search,
+            &self.side_input,
+            &self.plugin_source,
+            &self.terminal_input,
+        ];
+        inputs.push(self.browser.address_input());
+        inputs.extend(self.ask_inputs.values());
+        if let Some(palette) = &self.command_palette {
+            inputs.push(&palette.input);
+        }
+        inputs
+            .into_iter()
+            .find(|input| input.read(cx).focus_handle(cx) == focused)
+            .cloned()
+    }
+
+    fn poll_composition(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let composing = self.focused_input(window, cx).is_some_and(|input| {
+            input.update(cx, |input, cx| {
+                input.marked_text_range(window, cx).is_some()
+            })
+        });
+        match (self.last_seen_composing, composing) {
+            (_, true) => self.ime_guard.composition_started(),
+            (true, false) => self.ime_guard.composition_ended(Instant::now()),
+            (false, false) => {}
+        }
+        self.last_seen_composing = composing;
+    }
+
+    fn visible_palette_commands(&self, cx: &App) -> Vec<interaction::WorkspaceCommand> {
+        let query = self
+            .command_palette
+            .as_ref()
+            .map(|palette| palette.input.read(cx).value().trim().to_lowercase())
+            .unwrap_or_default();
+        interaction::WorkspaceCommand::PALETTE
+            .into_iter()
+            .filter(|command| {
+                query.is_empty()
+                    || i18n::t(self.language(), command.label_key())
+                        .to_lowercase()
+                        .contains(&query)
+                    || command.id().contains(&query)
+            })
+            .collect()
+    }
+
+    fn normalize_palette_active(&mut self, cx: &App) {
+        let count = self.visible_palette_commands(cx).len();
+        if let Some(palette) = self.command_palette.as_mut() {
+            palette.active = if count == 0 {
+                0
+            } else {
+                palette.active.min(count - 1)
+            };
+        }
+    }
+
+    pub fn open_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.command_palette.is_some() {
+            return;
+        }
+        let previous_focus = window.focused(cx);
+        let input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(i18n::t(self.language(), "commandPalette.placeholder"))
+        });
+        input.update(cx, |input, cx| {
+            input.select_all(window, cx);
+            let focus = input.focus_handle(cx);
+            window.focus(&focus, cx);
+        });
+        self.palette_subscription =
+            Some(cx.subscribe(&input, |this, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.normalize_palette_active(cx);
+                    cx.notify();
+                }
+            }));
+        self.command_palette = Some(CommandPaletteState {
+            input,
+            active: 0,
+            previous_focus,
+        });
+        cx.notify();
+    }
+
+    pub fn close_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(palette) = self.command_palette.take() else {
+            return;
+        };
+        self.palette_subscription = None;
+        let focus = palette
+            .previous_focus
+            .unwrap_or_else(|| self.workspace_focus.clone());
+        window.focus(&focus, cx);
+        cx.notify();
+    }
+
+    fn execute_workspace_command(
+        &mut self,
+        command: interaction::WorkspaceCommand,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.command_palette.is_some() {
+            self.close_command_palette(window, cx);
+        }
+        match command {
+            interaction::WorkspaceCommand::OpenPalette => self.open_command_palette(window, cx),
+            interaction::WorkspaceCommand::NewSession => {
+                self.set_view(AppView::Workspace, cx);
+                if let Some(project) = self.projects.first().cloned() {
+                    self.start_new_session(project, cx);
+                } else {
+                    self.add_project(window, cx);
+                }
+            }
+            interaction::WorkspaceCommand::OpenProjects => {
+                self.set_view(AppView::Workspace, cx);
+                self.geometry.sidebar_open = true;
+                self.sidebar_search_open = true;
+                self.reflow_panes();
+                self.schedule_geometry_save(cx);
+            }
+            interaction::WorkspaceCommand::OpenActivity => {
+                self.set_view(AppView::Workspace, cx);
+                self.set_right_pane("activity", cx);
+            }
+            interaction::WorkspaceCommand::OpenSchedules => self.set_view(AppView::Schedules, cx),
+            interaction::WorkspaceCommand::OpenCapabilities => self.set_view(AppView::Plugins, cx),
+            interaction::WorkspaceCommand::OpenBrowser => {
+                self.set_view(AppView::Workspace, cx);
+                self.set_right_pane("browser", cx);
+            }
+            interaction::WorkspaceCommand::ToggleSidebar => self.toggle_sidebar(cx),
+            interaction::WorkspaceCommand::OpenSettings => self.set_view(AppView::Settings, cx),
+            interaction::WorkspaceCommand::Dismiss => {
+                self.dismiss_one_layer(window, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    fn dismiss_one_layer(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.close_prompt.is_some() {
+            self.cancel_close(cx);
+            return true;
+        }
+        if self.ask_dialog.is_some() {
+            self.cancel_ask(cx);
+            return true;
+        }
+        if self.command_palette.is_some() {
+            self.close_command_palette(window, cx);
+            return true;
+        }
+        for menu in [&mut self.mention_menu_open, &mut self.model_menu_open] {
+            if *menu {
+                *menu = false;
+                cx.notify();
+                return true;
+            }
+        }
+        if self.project_menu.take().is_some() {
+            cx.notify();
+            return true;
+        }
+        for menu in [
+            &mut self.terminal_menu_open,
+            &mut self.overview_open,
+            &mut self.menu_open,
+        ] {
+            if *menu {
+                *menu = false;
+                cx.notify();
+                return true;
+            }
+        }
+        if self.active_drawer.take().is_some() {
+            cx.notify();
+            return true;
+        }
+        false
+    }
+
+    fn handle_workspace_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.poll_composition(window, cx);
+        let key = event.keystroke.key.to_lowercase();
+        let guarded = self.ime_guard.blocks_commit_key(Instant::now());
+        if self.command_palette.is_some() {
+            match key.as_str() {
+                "down" | "up" | "enter" | "escape" => {
+                    cx.stop_propagation();
+                    if guarded {
+                        return;
+                    }
+                    match key.as_str() {
+                        "down" | "up" => {
+                            let forward = key == "down";
+                            let count = self.visible_palette_commands(cx).len();
+                            if let Some(palette) = self.command_palette.as_mut()
+                                && let Some(next) =
+                                    interaction::cyclic_index(palette.active, count, forward)
+                            {
+                                palette.active = next;
+                                cx.notify();
+                            }
+                        }
+                        "enter" => {
+                            self.normalize_palette_active(cx);
+                            let command = self.command_palette.as_ref().and_then(|palette| {
+                                self.visible_palette_commands(cx)
+                                    .get(palette.active)
+                                    .copied()
+                            });
+                            if let Some(command) = command {
+                                self.execute_workspace_command(command, window, cx);
+                            }
+                        }
+                        "escape" => {
+                            self.dismiss_one_layer(window, cx);
+                        }
+                        _ => unreachable!(),
+                    }
+                    return;
+                }
+                "tab" => {
+                    cx.stop_propagation();
+                    if let Some(palette) = &self.command_palette {
+                        let focus = palette.input.read(cx).focus_handle(cx);
+                        window.focus(&focus, cx);
+                    }
+                    return;
+                }
+                _ => {
+                    if interaction::WorkspaceCommand::from_keystroke(&event.keystroke)
+                        .is_some_and(|command| command != interaction::WorkspaceCommand::Dismiss)
+                    {
+                        cx.stop_propagation();
+                    }
+                    return;
+                }
+            }
+        }
+        let Some(command) = interaction::WorkspaceCommand::from_keystroke(&event.keystroke) else {
+            return;
+        };
+        if command == interaction::WorkspaceCommand::Dismiss {
+            cx.stop_propagation();
+            if !guarded {
+                self.dismiss_one_layer(window, cx);
+            }
+            return;
+        }
+        if self.close_prompt.is_some() || self.ask_dialog.is_some() {
+            return;
+        }
+        cx.stop_propagation();
+        self.execute_workspace_command(command, window, cx);
+    }
+
+    pub fn command_palette_entity(&self) -> Option<Entity<InputState>> {
+        self.command_palette
+            .as_ref()
+            .map(|palette| palette.input.clone())
+    }
+
+    pub fn browser_address_entity(&self) -> Entity<InputState> {
+        self.browser.address_input().clone()
+    }
+
+    pub fn browser_navigation_pending(&self) -> bool {
+        self.browser.navigation_pending()
     }
 
     pub fn composer_entity(&self) -> &Entity<InputState> {
@@ -1973,6 +2282,19 @@ impl Workspace {
                 .map(TerminalSession::screen_text)
                 .unwrap_or_default()
         );
+        snapshot["commandPalette"] = self
+            .command_palette
+            .as_ref()
+            .map_or(Value::Null, |palette| {
+                let commands = self.visible_palette_commands(cx);
+                json!({
+                    "open": true,
+                    "query": palette.input.read(cx).value().to_string(),
+                    "active": palette.active,
+                    "activeCommand": commands.get(palette.active).map(|command| command.id()),
+                    "commands": commands.iter().map(|command| command.id()).collect::<Vec<_>>(),
+                })
+            });
         snapshot
     }
 
@@ -2929,6 +3251,97 @@ impl Workspace {
         if self.active_drawer.take().is_some() {
             cx.notify();
         }
+    }
+
+    fn command_palette(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = cx.theme().colors;
+        let commands = self.visible_palette_commands(cx);
+        let active = self
+            .command_palette
+            .as_ref()
+            .map_or(0, |palette| palette.active);
+        div()
+            .id("command-palette")
+            .aria_label(self.t("sidebar.commands"))
+            .test_support()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .flex()
+            .justify_center()
+            .bg(black().opacity(0.32))
+            .on_click(|_, _, _| {})
+            .child(
+                div()
+                    .id("command-palette-card")
+                    .test_support()
+                    .mt(px(96.0))
+                    .max_h(px(480.0))
+                    .w(px(560.0))
+                    .overflow_hidden()
+                    .rounded(px(12.0))
+                    .border_1()
+                    .border_color(colors.border)
+                    .bg(colors.background)
+                    .p_2()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .id("command-palette-input")
+                            .test_support()
+                            .px_3()
+                            .py_2()
+                            .border_b_1()
+                            .border_color(colors.border)
+                            .children(
+                                self.command_palette
+                                    .as_ref()
+                                    .map(|palette| Input::new(&palette.input)),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("command-results")
+                            .test_support()
+                            .flex()
+                            .flex_col()
+                            .gap_0p5()
+                            .overflow_y_scroll()
+                            .children(commands.iter().enumerate().map(|(index, command)| {
+                                let command = *command;
+                                div()
+                                    .id(format!("command-{}", command.id()))
+                                    .test_support()
+                                    .aria_label(self.t(command.label_key()))
+                                    .px_3()
+                                    .py_2()
+                                    .rounded(px(7.0))
+                                    .bg(if index == active {
+                                        colors.selection
+                                    } else {
+                                        colors.background
+                                    })
+                                    .hover(|style| style.bg(colors.accent))
+                                    .child(self.t(command.label_key()))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.execute_workspace_command(command, window, cx);
+                                    }))
+                            }))
+                            .when(commands.is_empty(), |element| {
+                                element.child(
+                                    div()
+                                        .id("command-no-match")
+                                        .px_3()
+                                        .py_2()
+                                        .text_color(colors.muted_foreground)
+                                        .child(self.t("commandPalette.noMatch")),
+                                )
+                            }),
+                    ),
+            )
     }
 
     fn toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -5862,6 +6275,8 @@ impl Workspace {
             .child(
                 div().flex().items_center().min_h(px(36.0)).child(
                     div()
+                        .id("composer-input")
+                        .test_support()
                         .flex_1()
                         .child(Input::new(&self.composer).appearance(false).bordered(false)),
                 ),
@@ -10781,6 +11196,18 @@ impl Render for Workspace {
         // view owns the truth, so every frame mirrors it and the confirmation
         // below only exists while a close is being asked about.
         self.sync_close_guard();
+        if window.focused(cx).is_none() {
+            let focus = self.workspace_focus.clone();
+            window.focus(&focus, cx);
+        }
+        self.poll_composition(window, cx);
+        if self.ime_guard.blocks_commit_key(Instant::now()) {
+            self.submit_requested = None;
+            self.side_submit_requested = false;
+            self.terminal_submit_requested = false;
+            self.plugin_submit_requested = false;
+            let _ = self.browser.take_navigate_request();
+        }
         if self.plugin_submit_requested {
             self.plugin_submit_requested = false;
             self.submit_plugin_install(cx);
@@ -10836,6 +11263,12 @@ impl Render for Workspace {
             self.ensure_ask_inputs(window, cx);
         }
         self.track_bounds(window, cx);
+        if let Some(palette) = &self.command_palette {
+            let focus = palette.input.read(cx).focus_handle(cx);
+            if window.focused(cx).as_ref() != Some(&focus) {
+                window.focus(&focus, cx);
+            }
+        }
         let colors = cx.theme().colors;
         let show_sidebar = self.layout.sidebar_docked;
         let show_right = self.layout.right_pane_docked;
@@ -10847,7 +11280,8 @@ impl Render for Workspace {
         let browser_visible = self.view == AppView::Workspace
             && (show_right || show_details)
             && self.right_pane == RightPane::Browser
-            && !close_prompt;
+            && !close_prompt
+            && self.command_palette.is_none();
         self.browser.set_visible(browser_visible, cx);
         if browser_visible {
             if self.browser.needs_webview() {
@@ -10871,6 +11305,10 @@ impl Render for Workspace {
             self.ensure_models(cx);
             return div()
                 .relative()
+                .track_focus(&self.workspace_focus)
+                .on_key_down(cx.listener(|this, event, window, cx| {
+                    this.handle_workspace_key(event, window, cx);
+                }))
                 .flex()
                 .flex_row()
                 .size_full()
@@ -10883,6 +11321,9 @@ impl Render for Workspace {
                     element.child(self.right_pane(cx))
                 })
                 .child(self.settings_page(cx))
+                .when(self.command_palette.is_some(), |element| {
+                    element.child(self.command_palette(cx))
+                })
                 .when(close_prompt, |element| {
                     element.child(self.close_confirmation(cx))
                 });
@@ -10890,6 +11331,10 @@ impl Render for Workspace {
         if self.view == AppView::Plugins {
             return div()
                 .relative()
+                .track_focus(&self.workspace_focus)
+                .on_key_down(cx.listener(|this, event, window, cx| {
+                    this.handle_workspace_key(event, window, cx);
+                }))
                 .flex()
                 .flex_row()
                 .size_full()
@@ -10900,6 +11345,9 @@ impl Render for Workspace {
                     element.child(self.right_pane(cx))
                 })
                 .child(self.plugins_page(cx))
+                .when(self.command_palette.is_some(), |element| {
+                    element.child(self.command_palette(cx))
+                })
                 .when(close_prompt, |element| {
                     element.child(self.close_confirmation(cx))
                 });
@@ -10907,6 +11355,10 @@ impl Render for Workspace {
         if self.view == AppView::Schedules {
             return div()
                 .relative()
+                .track_focus(&self.workspace_focus)
+                .on_key_down(cx.listener(|this, event, window, cx| {
+                    this.handle_workspace_key(event, window, cx);
+                }))
                 .flex()
                 .flex_row()
                 .size_full()
@@ -10917,12 +11369,19 @@ impl Render for Workspace {
                     element.child(self.right_pane(cx))
                 })
                 .child(self.schedules_page(cx))
+                .when(self.command_palette.is_some(), |element| {
+                    element.child(self.command_palette(cx))
+                })
                 .when(close_prompt, |element| {
                     element.child(self.close_confirmation(cx))
                 });
         }
         div()
             .relative()
+            .track_focus(&self.workspace_focus)
+            .on_key_down(cx.listener(|this, event, window, cx| {
+                this.handle_workspace_key(event, window, cx);
+            }))
             .flex()
             .flex_row()
             .size_full()
@@ -10967,6 +11426,9 @@ impl Render for Workspace {
             })
             .when(self.menu_open && !browser_visible, |element| {
                 element.child(self.session_menu(cx))
+            })
+            .when(self.command_palette.is_some(), |element| {
+                element.child(self.command_palette(cx))
             })
             .when(close_prompt, |element| {
                 element.child(self.close_confirmation(cx))

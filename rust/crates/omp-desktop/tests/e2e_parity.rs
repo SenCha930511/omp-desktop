@@ -2318,6 +2318,357 @@ fn ime_composition_guard_keeps_a_composing_key_out_of_the_composer(cx: &mut Test
     assert_eq!(state["transcript"], json!([]));
 }
 
+/// There is deliberately no Terminal row even though the Electron registry contains one.
+#[gpui_kit::test]
+fn command_palette_filters_wraps_activates_and_restores_focus(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let handle = cx.open_window(size(px(1280.0), px(800.0)), |window, cx| {
+        Workspace::new(window, cx, test_data(root))
+    });
+    let composer = handle
+        .update(cx, |workspace, _, _| workspace.composer_entity().clone())
+        .expect("composer");
+
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            let focus = composer.read(cx).focus_handle(cx);
+            window.focus(&focus, cx);
+            window.input("plain k n b ,", cx);
+            assert_eq!(window.focused(cx), Some(focus));
+            window.press("cmd-k", cx);
+        })
+        .expect("open palette");
+    });
+    let state = handle
+        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
+        .expect("palette snapshot");
+    assert_eq!(state["composer"]["text"], "plain k n b ,");
+    assert_eq!(state["commandPalette"]["active"], 0);
+    assert_eq!(
+        state["commandPalette"]["commands"].as_array().map(Vec::len),
+        Some(8)
+    );
+    assert!(
+        !state["commandPalette"]["commands"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|command| command == "terminal")
+    );
+    let palette = handle
+        .update(cx, |workspace, _, _| workspace.command_palette_entity())
+        .expect("palette entity")
+        .expect("palette open");
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            let focus = palette.read(cx).focus_handle(cx);
+            assert_eq!(window.focused(cx), Some(focus));
+            window.press("up", cx);
+        })
+        .expect("wrap backwards");
+    });
+    let state = handle
+        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
+        .expect("wrapped snapshot");
+    assert_eq!(state["commandPalette"]["activeCommand"], "settings");
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.press("down", cx);
+            window.input("no-such-command", cx);
+            window.press("down", cx);
+            window.press("up", cx);
+            window.press("enter", cx);
+        })
+        .expect("safe empty selection");
+    });
+    let state = handle
+        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
+        .expect("empty result snapshot");
+    assert_eq!(state["commandPalette"]["active"], 0);
+    assert_eq!(state["commandPalette"]["activeCommand"], Value::Null);
+    assert_eq!(state["commandPalette"]["commands"], json!([]));
+
+    handle
+        .update(cx, |_, window, cx| {
+            palette.update(cx, |input, cx| input.set_value("", window, cx));
+        })
+        .expect("clear query");
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.press("escape", cx);
+            let focus = composer.read(cx).focus_handle(cx);
+            assert_eq!(window.focused(cx), Some(focus));
+            window.press("cmd-k", cx);
+        })
+        .expect("close and reopen palette");
+    });
+    let palette = handle
+        .update(cx, |workspace, _, _| workspace.command_palette_entity())
+        .expect("reopened palette entity")
+        .expect("palette reopened");
+    handle
+        .update(cx, |_, window, cx| {
+            palette.update(cx, |input, cx| input.set_value("settings", window, cx));
+        })
+        .expect("filter query");
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.press("enter", cx);
+        })
+        .expect("activate Settings");
+    });
+    let state = handle
+        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
+        .expect("activated snapshot");
+    assert_eq!(state["view"], "settings");
+    assert_eq!(state["commandPalette"], Value::Null);
+    assert_eq!(state["composer"]["text"], "plain k n b ,");
+}
+
+#[gpui_kit::test]
+fn palette_enter_normalizes_a_stale_programmatic_selection(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let handle = cx.open_window(size(px(1280.0), px(800.0)), |window, cx| {
+        Workspace::new(window, cx, test_data(root))
+    });
+    let palette = {
+        cx.update(|cx| {
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.render_frame(cx);
+                window.press("cmd-k", cx);
+                window.press("up", cx);
+            })
+            .expect("select the last command");
+        });
+        handle
+            .update(cx, |workspace, _, _| workspace.command_palette_entity())
+            .expect("palette entity")
+            .expect("palette open")
+    };
+    handle
+        .update(cx, |workspace, window, cx| {
+            palette.update(cx, |input, cx| input.set_value("settings", window, cx));
+            let state = snapshot(workspace, cx);
+            assert_eq!(state["commandPalette"]["active"], 7);
+            assert_eq!(state["commandPalette"]["activeCommand"], Value::Null);
+        })
+        .expect("stale index setup");
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| window.press("enter", cx))
+            .expect("command normalization");
+    });
+    let state = handle
+        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
+        .expect("activated normalized command");
+    assert_eq!(state["view"], "settings");
+    assert_eq!(state["commandPalette"], Value::Null);
+}
+
+#[gpui_kit::test]
+fn escape_dismisses_one_layer_then_is_idempotent(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let handle = cx.open_window(size(px(800.0), px(800.0)), |window, cx| {
+        Workspace::new(window, cx, test_data(root))
+    });
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.toggle_mention_menu(cx);
+            workspace.set_right_pane("summary", cx);
+        })
+        .expect("seed layers");
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.press("cmd-k", cx);
+        })
+        .expect("open top layer");
+    });
+    let read = |cx: &mut TestAppContext| {
+        handle
+            .update(cx, |workspace, _, cx| snapshot(workspace, cx))
+            .expect("layer snapshot")
+    };
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| window.press("escape", cx))
+            .expect("close palette");
+    });
+    let state = read(cx);
+    assert_eq!(state["commandPalette"], Value::Null);
+    assert_eq!(state["composer"]["mentionMenuOpen"], true);
+    assert_eq!(state["drawer"], "rightPane");
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| window.press("escape", cx))
+            .expect("close mention");
+    });
+    let state = read(cx);
+    assert_eq!(state["composer"]["mentionMenuOpen"], false);
+    assert_eq!(state["drawer"], "rightPane");
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.press("escape", cx);
+        })
+        .expect("close drawer");
+    });
+    let idle = read(cx);
+    assert_eq!(idle["drawer"], "none");
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.press("escape", cx);
+            window.press("escape", cx);
+        })
+        .expect("idempotent idle Escape");
+    });
+    assert_eq!(read(cx), idle);
+}
+
+/// This is not native-IME proof.
+#[gpui_kit::test]
+fn palette_ime_guard_blocks_commit_keys_through_the_settle_boundary(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let handle = cx.open_window(size(px(1280.0), px(800.0)), |window, cx| {
+        Workspace::new(window, cx, test_data(root))
+    });
+    let palette = {
+        cx.update(|cx| {
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.render_frame(cx);
+                window.press("cmd-k", cx);
+            })
+            .expect("open palette");
+        });
+        handle
+            .update(cx, |workspace, _, _| workspace.command_palette_entity())
+            .expect("palette entity")
+            .expect("palette open")
+    };
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            let bounds = gpui_kit::Bounds::new(point(px(0.0), px(0.0)), size(px(0.0), px(0.0)));
+            {
+                let mut input = gpui_kit::test::TestInput::new(
+                    gpui_kit::ElementInputHandler::new(bounds, palette.clone()),
+                    window,
+                );
+                input.compose_text(None, "にほん", Some(3..3), cx);
+                assert_eq!(input.marked_text_range(cx), Some(0..3));
+            }
+            window.press("escape", cx);
+            window.press("enter", cx);
+        })
+        .expect("composing keys");
+    });
+    let state = handle
+        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
+        .expect("composing snapshot");
+    assert_ne!(state["commandPalette"], Value::Null);
+    assert_eq!(state["view"], "workspace");
+
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            let bounds = gpui_kit::Bounds::new(point(px(0.0), px(0.0)), size(px(0.0), px(0.0)));
+            let mut input = gpui_kit::test::TestInput::new(
+                gpui_kit::ElementInputHandler::new(bounds, palette.clone()),
+                window,
+            );
+            input.unmark_text(cx);
+            palette.update(cx, |input, cx| input.set_value("settings", window, cx));
+            window.press("escape", cx);
+            window.press("enter", cx);
+        })
+        .expect("settle-window keys");
+    });
+    let state = handle
+        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
+        .expect("settle snapshot");
+    assert_ne!(state["commandPalette"], Value::Null);
+    assert_eq!(state["view"], "workspace");
+
+    std::thread::sleep(Duration::from_millis(IME_POST_COMPOSITION_GUARD_MS));
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| window.press("enter", cx))
+            .expect("permitted Enter");
+    });
+    let state = handle
+        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
+        .expect("activated snapshot");
+    assert_eq!(state["view"], "settings");
+    assert_eq!(state["commandPalette"], Value::Null);
+}
+
+#[cfg(not(target_os = "linux"))]
+#[gpui_kit::test]
+fn browser_address_ime_guard_preserves_composition_and_drawer_state(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let handle = cx.open_window(size(px(800.0), px(800.0)), |window, cx| {
+        Workspace::new(window, cx, test_data(root))
+    });
+    let address = handle
+        .update(cx, |workspace, _, cx| {
+            workspace.set_right_pane("browser", cx);
+            workspace.browser_address_entity()
+        })
+        .expect("browser address input");
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            let focus = address.read(cx).focus_handle(cx);
+            window.focus(&focus, cx);
+            let bounds = gpui_kit::Bounds::new(point(px(0.0), px(0.0)), size(px(0.0), px(0.0)));
+            let mut input = gpui_kit::test::TestInput::new(
+                gpui_kit::ElementInputHandler::new(bounds, address.clone()),
+                window,
+            );
+            input.compose_text(None, "https://example.test", Some(20..20), cx);
+            assert!(input.marked_text_range(cx).is_some());
+            window.press("enter", cx);
+        })
+        .expect("composing navigation")
+    });
+    let state = handle
+        .update(cx, |workspace, _, cx| {
+            assert!(!workspace.browser_navigation_pending());
+            snapshot(workspace, cx)
+        })
+        .expect("navigation blocked while composing");
+    assert_eq!(state["drawer"], "rightPane");
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            let bounds = gpui_kit::Bounds::new(point(px(0.0), px(0.0)), size(px(0.0), px(0.0)));
+            let mut input = gpui_kit::test::TestInput::new(
+                gpui_kit::ElementInputHandler::new(bounds, address.clone()),
+                window,
+            );
+            input.unmark_text(cx);
+            window.press("escape", cx);
+        })
+        .expect("settle-window dismissal")
+    });
+    let state = handle
+        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
+        .expect("settle dismissal snapshot");
+    assert_eq!(state["drawer"], "rightPane");
+    std::thread::sleep(Duration::from_millis(IME_POST_COMPOSITION_GUARD_MS));
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| window.press("escape", cx))
+            .expect("permitted dismissal");
+    });
+    let state = handle
+        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
+        .expect("post-guard snapshot");
+    assert_eq!(state["drawer"], "none");
+}
+
 /// The turn diff is empty against a clean baseline and reports the seeded edit
 /// once the working tree changes; both sides are the serialized snapshot the
 /// workspace's turn card renders.

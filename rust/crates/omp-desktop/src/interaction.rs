@@ -1,7 +1,97 @@
 use std::time::Duration;
 
 use gpui_kit::base::{ReduceMotionPreference, set_reduce_motion_preference};
-use gpui_kit::{Animation, App};
+use gpui_kit::{Animation, App, Keystroke};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum WorkspaceCommand {
+    OpenPalette,
+    NewSession,
+    OpenProjects,
+    OpenActivity,
+    OpenSchedules,
+    OpenCapabilities,
+    OpenBrowser,
+    ToggleSidebar,
+    OpenSettings,
+    Dismiss,
+}
+
+impl WorkspaceCommand {
+    pub(super) const PALETTE: [Self; 8] = [
+        Self::NewSession,
+        Self::OpenProjects,
+        Self::OpenActivity,
+        Self::OpenSchedules,
+        Self::OpenCapabilities,
+        Self::OpenBrowser,
+        Self::ToggleSidebar,
+        Self::OpenSettings,
+    ];
+
+    pub(super) fn from_keystroke(keystroke: &Keystroke) -> Option<Self> {
+        let modifiers = keystroke.modifiers;
+        if modifiers.alt || modifiers.function {
+            return None;
+        }
+        let key = keystroke.key.to_lowercase();
+        if key == "escape" && !modifiers.modified() {
+            return Some(Self::Dismiss);
+        }
+        let primary = modifiers.control || modifiers.platform;
+        if !primary {
+            return None;
+        }
+        match (key.as_str(), modifiers.shift) {
+            ("k", false) => Some(Self::OpenPalette),
+            ("n", false) => Some(Self::NewSession),
+            ("b", true) => Some(Self::OpenBrowser),
+            ("b", false) => Some(Self::ToggleSidebar),
+            (",", false) => Some(Self::OpenSettings),
+            _ => None,
+        }
+    }
+
+    pub(super) fn id(self) -> &'static str {
+        match self {
+            Self::NewSession => "new-session",
+            Self::OpenProjects => "projects",
+            Self::OpenActivity => "activity",
+            Self::OpenSchedules => "schedules",
+            Self::OpenCapabilities => "capabilities",
+            Self::OpenBrowser => "browser",
+            Self::ToggleSidebar => "sidebar",
+            Self::OpenSettings => "settings",
+            Self::OpenPalette | Self::Dismiss => unreachable!("not a palette command"),
+        }
+    }
+
+    pub(super) fn label_key(self) -> &'static str {
+        match self {
+            Self::NewSession => "sidebar.newSession",
+            Self::OpenProjects => "sidebar.projects",
+            Self::OpenActivity => "sidebar.activity",
+            Self::OpenSchedules => "sidebar.schedules",
+            Self::OpenCapabilities => "sidebar.capabilities",
+            Self::OpenBrowser => "rightPane.browser",
+            Self::ToggleSidebar => "commandPalette.toggleSidebar",
+            Self::OpenSettings => "sidebar.settings",
+            Self::OpenPalette | Self::Dismiss => unreachable!("not a palette command"),
+        }
+    }
+}
+
+pub(super) fn cyclic_index(active: usize, count: usize, forward: bool) -> Option<usize> {
+    if count == 0 {
+        return None;
+    }
+    let active = active.min(count - 1);
+    Some(if forward {
+        (active + 1) % count
+    } else {
+        (active + count - 1) % count
+    })
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Motion {
@@ -175,13 +265,44 @@ impl StreamFeedback {
 mod tests {
     use std::time::Duration;
 
-    use super::{Easing, Motion, Playback, StreamFeedback, motion_spec};
+    use super::{
+        Easing, Motion, Playback, StreamFeedback, WorkspaceCommand, cyclic_index, motion_spec,
+    };
 
     fn assert_close(actual: f32, expected: f32) {
         assert!(
             (actual - expected).abs() <= 0.000_01,
             "expected {expected}, got {actual}"
         );
+    }
+
+    #[test]
+    fn workspace_shortcuts_match_only_owned_combinations() {
+        let cases = [
+            ("cmd-k", WorkspaceCommand::OpenPalette),
+            ("ctrl-k", WorkspaceCommand::OpenPalette),
+            ("cmd-n", WorkspaceCommand::NewSession),
+            ("ctrl-shift-b", WorkspaceCommand::OpenBrowser),
+            ("cmd-b", WorkspaceCommand::ToggleSidebar),
+            ("cmd-,", WorkspaceCommand::OpenSettings),
+            ("escape", WorkspaceCommand::Dismiss),
+        ];
+        for (key, expected) in cases {
+            let key = gpui_kit::Keystroke::parse(key).expect("valid keystroke");
+            assert_eq!(WorkspaceCommand::from_keystroke(&key), Some(expected));
+        }
+        for key in ["k", "n", "b", "ctrl-p", "cmd-p", "alt-cmd-k"] {
+            let key = gpui_kit::Keystroke::parse(key).expect("valid keystroke");
+            assert_eq!(WorkspaceCommand::from_keystroke(&key), None);
+        }
+    }
+
+    #[test]
+    fn palette_indices_wrap_and_clamp_without_an_empty_panic() {
+        assert_eq!(cyclic_index(0, 8, false), Some(7));
+        assert_eq!(cyclic_index(7, 8, true), Some(0));
+        assert_eq!(cyclic_index(99, 2, true), Some(0));
+        assert_eq!(cyclic_index(0, 0, true), None);
     }
 
     #[test]
