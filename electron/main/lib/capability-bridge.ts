@@ -84,6 +84,20 @@ export abstract class CapabilityBridge {
     return this.claims.get(token)
   }
 
+  /**
+   * Resolves the live claim scoped to one session file. Host tool calls arrive
+   * without the runtime's bearer token, so the manager's per-runtime wiring
+   * maps the runtime's reported session back to the claim it was minted with.
+   * Paths are compared canonically, matching rebind/revoke bookkeeping.
+   */
+  protected claimForSession(sessionPath: string): CapabilityClaim | undefined {
+    const wanted = canonicalSessionPath(sessionPath)
+    for (const claim of this.claims.values()) {
+      if (claim.sessionPath && canonicalSessionPath(claim.sessionPath) === wanted) return claim
+    }
+    return undefined
+  }
+
   /** Revoke one runtime's bearer claim. Safe to call repeatedly and during bridge shutdown. */
   revoke(token: string | undefined): boolean {
     if (!token) return false

@@ -43,9 +43,9 @@ function ompHost(withTypebox = true): Fixture {
 }
 
 const expectedRegistrations: Record<string, Registration[]> = {
-  'omp-work-browser.ts': [
-    ...['terminal_read', 'browser_tabs', 'browser_navigate', 'browser_screenshot', 'browser_read_page', 'browser_click', 'browser_type', 'browser_press_key', 'browser_scroll', 'browser_evaluate'].map((name) => ({ kind: 'tool' as const, name })),
-  ],
+  // The browser_* tools are OMP v19 host tools now; only the terminal read
+  // stays an extension tool so base pi runtimes keep it.
+  'omp-work-browser.ts': [{ kind: 'tool', name: 'terminal_read' }],
   'omp-work-ask-user.ts': [{ kind: 'tool', name: 'ask_user' }],
   'omp-work-collaboration.ts': [
     ...['gooeypi_session_list', 'gooeypi_session_models', 'gooeypi_session_create', 'gooeypi_session_read', 'gooeypi_session_send', 'gooeypi_session_wait'].map((name) => ({ kind: 'tool' as const, name })),
@@ -62,8 +62,7 @@ const brokerVariables: Partial<Record<ExtensionInjection['capability'], readonly
 }
 
 const LEGACY_UNPREFIXED_TOOLS = [
-  'ask_user', 'terminal_read', 'browser_tabs', 'browser_navigate', 'browser_screenshot', 'browser_read_page',
-  'browser_click', 'browser_type', 'browser_press_key', 'browser_scroll', 'browser_evaluate',
+  'ask_user', 'terminal_read',
   'scheduled_tasks_list', 'scheduled_task_create_once', 'scheduled_task_create_recurring',
   'scheduled_task_update', 'scheduled_task_manage',
 ]

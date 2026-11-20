@@ -1,6 +1,8 @@
 import { CapabilityBridge, type CapabilityClaim } from '../lib/capability-bridge'
 import { canonicalSessionPath } from '../session-paths'
 import type { TerminalService } from '../terminal'
+import type { RpcObject } from '../agent-rpc/types'
+import { browserHostToolScope } from './host-tools'
 import type { AgentBrowserService } from './agent-service'
 
 export interface AgentBrowserBridgeOptions {
@@ -50,6 +52,30 @@ export class AgentBrowserBridge extends CapabilityBridge {
   protected async dispatch(method: string, params: Record<string, unknown>, claim: CapabilityClaim): Promise<unknown> {
     if (!claim.sessionPath) throw new Error('Browser control is not available yet for this thread; try again in a moment')
     return this.call(method, params, canonicalSessionPath(claim.sessionPath))
+  }
+
+  /**
+   * Runs one OMP v19 host tool call for the runtime that owns `sessionPath`.
+   * Host tool frames carry no bearer token, so the claim is resolved from the
+   * session the manager reports for that runtime; a runtime without a live
+   * claim (Browser disabled, or not bound yet) gets a clear error instead of
+   * another thread's tabs.
+   */
+  async hostToolCall(sessionPath: string, method: string, params: Record<string, unknown>): Promise<unknown> {
+    const claim = this.claimForSession(sessionPath)
+    if (!claim) throw new Error('Browser control is not available for this session; the Browser capability is disabled or this runtime is not ready yet')
+    return this.dispatch(method, params, claim)
+  }
+
+  /**
+   * Browser host tool definitions and handlers bound to one runtime's session.
+   * A session with no live claim (Browser disabled, or no environment minted
+   * for it) yields no tools: advertising handlers that could only fail would
+   * leave dead tools in the model's list.
+   */
+  hostToolScope(sessionPath: string): { tools: RpcObject[]; handlers: Map<string, (args: Record<string, unknown>) => Promise<Record<string, unknown>>> } {
+    if (!this.claimForSession(sessionPath)) return { tools: [], handlers: new Map() }
+    return browserHostToolScope((method, params) => this.hostToolCall(sessionPath, method, params))
   }
 
   private call(method: string, params: Record<string, unknown>, sessionKey: string): Promise<unknown> {

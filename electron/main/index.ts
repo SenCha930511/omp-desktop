@@ -784,6 +784,10 @@ async function bootstrap(): Promise<void> {
   agentScheduleBridge = scheduleBridge
   agentBrowserBridge = browserBridge
   agentCollaborationBridge = collaborationBridge
+  // Browser tools are OMP v19 host tools: each runtime is handed this
+  // thread's definitions at start, and its calls resolve the claim minted for
+  // the session the runtime reports, so tabs stay scoped to one thread.
+  ompManager.setHostToolScopeProvider((runtime) => runtime.sessionFile ? browserBridge.hostToolScope(runtime.sessionFile) : undefined)
   const revokeRuntimeCapabilities = (environment: NodeJS.ProcessEnv): void => {
     const claims: Array<[string, { revoke(token: string | undefined): boolean }, string | undefined]> = [
       ['schedule', scheduleBridge, environment.OMP_DESKTOP_SCHEDULE_TOKEN],
