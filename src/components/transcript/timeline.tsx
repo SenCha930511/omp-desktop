@@ -1,6 +1,7 @@
 import { Check, ChevronDown, ChevronRight, CircleAlert, Copy, FileCode2, GitFork, Globe2, LoaderCircle, MessageCircle, MessageCircleQuestion, Sparkles, TerminalSquare, Wrench } from 'lucide-react'
 import { type ReactNode, memo, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { writeClipboardText } from '@/lib/clipboard'
+import { useDocumentVisible } from '@/hooks/useDocumentVisible'
 import { useI18n } from '@/lib/i18n'
 import { boundText } from '@/lib/render-bounds'
 import type { MessagePart, TranscriptMessage } from '@/types/api'
@@ -141,11 +142,15 @@ export function ThinkingDots({ labelled = false }: { labelled?: boolean }) {
  */
 export function LiveElapsed({ since }: { since?: string | number }) {
   const [now, setNow] = useState(() => Date.now())
+  // A hidden window cannot show the label, so the 1s tick is pure waste
+  // there: pause it on visibilitychange and catch up on the first tick back.
+  const visible = useDocumentVisible()
   useEffect(() => {
+    if (!visible) return
     setNow(Date.now())
     const id = setInterval(() => setNow(Date.now()), 1_000)
     return () => clearInterval(id)
-  }, [])
+  }, [visible])
   const startedAt = timestamp(since)
   if (startedAt === undefined) return null
   return (
