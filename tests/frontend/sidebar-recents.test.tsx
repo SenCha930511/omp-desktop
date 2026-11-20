@@ -50,7 +50,7 @@ async function renderSidebar(projects: ProjectRecord[], sessions: SessionRecord[
 }
 
 describe('sidebar recent conversations', () => {
-  it('orders the recent section by file modification time across projects', async () => {
+  it('orders the recent section by last updated time across projects', async () => {
     const alpha = project('alpha', '/alpha')
     const beta = project('beta', '/beta')
     const sessions = [
@@ -67,7 +67,7 @@ describe('sidebar recent conversations', () => {
     expect(times).toEqual(['2h', '8h', '20h'])
   })
 
-  it('sorts by modification time even when a session is pinned', () => {
+  it('sorts by last updated time even when a session is pinned', () => {
     const sessions = [
       session('pinned', '/alpha', hoursAgo(20), { pinned: true }),
       session('fresh', '/alpha', hoursAgo(1)),
