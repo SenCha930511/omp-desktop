@@ -215,6 +215,51 @@ export async function validateRpcCommand(raw: unknown, validateSessionPath: (pat
       sessionIds: command.sessionIds.map((id, index) => requireString(id, `sessionIds[${index}]`, { min: 1, max: 4096 })),
     }
   }
+  if (type === 'get_messages_page') {
+    rejectUnknownKeys(command, ['type', 'cursor', 'limit'], 'command')
+    const result: RpcObject = { type }
+    if (command.cursor !== undefined) result.cursor = requireString(command.cursor, 'cursor', { min: 1, max: 4096 })
+    if (command.limit !== undefined) {
+      if (typeof command.limit !== 'number' || !Number.isSafeInteger(command.limit) || command.limit < 1 || command.limit > 256) throw new TypeError('limit must be an integer from 1 to 256')
+      result.limit = command.limit
+    }
+    return result
+  }
+  if (type === 'set_event_filter') {
+    rejectUnknownKeys(command, ['type', 'events', 'messageUpdates'], 'command')
+    const result: RpcObject = { type }
+    if (command.events === null) result.events = null
+    else if (Array.isArray(command.events)) {
+      if (command.events.length > 200) throw new TypeError('events must contain at most 200 entries')
+      result.events = command.events.map((event, index) => requireString(event, `events[${index}]`, { min: 1, max: 128 }))
+    } else throw new TypeError('events must be an array or null')
+    if (command.messageUpdates !== undefined) {
+      if (command.messageUpdates !== 'full' && command.messageUpdates !== 'delta') throw new TypeError('messageUpdates must be full or delta')
+      result.messageUpdates = command.messageUpdates
+    }
+    return result
+  }
+  if (type === 'navigate_tree') {
+    rejectUnknownKeys(command, ['type', 'entryId', 'summarize', 'customInstructions'], 'command')
+    const result: RpcObject = { type, entryId: requireId(command.entryId, 'entryId') }
+    if (command.summarize !== undefined) result.summarize = requireBoolean(command.summarize, 'summarize')
+    if (command.customInstructions !== undefined) result.customInstructions = requireString(command.customInstructions, 'customInstructions', { max: 32_000 })
+    return result
+  }
+  if (type === 'set_label') {
+    rejectUnknownKeys(command, ['type', 'entryId', 'label'], 'command')
+    const result: RpcObject = { type, entryId: requireId(command.entryId, 'entryId') }
+    if (command.label !== undefined) result.label = requireString(command.label, 'label', { max: 256 })
+    return result
+  }
+  if (type === 'export_html') {
+    rejectUnknownKeys(command, ['type', 'outputPath'], 'command')
+    return command.outputPath === undefined ? { type } : { type, outputPath: requireString(command.outputPath, 'outputPath', { max: 4096 }) }
+  }
+  if (type === 'handoff') {
+    rejectUnknownKeys(command, ['type', 'customInstructions'], 'command')
+    return command.customInstructions === undefined ? { type } : { type, customInstructions: requireString(command.customInstructions, 'customInstructions', { max: 32_000 }) }
+  }
   if (type === 'extension_ui_response') {
     const id = requireId(command.id, 'id')
     if (command.cancelled === true) {
