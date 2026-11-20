@@ -225,6 +225,7 @@ pub fn snapshot_files(store: &StateStore, platform: Platform, cwd: &str) -> Vec<
                     additions: 0,
                     deletions: 0,
                     staged,
+                    tracked: true,
                 });
             entry.additions += additions;
             entry.deletions += deletions;
@@ -245,6 +246,7 @@ pub fn snapshot_files(store: &StateStore, platform: Platform, cwd: &str) -> Vec<
                 additions,
                 deletions: 0,
                 staged: false,
+                tracked: false,
             });
         }
     }

@@ -1,5 +1,5 @@
 use omp_core::geometry::{UiGeometry, resolve_layout};
-use omp_core::turn_changes::{FileSnapshot, TurnBaseline, compute_turn_changes};
+use omp_core::turn_changes::{FileSnapshot, TurnBaseline, TurnFileKind, compute_turn_changes};
 
 #[test]
 fn resolves_three_docked_columns_on_a_wide_window() {
@@ -52,12 +52,14 @@ fn turn_changes_only_report_what_this_turn_added() {
             additions: 2,
             deletions: 1,
             staged: false,
+            tracked: true,
         },
         FileSnapshot {
             path: "untouched.ts".into(),
             additions: 4,
             deletions: 0,
             staged: false,
+            tracked: true,
         },
     ]);
     let changes = compute_turn_changes(
@@ -68,18 +70,21 @@ fn turn_changes_only_report_what_this_turn_added() {
                 additions: 5,
                 deletions: 1,
                 staged: false,
+                tracked: true,
             },
             FileSnapshot {
                 path: "untouched.ts".into(),
                 additions: 4,
                 deletions: 0,
                 staged: false,
+                tracked: true,
             },
             FileSnapshot {
                 path: "new.ts".into(),
                 additions: 3,
                 deletions: 2,
                 staged: false,
+                tracked: true,
             },
         ],
     );
@@ -103,6 +108,7 @@ fn a_clean_baseline_reports_a_new_file() {
             additions: 3,
             deletions: 0,
             staged: false,
+            tracked: true,
         }],
     );
     assert_eq!(changes.files.len(), 1);
@@ -117,6 +123,7 @@ fn an_unchanged_turn_produces_no_card() {
         additions: 1,
         deletions: 1,
         staged: false,
+        tracked: true,
     }]);
     let changes = compute_turn_changes(
         &baseline,
@@ -125,7 +132,58 @@ fn an_unchanged_turn_produces_no_card() {
             additions: 1,
             deletions: 1,
             staged: false,
+            tracked: true,
         }],
     );
     assert!(changes.is_empty());
+}
+
+#[test]
+fn turn_changes_classifies_tracked_and_untracked_origins() {
+    let baseline = TurnBaseline::capture([
+        FileSnapshot {
+            path: "previous.txt".into(),
+            additions: 1,
+            deletions: 0,
+            staged: false,
+            tracked: false,
+        },
+        FileSnapshot {
+            path: "gone.txt".into(),
+            additions: 1,
+            deletions: 0,
+            staged: false,
+            tracked: true,
+        },
+    ]);
+    let changes = compute_turn_changes(
+        &baseline,
+        [
+            FileSnapshot {
+                path: "created.txt".into(),
+                additions: 4,
+                deletions: 0,
+                staged: false,
+                tracked: false,
+            },
+            FileSnapshot {
+                path: "previous.txt".into(),
+                additions: 2,
+                deletions: 0,
+                staged: false,
+                tracked: false,
+            },
+            FileSnapshot {
+                path: "tracked.txt".into(),
+                additions: 2,
+                deletions: 0,
+                staged: false,
+                tracked: true,
+            },
+        ],
+    );
+    assert_eq!(changes.files[0].kind, TurnFileKind::CreatedUntracked);
+    assert_eq!(changes.files[1].kind, TurnFileKind::Removed);
+    assert_eq!(changes.files[2].kind, TurnFileKind::PreexistingUntracked);
+    assert_eq!(changes.files[3].kind, TurnFileKind::Tracked);
 }

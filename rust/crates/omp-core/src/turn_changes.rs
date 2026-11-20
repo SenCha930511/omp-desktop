@@ -9,6 +9,16 @@ pub struct FileSnapshot {
     pub additions: u64,
     pub deletions: u64,
     pub staged: bool,
+    pub tracked: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TurnFileKind {
+    Tracked,
+    CreatedUntracked,
+    PreexistingUntracked,
+    Removed,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -22,6 +32,7 @@ pub struct TurnFileDelta {
     pub path: String,
     pub additions: u64,
     pub deletions: u64,
+    pub kind: TurnFileKind,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -70,6 +81,11 @@ pub fn compute_turn_changes(
     for file in after {
         let previous = baseline.files.get(&file.path);
         let is_new = previous.is_none();
+        let kind = match previous {
+            Some(previous) if !previous.tracked => TurnFileKind::PreexistingUntracked,
+            None if !file.tracked => TurnFileKind::CreatedUntracked,
+            _ => TurnFileKind::Tracked,
+        };
         let (delta_additions, delta_deletions) = match previous {
             Some(previous) => (
                 file.additions.saturating_sub(previous.additions),
@@ -86,6 +102,7 @@ pub fn compute_turn_changes(
             path: file.path,
             additions: delta_additions,
             deletions: delta_deletions,
+            kind,
         });
     }
     for (path, previous) in &baseline.files {
@@ -98,6 +115,7 @@ pub fn compute_turn_changes(
             path: path.clone(),
             additions: 0,
             deletions: removed,
+            kind: TurnFileKind::Removed,
         });
     }
     files.sort_by(|left, right| left.path.cmp(&right.path));
