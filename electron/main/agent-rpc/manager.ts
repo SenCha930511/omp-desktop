@@ -435,6 +435,10 @@ export class AgentRpcManager {
       }
       const sessionFile = runtime.snapshot().sessionFile
       if (sessionFile) {
+        // OMP 19 already streamed the manual lifecycle events, but its
+        // CompactionResult carries no tokensAfter. Read the record back so the
+        // divider can show the full token delta; the renderer folds this into
+        // the divider the native end opened instead of appending a second one.
         const record = await this.manualCompactionReader(sessionFile).catch(() => undefined)
         if (record) {
           this.eventSink({

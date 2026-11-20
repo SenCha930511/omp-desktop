@@ -25,16 +25,23 @@ interface PendingRequest {
 }
 
 export interface CompactionWatchdogTimings {
-  /** How often to poll get_state for the compacting flag while the runtime is active. */
+  /** How often to poll get_state while a turn is in flight: settles a lost agent_end and repairs a silently delivered queue. */
   pollIntervalMs: number
+  /**
+   * How often to poll when no turn is in flight. Native compaction events drive
+   * the divider, so this cadence only backs up a harness path that buffers or
+   * drops the lifecycle frames.
+   */
+  idlePollIntervalMs: number
   /** How long to wait for the agent's own compaction_end after a poll reports the compaction over. */
   endGraceMs: number
   /** How long after the last agent activity polling keeps running on an idle runtime. */
   idleWindowMs: number
 }
 
-const DEFAULT_COMPACTION_WATCHDOG_TIMINGS: CompactionWatchdogTimings = {
+export const DEFAULT_COMPACTION_WATCHDOG_TIMINGS: CompactionWatchdogTimings = {
   pollIntervalMs: 2_000,
+  idlePollIntervalMs: 10_000,
   endGraceMs: 4_000,
   idleWindowMs: 30_000,
 }
@@ -154,12 +161,14 @@ export class RpcRuntime {
   // outside info so get_state refreshes (which report isStreaming false
   // during the backoff) cannot clear it.
   private retryPending = false
-  // Compaction watchdog: some OMP agent event paths buffer compaction_start
-  // until the surrounding RPC command settles, so the desktop would learn
-  // about a compaction only after it finished. get_state responses are never
-  // buffered, so polling the compacting flag while the runtime is active lets
-  // the desktop expose running/unknown state; only authoritative completion
-  // events can establish a result. Real events take precedence.
+  // Compaction watchdog: OMP 19 emits auto_compaction_* and manual_compaction_*
+  // events on the same session-event path, so the divider normally follows the
+  // native lifecycle. A harness path that buffers or drops those frames would
+  // leave the desktop blind, so get_state (never buffered) is still polled as a
+  // fallback — promptly while a turn is in flight, where the same probe also
+  // settles a lost agent_end and repairs a silently delivered queue, and at a
+  // slow idle cadence otherwise. Only authoritative completion events can
+  // establish a result; real events take precedence.
   private readonly watchdogTimings: CompactionWatchdogTimings
   private compactionEpisode: 'none' | 'real' | 'synthetic' = 'none'
   private compactionEndFallback: NodeJS.Timeout | null = null
@@ -204,7 +213,15 @@ export class RpcRuntime {
     private readonly adapter: HarnessRpcAdapter = OMP_RPC_ADAPTER,
     private readonly chunkAssemblyTiming: RpcChunkAssemblyTiming = DEFAULT_RPC_CHUNK_ASSEMBLY_TIMING,
   ) {
-    this.watchdogTimings = { ...DEFAULT_COMPACTION_WATCHDOG_TIMINGS, ...watchdogTimings }
+    this.watchdogTimings = {
+      ...DEFAULT_COMPACTION_WATCHDOG_TIMINGS,
+      ...watchdogTimings,
+      // A caller that names only a fast cadence (tests and probes) means both
+      // cadences; otherwise the idle fallback stays slow.
+      idlePollIntervalMs: watchdogTimings.idlePollIntervalMs
+        ?? watchdogTimings.pollIntervalMs
+        ?? DEFAULT_COMPACTION_WATCHDOG_TIMINGS.idlePollIntervalMs,
+    }
     this.info = { runtimeId: this.runtimeId, harness: this.adapter.id, cwd, isStreaming: false, isCompacting: false, sessionActions: emptySessionActionSnapshot() }
     if (args.indexOf('--thinking') >= 0 && args[args.indexOf('--thinking') + 1] === 'auto') this.info.configuredThinkingLevel = 'auto'
     this.resumedSession = args.indexOf('--resume') >= 0
@@ -637,8 +654,22 @@ export class RpcRuntime {
     this.compactionPollTimer = setTimeout(() => {
       this.compactionPollTimer = null
       void this.pollCompactionState().finally(() => this.scheduleCompactionPoll())
-    }, this.watchdogTimings.pollIntervalMs)
+    }, this.compactionPollIntervalMs())
     this.compactionPollTimer.unref()
+  }
+
+  /**
+   * A turn in flight needs the prompt probe (a lost agent_end would otherwise
+   * spin the pill), and so does a queue the desktop still shows as held: omp
+   * can deliver a follow-up without pushing an update, so the tray only
+   * self-heals on a probe. With neither, the native compaction events carry the
+   * lifecycle and the poll is only a slow fallback.
+   */
+  private compactionPollIntervalMs(): number {
+    const held = this.info.sessionActions?.queuedCount ?? 0
+    return this.info.isStreaming || this.retryPending || this.continuationPending || held > 0
+      ? this.watchdogTimings.pollIntervalMs
+      : this.watchdogTimings.idlePollIntervalMs
   }
 
   private async pollCompactionState(): Promise<void> {

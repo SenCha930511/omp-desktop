@@ -111,6 +111,26 @@ describe('agent transport events', () => {
     })
   })
 
+  it('fills the token delta from the session record that follows the native manual end', () => {
+    const started = applyPrimeEvent([streamingMessage()], { type: 'compaction_start', reason: 'manual' })
+    // OMP's manual end carries the harness result, which has no tokensAfter.
+    const native = applyPrimeEvent(started, {
+      type: 'compaction_end', reason: 'manual', willRetry: false, aborted: false,
+      result: { summary: 'Summarized.', firstKeptEntryId: 'kept-1', tokensBefore: 95_000 },
+    })
+    expect(native.at(-1)?.parts[0]).toMatchObject({ type: 'compaction', status: 'done', tokensBefore: 95_000 })
+
+    const recorded = applyPrimeEvent(native, {
+      type: 'compaction_end', reason: 'manual', willRetry: false, aborted: false,
+      result: { summary: 'Summarized.', firstKeptEntryId: 'kept-1', tokensBefore: 95_000, tokensAfter: 21_000 },
+    })
+    // One divider, enriched with the record's post-compaction count.
+    expect(recorded.filter((message) => message.parts.some((part) => part.type === 'compaction'))).toHaveLength(1)
+    expect(recorded.at(-1)?.parts[0]).toMatchObject({
+      type: 'compaction', status: 'done', reason: 'manual', tokensBefore: 95_000, tokensAfter: 21_000,
+    })
+  })
+
   it('does not duplicate the persisted failure outcome and end event', () => {
     const now = vi.spyOn(Date, 'now').mockReturnValue(1_786_074_279_000)
     const events: Record<string, unknown>[] = [

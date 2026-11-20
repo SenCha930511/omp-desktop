@@ -34,6 +34,8 @@ interface FakeOmpOptions {
   promptScript?: string
   /** JavaScript statements the fake runs after answering an abort. */
   abortScript?: string
+  /** JavaScript statements the fake runs instead of answering a compact; it must send the response itself. */
+  compactScript?: string
   /** When false the fake rejects negotiate_protocol like an unsupported version. */
   acceptNegotiate?: boolean
   sessionActions?: Record<string, unknown>
@@ -106,6 +108,12 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     } })
   } else if (command.type === 'get_session_stats') {
     send({ id: command.id, type: 'response', command: 'get_session_stats', success: true, data: { contextUsage: { tokens: 12000, contextWindow: 200000, percent: 6 }, tokens: { input: 9000, output: 3000, cacheRead: 0, cacheWrite: 0, total: 12000 } } })
+  } else if (command.type === 'get_tree') {
+    // Compaction leaf diagnostics: answer immediately so the compact path does
+    // not wait out the 5s readLeafId deadline.
+    send({ id: command.id, type: 'response', command: 'get_tree', success: true, data: { tree: {}, leafId: 'leaf-1' } })
+  } else if (command.type === 'compact') {
+    ${options.compactScript ?? `send({ id: command.id, type: 'response', command: 'compact', success: true, data: { agentInvoked: false } })`}
   } else if (command.type === 'set_thinking_level') {
     send({ id: command.id, type: 'response', command: command.type, success: true })
   } else if (command.type === 'set_ask_dialog') {
@@ -984,6 +992,70 @@ describe('OMP RPC event normalization', () => {
     const ends = events.filter((event) => event.type === 'agent_end')
     expect(ends).toHaveLength(1)
     expect(ends[0].isTerminal).toBe(true)
+  })
+
+  it('renders the native manual compaction lifecycle before the compact command settles', async () => {
+    const fake = fakeOmpAgent({ compactScript: `
+    send({ type: 'manual_compaction_start' })
+    setTimeout(() => {
+      send({ type: 'manual_compaction_end', aborted: false, result: { summary: 'Summarized.', firstKeptEntryId: 'kept-1', tokensBefore: 95000 } })
+      send({ id: command.id, type: 'response', command: 'compact', success: true, data: { agentInvoked: false } })
+    }, 150)` })
+    const manager = ompManager(fake.executable)
+    const events: Array<Record<string, unknown>> = []
+    manager.setEventSink(({ event }) => events.push(event))
+    const runtime = await manager.start({ cwd: fake.cwd })
+
+    const compacting = manager.command(runtime.runtimeId, { type: 'compact' })
+    // The divider must open while the command is still in flight: this is the
+    // buffered-lifecycle case the get_state watchdog used to cover.
+    await waitUntil(() => events.some((event) => event.type === 'compaction_start'))
+    expect(events.filter((event) => event.type === 'compaction_end')).toEqual([])
+    expect(manager.list()[0]).toMatchObject({ isCompacting: true })
+    await compacting
+    await waitUntil(() => events.some((event) => event.type === 'compaction_end'))
+
+    expect(events.filter((event) => event.type === 'compaction_start')).toEqual([{ type: 'compaction_start', reason: 'manual' }])
+    expect(events.find((event) => event.type === 'compaction_end')).toMatchObject({
+      type: 'compaction_end',
+      reason: 'manual',
+      aborted: false,
+      willRetry: false,
+      result: { summary: 'Summarized.', firstKeptEntryId: 'kept-1', tokensBefore: 95_000 },
+    })
+    expect(events.some((event) => String(event.type).startsWith('manual_compaction'))).toBe(false)
+    expect(manager.list()[0]).toMatchObject({ isCompacting: false })
+  })
+
+  it('follows the native manual end and the session record for the token delta', async () => {
+    const scaffold = fakeOmpAgent()
+    const sessionFile = join(scaffold.cwd, 'session-manual.jsonl')
+    writeFileSync(sessionFile, `${JSON.stringify({ type: 'session', id: 'omp-session', cwd: scaffold.cwd, timestamp: '2026-11-20T00:00:00.000Z' })}\n`)
+    const fake = fakeOmpAgent({
+      initialSessionFile: sessionFile,
+      compactScript: `
+    send({ type: 'manual_compaction_start' })
+    require('node:fs').appendFileSync(${JSON.stringify(sessionFile)}, JSON.stringify({ type: 'compaction', id: 'compact-1', parentId: null, timestamp: '2026-11-20T00:01:00.000Z', tokensBefore: 95000, tokensAfter: 21000, summary: 'Summarized.', firstKeptEntryId: 'kept-1' }) + '\\n')
+    send({ type: 'manual_compaction_end', aborted: false, result: { summary: 'Summarized.', firstKeptEntryId: 'kept-1', tokensBefore: 95000 } })
+    send({ id: command.id, type: 'response', command: 'compact', success: true, data: { agentInvoked: false } })`,
+    })
+    const manager = ompManager(fake.executable)
+    const events: Array<Record<string, unknown>> = []
+    manager.setEventSink(({ event }) => events.push(event))
+    const runtime = await manager.start({ cwd: fake.cwd, sessionPath: sessionFile })
+
+    await manager.command(runtime.runtimeId, { type: 'compact' })
+
+    await waitUntil(() => events.filter((event) => event.type === 'compaction_end').length === 2)
+    expect(events.filter((event) => event.type === 'compaction_start')).toHaveLength(1)
+    const [native, recorded] = events.filter((event) => event.type === 'compaction_end')
+    // The harness result has no tokensAfter; the record read after the command
+    // carries it, and the renderer folds it into the same divider.
+    expect(native.result).not.toHaveProperty('tokensAfter')
+    expect(recorded).toMatchObject({
+      reason: 'manual',
+      result: { tokensBefore: 95_000, tokensAfter: 21_000, summary: 'Summarized.', firstKeptEntryId: 'kept-1' },
+    })
   })
 })
 

@@ -183,11 +183,30 @@ export const OMP_RPC_ADAPTER: HarnessRpcAdapter = {
   normalizeEvent: (event) => {
     if (event.type === 'auto_compaction_start') return { ...event, type: 'compaction_start' }
     if (event.type === 'auto_compaction_end') return { ...event, type: 'compaction_end' }
-    // A manual /compact runs as a local harness command: it never emits the
-    // compaction lifecycle events the automatic path uses, only a
-    // command_output completion line. Translate that line into the
-    // compaction_end shape so the live transcript renders the divider (with
-    // token counts) immediately instead of after a session re-entry.
+    // OMP 19 emits the manual lifecycle (RPC `compact`, `/compact`, extension
+    // ctx.compact()) on the same session-event path as the automatic one, so
+    // translate it into the same vocabulary: the divider then shows the
+    // running row and its completion without waiting for a session re-entry.
+    if (event.type === 'manual_compaction_start') return { ...event, type: 'compaction_start', reason: 'manual' }
+    if (event.type === 'manual_compaction_end') {
+      const { skipped, ...rest } = event
+      return {
+        ...rest,
+        type: 'compaction_end',
+        reason: 'manual',
+        // A manual compaction never retries the turn it summarized.
+        willRetry: false,
+        // The renderer reads a benign skip from the severity field the
+        // automatic path already sets; a bare `skipped` would render as a
+        // failure. The upstream `result` carries no tokensAfter — the session
+        // record read after the command supplies it.
+        ...(skipped === true ? { errorSeverity: 'warning' } : {}),
+      }
+    }
+    // Older harness builds (and the builtin slash-command path) print only a
+    // completion line instead of the lifecycle events. Translate that line
+    // into the compaction_end shape so the divider (with both token counts)
+    // still renders immediately.
     if (event.type === 'command_output' && typeof event.text === 'string') {
       const match = /^Compaction complete\. Tokens: (\d+) -> (\d+) \(saved -?\d+\)\.$/.exec(event.text)
       if (match) {
