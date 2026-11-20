@@ -179,19 +179,11 @@ struct SidebarNavItem {
     active: bool,
 }
 
-/// Window width below which the workspace draws the compact layout.
-///
-/// The geometry module keeps its own breakpoints for the persisted pane
-/// widths; this one is the render's: a narrower window collapses the right
-/// pane and the toolbar's `Details` toggle opens it over the transcript.
-pub const COMPACT_LAYOUT_BREAKPOINT: f32 = 1100.0;
+/// The core geometry model owns this cutoff so rendering and docking cannot diverge.
+pub const COMPACT_LAYOUT_BREAKPOINT: f32 = omp_core::geometry::COMPACT_BREAKPOINT as f32;
 
-/// Whether a window `width` draws the compact single-pane layout.
-///
-/// Pure so the parity suite and the unit tests can pin the decision without a
-/// window; `Workspace` stores the answer it read from its bounds.
 pub fn compact_layout(width: f32) -> bool {
-    width < COMPACT_LAYOUT_BREAKPOINT
+    width <= COMPACT_LAYOUT_BREAKPOINT
 }
 
 fn session_path_is_inside(session_path: &str, project: &ProjectRecord) -> bool {
@@ -11176,7 +11168,9 @@ mod tests {
     /// the breakpoint stays wide, so the existing three-pane layout survives.
     #[test]
     fn compact_layout_breakpoint_splits_wide_and_narrow_windows() {
-        assert!(!compact_layout(COMPACT_LAYOUT_BREAKPOINT));
+        assert_eq!(COMPACT_LAYOUT_BREAKPOINT, 980.0);
+        assert!(compact_layout(COMPACT_LAYOUT_BREAKPOINT));
+        assert!(!compact_layout(COMPACT_LAYOUT_BREAKPOINT + 1.0));
         assert!(!compact_layout(1400.0));
         assert!(!compact_layout(1280.0));
         assert!(compact_layout(COMPACT_LAYOUT_BREAKPOINT - 1.0));
