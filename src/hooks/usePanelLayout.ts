@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { WorkspaceView } from '@/types/api'
 
 export const INSPECTOR_MIN = 340
+export const INSPECTOR_MAX = 660
 export const INSPECTOR_DEFAULT = 520
 export const SIDEBAR_MIN = 180
 export const SIDEBAR_DEFAULT = 248
@@ -11,6 +12,32 @@ export const TERMINAL_MIN = 170
 export const TERMINAL_DEFAULT = 310
 export const WORKSPACE_ROW_MIN = 220
 export const SMALLEST_LAYOUT_BREAKPOINT = 720
+/** The toolbar is laid out before the workspace row, so its height is already unavailable. */
+export const TOOLBAR_HEIGHT = 52
+
+export interface PanelSizes {
+  sidebarWidth: number
+  inspectorWidth: number
+  sideChatWidth: number
+  terminalHeight: number
+}
+
+export interface PanelViewport {
+  width: number
+  height: number
+}
+
+export function clampPanelSizes(sizes: PanelSizes, viewport: PanelViewport): PanelSizes {
+  const sidebarWidth = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, sizes.sidebarWidth))
+  const inspectorMax = Math.max(INSPECTOR_MIN, Math.min(INSPECTOR_MAX, viewport.width - sidebarWidth - CHAT_MIN))
+  const terminalMax = Math.max(TERMINAL_MIN, viewport.height - TOOLBAR_HEIGHT - WORKSPACE_ROW_MIN)
+  return {
+    sidebarWidth,
+    inspectorWidth: Math.min(inspectorMax, Math.max(INSPECTOR_MIN, sizes.inspectorWidth)),
+    sideChatWidth: Math.min(inspectorMax, Math.max(INSPECTOR_MIN, sizes.sideChatWidth)),
+    terminalHeight: Math.min(terminalMax, Math.max(TERMINAL_MIN, sizes.terminalHeight)),
+  }
+}
 
 const readPanelSize = (key: string, fallback: number) => {
   if (typeof window === 'undefined') return fallback
@@ -37,13 +64,26 @@ export function usePanelLayout({
 }: UsePanelLayoutOptions) {
   const [compactLayout, setCompactLayout] = useState(() => window.matchMedia('(max-width: 980px)').matches)
   const [smallestLayout, setSmallestLayout] = useState(() => window.matchMedia(`(max-width: ${SMALLEST_LAYOUT_BREAKPOINT}px)`).matches)
+  const initialSizes = useMemo(
+    () =>
+      clampPanelSizes(
+        {
+          sidebarWidth: readPanelSize('omp-desktop.sidebar-width', SIDEBAR_DEFAULT),
+          inspectorWidth: readPanelSize('omp-desktop.inspector-width', INSPECTOR_DEFAULT),
+          sideChatWidth: readPanelSize('omp-desktop.side-chat-width', INSPECTOR_DEFAULT),
+          terminalHeight: readPanelSize('omp-desktop.terminal-height', TERMINAL_DEFAULT),
+        },
+        { width: window.innerWidth, height: window.innerHeight },
+      ),
+    [],
+  )
   const [smallestSidebarAllowed, setSmallestSidebarAllowed] = useState(false)
   const [smallestInspectorAllowed, setSmallestInspectorAllowed] = useState(false)
-  const [inspectorWidth, setInspectorWidth] = useState(() => readPanelSize('omp-desktop.inspector-width', INSPECTOR_DEFAULT))
-  const [sideChatWidth, setSideChatWidth] = useState(() => readPanelSize('omp-desktop.side-chat-width', INSPECTOR_DEFAULT))
-  const [sidebarWidth, setSidebarWidth] = useState(() => readPanelSize('omp-desktop.sidebar-width', SIDEBAR_DEFAULT))
-  const [terminalHeight, setTerminalHeight] = useState(() => readPanelSize('omp-desktop.terminal-height', TERMINAL_DEFAULT))
-  const [inspectorMax, setInspectorMax] = useState(660)
+  const [inspectorWidth, setInspectorWidth] = useState(initialSizes.inspectorWidth)
+  const [sideChatWidth, setSideChatWidth] = useState(initialSizes.sideChatWidth)
+  const [sidebarWidth, setSidebarWidth] = useState(initialSizes.sidebarWidth)
+  const [terminalHeight, setTerminalHeight] = useState(initialSizes.terminalHeight)
+  const [inspectorMax, setInspectorMax] = useState(INSPECTOR_MAX)
   const [terminalMax, setTerminalMax] = useState(520)
   const workspaceRowRef = useRef<HTMLDivElement>(null)
   const sessionWorkspaceRef = useRef<HTMLDivElement>(null)
@@ -119,7 +159,6 @@ export function usePanelLayout({
   useEffect(() => { window.localStorage.setItem('omp-desktop.inspector-width', String(inspectorWidth)) }, [inspectorWidth])
   useEffect(() => { window.localStorage.setItem('omp-desktop.side-chat-width', String(sideChatWidth)) }, [sideChatWidth])
   useEffect(() => { window.localStorage.setItem('omp-desktop.sidebar-width', String(Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, sidebarWidth)))) }, [sidebarWidth])
-  useEffect(() => setSidebarWidth((value) => Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, value))), [])
   useEffect(() => { window.localStorage.setItem('omp-desktop.terminal-height', String(terminalHeight)) }, [terminalHeight])
 
   return {
