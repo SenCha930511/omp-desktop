@@ -131,7 +131,7 @@ OMP 的 `notice` 包含 session 寫入失敗或搬移的提示。TUI 有顯示�
 | slash 加圖片 | `/skill:*` 可帶圖片 | 一律拒絕 | 不相容 |
 | 普通圖片輸入 | 交由 OMP 輸入流程 | 支援 PNG/JPEG/GIF/WebP，最多 8 張 | 有額外限制 |
 | 圖片草稿 | 依 TUI editor 生命週期 | 記憶體暫存，與文字持久化不同，重啟不保證保留 | 設計差異 |
-| 新增 session | 建立 durable 空 session 邊界 | 先建立 GUI 草稿 workspace，之後才啟動 | 可接受設計，但跨程序可見性不同 |
+| 新增 session | 建立 durable 空 session 邊界 | 純 GUI 草稿 workspace；首個 prompt 才啟動並建立 session | 刻意不同：未送出前不佔 sidebar、不產生空檔 |
 | session fork／branch | 分別有完整 fork、指定 leaf 分支與導航語意 | sidebar 複製 JSONL，非完整等價 | 目前有功能及正確性問題 |
 | session 刪除 | `dropSession` 刪除 session 與附屬 artifacts | 刪 JSONL，附屬目錄可能殘留 | 清理行為不同 |
 | 閒置程序 | 終端機中的 TUI 程序持續存在 | 新 runtime 可回收舊 idle runtime；也有 idle retention | 刻意節省資源，暫存 extension 狀態需重建 |
@@ -269,7 +269,7 @@ GUI 的專案、Git、瀏覽器及排程可以保留。會新增工具或改變 
 5. Transcript 依上游 `activeLeafId` 規則選 active branch，包含 null、舊版未帶欄位的 fallback 與晚到的 off-branch 結果。Live 顯示與重新開啟後應一致。
 6. 將「完整 fork」、「從指定訊息分支」、「tree 導航／rewind」做成不同操作。使用實際可用的 OMP 命令；不再以只改 header ID 的檔案複製替代。完整 fork 或導航若缺公開 RPC，列為上游接入工作。
 7. 由 OMP 管理分支 artifacts 與刪除清理；刪除時釐清僅刪選中 session 的語意，不連帶刪 parent／siblings，也不移除仍被其他 session 使用的共用資料。
-8. 「新工作階段」比照 TUI 建立 durable 空 session 邊界。尚未建立的輸入框草稿另行表示，不能讓使用者以為已建立卻仍被其他程序續接上一個 session。
+8. 「新工作階段」維持純 GUI 草稿；首個 prompt 才建立 session。未送出前不得出現在 sidebar，也不得先產生空 JSONL 檔。
 9. 清除相關錯誤註解與 successor fixture 假設。恢復原本被隱藏的合法分支；不要用刪檔或重新合併來修列表。檢查已儲存的 pin、archive、選取路徑能否精確保留，無法判定的歷史關係不可猜測。
 
 驗收：原對話＋兩個 fork 全部可見且可獨立續接；對 fork 再分支成功；artifact 可讀；activeLeaf 與 TUI 一致；compact 不額外建立 GUI session；真正衝突時保留雙方資料並顯示原因。跨程序測試以各自可寫的分支進行，同檔競爭時驗證鎖定拒絕，不強制讓兩程序同時寫入。

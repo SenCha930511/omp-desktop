@@ -386,6 +386,9 @@ export class AgentRpcManager {
     if (Array.isArray(command.images) && command.images.length > 0 && runtime.snapshot().imageInputSupported === false) {
       throw new Error('The active model does not accept images. Choose a vision model and try again.')
     }
+    if (command.type === 'bash' && command.excludeFromContext === true && runtime.snapshot().bashExcludeFromContext !== true) {
+      throw new Error('This OMP version does not support excluding shell output from the model context. Update OMP and try again.')
+    }
     if (this.sessionMutations.has(runtime.runtimeId)) throw new Error('Session identity is being changed')
     // 診斷用 leaf 查詢是唯讀 get_tree；失敗/逾時降級為未知，不阻擋 compact
     if (command.type === 'compact') recordSessionDiagnostic('compact-requested', runtime.snapshot(), undefined, await runtime.readLeafId())

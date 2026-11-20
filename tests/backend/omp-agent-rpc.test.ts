@@ -46,6 +46,8 @@ interface FakeOmpOptions {
   catalogModels?: unknown[]
   /** get_state 回報的 usageLimit 初值;可被 promptScript 改寫。 */
   usageLimit?: 'low_priority' | 'wrap_up'
+  /** When false the ready frame omits supportsBashExcludeFromContext. */
+  bashExcludeFromContext?: boolean
 }
 
 function fakeOmpAgent(options: FakeOmpOptions = {}): { cwd: string; executable: string } {
@@ -68,7 +70,7 @@ let streaming = false
 let askDialogEnabled = false
 let usageLimitVar = ${JSON.stringify(fakeUsageLimit)}
 let sessionFileVar = ${JSON.stringify(options.initialSessionFile ?? null)}
-send({ type: 'ready', protocolVersion: 1, supportedProtocolVersions: [1, 2] })
+send({ type: 'ready', protocolVersion: 1, supportedProtocolVersions: [1, 2]${options.bashExcludeFromContext === false ? '' : ', supportsBashExcludeFromContext: true'} })
 send({ type: 'available_commands_update', commands: [{ name: 'help' }] })
 send({ type: 'fake_argv', argv: process.argv.slice(2) })
 readline.createInterface({ input: process.stdin }).on('line', (line) => {
@@ -372,6 +374,7 @@ describe('OMP RPC handshake', () => {
     expect(runtime.slowModeEnabled).toBe(false)
     expect(runtime.fastModeAvailable).toBe(true)
     expect(runtime.fastModeSupported).toBe(true)
+    expect(runtime.bashExcludeFromContext).toBe(true)
     // contextUsage arrives directly in get_state data.
     expect(runtime.contextUsage).toEqual({ tokens: 12_000, contextWindow: 200_000, percent: 6 })
     // Stats without a cost field (older builds) still surface token totals with a null cost.
@@ -379,6 +382,16 @@ describe('OMP RPC handshake', () => {
     // Unsolicited pre-request frames are tolerated and forwarded for the renderer to ignore.
     await waitUntil(() => events.some((event) => event.type === 'ready'))
     expect(events.some((event) => event.type === 'available_commands_update')).toBe(true)
+  })
+
+  it('rejects excluded bash when the ready frame did not advertise it', async () => {
+    const fake = fakeOmpAgent({ bashExcludeFromContext: false })
+    const manager = ompManager(fake.executable)
+
+    const runtime = await manager.start({ cwd: fake.cwd })
+
+    expect(runtime.bashExcludeFromContext).toBe(false)
+    await expect(manager.command(runtime.runtimeId, { type: 'bash', command: 'ls', excludeFromContext: true })).rejects.toThrow('does not support excluding shell output')
   })
 
   it('fails the handshake when protocol negotiation is rejected', async () => {

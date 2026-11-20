@@ -275,6 +275,8 @@ export interface RuntimeInfo {
   sessionFile?: string
   cwd: string
   isStreaming: boolean
+  /** ready.supportsBashExcludeFromContext; absent on builds that cannot omit `!!` output. */
+  bashExcludeFromContext?: boolean
   sessionActions?: SessionActionSnapshot
   isCompacting?: boolean
   model?: { provider?: string; id?: string; name?: string } | null

@@ -299,6 +299,18 @@ export function useWorkspaceRuntime({
     setActiveSessionId(followed.id)
   }, [])
 
+  // A draft prompt starts a runtime before its JSONL exists; the catalog row
+  // can arrive after the prompt is admitted. Bind the owned runtime's file to
+  // that row as soon as it appears, without resetting the in-flight transcript.
+  useEffect(() => {
+    const current = workspaceRef.current
+    const owner = runtimeOwnerRef.current
+    if (!runtime?.sessionFile || current.session) return
+    if (owner?.runtimeId !== runtime.runtimeId || owner.generation !== current.generation) return
+    const match = sessions.find((session) => session.harness === harnessRef.current && session.filePath === runtime.sessionFile)
+    if (match) adoptSessionId(match)
+  }, [adoptSessionId, runtime, sessions])
+
 
   const reconcileRuntime = useCallback(async (generation: number) => {
     if (!bridge) return

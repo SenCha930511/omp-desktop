@@ -156,8 +156,9 @@ export const OMP_RPC_ADAPTER: HarnessRpcAdapter = {
     }
     const computerUseSkillPath = input.environment.GOOEYPI_COMPUTER_USE_SKILL_PATH
     if (computerUseSkillPath && !unsafeArgValue(computerUseSkillPath)) args.push('--append-system-prompt', computerUseSkillPath)
-    // OMP has no --skill flag: app capabilities are injected as explicit,
-    // self-contained extensions while normal OMP skills remain discovery-based.
+    // OMP has no per-skill --skill <path> flag; --skills only filters the
+    // discovery roots. App capabilities stay explicit extensions while normal
+    // OMP skills remain discovery-based.
     for (const injection of extensionInjections('omp')) {
       const extensionPath = input.environment[injection.environmentVariable]
       if (extensionPath && !unsafeArgValue(extensionPath)) args.push('--extension', extensionPath)

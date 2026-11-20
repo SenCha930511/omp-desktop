@@ -41,7 +41,7 @@ afterEach(async () => {
   vi.unstubAllGlobals()
 })
 
-function renderComposer(onSend = vi.fn(), imageInputSupported = true, busy = false, messageEnterAction: 'queue' | 'steer' = 'queue', contextUsage?: PrimeContextUsage, executingModel?: RuntimeInfo['executingModel'], harnessTokensPerSecond?: number) {
+function renderComposer(onSend = vi.fn(), imageInputSupported = true, busy = false, messageEnterAction: 'queue' | 'steer' = 'queue', contextUsage?: PrimeContextUsage, executingModel?: RuntimeInfo['executingModel'], harnessTokensPerSecond?: number, availableCommands?: RuntimeInfo['availableCommands']) {
   act(() => root.render(<Composer
     busy={busy}
     model="provider/vision"
@@ -58,6 +58,7 @@ function renderComposer(onSend = vi.fn(), imageInputSupported = true, busy = fal
     harnessTokensPerSecond={harnessTokensPerSecond}
     executingModel={executingModel}
     skills={[]}
+    availableCommands={availableCommands}
     onModelChange={vi.fn()}
     onEffortChange={vi.fn()}
     onFastChange={vi.fn()}
@@ -344,6 +345,19 @@ describe('Composer image ingestion', () => {
 
     await pickFiles([pastedPng()])
     expect(container.querySelector('.composer-attachment')?.textContent).toContain('pasted.png')
+  })
+
+  it('opens native skill commands from the add menu', () => {
+    renderComposer(vi.fn(), true, false, 'queue', undefined, undefined, undefined, [{ name: 'skill:officecli', source: 'skill', description: 'Office documents' }])
+
+    act(() => (container.querySelector('button[aria-label="Add context"]') as HTMLButtonElement).click())
+    const skills = Array.from(container.querySelectorAll<HTMLButtonElement>('.composer-menu button')).find((button) => button.textContent?.includes('Skills'))
+    expect(skills).toBeDefined()
+    act(() => skills?.click())
+
+    const textarea = container.querySelector('textarea') as HTMLTextAreaElement
+    expect(textarea.value).toBe('/skill:')
+    expect(container.querySelector('[role="listbox"]')?.textContent).toContain('/skill:officecli')
   })
 
   it('closes the add menu from its trigger or an outside click', () => {

@@ -5,6 +5,10 @@ with the running CLI's `available_commands_update` catalog, including installed
 extension, skill, custom and file commands. Aliases and declared subcommands
 are searchable; select one, supply its arguments, then send it.
 
+Installed skills appear as `/skill:<name>`. Choose **Skills** from the **+** menu to
+open the skill list directly; sending the command loads the skill through OMP's
+native dispatcher.
+
 The desktop menu keeps commands without an equivalent desktop action and custom
 commands. Model selection (`/model`, `/switch`), reasoning effort (`/effort`),
 speed (`/fast`, `/slow`) and failed-turn retry (`/retry`) use the existing desktop

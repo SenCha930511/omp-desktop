@@ -6,7 +6,7 @@ import type { RpcObject } from './types'
 const SIMPLE_COMMANDS = new Set([
   'abort', 'abort_and_restore_queue', 'new_session', 'get_state', 'cycle_model', 'get_available_models', 'cycle_thinking_level',
   'abort_retry', 'get_session_stats', 'get_branch_messages', 'get_tree', 'get_last_assistant_text',
-  'get_messages', 'get_commands', 'get_available_commands', 'get_subagents',
+  'get_messages', 'get_available_commands', 'get_subagents',
   // abort_bash takes no parameters (upstream wire/commands.ts); it cancels the
   // shell command the user launched through the `bash` command below.
   'abort_bash',
@@ -164,11 +164,14 @@ export async function validateRpcCommand(raw: unknown, validateSessionPath: (pat
     // renderer 本來就能透過 prompt/工具核准讓 agent 執行任意 shell;這裡開放
     // 的是同一台機器、同一使用者權限下的「明確使用者指令」通道,不經過模型
     // 也不經過工具核准,因此 schema 只做結構驗證(型別、非空、長度上限),
-    // 指令內容原樣轉送——不嘗試過濾 shell 語法(上游以使用者 shell 執行,
-    // 任何過濾都只是假安全感)。上游 wire 沒有 excludeFromContext 參數,
-    // `!!`(排除出 context)在 renderer 層拒絕,不在此放行語意不符的欄位。
-    rejectUnknownKeys(command, ['type', 'command'], 'command')
-    return { type, command: requireString(command.command, 'command', { min: 1, max: MAX_BASH_COMMAND_CHARS }) }
+    // 上游 19.0.1 wire: bash { command, excludeFromContext? }. The capability
+    // is advertised in the ready frame; the manager rejects the flag when the
+    // live runtime did not report it, so an older CLI cannot silently pollute
+    // the model context with `!!` output.
+    rejectUnknownKeys(command, ['type', 'command', 'excludeFromContext'], 'command')
+    const result: RpcObject = { type, command: requireString(command.command, 'command', { min: 1, max: MAX_BASH_COMMAND_CHARS }) }
+    if (command.excludeFromContext !== undefined && requireBoolean(command.excludeFromContext, 'excludeFromContext')) result.excludeFromContext = true
+    return result
   }
   if (type === 'set_auto_compaction' || type === 'set_auto_retry') {
     rejectUnknownKeys(command, ['type', 'enabled'], 'command')

@@ -69,8 +69,19 @@ export const DEFERRED_SLASH_COMMANDS = [
 // 因此 /queue 維持擋住——缺口記錄於此與 docs/gui-tui-parity-audit。
 export const DEFERRED_TUI_MODES = ['plan', 'plan-review', 'vibe', 'guided-goal', 'loop', 'queue'] as const
 
-export function parseSlashInvocation(prompt: string): { name: string; args: string } | undefined {
-  const match = /^\/([^\s:]+)(?:[\s:]([\s\S]*))?$/.exec(prompt.trim())
+export function parseSlashInvocation(prompt: string, catalog?: readonly SlashCommand[]): { name: string; args: string } | undefined {
+  const trimmed = prompt.trim()
+  // Namespaced commands (`/skill:officecli`) are one catalog name, not a
+  // subcommand separator. Bare colon commands keep the legacy split so
+  // `/todo:edit` still resolves to the `todo` subcommand.
+  const token = /^\/(\S+)(?:\s+([\s\S]*))?$/.exec(trimmed)
+  if (token) {
+    const name = token[1]
+    if (name.toLowerCase().startsWith('skill:') || catalog?.some((command) => command.name.toLowerCase() === name.toLowerCase())) {
+      return { name, args: token[2]?.trim() ?? '' }
+    }
+  }
+  const match = /^\/([^\s:]+)(?:[\s:]([\s\S]*))?$/.exec(trimmed)
   return match ? { name: match[1], args: match[2]?.trim() ?? '' } : undefined
 }
 
@@ -150,7 +161,7 @@ export function tuiOnlySubcommand(name: string, args: string): boolean {
 export const isBackgroundedSlashCommand = (prompt: string): boolean => /^\/modelpreset\s+switch\s+\S/.test(prompt.trim())
 
 export function deferredSlashCommand(prompt: string, catalog?: readonly SlashCommand[]): string | undefined {
-  const invocation = parseSlashInvocation(prompt)
+  const invocation = parseSlashInvocation(prompt, catalog)
   if (!invocation) return
   // 上游別名(/q、/providers、/rewind …)正規化後再分類;catalog 未載入時
   // 退回既有小寫 name,DEFERRED 清單裡的手寫別名仍兜底。GUI 自有命令
@@ -305,7 +316,7 @@ export function alwaysLocalSlashCommand(name: string, catalog?: readonly SlashCo
 }
 
 export function busySlashDisposition(prompt: string, catalog?: readonly SlashCommand[]): BusySlashDisposition {
-  const invocation = parseSlashInvocation(prompt)
+  const invocation = parseSlashInvocation(prompt, catalog)
   if (!invocation) return { kind: 'queue-until-idle' }
   // 上游 dispatch 以主名為主鍵、別名指向同一命令;GUI 分類以 catalog 反查
   // 主名,同時保留打出原名(GUI 自有命令如 /status 優先於上游同名別名)。

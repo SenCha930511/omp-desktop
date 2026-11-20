@@ -637,6 +637,7 @@ export class RpcRuntime {
   private handleFrame(raw: unknown): void {
     if (!isRecord(raw) || typeof raw.type !== 'string') return
     this.receivedFrame = true
+    if (raw.type === 'ready') this.info.bashExcludeFromContext = raw.supportsBashExcludeFromContext === true
     if (raw.type !== 'response') { this.lastActivityAt = Date.now(); this.scheduleCompactionPoll() }
     if (raw.type === 'response' && typeof raw.id === 'string') {
       const pending = this.pending.get(raw.id)

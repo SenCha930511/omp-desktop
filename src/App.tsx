@@ -664,8 +664,6 @@ export default function App() {
     selectProject,
     selectSession,
     newSession,
-    openDraftSession,
-    discardDraftSession,
     navigate,
     renameSession,
     deleteSession,
@@ -1376,8 +1374,6 @@ export default function App() {
               onHarnessUpdateAction={openHarnessUpdatePrompt}
               projectSortMode={settingsState.settings.projectSortMode}
               {...sidebarActions}
-              onSelectDraftSession={openDraftSession}
-              onDiscardDraftSession={discardDraftSession}
               overlay={layout.compactLayout}
               platform={platform}
             />

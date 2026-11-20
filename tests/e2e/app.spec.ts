@@ -704,8 +704,6 @@ test.describe('OMP Desktop desktop smoke', () => {
       try {
         const environment = hermeticEnvironment(fixture.home, fixture.ompExecutable, fixture.cuaExecutable, noOmp)
         if (testInfo.title === 'shows a new conversation immediately while the harness starts') environment.OMP_FIXTURE_START_DELAY_MS = '2500'
-        // The durable new-session flight adopts whatever get_state reports; the fixture reports the pre-existing session file, so on slow runners the adoption lands inside this test's hover/click window and detaches the placeholder. Stalling get_state keeps the flight in flight until the discard bumps the generation.
-        if (testInfo.title === 'discards the draft placeholder without a confirmation dialog and resumes the newest session') environment.OMP_FIXTURE_START_DELAY_MS = '5000'
         if (testInfo.title === 'Command-Q backgrounds the window and menu-bar Open restores it') environment.OMP_DESKTOP_E2E_HIDE_WINDOWS = '0'
         if (testInfo.title === 'offers to update omp when the startup check finds a newer version') environment.OMP_FIXTURE_UPDATE_AVAILABLE = '17.3.0'
         app = await electron.launch({
@@ -2000,13 +1998,10 @@ test.describe('OMP Desktop desktop smoke', () => {
     }).toBe('1')
     await projectSession.click()
 
-    // The draft placeholder owns selection instead of the project row.
-    const placeholder = page.locator('.session-row-wrap.is-placeholder')
-    await expect(placeholder).toHaveCount(1)
-    await expect(placeholder).toHaveClass(/is-selected/)
-    await expect(placeholder).toContainText('Untitled session')
-    await expect(projectRow).not.toHaveClass(/is-selected/)
-    await expect(page.locator('.session-row-wrap.is-selected')).toHaveCount(1)
+    // The empty draft selects the project row and fabricates no session row.
+    await expect(projectRow).toHaveClass(/is-selected/)
+    await expect(page.locator('.session-row-wrap.is-selected')).toHaveCount(0)
+    await expect(page.locator('.session-row-wrap.is-placeholder')).toHaveCount(0)
     await expect(page.getByRole('combobox', { name: 'Message OMP' })).toHaveValue('')
   })
 
@@ -2018,11 +2013,10 @@ test.describe('OMP Desktop desktop smoke', () => {
     await sessionRowWrap.getByRole('button', { name: /^Delete / }).click()
     await page.getByRole('dialog').getByRole('button', { name: 'Delete permanently', exact: true }).click()
 
-    // Deleting the session on screen lands the user on the draft placeholder —
-    // a blank composer instead of a corpse.
-    const placeholder = page.locator('.session-row-wrap.is-placeholder')
-    await expect(placeholder).toHaveCount(1)
-    await expect(placeholder).toHaveClass(/is-selected/)
+    // Deleting the session on screen leaves an empty draft; the project row
+    // carries selection and no session row is fabricated.
+    await expect(page.locator('.session-row-wrap.is-placeholder')).toHaveCount(0)
+    await expect(page.locator('.project-row').first()).toHaveClass(/is-selected/)
     const composer = page.getByRole('combobox', { name: 'Message OMP' })
     await expect(composer).toHaveValue('')
     await expect(page.locator('.toast', { hasText: 'Conversation deleted.' })).toBeVisible()
@@ -2042,9 +2036,8 @@ test.describe('OMP Desktop desktop smoke', () => {
     await sessionRowWrap.getByRole('button', { name: /^Delete / }).click()
     await page.getByRole('dialog').getByRole('button', { name: 'Delete permanently', exact: true }).click()
 
-    const placeholder = page.locator('.session-row-wrap.is-placeholder')
-    await expect(placeholder).toHaveCount(1)
-    await expect(placeholder).toHaveClass(/is-selected/)
+    await expect(page.locator('.session-row-wrap.is-placeholder')).toHaveCount(0)
+    await expect(page.locator('.project-row').first()).toHaveClass(/is-selected/)
     await expect(composer).toHaveValue('')
     await expect(page.locator('.transcript .user-bubble').first()).toHaveCount(0)
   })
@@ -2056,8 +2049,8 @@ test.describe('OMP Desktop desktop smoke', () => {
     const projectSession = projectRow.getByRole('button', { name: /^New session in / })
     await projectRow.hover()
     await projectSession.click()
-    await expect(page.locator('.session-row-wrap.is-placeholder')).toHaveClass(/is-selected/)
-    await expect(page.locator('.session-row-wrap.is-selected')).toHaveCount(1)
+    await expect(projectRow).toHaveClass(/is-selected/)
+    await expect(page.locator('.session-row-wrap.is-selected')).toHaveCount(0)
 
     const composer = page.getByRole('combobox', { name: 'Message OMP' })
     await composer.fill('/btw')
@@ -2067,33 +2060,21 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(page.locator('.transcript .user-bubble')).toHaveCount(0)
     expect(existsSync(join(fixtureRoot, 'prompt-args.json'))).toBe(false)
 
-    // A real prompt then covers the hint like any queued note, and the draft
-    // placeholder adopts the session its daemon started (the hermetic daemon
-    // reuses the fixture session file for fresh starts).
-    await composer.fill('/modelpreset list')
-    await composer.press('Enter')
+    // A real prompt starts the session its daemon created; the sidebar row
+    // appears only after admission.
     await expect(page.locator('.conversation-hint')).toHaveCount(0)
     await expect(page.locator('.session-row-wrap.is-placeholder')).toHaveCount(0)
-    // The prompt rode the New-session boundary runtime, so the boundary's
-    // own row (not the deleted fixture session) owns the selection.
-    await expect(page.locator('.session-row-wrap').filter({ hasText: 'Untitled session' })).toHaveClass(/is-selected/)
+    await expect(page.locator('.session-row-wrap.is-selected')).toHaveCount(1)
     await expect(page.locator('.transcript .user-bubble').filter({ hasText: '/modelpreset list' })).toHaveCount(0)
   })
 
-  test('adopts the session started by the first prompt in place of the draft placeholder', async () => {
+  test('starts the session on the first prompt and selects its row', async () => {
     // Let the boot's auto-selection settle first: clicking New during the
     // bootstrap workspace reset races the flight against a generation bump.
     await expect(page.locator('.session-row-wrap.is-selected')).toHaveCount(1)
     const projectRow = page.locator('.project-row').first()
     await projectRow.hover()
     await projectRow.getByRole('button', { name: /^New session in / }).click()
-
-    const placeholder = page.locator('.session-row-wrap.is-placeholder')
-    await expect(placeholder).toHaveCount(1)
-    await expect(placeholder).toHaveClass(/is-selected/)
-    await expect(placeholder).toContainText('Untitled session')
-    await expect(projectRow).not.toHaveClass(/is-selected/)
-    await expect(page.locator('.project-row.is-selected')).toHaveCount(0)
 
     const composer = page.getByRole('combobox', { name: 'Message OMP' })
     await composer.fill('Draft placeholder adoption probe')
@@ -2107,39 +2088,13 @@ test.describe('OMP Desktop desktop smoke', () => {
       throw error
     }
 
-    // The hermetic daemon reports the fixture session file for fresh starts,
-    // so its row replaces the placeholder and keeps the turn that created it.
-    await expect(placeholder).toHaveCount(0)
-    // The prompt rode the New-session boundary runtime, so the boundary's own
-    // row replaces the placeholder (no second session file is spawned).
-    const adopted = page.locator('.session-row-wrap').filter({ hasText: 'Untitled session' })
-    await expect(adopted).toHaveClass(/is-selected/)
+    // The hermetic daemon reports the fixture session file for fresh starts.
+    // The first admitted prompt indexes the row and keeps the turn that
+    // created it; no placeholder existed before this point.
+    await expect(page.locator('.session-row-wrap.is-placeholder')).toHaveCount(0)
     await expect(page.locator('.session-row-wrap.is-selected')).toHaveCount(1)
     await expect(page.locator('.transcript .user-bubble').filter({ hasText: 'Draft placeholder adoption probe' })).toHaveCount(1)
     await expect(page.locator('.transcript').getByText('Fixture response.', { exact: true })).toBeVisible()
-  })
-
-  test('discards the draft placeholder without a confirmation dialog and resumes the newest session', async () => {
-    const projectRow = page.locator('.project-row').first()
-    await projectRow.hover()
-    await projectRow.getByRole('button', { name: /^New session in / }).click()
-
-    const placeholder = page.locator('.session-row-wrap.is-placeholder')
-    await expect(placeholder).toHaveCount(1)
-    await expect(placeholder).toHaveClass(/is-selected/)
-
-    await placeholder.hover()
-    await placeholder.getByRole('button', { name: 'Delete Untitled session' }).click()
-
-    await expect(page.getByRole('dialog')).toHaveCount(0)
-    await expect(placeholder).toHaveCount(0)
-    const restored = page.locator('.session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' })
-    await expect(restored).toHaveClass(/is-selected/)
-    await expect(page.locator('.session-row-wrap.is-selected')).toHaveCount(1)
-    // Selection belongs to the session row while its project is expanded; the
-    // project row carries it only when collapsed.
-    await expect(projectRow).not.toHaveClass(/is-selected/)
-    await expect(page.locator('.toast')).toHaveCount(0)
   })
 
   test('asks side questions from the dock next to the live session', async () => {

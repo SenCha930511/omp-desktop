@@ -65,6 +65,18 @@ describe('slash command catalog', () => {
     expect(deferredSlashCommand('/effort high')).toBeUndefined()
     expect(parseSlashCommands([null, { name: 3 }, { name: 'context' }])).toEqual([{ name: 'context' }])
   })
+
+  it('treats namespaced skill commands as one catalog name', () => {
+    expect(parseSlashInvocation('/skill:officecli make a deck')).toEqual({ name: 'skill:officecli', args: 'make a deck' })
+    expect(parseSlashInvocation('/skill:officecli')).toEqual({ name: 'skill:officecli', args: '' })
+    expect(parseSlashInvocation('/skill:officecli', [{ name: 'skill:officecli', source: 'skill' }])).toEqual({ name: 'skill:officecli', args: '' })
+    expect(deferredSlashCommand('/skill:officecli')).toBeUndefined()
+    expect(busySlashDisposition('/skill:officecli')).toEqual({ kind: 'queue-until-idle' })
+    expect(slashSuggestions([
+      { name: 'skill:officecli', source: 'skill' },
+      { name: 'skill:pdf', source: 'skill' },
+    ], '/skill:').map((item) => item.command)).toEqual(['/skill:officecli', '/skill:pdf'])
+  })
   it('hides TUI-only subcommands without changing extension commands', () => {
     const subcommands = [{ name: 'edit' }, { name: 'expand' }, { name: 'done' }]
     const commands = desktopSlashCommands([{ name: 'todo', source: 'builtin', subcommands }, { name: 'todo', source: 'extension', subcommands }], (key) => translate('en', key))
