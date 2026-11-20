@@ -10,6 +10,9 @@ let page: Page
 let fixtureRoot = ''
 let fixtureSessionFile = ''
 let fixturePrimarySessionFile = ''
+let fixtureHome = ''
+let fixtureOmpExecutable = ''
+let fixtureCuaExecutable = ''
 let actionableErrors: string[] = []
 
 const ISSUE_131_LONG_TOKEN = 'ReProductSkuController.getProductPoolDetail,ReProductSkuController.getProductPoolPriceWave'
@@ -37,6 +40,22 @@ async function closeHermeticApp(target: ElectronApplication | undefined): Promis
   if (closedGracefully) return
   if (child.exitCode === null) child.kill('SIGKILL')
   await closeEvent
+}
+
+async function relaunchHermeticApp(userData: string): Promise<void> {
+  await closeHermeticApp(app)
+  app = undefined
+  app = await electron.launch({
+    args: ['.', `--user-data-dir=${userData}`],
+    cwd: process.cwd(),
+    env: hermeticEnvironment(fixtureHome, fixtureOmpExecutable, fixtureCuaExecutable) as Record<string, string>,
+    timeout: 20_000,
+  })
+  app.context().on('page', attachDiagnostics)
+  for (const target of app.windows()) attachDiagnostics(target)
+  page = await app.firstWindow({ timeout: 15_000 })
+  attachDiagnostics(page)
+  await expect(page.locator('.app-shell')).toHaveAttribute('data-ready', 'true', { timeout: 20_000 })
 }
 
 interface CapturedClosePrompt {
@@ -700,6 +719,9 @@ test.describe('OMP Desktop desktop smoke', () => {
       if (networkMcp) writeFileSync(join(fixture.home, '.omp', 'agent', 'mcp.json'), JSON.stringify({ mcpServers: { Notion: { type: 'http', url: 'https://mcp.notion.test/mcp' } } }))
       fixtureSessionFile = fixture.sessionFile
       fixturePrimarySessionFile = fixture.primarySessionFile
+      fixtureHome = fixture.home
+      fixtureOmpExecutable = fixture.ompExecutable
+      fixtureCuaExecutable = fixture.cuaExecutable
       if (noOmp) renameSync(fixture.ompExecutable, `${fixture.ompExecutable}.pending`)
       try {
         const environment = hermeticEnvironment(fixture.home, fixture.ompExecutable, fixture.cuaExecutable, noOmp)
@@ -726,6 +748,9 @@ test.describe('OMP Desktop desktop smoke', () => {
         fixtureRoot = ''
         fixtureSessionFile = ''
         fixturePrimarySessionFile = ''
+        fixtureHome = ''
+        fixtureOmpExecutable = ''
+        fixtureCuaExecutable = ''
       }
     }
     throw startupError ?? new Error('OMP Desktop did not create its initial window')
@@ -738,6 +763,9 @@ test.describe('OMP Desktop desktop smoke', () => {
     fixtureRoot = ''
     fixtureSessionFile = ''
     fixturePrimarySessionFile = ''
+    fixtureHome = ''
+    fixtureOmpExecutable = ''
+    fixtureCuaExecutable = ''
   })
 
   test('runs slash commands and inspects a subagent transcript', async () => {
@@ -3313,6 +3341,43 @@ test.describe('OMP Desktop desktop smoke', () => {
     expect(dialogCalls).toBe(0)
     await closed
     app = undefined
+  })
+
+  test('restores window bounds across a relaunch', async () => {
+    const userData = join(fixtureRoot, 'user-data')
+    const geometryPath = join(userData, 'ui-geometry.json')
+    await app!.evaluate(({ BrowserWindow }) => {
+      const window = BrowserWindow.getAllWindows()[0]
+      if (!window) throw new Error('No application window to resize')
+      window.setBounds({ x: 40, y: 50, width: 1100, height: 760 })
+    })
+    await expect.poll(() => {
+      if (!existsSync(geometryPath)) return null
+      const saved = JSON.parse(readFileSync(geometryPath, 'utf8')) as { version: number; window: { width: number; height: number } }
+      return { version: saved.version, width: saved.window.width, height: saved.window.height }
+    }, { timeout: 5_000 }).toEqual({ version: 1, width: 1100, height: 760 })
+
+    await relaunchHermeticApp(userData)
+    const bounds = await app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.getBounds())
+    expect(bounds).toMatchObject({ width: 1100, height: 760 })
+  })
+
+  test('restores a maximized window across a relaunch', async () => {
+    const userData = join(fixtureRoot, 'user-data')
+    const geometryPath = join(userData, 'ui-geometry.json')
+    await app!.evaluate(({ BrowserWindow }) => {
+      const window = BrowserWindow.getAllWindows()[0]
+      if (!window) throw new Error('No application window to maximize')
+      window.maximize()
+    })
+    await expect.poll(() => {
+      if (!existsSync(geometryPath)) return null
+      const saved = JSON.parse(readFileSync(geometryPath, 'utf8')) as { window?: { maximized?: boolean } }
+      return saved.window?.maximized ?? null
+    }, { timeout: 5_000 }).toBe(true)
+    await relaunchHermeticApp(userData)
+    await app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.show())
+    await expect.poll(() => app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.isMaximized()), { timeout: 5_000 }).toBe(true)
   })
 
   test('Command-Q backgrounds the window and menu-bar Open restores it', async () => {
