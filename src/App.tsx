@@ -716,6 +716,8 @@ export default function App() {
     bumpRecentSessionOpen,
     reportError,
   })
+  // Stable so the memoized title toolbar keeps its shallow compare.
+  const openSettings = useCallback(() => navigate('settings'), [navigate])
   // Side chats are transient: closing the panel (its × button or a session
   // switch) drops the visible topics so reopening starts blank, like
   // ChatGPT's temporary side conversation. Harness history is unaffected.
@@ -1392,6 +1394,13 @@ export default function App() {
               onToggleInspector={toggleInspectorPanel}
               onOpenBrowser={openBrowser}
               onOpenSessionTree={view === 'session' ? openSessionTree : undefined}
+              onNewSession={newSession}
+              projectCount={projects.length}
+              sessionCount={sessions.length}
+              agentCount={subagents.agents.length}
+              runningAgentCount={subagents.agents.filter((agent) => agent.status === 'running').length}
+              scheduleCount={schedules.filter((schedule) => schedule.status === 'active').length}
+              onOpenSettings={openSettings}
               platform={platform}
             />
             <div className="workbench__content">
