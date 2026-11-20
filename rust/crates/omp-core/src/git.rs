@@ -15,6 +15,7 @@ use crate::turn_changes::FileSnapshot;
 pub struct GitFileStatus {
     pub path: String,
     pub staged: bool,
+    pub untracked: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -165,18 +166,21 @@ pub fn status(store: &StateStore, platform: Platform, cwd: &str) -> GitStatus {
             files.push(GitFileStatus {
                 path,
                 staged: false,
+                untracked: true,
             });
         } else {
             if index != ' ' {
                 files.push(GitFileStatus {
                     path: path.clone(),
                     staged: true,
+                    untracked: false,
                 });
             }
             if worktree != ' ' {
                 files.push(GitFileStatus {
                     path,
                     staged: false,
+                    untracked: false,
                 });
             }
         }
@@ -334,6 +338,15 @@ pub fn remove_untracked(
     }
     let cwd = authorize(store, platform, cwd)?;
     Ok(run_git(&cwd, &["clean", "-f", "-q", "--", path])?.ok)
+}
+
+pub fn ahead_count(store: &StateStore, platform: Platform, cwd: &str) -> Option<u64> {
+    let cwd = authorize(store, platform, cwd).ok()?;
+    let outcome = run_git(&cwd, &["rev-list", "--count", "@{upstream}..HEAD"]).ok()?;
+    if !outcome.ok {
+        return None;
+    }
+    outcome.output.trim().parse().ok()
 }
 
 pub fn commit(

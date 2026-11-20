@@ -29,8 +29,8 @@ use omp_core::settings::{AppSettings, ConversationDensity, Locale, MessageEnterA
 use omp_core::state::{CURRENT_DESKTOP_STATE_FILENAME, NotificationRecord, Platform, StateStore};
 use omp_core::turn_changes::{TurnBaseline, compute_turn_changes};
 use omp_desktop::app::{
-    AppView, CloseGuard, CloseIntent, Workspace, WorkspaceData, request_app_quit,
-    should_confirm_close,
+    AppView, CloseGuard, CloseIntent, Workspace, WorkspaceData, bound_review_diff,
+    request_app_quit, should_confirm_close,
 };
 use omp_desktop::ime::{CompositionGuard, IME_POST_COMPOSITION_GUARD_MS};
 use serde_json::{Value, json};
@@ -917,8 +917,242 @@ fn review_panel_snapshots_stages_and_unstages_a_real_repo(cx: &mut TestAppContex
                     .iter()
                     .any(|file| file.path == "a.txt" && !file.staged)
             );
+
+            workspace.set_all_review_staged(true, cx);
+            assert!(
+                workspace
+                    .review_status()
+                    .expect("stage-all snapshot")
+                    .files
+                    .iter()
+                    .all(|file| file.staged)
+            );
+            workspace.set_all_review_staged(false, cx);
+            assert!(
+                workspace
+                    .review_status()
+                    .expect("unstage-all snapshot")
+                    .files
+                    .iter()
+                    .all(|file| !file.staged)
+            );
         })
         .expect("workspace window");
+}
+
+#[gpui_kit::test]
+fn review_mixed_status_distinguishes_untracked_and_counts_each_path_once(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let repo = seed_repo(root);
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, test_data(root)));
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.update_setting(json!({ "locale": "en" }), cx);
+            workspace.grant_project(&repo, cx);
+            std::fs::write(repo.join("a.txt"), "line1\nstaged\n").expect("staged edit");
+            std::fs::write(repo.join("b.txt"), "untracked\n").expect("untracked fixture");
+            workspace.stage_path("a.txt", true, cx);
+            std::fs::write(repo.join("a.txt"), "line1\nstaged\nworktree\n")
+                .expect("mixed worktree edit");
+            workspace.refresh_review();
+            let status = workspace.review_status().expect("mixed Git status");
+            assert_eq!(status.files.len(), 3);
+            assert!(
+                status
+                    .files
+                    .iter()
+                    .filter(|file| file.path == "a.txt")
+                    .all(|file| !file.untracked)
+            );
+            assert!(
+                status
+                    .files
+                    .iter()
+                    .any(|file| { file.path == "b.txt" && !file.staged && file.untracked })
+            );
+            let state = snapshot(workspace, cx);
+            assert_eq!(
+                state["summary"]["changedFiles"]
+                    .as_array()
+                    .expect("summary paths")
+                    .len(),
+                3
+            );
+            assert_eq!(state["overviewBadges"]["review"], 2);
+            assert_eq!(state["review"]["undoablePaths"], json!(["a.txt"]));
+            workspace.set_right_pane("review", cx);
+        })
+        .expect("mixed Git state");
+    draw_frame(cx, handle.into());
+    handle
+        .update(cx, |_, window, _| {
+            let count = window
+                .try_find("review-unstaged-count")
+                .and_then(|element| element.label().map(ToString::to_string));
+            assert_eq!(count.as_deref(), Some("Unstaged 2"));
+        })
+        .expect("mixed status UI");
+}
+
+#[gpui_kit::test]
+fn summary_renders_latest_reply_todos_and_changed_file_badges(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let repo = seed_repo(root);
+    let home = root.join("home");
+    let bucket = home.join(".omp/agent/sessions/-repo");
+    let session = write_session(
+        &bucket,
+        "2026-04-02T00-00-00-000Z_019fdf24-dddd-7000-8000-000000000710.jsonl",
+        "Summary parity",
+        "2026-04-02T00:00:00.000Z",
+        "summarize the plan",
+        "latest useful reply",
+        &repo,
+    );
+    let todo = json!({
+        "type": "message",
+        "id": "todo-1",
+        "parentId": "a1",
+        "timestamp": "2026-04-02T00:01:00.000Z",
+        "message": {
+            "role": "toolResult",
+            "toolName": "todo",
+            "content": [{
+                "type": "text",
+                "text": "  Implement:\n    - [X] Load reply\n    - [ ] Show diff (in progress)\n"
+            }],
+        },
+    });
+    let mut source = std::fs::read_to_string(&session).expect("session source");
+    source.push_str(&serde_json::to_string(&todo).expect("todo json"));
+    source.push('\n');
+    std::fs::write(&session, source).expect("append todo");
+    std::fs::write(repo.join("a.txt"), "line1\nline2\n").expect("edit");
+
+    let store = open_store(root);
+    let sessions = omp_core::sessions::list_sessions(&store, &home, false, None);
+    drop(store);
+    let mut data = test_data(root);
+    data.home_dir = home;
+    data.sessions = sessions;
+    let handle = cx.open_window(size(px(1400.0), px(900.0)), |window, cx| {
+        Workspace::new(window, cx, data)
+    });
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.grant_project(&repo, cx);
+            workspace.select_session(0, cx);
+            workspace.set_right_pane("summary", cx);
+            let state = snapshot(workspace, cx);
+            assert_eq!(state["summary"]["latestReply"], "latest useful reply");
+            assert_eq!(state["summary"]["todoPhases"][0]["name"], "Implement");
+            assert_eq!(
+                state["summary"]["todoPhases"][0]["tasks"][1]["status"],
+                "inProgress"
+            );
+            assert_eq!(state["summary"]["changedFiles"][0]["path"], "a.txt");
+            assert_eq!(state["overviewBadges"]["review"], 1);
+            assert_eq!(state["overviewBadges"]["subagents"], "0/0");
+        })
+        .expect("summary state");
+    draw_frame(cx, handle.into());
+    handle
+        .update(cx, |_, window, _| {
+            assert!(window.try_find("summary-latest-reply").is_some());
+            assert!(window.try_find("summary-todo-task").is_some());
+            assert!(window.try_find("summary-changed-files").is_some());
+        })
+        .expect("summary rendering");
+}
+
+#[gpui_kit::test]
+fn review_expansion_bounds_and_confirmed_undo_use_real_git_state(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let repo = seed_repo(root);
+    let oversized = (0..5_000)
+        .map(|line| format!("line {line}\n"))
+        .collect::<String>();
+    std::fs::write(repo.join("a.txt"), &oversized).expect("large edit");
+
+    let mut data = test_data(root);
+    data.home_dir = root.join("home");
+    std::fs::create_dir_all(&data.home_dir).expect("home");
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.grant_project(&repo, cx);
+            workspace.refresh_review();
+            workspace.toggle_review_diff("a.txt", false, cx);
+            let state = snapshot(workspace, cx);
+            assert_eq!(state["review"]["expanded"][0]["path"], "a.txt");
+            assert_eq!(state["review"]["undoablePaths"], json!(["a.txt"]));
+            assert_eq!(state["review"]["expanded"][0]["lines"], 4_000);
+            assert_eq!(
+                state["review"]["expanded"][0]["truncatedByLines"],
+                json!(true)
+            );
+            workspace.set_review_diff_mode("a.txt", false, "split", cx);
+            assert_eq!(
+                snapshot(workspace, cx)["review"]["expanded"][0]["mode"],
+                "split"
+            );
+
+            // Undo is armed first: cancelling leaves the worktree byte-exact.
+            workspace.request_review_undo("a.txt", cx);
+            assert_eq!(
+                snapshot(workspace, cx)["review"]["undoConfirmation"],
+                "a.txt"
+            );
+            assert_eq!(
+                std::fs::read_to_string(repo.join("a.txt")).expect("edit"),
+                oversized
+            );
+            workspace.cancel_review_undo(cx);
+            assert_eq!(
+                std::fs::read_to_string(repo.join("a.txt")).expect("edit"),
+                oversized
+            );
+            workspace.request_review_undo("a.txt", cx);
+            workspace.confirm_review_undo(cx);
+            assert_eq!(
+                std::fs::read_to_string(repo.join("a.txt")).expect("restored"),
+                "line1\n"
+            );
+
+            let untracked = repo.join("untracked.txt");
+            std::fs::write(&untracked, b"keep these exact bytes\n").expect("untracked edit");
+            workspace.refresh_review();
+            assert_eq!(
+                snapshot(workspace, cx)["review"]["undoablePaths"],
+                json!([])
+            );
+            workspace.request_review_undo("untracked.txt", cx);
+            assert_eq!(
+                snapshot(workspace, cx)["review"]["undoConfirmation"],
+                json!(null)
+            );
+            assert_eq!(
+                std::fs::read(&untracked).expect("untracked bytes"),
+                b"keep these exact bytes\n"
+            );
+        })
+        .expect("review diff and undo");
+
+    let lines = "x\n".repeat(4_100);
+    let bounded = bound_review_diff(&lines);
+    assert_eq!(bounded.lines, 4_000);
+    assert!(bounded.truncated_by_lines);
+    let bytes = "é".repeat(2 * 1024 * 1024);
+    let bounded = bound_review_diff(&bytes);
+    assert!(bounded.text.len() <= 2 * 1024 * 1024);
+    assert!(bounded.truncated_by_bytes);
+    assert!(std::str::from_utf8(bounded.text.as_bytes()).is_ok());
 }
 
 #[gpui_kit::test]
@@ -1532,9 +1766,8 @@ fn seed_project(root: &Path) -> PathBuf {
     project
 }
 
-/// The Files pane lists a granted project's entries, directories first.
 #[gpui_kit::test]
-fn files_pane_lists_a_granted_project(cx: &mut TestAppContext) {
+fn open_file_launcher_destination_lists_a_granted_project(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let dir = tempfile::TempDir::new().expect("temp dir");
     let root = dir.path();
@@ -1587,6 +1820,208 @@ fn subagents_pane_reports_an_empty_runtime_list(cx: &mut TestAppContext) {
             );
         })
         .expect("workspace window");
+}
+
+#[gpui_kit::test]
+fn runtime_resets_from_new_session_and_project_removal_clear_subagents(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let (home, _, _) = seed_two_sessions(root);
+    let project = root.join("project");
+    std::fs::create_dir_all(&project).expect("project");
+    let store = open_store(root);
+    let sessions = omp_core::sessions::list_sessions(&store, &home, false, None);
+    drop(store);
+    let mut data = test_data(root);
+    data.home_dir = home;
+    data.sessions = sessions;
+    let handle = cx.open_window(size(px(1400.0), px(900.0)), |window, cx| {
+        Workspace::new(window, cx, data)
+    });
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.grant_project(&project, cx);
+            workspace.select_session(0, cx);
+            workspace.set_right_pane("subagents", cx);
+            workspace.apply_subagents_response(&json!({
+                "success": true,
+                "data": { "subagents": [{ "id": "old", "status": "running" }] }
+            }));
+            workspace.select_subagent("old", cx);
+            assert_eq!(
+                snapshot(workspace, cx)["overviewBadges"]["subagents"],
+                "1/1"
+            );
+        })
+        .expect("stale roster fixture");
+    draw_frame(cx, handle.into());
+    click_element(cx, handle, "sidebar-new-session");
+    handle
+        .update(cx, |workspace, _, cx| {
+            let state = snapshot(workspace, cx);
+            assert_eq!(state["subagents"], json!([]));
+            assert_eq!(state["subagentPanel"]["loaded"], json!(true));
+            assert_eq!(state["subagentPanel"]["selected"], json!(null));
+            assert_eq!(state["subagentPanel"]["error"], json!(null));
+            assert_eq!(state["overviewBadges"]["subagents"], "0/0");
+
+            // Recreate stale state in a selected project session, then remove
+            // the grant that hides that session and stops its runtime.
+            workspace.select_session(0, cx);
+            workspace.apply_subagents_response(&json!({
+                "success": true,
+                "data": { "subagents": [{ "id": "removed", "status": "working" }] }
+            }));
+            workspace.select_subagent("removed", cx);
+            let project_id = workspace.projects()[0].id.clone();
+            workspace.remove_project(&project_id, cx);
+            let state = snapshot(workspace, cx);
+            assert_eq!(state["selectedSession"], json!(null));
+            assert_eq!(state["subagents"], json!([]));
+            assert_eq!(state["subagentPanel"]["loaded"], json!(true));
+            assert_eq!(state["subagentPanel"]["selected"], json!(null));
+            assert_eq!(state["subagentPanel"]["error"], json!(null));
+            assert_eq!(state["overviewBadges"]["subagents"], "0/0");
+        })
+        .expect("runtime replacement cleanup");
+}
+
+#[gpui_kit::test]
+fn subagents_filter_detail_badges_and_center_pin_follow_reported_state(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let handle = cx.open_window(size(px(1400.0), px(900.0)), |window, cx| {
+        Workspace::new(window, cx, test_data(root))
+    });
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.set_right_pane("subagents", cx);
+            workspace.apply_subagents_response(&json!({
+                "success": true,
+                "data": { "subagents": [
+                    { "id": "one", "name": "Researcher", "status": "running", "task": "inspect" },
+                    { "id": "two", "name": "Reviewer", "status": "completed" },
+                    { "id": "three", "name": "Writer", "status": "working" },
+                    { "id": "four", "name": "Failed worker", "status": "error" },
+                ] }
+            }));
+            let state = snapshot(workspace, cx);
+            assert_eq!(state["subagents"].as_array().expect("roster").len(), 4);
+            assert_eq!(state["overviewBadges"]["subagents"], "2/4");
+            assert_eq!(
+                state["subagentPanel"]["visible"]
+                    .as_array()
+                    .expect("all")
+                    .len(),
+                4
+            );
+
+            workspace.set_subagent_filter("running", cx);
+            let filtered = snapshot(workspace, cx);
+            assert_eq!(
+                filtered["subagentPanel"]["visible"]
+                    .as_array()
+                    .expect("running")
+                    .len(),
+                2
+            );
+            workspace.select_subagent("one", cx);
+            assert_eq!(snapshot(workspace, cx)["subagentPanel"]["selected"], "one");
+            assert_eq!(
+                snapshot(workspace, cx)["subagentPanel"]["capabilities"],
+                json!({ "messagePagination": false, "steer": false, "cancel": false })
+            );
+
+            workspace.toggle_subagents_pin(cx);
+            assert_eq!(
+                snapshot(workspace, cx)["subagentPanel"]["centerPinned"],
+                json!(true)
+            );
+            // Pinning has just refreshed the no-runtime roster to empty. A
+            // later reported roster populates this isolated UI fixture.
+            workspace.apply_subagents_response(&json!({
+                "success": true,
+                "data": { "subagents": [
+                    { "id": "one", "name": "Researcher", "status": "running", "task": "inspect" },
+                    { "id": "two", "name": "Reviewer", "status": "completed" },
+                    { "id": "three", "name": "Writer", "status": "working" },
+                    { "id": "four", "name": "Failed worker", "status": "error" },
+                ] }
+            }));
+            workspace.set_subagent_filter("running", cx);
+            workspace.select_subagent("one", cx);
+        })
+        .expect("subagent state");
+    draw_frame(cx, handle.into());
+    handle
+        .update(cx, |_, window, _| {
+            assert!(window.try_find("subagents-center-pane").is_some());
+            assert!(window.try_find("subagent-detail").is_some());
+            assert!(window.try_find("subagents-rpc-boundary").is_some());
+        })
+        .expect("subagent center split");
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.toggle_subagents_pin(cx);
+            workspace.apply_subagents_response(&json!({
+                "success": false,
+                "error": { "message": "roster failed" }
+            }));
+            let state = snapshot(workspace, cx);
+            assert_eq!(state["subagentPanel"]["error"], "roster failed");
+            assert_eq!(state["overviewBadges"]["subagents"], "0/0");
+        })
+        .expect("subagent error banner");
+}
+
+#[gpui_kit::test]
+fn subagents_refresh_after_turn_and_for_a_pinned_session_switch(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let (_, mut data) = turn_workspace_data(dir.path());
+    data.omp_executable = install_fixture_omp(dir.path());
+    let handle = cx.open_window(size(px(1400.0), px(900.0)), |window, cx| {
+        Workspace::new(window, cx, data)
+    });
+    handle
+        .update(cx, |workspace, window, cx| {
+            workspace.select_session(0, cx);
+            assert_eq!(
+                snapshot(workspace, cx)["overviewBadges"]["subagents"],
+                "0/0"
+            );
+            workspace.set_right_pane("subagents", cx);
+            let initial = snapshot(workspace, cx);
+            assert_eq!(initial["subagents"], json!([]));
+            let composer = workspace.composer_entity().clone();
+            composer.update(cx, |input, cx| {
+                input.set_value("[subagents] lifecycle", window, cx)
+            });
+            workspace.send_prompt(window, cx);
+            workspace.drain_agent_events();
+            let completed = snapshot(workspace, cx);
+            assert_eq!(completed["subagents"][0]["status"], "completed");
+            assert_eq!(completed["overviewBadges"]["subagents"], "0/1");
+
+            workspace.set_right_pane("review", cx);
+            workspace.toggle_subagents_pin(cx);
+            workspace.select_session(1, cx);
+            let switched = snapshot(workspace, cx);
+            assert_eq!(switched["rightPane"], "review");
+            assert_eq!(switched["subagentPanel"]["loaded"], true);
+            assert_eq!(switched["subagentPanel"]["selected"], json!(null));
+            assert_eq!(switched["subagents"], json!([]));
+            assert_eq!(switched["overviewBadges"]["subagents"], "0/0");
+        })
+        .expect("live roster and pinned session switch");
+    draw_frame(cx, handle.into());
+    handle
+        .update(cx, |_, window, _| {
+            assert!(window.try_find("subagents-center-pane").is_some());
+        })
+        .expect("pinned pane next to Review");
 }
 
 /// Live Voice opens on its idle phase while no runtime can carry the audio.

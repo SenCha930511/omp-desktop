@@ -165,6 +165,7 @@ const thinkingIndex = args.indexOf('--thinking')
 let thinkingLevel = thinkingIndex >= 0 ? args[thinkingIndex + 1] : 'medium'
 let fastModeEnabled = false
 let streaming = false
+let fixtureSubagentPhase = 'idle'
 const steeringQueue = []
 const followUpQueue = []
 let negotiated = false
@@ -247,7 +248,10 @@ rl.on('line', (line) => {
       break
     }
     case 'get_subagents': {
-      replySuccess(command, { subagents: [] })
+      const subagents = fixtureSubagentPhase === 'idle'
+        ? []
+        : [{ id: 'fixture-child', name: 'Fixture child', status: fixtureSubagentPhase, task: 'event lifecycle' }]
+      replySuccess(command, { subagents })
       break
     }
     case 'get_login_providers': {
@@ -395,6 +399,7 @@ rl.on('line', (line) => {
     case 'prompt': {
       const message = String(command.message ?? '')
       replySuccess(command, { accepted: true })
+      if (message.includes('[subagents]')) fixtureSubagentPhase = 'running'
       if (message.includes('[hold-busy]')) {
         streaming = true
         send({ type: 'agent_start' })
@@ -458,6 +463,7 @@ rl.on('line', (line) => {
       send({ type: 'message_start', message: { id: 'm1', role: 'assistant', content: [] } })
       send({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: `echo:${message}` } })
       send({ type: 'message_end', message: { id: 'm1', role: 'assistant', content: [{ type: 'text', text: `echo:${message}` }] } })
+      if (fixtureSubagentPhase === 'running') fixtureSubagentPhase = 'completed'
       send({ type: 'agent_end', isTerminal: true })
       break
     }

@@ -546,6 +546,9 @@ impl AppSettings {
                 "showFileChangesPopup" => {
                     next.show_file_changes_popup = require_bool(value, "showFileChangesPopup")?
                 }
+                "subagentsPanelPinned" => {
+                    next.subagents_panel_pinned = require_bool(value, "subagentsPanelPinned")?;
+                }
                 "checkoutStrategy" => {
                     next.checkout_strategy = match value.as_str() {
                         Some("branch") => CheckoutStrategy::Branch,

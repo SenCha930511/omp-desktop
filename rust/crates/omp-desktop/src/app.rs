@@ -14,6 +14,7 @@ use gpui_kit::InteractiveElement as _;
 use gpui_kit::StatefulInteractiveElement as _;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{ActiveTheme, Theme, ThemeColor, ThemeMode};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -87,6 +88,71 @@ enum RightPane {
     LiveVoice,
     Subagents,
     Activity,
+}
+
+const REVIEW_DIFF_MAX_LINES: usize = 4_000;
+const REVIEW_DIFF_MAX_BYTES: usize = 2 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReviewDiffMode {
+    Unified,
+    Split,
+}
+
+/// A diff is bounded before any rows are built, so expansion cannot turn a
+/// generated or accidentally huge patch into an unbounded GPUI element tree.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BoundedReviewDiff {
+    pub text: String,
+    pub lines: usize,
+    pub truncated_by_lines: bool,
+    pub truncated_by_bytes: bool,
+}
+
+pub fn bound_review_diff(text: &str) -> BoundedReviewDiff {
+    let mut output = String::new();
+    let mut lines = 0;
+    let mut truncated_by_lines = false;
+    let mut truncated_by_bytes = false;
+    for line in text.split_inclusive('\n') {
+        if lines == REVIEW_DIFF_MAX_LINES {
+            truncated_by_lines = true;
+            break;
+        }
+        let remaining = REVIEW_DIFF_MAX_BYTES.saturating_sub(output.len());
+        if remaining == 0 {
+            truncated_by_bytes = true;
+            break;
+        }
+        if line.len() > remaining {
+            let mut end = remaining;
+            while end > 0 && !line.is_char_boundary(end) {
+                end -= 1;
+            }
+            output.push_str(&line[..end]);
+            if end > 0 {
+                lines += 1;
+            }
+            truncated_by_bytes = true;
+            break;
+        }
+        output.push_str(line);
+        lines += 1;
+    }
+    if !text.is_empty() && lines == 0 && output.is_empty() {
+        truncated_by_bytes = true;
+    }
+    BoundedReviewDiff {
+        text: output,
+        lines,
+        truncated_by_lines,
+        truncated_by_bytes,
+    }
+}
+
+struct ReviewDiffState {
+    mode: ReviewDiffMode,
+    diff: BoundedReviewDiff,
 }
 
 impl RightPane {
@@ -1060,6 +1126,17 @@ pub struct Workspace {
     review_focus_path: Option<String>,
     review_status: Option<GitStatus>,
     review_error: Option<String>,
+    review_ahead: Option<u64>,
+    review_diffs: HashMap<String, ReviewDiffState>,
+    review_commit_open: bool,
+    review_commit_input: Entity<InputState>,
+    review_undo: Option<String>,
+    review_untracked: HashSet<String>,
+    subagent_records: Vec<Value>,
+    subagents_loaded: bool,
+    subagents_error: Option<String>,
+    subagent_filter: String,
+    selected_subagent: Option<String>,
     last_bounds: Option<(f32, f32, f32, f32)>,
     save_task: Option<Task<()>>,
     update_check: UpdateCheckState,
@@ -1094,6 +1171,9 @@ impl Workspace {
                 this.submit_requested = Some(*secondary);
                 cx.notify();
             }
+        });
+        let review_commit_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(i18n::t(language, "review.commitMessage"))
         });
         let right_pane_search = cx.new(|cx| {
             InputState::new(window, cx)
@@ -1317,6 +1397,17 @@ impl Workspace {
             review_focus_path: None,
             review_status: None,
             review_error: None,
+            review_ahead: None,
+            review_diffs: HashMap::new(),
+            review_commit_open: false,
+            review_commit_input,
+            review_undo: None,
+            review_untracked: HashSet::new(),
+            subagent_records: Vec::new(),
+            subagents_loaded: false,
+            subagents_error: None,
+            subagent_filter: "all".to_string(),
+            selected_subagent: None,
             last_bounds: None,
             save_task: None,
             update_check: updates::initial_state(),
@@ -1669,6 +1760,7 @@ impl Workspace {
             &self.terminal_input,
         ];
         inputs.push(self.browser.address_input());
+        inputs.push(&self.review_commit_input);
         inputs.extend(self.ask_inputs.values());
         if let Some(palette) = &self.command_palette {
             inputs.push(&palette.input);
@@ -2142,8 +2234,13 @@ impl Workspace {
         self.resize_terminal();
         self.schedule_geometry_save(cx);
         match target {
+            RightPane::Summary => {
+                self.refresh_review();
+                self.refresh_schedules();
+            }
             RightPane::Review => self.refresh_review(),
             RightPane::Files => self.refresh_files(),
+            RightPane::Subagents => self.refresh_subagents(),
             // Opening the pane is the acknowledgement: the list is shown, so
             // its records are marked read and the toolbar badge clears.
             RightPane::Activity => self.mark_notifications_read(cx),
@@ -2254,6 +2351,59 @@ impl Workspace {
                     .collect()
             })
             .unwrap_or_default();
+        let summary_todos: Vec<Value> = latest_todo_phases(&self.transcript)
+            .into_iter()
+            .map(|phase| {
+                json!({
+                    "name": phase.name,
+                    "tasks": phase.tasks.into_iter().map(|task| json!({
+                        "content": task.content,
+                        "status": match task.status {
+                            TodoStatus::Pending => "pending",
+                            TodoStatus::InProgress => "inProgress",
+                            TodoStatus::Completed => "completed",
+                        },
+                    })).collect::<Vec<Value>>(),
+                })
+            })
+            .collect();
+        let review_diffs: Vec<Value> = self
+            .review_status
+            .as_ref()
+            .map(|status| {
+                status
+                    .files
+                    .iter()
+                    .filter_map(|file| {
+                        self.review_diffs
+                            .get(&Self::review_diff_key(&file.path, file.staged))
+                            .map(|diff| {
+                                json!({
+                                    "path": file.path,
+                                    "staged": file.staged,
+                                    "mode": match diff.mode {
+                                        ReviewDiffMode::Unified => "unified",
+                                        ReviewDiffMode::Split => "split",
+                                    },
+                                    "lines": diff.diff.lines,
+                                    "bytes": diff.diff.text.len(),
+                                    "truncatedByLines": diff.diff.truncated_by_lines,
+                                    "truncatedByBytes": diff.diff.truncated_by_bytes,
+                                })
+                            })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let visible_subagents: Vec<Value> = self
+            .subagent_records
+            .iter()
+            .filter(|agent| {
+                self.subagent_filter == "all" || subagent_group(agent) == self.subagent_filter
+            })
+            .cloned()
+            .collect();
+        let (subagent_running, subagent_total) = self.subagent_badge();
         // Built in one macro literal for the harness, then extended below: two
         // more keys inside the literal would push the `json!` expansion past
         // the crate's recursion limit.
@@ -2271,6 +2421,8 @@ impl Workspace {
             "overviewPinned": self.overview_pinned,
             "overviewVisible": self.overview_visible(),
             "attention": self.attention_count,
+
+
             "layout": {
                 "sidebarDocked": self.layout.sidebar_docked,
                 "sidebarWidth": self.layout.sidebar_width,
@@ -2359,7 +2511,8 @@ impl Workspace {
                 "skipped": self.files_skipped,
                 "error": self.files_error,
             },
-            "subagents": self.agents.list(),
+            "subagents": if self.subagents_loaded { self.subagent_records.clone() } else { self.agents.list() },
+
             "liveVoice": {
                 "runtime": self.runtime_id.is_some(),
                 "phase": self.live_phase,
@@ -2480,6 +2633,39 @@ impl Workspace {
         });
         // The render's breakpoint decision and whether the compact layout is
         // drawing the right pane as an overlay over the transcript.
+        snapshot["overviewBadges"] = json!({
+            "review": self.review_status
+                .as_ref()
+                .map(Self::uncommitted_file_count)
+                .unwrap_or(0),
+            "subagents": format!("{subagent_running}/{subagent_total}"),
+        });
+        snapshot["summary"] = json!({
+            "latestReply": latest_assistant_reply(&self.transcript),
+            "todoPhases": summary_todos,
+            "changedFiles": self.review_status
+                .as_ref()
+                .map(|status| status.files.clone())
+                .unwrap_or_default(),
+            "branch": self.review_status.as_ref().and_then(|status| status.branch.clone()),
+            "model": self.selected_session
+                .and_then(|index| self.sessions.get(index))
+                .and_then(|session| session.model.clone())
+                .unwrap_or_else(|| self.settings.last_selected_model()),
+        });
+        snapshot["subagentPanel"] = json!({
+            "loaded": self.subagents_loaded,
+            "filter": self.subagent_filter,
+            "visible": visible_subagents,
+            "selected": self.selected_subagent,
+            "error": self.subagents_error,
+            "centerPinned": self.settings.subagents_panel_pinned,
+            "capabilities": {
+                "messagePagination": false,
+                "steer": false,
+                "cancel": false,
+            },
+        });
         snapshot["turnCard"] = json!({
             "state": self.turn_card.name(),
             "visible": self.turn_card_visible(),
@@ -2491,6 +2677,23 @@ impl Workspace {
             }),
             "error": self.turn_card_error,
         });
+        snapshot["review"]["ahead"] = json!(self.review_ahead);
+        snapshot["review"]["expanded"] = json!(review_diffs);
+        snapshot["review"]["commitOpen"] = json!(self.review_commit_open);
+        snapshot["review"]["undoConfirmation"] = json!(self.review_undo);
+        snapshot["review"]["undoablePaths"] = json!(
+            self.review_status
+                .as_ref()
+                .map(|status| {
+                    status
+                        .files
+                        .iter()
+                        .filter(|file| !file.staged && self.review_undo_allowed(&file.path))
+                        .map(|file| file.path.clone())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        );
         snapshot["compactLayout"] = json!(self.compact_layout);
         snapshot["detailsOpen"] =
             json!(self.compact_layout && self.active_drawer == Some(CollapsedPane::RightPane));
@@ -3523,6 +3726,7 @@ impl Workspace {
         let inputs = [
             (&self.composer, "composer.placeholder"),
             (&self.right_pane_search, "rightPane.searchPlaceholder"),
+            (&self.review_commit_input, "review.commitMessage"),
             (&self.side_input, "sideQuestion.placeholder"),
             (&self.terminal_input, "terminal.placeholder"),
             (&self.plugin_source, "plugin.sourcePlaceholder"),
@@ -3872,6 +4076,10 @@ impl Workspace {
                 },
                 cx.listener(|this, _, _, cx| {
                     this.overview_open = !this.overview_open;
+                    if this.overview_open {
+                        this.refresh_review();
+                        this.refresh_subagents();
+                    }
                     cx.notify();
                 }),
             ))
@@ -4466,6 +4674,13 @@ impl Workspace {
             })
     }
 
+    fn clear_subagent_state(&mut self) {
+        self.subagent_records.clear();
+        self.subagents_loaded = false;
+        self.subagents_error = None;
+        self.selected_subagent = None;
+    }
+
     pub fn select_session(&mut self, index: usize, cx: &mut Context<Self>) {
         self.reset_transcript_search(cx);
         if let Some(runtime_id) = self.runtime_id.take() {
@@ -4481,6 +4696,7 @@ impl Workspace {
         self.queued_follow_ups.clear();
         self.runtime_error = None;
         self.clear_turn_state();
+        self.clear_subagent_state();
         // The dial reports the session it was read from, never the previous one.
         self.context_usage = None;
         // The mention list is a view of this catalog, so a switch closes it
@@ -4521,6 +4737,9 @@ impl Workspace {
         }
         self.apply_overview_pin();
         self.ensure_runtime(cx);
+        if self.right_pane == RightPane::Subagents || self.settings.subagents_panel_pinned {
+            self.refresh_subagents();
+        }
         cx.notify();
     }
 
@@ -4659,6 +4878,7 @@ impl Workspace {
                 self.queued_follow_ups.clear();
                 self.runtime_error = None;
                 self.selected_session = None;
+                self.clear_subagent_state();
                 self.clear_transcript();
                 // The session that reported the window is gone with its project.
                 self.context_usage = None;
@@ -4685,6 +4905,9 @@ impl Workspace {
             // Neither pane can keep showing a folder that is no longer granted.
             self.refresh_files();
             self.refresh_review();
+            if self.right_pane == RightPane::Subagents || self.settings.subagents_panel_pinned {
+                self.refresh_subagents();
+            }
         }
         cx.notify();
     }
@@ -4757,6 +4980,7 @@ impl Workspace {
         self.transcript_error = None;
         self.runtime_error = None;
         self.clear_turn_state();
+        self.clear_subagent_state();
         // A new session's window starts empty; nothing carries over from the
         // session it replaced.
         self.context_usage = None;
@@ -4788,6 +5012,9 @@ impl Workspace {
                 self.refresh_context_usage();
             }
             Err(error) => self.runtime_error = Some(error.message),
+        }
+        if self.right_pane == RightPane::Subagents || self.settings.subagents_panel_pinned {
+            self.refresh_subagents();
         }
         cx.notify();
     }
@@ -4893,6 +5120,7 @@ impl Workspace {
                     // The turn just spent tokens, so the dial catches up now
                     // instead of waiting for the next prompt.
                     self.refresh_context_usage();
+                    self.refresh_subagents();
                 }
                 Some("session_action_update") => {
                     // The harness owns the queue: mirror what it reports so the
@@ -6462,11 +6690,26 @@ impl Workspace {
         };
         let store = store.lock().expect("state lock");
         let status = git::status(&store, Platform::current(), &cwd);
+        self.review_diffs.clear();
+        self.review_undo = None;
+        self.review_untracked.clear();
         if let Some(error) = status.error.clone() {
             self.review_error = Some(error);
             self.review_status = None;
+            self.review_ahead = None;
         } else {
             self.review_error = None;
+            self.review_ahead = git::ahead_count(&store, Platform::current(), &cwd);
+            // Reuse the status probe's ?? marker; per-file Git probes would
+            // make Safety confirmation grow linearly across renderer turns.
+            self.review_untracked.extend(
+                status
+                    .files
+                    .iter()
+                    .filter(|file| file.untracked)
+                    .map(|file| file.path.clone()),
+            );
+            drop(store);
             self.review_status = Some(status);
         }
     }
@@ -9532,6 +9775,12 @@ impl Workspace {
 
     fn right_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.theme().colors;
+        let (subagent_running, subagent_total) = self.subagent_badge();
+        let review_count = self
+            .review_status
+            .as_ref()
+            .map(Self::uncommitted_file_count)
+            .unwrap_or(0);
         let items = [
             (
                 RightPane::Summary,
@@ -9547,8 +9796,8 @@ impl Workspace {
             ),
             (
                 RightPane::Files,
-                "Files",
-                "rightPane.files",
+                "Open File",
+                "rightPane.openFile",
                 IconName::Folder,
             ),
             (
@@ -9576,6 +9825,19 @@ impl Workspace {
             RightPane::Review => Some(self.review_content(cx).into_any_element()),
             RightPane::Browser => Some(self.browser.content(cx).into_any_element()),
             RightPane::Files => Some(self.files_content(cx).into_any_element()),
+            RightPane::Subagents
+                if self.settings.subagents_panel_pinned && self.layout.right_pane_docked =>
+            {
+                Some(
+                    div()
+                        .id("subagents-right-pinned")
+                        .p_3()
+                        .text_sm()
+                        .text_color(colors.muted_foreground)
+                        .child(self.t("subagents.pinnedNotice"))
+                        .into_any_element(),
+                )
+            }
             RightPane::Subagents => Some(self.subagents_content(cx).into_any_element()),
             RightPane::SideQuestion => Some(self.side_question_content(cx).into_any_element()),
             RightPane::Ask => Some(self.ask_content(cx).into_any_element()),
@@ -9691,6 +9953,29 @@ impl Workspace {
                                 .child(icon),
                         )
                         .child(self.t(key))
+                        .child(div().flex_1())
+                        .when(pane == RightPane::Review, |element| {
+                            element.child(
+                                div()
+                                    .id("overview-review-badge")
+                                    .px_2()
+                                    .rounded(px(999.0))
+                                    .bg(colors.accent)
+                                    .text_xs()
+                                    .child(review_count.to_string()),
+                            )
+                        })
+                        .when(pane == RightPane::Subagents, |element| {
+                            element.child(
+                                div()
+                                    .id("overview-subagents-badge")
+                                    .px_2()
+                                    .rounded(px(999.0))
+                                    .bg(colors.accent)
+                                    .text_xs()
+                                    .child(format!("{subagent_running}/{subagent_total}")),
+                            )
+                        })
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.set_right_pane(pane.name(), cx);
                             // A launcher row is the only control that can build
@@ -9937,98 +10222,257 @@ impl Workspace {
 
     fn subagents_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.theme().colors;
-        let agents = self.agents.list();
-        let mut list = div().flex().flex_col().gap_1();
-        for (index, agent) in agents.iter().enumerate() {
-            let runtime_id = agent
-                .get("runtimeId")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown")
-                .to_string();
-            let cwd = agent
-                .get("cwd")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            let session = agent
-                .get("sessionFile")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            let stop_id = runtime_id.clone();
-            list = list.child(
+        let agents: Vec<&Value> = self
+            .subagent_records
+            .iter()
+            .filter(|agent| {
+                self.subagent_filter == "all" || subagent_group(agent) == self.subagent_filter
+            })
+            .collect();
+        let selected = self.selected_subagent.as_deref().and_then(|selected| {
+            self.subagent_records
+                .iter()
+                .find(|agent| subagent_id(agent) == selected)
+        });
+        let (running, total) = self.subagent_badge();
+        let filters = [
+            ("all", self.t("subagents.filterAll")),
+            ("running", self.t("subagents.filterRunning")),
+            ("waiting", self.t("subagents.filterWaiting")),
+            ("completed", self.t("subagents.filterCompleted")),
+            ("error", self.t("subagents.filterError")),
+        ];
+        div()
+            .id("subagents-content")
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h(px(0.0))
+            .gap_2()
+            .overflow_y_scroll()
+            .p_2()
+            .child(
                 div()
-                    .id(format!("subagent-{index}"))
                     .flex()
                     .items_center()
                     .gap_2()
-                    .px_2()
-                    .py_1()
-                    .rounded(px(6.0))
-                    .hover(|style| style.bg(colors.accent))
-                    .child(IconName::Bot)
                     .child(
                         div()
-                            .flex()
-                            .flex_col()
-                            .gap_0p5()
                             .text_sm()
-                            .text_color(colors.foreground)
-                            .child(runtime_id)
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(colors.muted_foreground)
-                                    .child(cwd),
-                            )
-                            .when(!session.is_empty(), |element| {
-                                element.child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(colors.muted_foreground)
-                                        .child(session),
-                                )
-                            }),
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child(self.t("rightPane.subagents")),
+                    )
+                    .child(
+                        div()
+                            .id("subagents-running-total")
+                            .px_2()
+                            .rounded(px(999.0))
+                            .bg(colors.accent)
+                            .text_xs()
+                            .child(format!("{running}/{total}")),
                     )
                     .child(div().flex_1())
                     .child(
                         div()
-                            .id(format!("subagent-stop-{index}"))
-                            .aria_label("Stop subagent")
+                            .id("subagents-refresh")
+                            .aria_label(self.t("review.refresh"))
                             .px_2()
                             .py_1()
                             .rounded(px(6.0))
                             .border_1()
                             .border_color(colors.border)
                             .text_xs()
-                            .child("Stop")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.agents.stop(&stop_id);
+                            .child(self.t("review.refresh"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.refresh_subagents();
                                 cx.notify();
                             })),
                     ),
-            );
-        }
-        div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .p_2()
+            )
             .child(
                 div()
-                    .text_sm()
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .child("Subagents"),
+                    .id("subagents-pin-center")
+                    .aria_label(if self.settings.subagents_panel_pinned {
+                        self.t("subagents.unpinCenter")
+                    } else {
+                        self.t("subagents.pinCenter")
+                    })
+                    .px_2()
+                    .py_1()
+                    .rounded(px(6.0))
+                    .border_1()
+                    .border_color(colors.border)
+                    .text_xs()
+                    .text_color(colors.foreground)
+                    .hover(|style| style.bg(colors.accent))
+                    .child(if self.settings.subagents_panel_pinned {
+                        self.t("subagents.unpinCenter")
+                    } else {
+                        self.t("subagents.pinCenter")
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_subagents_pin(cx))),
             )
-            .when(agents.is_empty(), |element| {
+            .when_some(self.subagents_error.clone(), |element, error| {
                 element.child(
                     div()
-                        .text_sm()
-                        .text_color(colors.muted_foreground)
-                        .child("No background runtimes."),
+                        .id("subagents-error")
+                        .p_2()
+                        .rounded(px(6.0))
+                        .border_1()
+                        .border_color(colors.danger)
+                        .text_xs()
+                        .text_color(colors.danger)
+                        .child(error),
                 )
             })
-            .child(list)
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_1()
+                    .children(filters.into_iter().map(|(filter, label)| {
+                        div()
+                            .id(format!("subagents-filter-{filter}"))
+                            .aria_label(label)
+                            .px_2()
+                            .py_1()
+                            .rounded(px(6.0))
+                            .bg(if self.subagent_filter == filter {
+                                colors.accent
+                            } else {
+                                colors.background
+                            })
+                            .border_1()
+                            .border_color(colors.border)
+                            .text_xs()
+                            .child(label)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.set_subagent_filter(filter, cx);
+                            }))
+                    })),
+            )
+            .when(agents.is_empty(), |element| {
+                element.child(div().text_sm().text_color(colors.muted_foreground).child(
+                    if self.subagent_filter == "all" {
+                        self.t("subagents.none")
+                    } else {
+                        self.t("subagents.noneForFilter")
+                    },
+                ))
+            })
+            .children(agents.into_iter().map(|agent| {
+                let id = subagent_id(agent);
+                let name = agent
+                    .get("name")
+                    .or_else(|| agent.get("agentName"))
+                    .or_else(|| agent.get("label"))
+                    .and_then(Value::as_str)
+                    .unwrap_or(id.as_str())
+                    .to_string();
+                let task = agent
+                    .get("task")
+                    .or_else(|| agent.get("prompt"))
+                    .or_else(|| agent.get("description"))
+                    .and_then(Value::as_str)
+                    .map(|task| preview_text(task, 180))
+                    .unwrap_or_default();
+                let status = subagent_status(agent).to_string();
+                let selected = self.selected_subagent.as_deref() == Some(id.as_str());
+                let select_id = id.clone();
+                div()
+                    .id(format!("subagent-{id}"))
+                    .aria_label(name.clone())
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .px_2()
+                    .py_2()
+                    .rounded(px(6.0))
+                    .border_1()
+                    .border_color(if selected {
+                        colors.primary
+                    } else {
+                        colors.border
+                    })
+                    .hover(|style| style.bg(colors.accent))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(IconName::Bot)
+                            .child(div().flex_1().text_sm().child(name))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(if subagent_group(agent) == "error" {
+                                        colors.danger
+                                    } else {
+                                        colors.muted_foreground
+                                    })
+                                    .child(status),
+                            ),
+                    )
+                    .when(!task.is_empty(), |element| {
+                        element.child(
+                            div()
+                                .text_xs()
+                                .text_color(colors.muted_foreground)
+                                .child(task),
+                        )
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.select_subagent(&select_id, cx);
+                    }))
+            }))
+            .when_some(selected, |element, agent| {
+                let id = subagent_id(agent);
+                let detail = serde_json::to_string_pretty(&json!({
+                    "id": id,
+                    "name": agent.get("name").or_else(|| agent.get("agentName")),
+                    "status": subagent_status(agent),
+                    "task": agent.get("task").or_else(|| agent.get("prompt")),
+                    "cwd": agent.get("cwd"),
+                    "sessionFile": agent.get("sessionFile"),
+                }))
+                .unwrap_or_default();
+                element.child(
+                    div()
+                        .id("subagent-detail")
+                        .test_support()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .p_2()
+                        .rounded(px(8.0))
+                        .border_1()
+                        .border_color(colors.border)
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .child(format!("{}: {id}", self.t("subagents.detail"))),
+                        )
+                        .child(
+                            div()
+                                .max_h(px(220.0))
+                                .overflow_y_scrollbar()
+                                .font_family("ui-monospace")
+                                .whitespace_nowrap()
+                                .text_xs()
+                                .text_color(colors.muted_foreground)
+                                .child(detail),
+                        ),
+                )
+            })
+            .child(
+                div()
+                    .id("subagents-rpc-boundary")
+                    .test_support()
+                    .text_xs()
+                    .text_color(colors.muted_foreground)
+                    .child(self.t("subagents.rpcBoundary")),
+            )
     }
 
     /// The Activity pane lists the persisted notifications newest first and
@@ -10141,135 +10585,374 @@ impl Workspace {
             .child(list)
     }
 
+    fn uncommitted_file_count(status: &GitStatus) -> usize {
+        status
+            .files
+            .iter()
+            .map(|file| file.path.as_str())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+    }
+
     fn summary_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.theme().colors;
-        let (title, project, status) = self
+        let session = self
             .selected_session
-            .and_then(|index| self.sessions.get(index))
-            .map(|session| {
-                (
-                    session.title.clone(),
-                    session.project_path.clone(),
-                    session.status.clone(),
-                )
+            .and_then(|index| self.sessions.get(index));
+        let title = session
+            .map(|session| session.title.clone())
+            .unwrap_or_else(|| self.t("summary.noSession").to_string());
+        let project = session
+            .map(|session| session.project_path.clone())
+            .or_else(|| self.project_cwd())
+            .unwrap_or_default();
+        let status = if self.running {
+            self.t("common.working").to_string()
+        } else {
+            session
+                .map(|session| session.status.clone())
+                .unwrap_or_else(|| self.t("common.idle").to_string())
+        };
+        let reply = latest_assistant_reply(&self.transcript)
+            .map(|reply| preview_text(reply, 720))
+            .unwrap_or_else(|| self.t("summary.noReply").to_string());
+        let phases = latest_todo_phases(&self.transcript);
+        let model = session
+            .and_then(|session| session.model.clone())
+            .filter(|model| !model.is_empty())
+            .unwrap_or_else(|| self.settings.last_selected_model());
+        let branch = self
+            .review_status
+            .as_ref()
+            .and_then(|status| status.branch.clone())
+            .unwrap_or_else(|| self.t("review.detached").to_string());
+        let changed_files: std::collections::BTreeMap<String, omp_core::git::GitFileStatus> = self
+            .review_status
+            .as_ref()
+            .map(|status| {
+                status
+                    .files
+                    .iter()
+                    .map(|file| (file.path.clone(), file.clone()))
+                    .collect()
             })
-            .unwrap_or_else(|| {
-                (
-                    "No session selected".to_string(),
-                    String::new(),
-                    "idle".to_string(),
-                )
-            });
+            .unwrap_or_default();
         div()
+            .id("summary-content")
             .flex()
             .flex_col()
+            .flex_1()
+            .min_h(px(0.0))
             .gap_2()
+            .overflow_y_scroll()
             .p_2()
             .child(
                 div()
-                    .text_sm()
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(colors.foreground)
-                    .child(title),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(colors.muted_foreground)
-                    .child(project),
-            )
-            .child(
-                div()
                     .flex()
-                    .items_center()
-                    .gap_2()
-                    .text_xs()
-                    .text_color(colors.muted_foreground)
-                    .child("Status")
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(colors.foreground)
+                            .child(title.clone()),
+                    )
                     .child(
                         div()
                             .px_2()
                             .rounded(px(999.0))
-                            .bg(colors.accent)
+                            .bg(if self.running {
+                                colors.primary
+                            } else {
+                                colors.accent
+                            })
+                            .text_xs()
+                            .text_color(if self.running {
+                                colors.primary_foreground
+                            } else {
+                                colors.foreground
+                            })
                             .child(status),
                     ),
             )
             .child(
                 div()
-                    .text_xs()
-                    .text_color(colors.muted_foreground)
-                    .child("todoPhases"),
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .p_2()
+                    .rounded(px(8.0))
+                    .border_1()
+                    .border_color(colors.border)
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(colors.muted_foreground)
+                            .child(self.t("summary.latestReply")),
+                    )
+                    .child(
+                        div()
+                            .id("summary-latest-reply")
+                            .test_support()
+                            .text_sm()
+                            .text_color(colors.foreground)
+                            .child(reply),
+                    ),
             )
             .child(
                 div()
-                    .text_sm()
-                    .text_color(colors.foreground)
-                    .child("No plan items yet."),
+                    .id("summary-plan")
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .p_2()
+                    .rounded(px(8.0))
+                    .border_1()
+                    .border_color(colors.border)
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(colors.muted_foreground)
+                            .child(self.t("summary.plan")),
+                    )
+                    .when(phases.is_empty(), |element| {
+                        element.child(
+                            div()
+                                .text_sm()
+                                .text_color(colors.muted_foreground)
+                                .child(self.t("summary.noPlan")),
+                        )
+                    })
+                    .children(phases.iter().map(|phase| {
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .text_color(colors.foreground)
+                                    .child(phase.name.clone()),
+                            )
+                            .children(phase.tasks.iter().map(|task| {
+                                let marker = match task.status {
+                                    TodoStatus::Completed => "✓",
+                                    TodoStatus::InProgress => "●",
+                                    TodoStatus::Pending => "○",
+                                };
+                                div()
+                                    .id("summary-todo-task")
+                                    .test_support()
+                                    .flex()
+                                    .items_start()
+                                    .gap_2()
+                                    .text_xs()
+                                    .text_color(if task.status == TodoStatus::Completed {
+                                        colors.muted_foreground
+                                    } else {
+                                        colors.foreground
+                                    })
+                                    .child(marker)
+                                    .child(task.content.clone())
+                            }))
+                    })),
+            )
+            .child(
+                div()
+                    .id("summary-changed-files")
+                    .test_support()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .p_2()
+                    .rounded(px(8.0))
+                    .border_1()
+                    .border_color(colors.border)
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(colors.muted_foreground)
+                            .child(format!(
+                                "{} ({})",
+                                self.t("summary.changedFiles"),
+                                changed_files.len()
+                            )),
+                    )
+                    .when(changed_files.is_empty(), |element| {
+                        element.child(
+                            div()
+                                .text_sm()
+                                .text_color(colors.muted_foreground)
+                                .child(self.t("common.noChanges")),
+                        )
+                    })
+                    .children(changed_files.values().take(8).map(|file| {
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .text_xs()
+                            .child(div().flex_1().child(file.path.clone()))
+                            .child(
+                                div()
+                                    .text_color(if file.staged {
+                                        colors.success
+                                    } else {
+                                        colors.muted_foreground
+                                    })
+                                    .child(if file.staged {
+                                        self.t("review.staged")
+                                    } else {
+                                        self.t("review.unstaged")
+                                    }),
+                            )
+                    }))
+                    .when(changed_files.len() > 8, |element| {
+                        element.child(
+                            div()
+                                .text_xs()
+                                .text_color(colors.muted_foreground)
+                                .child(format!("+{}", changed_files.len() - 8)),
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .p_2()
+                    .rounded(px(8.0))
+                    .border_1()
+                    .border_color(colors.border)
+                    .text_xs()
+                    .child(format!("{}: {project}", self.t("summary.workspace")))
+                    .child(format!("{}: {branch}", self.t("summary.branch")))
+                    .child(format!("{}: {model}", self.t("summary.model")))
+                    .when_some(self.context_usage, |element, usage| {
+                        element.child(format!(
+                            "{}: {} / {} ({}%)",
+                            self.t("summary.context"),
+                            group_digits(usage.tokens),
+                            group_digits(usage.window),
+                            context_percent(usage.percent)
+                        ))
+                    }),
+            )
+            .child(
+                div()
+                    .id("summary-schedules")
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .p_2()
+                    .rounded(px(8.0))
+                    .border_1()
+                    .border_color(colors.border)
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(colors.muted_foreground)
+                            .child(self.t("summary.schedules")),
+                    )
+                    .when(self.schedules.is_empty(), |element| {
+                        element.child(
+                            div()
+                                .text_sm()
+                                .text_color(colors.muted_foreground)
+                                .child(self.t("summary.noSchedules")),
+                        )
+                    })
+                    .children(self.schedules.iter().take(5).map(|schedule| {
+                        let title = schedule
+                            .get("title")
+                            .and_then(Value::as_str)
+                            .unwrap_or_else(|| self.t("sidebar.schedules"))
+                            .to_string();
+                        let next = schedule
+                            .get("nextRunAt")
+                            .and_then(Value::as_str)
+                            .unwrap_or("—");
+                        let status = schedule
+                            .get("status")
+                            .and_then(Value::as_str)
+                            .unwrap_or("active");
+                        div()
+                            .flex()
+                            .flex_col()
+                            .text_xs()
+                            .child(div().text_color(colors.foreground).child(title))
+                            .child(
+                                div()
+                                    .text_color(colors.muted_foreground)
+                                    .child(format!("{status} · {next}")),
+                            )
+                    })),
             )
     }
 
     fn review_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.theme().colors;
-        if let Some(error) = &self.review_error {
-            return div()
-                .p_2()
-                .flex()
-                .flex_col()
-                .gap_2()
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(colors.danger)
-                        .child(error.clone()),
-                )
-                .child(
-                    div()
-                        .id("review-refresh")
-                        .px_2()
-                        .py_1()
-                        .rounded(px(6.0))
-                        .border_1()
-                        .border_color(colors.border)
-                        .text_xs()
-                        .child("Refresh")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.refresh_review();
-                            cx.notify();
-                        })),
-                );
-        }
+        let refresh = || {
+            div()
+                .id("review-refresh")
+                .aria_label(self.t("review.refresh"))
+                .px_2()
+                .py_1()
+                .rounded(px(6.0))
+                .border_1()
+                .border_color(colors.border)
+                .text_xs()
+                .child(self.t("review.refresh"))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.refresh_review();
+                    cx.notify();
+                }))
+        };
         let Some(status) = &self.review_status else {
             return div()
                 .p_2()
                 .flex()
                 .flex_col()
                 .gap_2()
+                .when_some(self.review_error.clone(), |element, error| {
+                    element.child(div().text_sm().text_color(colors.danger).child(error))
+                })
                 .child(
                     div()
                         .text_xs()
                         .text_color(colors.muted_foreground)
-                        .child("Load the current branch and changed files."),
+                        .child(self.t("review.load")),
                 )
-                .child(
-                    div()
-                        .id("review-load")
-                        .px_2()
-                        .py_1()
-                        .rounded(px(6.0))
-                        .border_1()
-                        .border_color(colors.border)
-                        .text_xs()
-                        .child("Refresh")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.refresh_review();
-                            cx.notify();
-                        })),
-                );
+                .child(refresh())
+                .into_any_element();
         };
+        let staged_count = status.files.iter().filter(|file| file.staged).count();
+        let unstaged_count = status
+            .files
+            .iter()
+            .filter(|file| !file.staged)
+            .map(|file| file.path.as_str())
+            .collect::<HashSet<_>>()
+            .len();
+        let branch = status
+            .branch
+            .clone()
+            .unwrap_or_else(|| self.t("review.detached").to_string());
         div()
+            .id("review-content")
             .flex()
             .flex_col()
+            .flex_1()
+            .min_h(px(0.0))
             .gap_2()
+            .overflow_y_scroll()
             .p_2()
             .child(
                 div()
@@ -10278,60 +10961,455 @@ impl Workspace {
                     .gap_2()
                     .text_xs()
                     .text_color(colors.muted_foreground)
+                    .child(format!("{}: {branch}", self.t("review.branch")))
                     .child(format!(
-                        "Branch: {}",
-                        status
-                            .branch
-                            .clone()
-                            .unwrap_or_else(|| "detached".to_string())
+                        "{}: {}",
+                        self.t("review.ahead"),
+                        self.review_ahead
+                            .map(|ahead| ahead.to_string())
+                            .unwrap_or_else(|| "—".to_string())
                     ))
-                    .child(format!("{} changed", status.files.len())),
+                    .child(div().flex_1())
+                    .child(refresh()),
             )
-            .children(status.files.iter().map(|file| {
-                let path = file.path.clone();
-                let staged = file.staged;
-                let selected = self.review_focus_path.as_deref() == Some(path.as_str());
+            .when_some(self.review_error.clone(), |element, error| {
+                element.child(
+                    div()
+                        .id("review-error")
+                        .p_2()
+                        .rounded(px(6.0))
+                        .border_1()
+                        .border_color(colors.danger)
+                        .text_xs()
+                        .text_color(colors.danger)
+                        .child(error),
+                )
+            })
+            .child(
                 div()
                     .flex()
                     .items_center()
                     .gap_2()
-                    .px_2()
-                    .py_1()
-                    .rounded(px(6.0))
-                    .when(selected, |element| element.bg(colors.accent))
-                    .hover(|style| style.bg(colors.accent))
+                    .text_xs()
+                    .child(format!(
+                        "{}: {}",
+                        self.t("review.uncommitted"),
+                        Self::uncommitted_file_count(status)
+                    ))
                     .child(
                         div()
-                            .text_sm()
-                            .text_color(colors.foreground)
-                            .child(path.clone()),
+                            .id("review-unstaged-count")
+                            .aria_label(format!("{} {unstaged_count}", self.t("review.unstaged")))
+                            .test_support()
+                            .child(format!("{} {unstaged_count}", self.t("review.unstaged"))),
                     )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(if staged {
-                                colors.success
-                            } else {
-                                colors.muted_foreground
-                            })
-                            .child(if staged { "staged" } else { "unstaged" }),
-                    )
+                    .child(format!("{} {staged_count}", self.t("review.staged")))
                     .child(div().flex_1())
                     .child(
                         div()
-                            .id(format!("toggle-{path}"))
-                            .aria_label(if staged { "Unstage file" } else { "Stage file" })
+                            .id("review-stage-all")
+                            .aria_label(self.t("review.stageAll"))
                             .px_2()
+                            .py_1()
                             .rounded(px(6.0))
                             .border_1()
                             .border_color(colors.border)
-                            .text_xs()
-                            .child(if staged { "Unstage" } else { "Stage" })
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.stage_path(&path, !staged, cx);
+                            .child(self.t("review.stageAll"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.set_all_review_staged(true, cx);
                             })),
                     )
+                    .child(
+                        div()
+                            .id("review-unstage-all")
+                            .aria_label(self.t("review.unstageAll"))
+                            .px_2()
+                            .py_1()
+                            .rounded(px(6.0))
+                            .border_1()
+                            .border_color(colors.border)
+                            .child(self.t("review.unstageAll"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.set_all_review_staged(false, cx);
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .id("review-commit-row")
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .p_2()
+                    .rounded(px(8.0))
+                    .border_1()
+                    .border_color(colors.border)
+                    .child(
+                        div()
+                            .id("review-commit-expand")
+                            .aria_label(self.t("review.commit"))
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .text_sm()
+                            .child(if self.review_commit_open {
+                                "▾"
+                            } else {
+                                "▸"
+                            })
+                            .child(format!("{} ({staged_count})", self.t("review.commit")))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.review_commit_open = !this.review_commit_open;
+                                cx.notify();
+                            })),
+                    )
+                    .when(self.review_commit_open, |element| {
+                        element
+                            .child(
+                                Input::new(&self.review_commit_input)
+                                    .aria_label(self.t("review.commitMessage")),
+                            )
+                            .child(
+                                div()
+                                    .id("review-commit-submit")
+                                    .aria_label(self.t("review.commitChanges"))
+                                    .px_2()
+                                    .py_1()
+                                    .rounded(px(6.0))
+                                    .bg(colors.primary)
+                                    .text_color(colors.primary_foreground)
+                                    .text_xs()
+                                    .child(self.t("review.commitChanges"))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.commit_review(window, cx);
+                                    })),
+                            )
+                    }),
+            )
+            .when(status.files.is_empty(), |element| {
+                element.child(
+                    div()
+                        .text_sm()
+                        .text_color(colors.muted_foreground)
+                        .child(self.t("common.noChanges")),
+                )
+            })
+            .children(status.files.iter().map(|file| {
+                let path = file.path.clone();
+                let staged = file.staged;
+                let key = Self::review_diff_key(&path, staged);
+                let expanded = self.review_diffs.get(&key);
+                let is_expanded = expanded.is_some();
+                let selected = self.review_focus_path.as_deref() == Some(path.as_str());
+                let expand_path = path.clone();
+                let stage_path = path.clone();
+                let undo_path = path.clone();
+                let confirming_undo = self.review_undo.as_deref() == Some(path.as_str());
+                div()
+                    .id(format!("review-file-{path}"))
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .p_2()
+                    .rounded(px(8.0))
+                    .border_1()
+                    .border_color(colors.border)
+                    .when(selected, |element| element.bg(colors.accent))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .id(format!("review-expand-{path}"))
+                                    .aria_label(if is_expanded {
+                                        self.t("review.collapse")
+                                    } else {
+                                        self.t("review.expand")
+                                    })
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .child(if is_expanded { "▾" } else { "▸" })
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(colors.foreground)
+                                            .child(path.clone()),
+                                    )
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.toggle_review_diff(&expand_path, staged, cx);
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(if staged {
+                                        colors.success
+                                    } else {
+                                        colors.muted_foreground
+                                    })
+                                    .child(if staged {
+                                        self.t("review.staged")
+                                    } else {
+                                        self.t("review.unstaged")
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .id(format!("toggle-{path}"))
+                                    .aria_label(if staged {
+                                        self.t("review.unstageFile")
+                                    } else {
+                                        self.t("review.stageFile")
+                                    })
+                                    .px_2()
+                                    .rounded(px(6.0))
+                                    .border_1()
+                                    .border_color(colors.border)
+                                    .text_xs()
+                                    .child(if staged {
+                                        self.t("review.unstage")
+                                    } else {
+                                        self.t("review.stage")
+                                    })
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.stage_path(&stage_path, !staged, cx);
+                                    })),
+                            )
+                            .when(
+                                !staged && !self.review_untracked.contains(&path),
+                                |element| {
+                                    element.child(
+                                        div()
+                                            .id(format!("review-undo-{path}"))
+                                            .aria_label(self.t("review.undo"))
+                                            .px_2()
+                                            .rounded(px(6.0))
+                                            .border_1()
+                                            .border_color(colors.danger)
+                                            .text_xs()
+                                            .text_color(colors.danger)
+                                            .child(self.t("review.undo"))
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.request_review_undo(&undo_path, cx);
+                                            })),
+                                    )
+                                },
+                            ),
+                    )
+                    .when(confirming_undo, |element| {
+                        element.child(
+                            div()
+                                .id("review-undo-confirmation")
+                                .flex()
+                                .flex_col()
+                                .gap_2()
+                                .p_2()
+                                .rounded(px(6.0))
+                                .bg(colors.accent)
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(colors.danger)
+                                        .child(format!("{}: {path}", self.t("review.confirmUndo"))),
+                                )
+                                .child(
+                                    div()
+                                        .flex()
+                                        .gap_2()
+                                        .child(
+                                            div()
+                                                .id("review-undo-cancel")
+                                                .px_2()
+                                                .py_1()
+                                                .rounded(px(6.0))
+                                                .border_1()
+                                                .border_color(colors.border)
+                                                .text_xs()
+                                                .child(self.t("common.cancel"))
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.cancel_review_undo(cx);
+                                                })),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("review-undo-confirm")
+                                                .aria_label(self.t("review.confirmUndo"))
+                                                .px_2()
+                                                .py_1()
+                                                .rounded(px(6.0))
+                                                .bg(colors.danger)
+                                                .text_color(colors.primary_foreground)
+                                                .text_xs()
+                                                .child(self.t("review.confirmUndo"))
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.confirm_review_undo(cx);
+                                                })),
+                                        ),
+                                ),
+                        )
+                    })
+                    .when_some(expanded, |element, diff| {
+                        let mode = diff.mode;
+                        let rows = review_diff_rows(&diff.diff.text, mode);
+                        element
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .id(format!("review-unified-{path}"))
+                                            .aria_label(self.t("review.unified"))
+                                            .px_2()
+                                            .py_1()
+                                            .rounded(px(6.0))
+                                            .bg(if mode == ReviewDiffMode::Unified {
+                                                colors.accent
+                                            } else {
+                                                colors.background
+                                            })
+                                            .border_1()
+                                            .border_color(colors.border)
+                                            .text_xs()
+                                            .child(self.t("review.unified"))
+                                            .on_click(cx.listener({
+                                                let path = path.clone();
+                                                move |this, _, _, cx| {
+                                                    this.set_review_diff_mode(
+                                                        &path, staged, "unified", cx,
+                                                    );
+                                                }
+                                            })),
+                                    )
+                                    .child(
+                                        div()
+                                            .id(format!("review-split-{path}"))
+                                            .aria_label(self.t("review.split"))
+                                            .px_2()
+                                            .py_1()
+                                            .rounded(px(6.0))
+                                            .bg(if mode == ReviewDiffMode::Split {
+                                                colors.accent
+                                            } else {
+                                                colors.background
+                                            })
+                                            .border_1()
+                                            .border_color(colors.border)
+                                            .text_xs()
+                                            .child(self.t("review.split"))
+                                            .on_click(cx.listener({
+                                                let path = path.clone();
+                                                move |this, _, _, cx| {
+                                                    this.set_review_diff_mode(
+                                                        &path, staged, "split", cx,
+                                                    );
+                                                }
+                                            })),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .id(format!("review-diff-{path}"))
+                                    .max_h(px(420.0))
+                                    .overflow_y_scroll()
+                                    .rounded(px(6.0))
+                                    .bg(colors.tab)
+                                    .p_1()
+                                    .font_family("ui-monospace")
+                                    .text_size(px(10.5))
+                                    .when(rows.is_empty(), |element| {
+                                        element.child(
+                                            div()
+                                                .text_color(colors.muted_foreground)
+                                                .child(self.t("review.noDiff")),
+                                        )
+                                    })
+                                    .children(rows.into_iter().map(|row| {
+                                        let color = if row.added {
+                                            colors.success
+                                        } else if row.removed {
+                                            colors.danger
+                                        } else {
+                                            colors.foreground
+                                        };
+                                        if mode == ReviewDiffMode::Unified {
+                                            div()
+                                                .flex()
+                                                .items_start()
+                                                .gap_2()
+                                                .whitespace_nowrap()
+                                                .child(
+                                                    div()
+                                                        .w(px(42.0))
+                                                        .text_right()
+                                                        .text_color(colors.muted_foreground)
+                                                        .child(row.number),
+                                                )
+                                                .child(div().text_color(color).child(row.text))
+                                        } else {
+                                            div()
+                                                .flex()
+                                                .items_start()
+                                                .gap_2()
+                                                .whitespace_nowrap()
+                                                .child(
+                                                    div()
+                                                        .w(px(36.0))
+                                                        .text_right()
+                                                        .text_color(colors.muted_foreground)
+                                                        .child(row.old_number),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .flex_1()
+                                                        .text_color(if row.removed {
+                                                            colors.danger
+                                                        } else {
+                                                            colors.foreground
+                                                        })
+                                                        .child(row.old_text),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .w(px(36.0))
+                                                        .text_right()
+                                                        .text_color(colors.muted_foreground)
+                                                        .child(row.new_number),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .flex_1()
+                                                        .text_color(if row.added {
+                                                            colors.success
+                                                        } else {
+                                                            colors.foreground
+                                                        })
+                                                        .child(row.new_text),
+                                                )
+                                        }
+                                    })),
+                            )
+                            .when(
+                                diff.diff.truncated_by_lines || diff.diff.truncated_by_bytes,
+                                |element| {
+                                    element.child(
+                                        div()
+                                            .id("review-diff-truncated")
+                                            .text_xs()
+                                            .text_color(colors.muted_foreground)
+                                            .child(self.t("review.truncated")),
+                                    )
+                                },
+                            )
+                    })
             }))
+            .into_any_element()
     }
 
     /// Ask pane: one card per question with its header, options (radio for
@@ -10786,10 +11864,283 @@ impl Workspace {
         drop(store);
         match result {
             Ok(true) => self.refresh_review(),
-            Ok(false) => self.review_error = Some("Git rejected the stage request.".to_string()),
+            Ok(false) => {
+                self.review_error = Some(i18n::t(self.language(), "review.gitRejected").to_string())
+            }
             Err(error) => self.review_error = Some(error.message),
         }
         cx.notify();
+    }
+
+    fn review_diff_key(path: &str, staged: bool) -> String {
+        format!("{}:{path}", if staged { "staged" } else { "unstaged" })
+    }
+
+    fn review_undo_allowed(&self, path: &str) -> bool {
+        !self.review_untracked.contains(path)
+            && self.review_status.as_ref().is_some_and(|status| {
+                status
+                    .files
+                    .iter()
+                    .any(|file| file.path == path && !file.staged)
+            })
+    }
+
+    /// Expansion only reads Git. Staging remains a separate, explicit action.
+    pub fn toggle_review_diff(&mut self, path: &str, staged: bool, cx: &mut Context<Self>) {
+        let key = Self::review_diff_key(path, staged);
+        if self.review_diffs.remove(&key).is_some() {
+            cx.notify();
+            return;
+        }
+        let Some(store) = self.store.clone() else {
+            return;
+        };
+        let Some(cwd) = self.project_cwd() else {
+            return;
+        };
+        let result = {
+            let store = store.lock().expect("state lock");
+            git::diff(&store, Platform::current(), &cwd, path, staged)
+        };
+        match result {
+            Ok(diff) => {
+                self.review_diffs.insert(
+                    key,
+                    ReviewDiffState {
+                        mode: ReviewDiffMode::Unified,
+                        diff: bound_review_diff(&diff.text),
+                    },
+                );
+                self.review_error = None;
+            }
+            Err(error) => self.review_error = Some(error.message),
+        }
+        cx.notify();
+    }
+
+    pub fn set_review_diff_mode(
+        &mut self,
+        path: &str,
+        staged: bool,
+        mode: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let key = Self::review_diff_key(path, staged);
+        if let Some(diff) = self.review_diffs.get_mut(&key) {
+            diff.mode = if mode == "split" {
+                ReviewDiffMode::Split
+            } else {
+                ReviewDiffMode::Unified
+            };
+            cx.notify();
+        }
+    }
+
+    pub fn set_all_review_staged(&mut self, staged: bool, cx: &mut Context<Self>) {
+        let Some(status) = &self.review_status else {
+            return;
+        };
+        let paths: Vec<String> = status
+            .files
+            .iter()
+            .filter(|file| file.staged != staged)
+            .map(|file| file.path.clone())
+            .collect();
+        if paths.is_empty() {
+            return;
+        }
+        let Some(store) = self.store.clone() else {
+            return;
+        };
+        let Some(cwd) = self.project_cwd() else {
+            return;
+        };
+        let result = {
+            let store = store.lock().expect("state lock");
+            if staged {
+                git::stage(&store, Platform::current(), &cwd, &paths)
+            } else {
+                git::unstage(&store, Platform::current(), &cwd, &paths)
+            }
+        };
+        match result {
+            Ok(true) => self.refresh_review(),
+            Ok(false) => {
+                self.review_error = Some(i18n::t(self.language(), "review.gitRejected").to_string())
+            }
+            Err(error) => self.review_error = Some(error.message),
+        }
+        cx.notify();
+    }
+
+    pub fn commit_review(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let message = self.review_commit_input.read(cx).value().trim().to_string();
+        if message.is_empty() {
+            self.review_error = Some(i18n::t(self.language(), "review.commitEmpty").to_string());
+            cx.notify();
+            return;
+        }
+        let Some(store) = self.store.clone() else {
+            return;
+        };
+        let Some(cwd) = self.project_cwd() else {
+            return;
+        };
+        let result = {
+            let store = store.lock().expect("state lock");
+            git::commit(&store, Platform::current(), &cwd, &message)
+        };
+        match result {
+            Ok(outcome) if outcome.ok => {
+                self.review_error = None;
+                self.review_commit_open = false;
+                self.review_commit_input
+                    .update(cx, |input, cx| input.set_value("", window, cx));
+                self.refresh_review();
+            }
+            Ok(outcome) => {
+                self.review_error = Some(outcome.reason.unwrap_or(outcome.output));
+            }
+            Err(error) => self.review_error = Some(error.message),
+        }
+        cx.notify();
+    }
+
+    pub fn request_review_undo(&mut self, path: &str, cx: &mut Context<Self>) {
+        if self.review_undo_allowed(path) {
+            self.review_undo = Some(path.to_string());
+            cx.notify();
+        }
+    }
+
+    pub fn cancel_review_undo(&mut self, cx: &mut Context<Self>) {
+        self.review_undo = None;
+        cx.notify();
+    }
+
+    pub fn confirm_review_undo(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.review_undo.take() else {
+            return;
+        };
+        if !self.review_undo_allowed(&path) {
+            cx.notify();
+            return;
+        }
+        let Some(store) = self.store.clone() else {
+            return;
+        };
+        let Some(cwd) = self.project_cwd() else {
+            return;
+        };
+        let result = {
+            let store = store.lock().expect("state lock");
+            git::restore(&store, Platform::current(), &cwd, &[path])
+        };
+        match result {
+            Ok(true) => self.refresh_review(),
+            Ok(false) => {
+                self.review_error =
+                    Some(i18n::t(self.language(), "review.undoRejected").to_string())
+            }
+            Err(error) => self.review_error = Some(error.message),
+        }
+        cx.notify();
+    }
+
+    pub fn apply_subagents_response(&mut self, response: &Value) {
+        if response.get("success").and_then(Value::as_bool) == Some(false) {
+            self.subagents_loaded = true;
+            self.subagent_records.clear();
+            self.selected_subagent = None;
+            self.subagents_error = response
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .or_else(|| response.get("error").and_then(Value::as_str))
+                .map(str::to_string)
+                .or_else(|| Some(i18n::t(self.language(), "subagents.loadFailed").to_string()));
+            return;
+        }
+        let records = response
+            .pointer("/data/subagents")
+            .or_else(|| response.get("subagents"))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        self.selected_subagent = self.selected_subagent.take().filter(|selected| {
+            records
+                .iter()
+                .any(|agent| subagent_id(agent) == selected.as_str())
+        });
+        self.subagent_records = records;
+        self.subagents_loaded = true;
+        self.subagents_error = None;
+    }
+
+    pub fn refresh_subagents(&mut self) {
+        let Some(runtime_id) = self.runtime_id.clone() else {
+            self.subagent_records.clear();
+            self.selected_subagent = None;
+            self.subagents_loaded = true;
+            self.subagents_error = None;
+            return;
+        };
+        let result = self
+            .agents
+            .command(&runtime_id, &json!({ "type": "get_subagents" }));
+        match result {
+            Ok(response) => self.apply_subagents_response(&response),
+            Err(error) => {
+                self.subagents_loaded = true;
+                self.subagent_records.clear();
+                self.selected_subagent = None;
+                self.subagents_error = Some(error.message);
+            }
+        }
+    }
+
+    pub fn set_subagent_filter(&mut self, filter: &str, cx: &mut Context<Self>) {
+        if matches!(
+            filter,
+            "all" | "running" | "waiting" | "completed" | "error"
+        ) {
+            self.subagent_filter = filter.to_string();
+            cx.notify();
+        }
+    }
+
+    pub fn select_subagent(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self
+            .subagent_records
+            .iter()
+            .any(|agent| subagent_id(agent) == id)
+        {
+            self.selected_subagent = Some(id.to_string());
+            cx.notify();
+        }
+    }
+
+    pub fn toggle_subagents_pin(&mut self, cx: &mut Context<Self>) {
+        let pinned = !self.settings.subagents_panel_pinned;
+        self.update_setting(json!({ "subagentsPanelPinned": pinned }), cx);
+        if pinned {
+            self.refresh_subagents();
+        }
+    }
+
+    fn subagent_badge(&self) -> (usize, usize) {
+        let records = if self.subagents_loaded {
+            &self.subagent_records
+        } else {
+            return (0, 0);
+        };
+        (
+            records
+                .iter()
+                .filter(|agent| subagent_group(agent) == "running")
+                .count(),
+            records.len(),
+        )
     }
 
     /// Forks the selected session through the live harness and moves to the
@@ -10943,6 +12294,12 @@ impl Workspace {
 
     fn overview_popover(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.theme().colors;
+        let review_count = self
+            .review_status
+            .as_ref()
+            .map(Self::uncommitted_file_count)
+            .unwrap_or(0);
+        let (subagent_running, subagent_total) = self.subagent_badge();
         div()
             .absolute()
             .top(px(56.0))
@@ -10976,14 +12333,45 @@ impl Workspace {
                 ]
                 .into_iter()
                 .map(|(label, id)| {
+                    let label = if id == "files" {
+                        self.t("rightPane.openFile")
+                    } else {
+                        label
+                    };
                     div()
                         .id(id)
                         .aria_label(label)
+                        .flex()
+                        .items_center()
+                        .gap_2()
                         .px_2()
                         .py_1()
                         .rounded(px(6.0))
                         .hover(|style| style.bg(colors.accent))
                         .child(label)
+                        .child(div().flex_1())
+                        .when(id == "review", |element| {
+                            element.child(
+                                div()
+                                    .id("popover-review-badge")
+                                    .px_2()
+                                    .rounded(px(999.0))
+                                    .bg(colors.accent)
+                                    .text_xs()
+                                    .child(review_count.to_string()),
+                            )
+                        })
+                        .when(id == "subagents", |element| {
+                            element.child(
+                                div()
+                                    .id("popover-subagents-badge")
+                                    .px_2()
+                                    .rounded(px(999.0))
+                                    .bg(colors.accent)
+                                    .text_xs()
+                                    .child(format!("{subagent_running}/{subagent_total}")),
+                            )
+                        })
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.set_right_pane(id, cx);
                             this.overview_open = false;
@@ -11501,6 +12889,144 @@ fn transcript_is_at_bottom(offset: f32, max_offset: f32, viewport: f32, threshol
 
 /// The transcript's name for a message's author: the two known roles are
 /// relabelled, an agent carries its own name, and anything else keeps its role.
+struct ReviewDiffRow {
+    number: String,
+    text: String,
+    old_number: String,
+    new_number: String,
+    old_text: String,
+    new_text: String,
+    added: bool,
+    removed: bool,
+}
+
+fn hunk_start(header: &str, marker: char) -> Option<u64> {
+    let start = header.find(marker)? + 1;
+    let digits: String = header[start..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits.parse().ok()
+}
+
+fn review_diff_rows(text: &str, mode: ReviewDiffMode) -> Vec<ReviewDiffRow> {
+    let mut old_line = 0_u64;
+    let mut new_line = 0_u64;
+    text.lines()
+        .map(|line| {
+            if line.starts_with("@@") {
+                old_line = hunk_start(line, '-').unwrap_or(0);
+                new_line = hunk_start(line, '+').unwrap_or(0);
+                return ReviewDiffRow {
+                    number: String::new(),
+                    text: line.to_string(),
+                    old_number: String::new(),
+                    new_number: String::new(),
+                    old_text: line.to_string(),
+                    new_text: String::new(),
+                    added: false,
+                    removed: false,
+                };
+            }
+            let added = line.starts_with('+') && !line.starts_with("+++");
+            let removed = line.starts_with('-') && !line.starts_with("---");
+            let context = line.starts_with(' ');
+            let old_number = (context || removed).then(|| {
+                let number = old_line;
+                old_line += 1;
+                number.to_string()
+            });
+            let new_number = (context || added).then(|| {
+                let number = new_line;
+                new_line += 1;
+                number.to_string()
+            });
+            let number = if removed {
+                old_number.clone()
+            } else {
+                new_number.clone()
+            };
+            let body = if added || removed || context {
+                line.get(1..).unwrap_or(line)
+            } else {
+                line
+            };
+            ReviewDiffRow {
+                number: number.unwrap_or_default(),
+                text: line.to_string(),
+                old_number: old_number.unwrap_or_default(),
+                new_number: new_number.unwrap_or_default(),
+                old_text: if mode == ReviewDiffMode::Split && (context || removed) {
+                    body.to_string()
+                } else if mode == ReviewDiffMode::Split && !added && !context {
+                    line.to_string()
+                } else {
+                    String::new()
+                },
+                new_text: if mode == ReviewDiffMode::Split && (context || added) {
+                    body.to_string()
+                } else {
+                    String::new()
+                },
+                added,
+                removed,
+            }
+        })
+        .collect()
+}
+
+fn latest_assistant_reply(messages: &[TranscriptMessage]) -> Option<&str> {
+    messages.iter().rev().find_map(|message| {
+        (message.role == "assistant")
+            .then(|| {
+                message
+                    .parts
+                    .iter()
+                    .filter(|part| part.kind == "text")
+                    .filter_map(|part| part.text.as_deref())
+                    .rfind(|text| !text.trim().is_empty())
+            })
+            .flatten()
+    })
+}
+
+fn preview_text(text: &str, max_chars: usize) -> String {
+    let mut chars = text.trim().chars();
+    let preview: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        format!("{preview}…")
+    } else {
+        preview
+    }
+}
+
+fn subagent_id(agent: &Value) -> String {
+    ["id", "agentId", "runtimeId"]
+        .iter()
+        .filter_map(|key| agent.get(*key).and_then(Value::as_str))
+        .find(|id| !id.is_empty())
+        .unwrap_or("unknown")
+        .to_string()
+}
+
+fn subagent_status(agent: &Value) -> &str {
+    agent
+        .get("status")
+        .or_else(|| agent.get("state"))
+        .and_then(Value::as_str)
+        .unwrap_or("unknown")
+}
+
+fn subagent_group(agent: &Value) -> &'static str {
+    match subagent_status(agent).to_ascii_lowercase().as_str() {
+        "running" | "working" | "active" | "starting" | "streaming" => "running",
+        "waiting" | "idle" | "queued" | "paused" | "pending" => "waiting",
+        "completed" | "complete" | "done" | "exited" | "finished" | "success" => "completed",
+        "error" | "failed" | "cancelled" | "canceled" => "error",
+        _ => "unknown",
+    }
+}
+
 fn transcript_role_label(message: &TranscriptMessage) -> String {
     match message.role.as_str() {
         "user" => "You".to_string(),
@@ -12385,6 +13911,23 @@ impl Render for Workspace {
                         element.child(self.turn_changes_card(cx))
                     })
                     .child(self.composer(cx)),
+            )
+            .when(
+                show_right && self.settings.subagents_panel_pinned,
+                |element| {
+                    element.child(
+                        div()
+                            .id("subagents-center-pane")
+                            .test_support()
+                            .h_full()
+                            .w(px(omp_core::geometry::clamp_right_pane(
+                                self.geometry.right_pane_width,
+                            ) as f32))
+                            .border_l_1()
+                            .border_color(colors.border)
+                            .child(self.subagents_content(cx)),
+                    )
+                },
             )
             .when(show_right, |element| element.child(self.right_pane(cx)))
             .when(show_details, |element| {
