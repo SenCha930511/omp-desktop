@@ -83,16 +83,97 @@ const renderToolbar = async (props: Partial<ComponentProps<typeof TitleToolbar>>
 }
 
 describe('title toolbar session actions', () => {
-  it('starts a new session without dropping the session tree, browser, or inspector controls', async () => {
+  it('keeps three direct actions and folds the session tree, browser, and inspector into More', async () => {
     const onNewSession = vi.fn()
     await renderToolbar({ onNewSession, onOpenSessionTree: noop })
 
-    expect(container.querySelector('button[aria-label="Session tree"]')).not.toBeNull()
-    expect(container.querySelector('button[aria-label^="Open browser"]')).not.toBeNull()
-    expect(container.querySelector('button[aria-label="Toggle inspector"]')).not.toBeNull()
+    expect([...container.querySelectorAll('.title-toolbar__actions button')].map((button) => button.getAttribute('aria-label'))).toEqual([
+      'New session',
+      'Overview',
+      'More',
+    ])
+    expect(container.querySelector('button[aria-label="Session tree"]')).toBeNull()
+
+    await click(container.querySelector('button[aria-label="More"]'))
+    const menu = container.querySelector('[role="dialog"]')
+    expect(menu?.getAttribute('aria-label')).toBe('More')
+    expect(menu?.querySelector('button[aria-label="Session tree"]')).not.toBeNull()
+    expect(menu?.querySelector('button[aria-label^="Open browser"]')).not.toBeNull()
+    expect(menu?.querySelector('button[aria-label="Toggle inspector"]')).not.toBeNull()
 
     await click(container.querySelector('.title-toolbar__actions button[aria-label="New session"]'))
     expect(onNewSession).toHaveBeenCalledTimes(1)
+  })
+
+  it('runs each More action and closes the menu', async () => {
+    const onOpenSessionTree = vi.fn()
+    const onOpenBrowser = vi.fn()
+    const onToggleInspector = vi.fn()
+    await renderToolbar({ onOpenSessionTree, onOpenBrowser, onToggleInspector, inspectorOpen: false })
+
+    const choose = async (selector: string) => {
+      await click(container.querySelector('button[aria-label="More"]'))
+      await click(container.querySelector(`[role="dialog"] ${selector}`))
+      expect(container.querySelector('[role="dialog"]')).toBeNull()
+    }
+
+    await choose('button[aria-label="Session tree"]')
+    expect(onOpenSessionTree).toHaveBeenCalledTimes(1)
+    await choose('button[aria-label^="Open browser"]')
+    expect(onOpenBrowser).toHaveBeenCalledTimes(1)
+    await choose('button[aria-label="Toggle inspector"]')
+    expect(onToggleInspector).toHaveBeenCalledTimes(1)
+    expect(onOpenSessionTree).toHaveBeenCalledTimes(1)
+    expect(onOpenBrowser).toHaveBeenCalledTimes(1)
+  })
+
+  it('marks the inspector action active while the inspector is open', async () => {
+    await renderToolbar({ inspectorOpen: true })
+    await click(container.querySelector('button[aria-label="More"]'))
+    const action = container.querySelector('[role="dialog"] button[aria-label="Toggle inspector"]')
+    expect(action?.className).toContain('is-active')
+
+    await click(container.querySelector('button[aria-label="More"]'))
+    await renderToolbar({ inspectorOpen: false })
+    await click(container.querySelector('button[aria-label="More"]'))
+    expect(container.querySelector('[role="dialog"] button[aria-label="Toggle inspector"]')?.className).not.toContain('is-active')
+  })
+
+  it('closes the More menu on Escape and on an outside pointer down', async () => {
+    await renderToolbar()
+    const more = container.querySelector('button[aria-label="More"]')
+
+    await click(more)
+    expect(container.querySelector('[role="dialog"]')).not.toBeNull()
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    })
+    expect(container.querySelector('[role="dialog"]')).toBeNull()
+
+    await click(more)
+    expect(container.querySelector('[role="dialog"]')).not.toBeNull()
+    await act(async () => {
+      document.body.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+    })
+    expect(container.querySelector('[role="dialog"]')).toBeNull()
+
+    await click(more)
+    await act(async () => {
+      container.querySelector('[role="dialog"]')?.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+    })
+    expect(container.querySelector('[role="dialog"]')).not.toBeNull()
+  })
+
+  it('keeps the Overview and More popovers mutually exclusive', async () => {
+    await renderToolbar()
+
+    await click(container.querySelector('button[aria-label="More"]'))
+    await click(container.querySelector('button[aria-label="Overview"]'))
+    const dialogs = [...container.querySelectorAll('[role="dialog"]')]
+    expect(dialogs.map((dialog) => dialog.getAttribute('aria-label'))).toEqual(['Workspace overview'])
+
+    await click(container.querySelector('button[aria-label="More"]'))
+    expect([...container.querySelectorAll('[role="dialog"]')].map((dialog) => dialog.getAttribute('aria-label'))).toEqual(['More'])
   })
 
   it('toggles the Overview popover and reports the workspace counts', async () => {

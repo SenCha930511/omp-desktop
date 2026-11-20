@@ -684,6 +684,20 @@ function hermeticEnvironment(home: string, ompExecutable: string, cuaExecutable:
   return env
 }
 
+/** Opens the title toolbar's More popover, which holds the session tree, browser, and inspector actions. */
+async function openToolbarMore() {
+  await page.locator('.title-toolbar__more > button').click()
+  const menu = page.locator('.toolbar-more')
+  await expect(menu).toBeVisible()
+  return menu
+}
+
+/** Runs one of the toolbar actions folded into the More popover. */
+async function chooseToolbarAction(name: string | RegExp) {
+  const menu = await openToolbarMore()
+  await menu.getByRole('button', { name }).click()
+  await expect(menu).toHaveCount(0)
+}
 
 test.describe('OMP Desktop desktop smoke', () => {
   // biome-ignore lint/correctness/noEmptyPattern: Playwright derives fixture usage from this destructuring pattern
@@ -887,7 +901,7 @@ test.describe('OMP Desktop desktop smoke', () => {
 
   test('prioritizes agent attention in the inspector Agents tab and keeps the conversation full width', async () => {
     await page.setViewportSize({ width: 1800, height: 950 })
-    if (await page.locator('.inspector').count()) await page.getByRole('button', { name: 'Toggle inspector' }).click()
+    if (await page.locator('.inspector').count()) await chooseToolbarAction('Toggle inspector')
     await expect(page.locator('.model-picker__trigger')).toHaveAccessibleName('Model: Claude Fixture')
     // This fixture emits a one-shot roster, so attach the observer before asking
     // it to spawn agents. A real harness can also recover its registry snapshot.
@@ -1166,7 +1180,7 @@ test.describe('OMP Desktop desktop smoke', () => {
 
   test('filters unread agent updates in the inspector Agents tab', async () => {
     await page.setViewportSize({ width: 1600, height: 950 })
-    if (await page.locator('.inspector').count()) await page.getByRole('button', { name: 'Toggle inspector' }).click()
+    if (await page.locator('.inspector').count()) await chooseToolbarAction('Toggle inspector')
     await expect(page.locator('.model-picker__trigger')).toHaveAccessibleName('Model: Claude Fixture')
     const composer = page.getByRole('combobox', { name: 'Message OMP' })
     await composer.fill('/context')
@@ -1202,7 +1216,7 @@ test.describe('OMP Desktop desktop smoke', () => {
     await page.reload()
     await expect(page.locator('.app-shell')).toHaveAttribute('data-ready', 'true')
     await page.setViewportSize({ width: 1540, height: 980 })
-    if (await page.locator('.inspector').count()) await page.getByRole('button', { name: '切換檢查器' }).click()
+    if (await page.locator('.inspector').count()) await chooseToolbarAction('切換檢查器')
     const timestamp = new Date().toISOString()
     appendFileSync(fixtureSessionFile, `${JSON.stringify({ type: 'message', id: 'preview-user', parentId: 'fixture-goal-summary', timestamp,
       message: { role: 'user', timestamp, content: [{ type: 'text', text: '請整理這次介面更新，並確認測試結果。' }] },
@@ -2659,7 +2673,7 @@ test.describe('OMP Desktop desktop smoke', () => {
   })
 
   test('keeps transcript text from showing through the composer disclaimer', async () => {
-    await page.getByRole('button', { name: 'Toggle inspector' }).click()
+    await chooseToolbarAction('Toggle inspector')
     await expect(page.locator('.composer-note')).toBeVisible()
     const colors = await page.locator('.composer-note').evaluate((node) => {
       const probe = document.createElement('div')
@@ -2789,7 +2803,11 @@ test.describe('OMP Desktop desktop smoke', () => {
     }
     await expect(page.locator('.workbench')).not.toHaveAttribute('inert')
     await expect(page.locator('.title-toolbar')).not.toHaveAttribute('inert')
-    const inspectorToggle = page.getByRole('button', { name: 'Toggle inspector' })
+    // The inspector toggle lives in the More popover; keep exercising the keyboard path.
+    const more = page.getByRole('button', { name: 'More', exact: true })
+    await more.focus()
+    await more.press('Enter')
+    const inspectorToggle = page.getByRole('dialog', { name: 'More', exact: true }).getByRole('button', { name: 'Toggle inspector' })
     await inspectorToggle.focus()
     await inspectorToggle.press('Enter')
     await expect.poll(() => page.locator('.inspector').evaluate((node) => getComputedStyle(node).position)).toBe('fixed')
@@ -2805,7 +2823,7 @@ test.describe('OMP Desktop desktop smoke', () => {
     await page.getByRole('button', { name: /^New session/ }).first().click()
     await page.setViewportSize({ width: 1800, height: 900 })
     if (await page.locator('.inspector').count()) {
-      await page.getByRole('button', { name: 'Toggle inspector' }).click()
+      await chooseToolbarAction('Toggle inspector')
       await expect(page.locator('.inspector')).toHaveCount(0)
     }
     const measure = () => page.evaluate(() => {
@@ -2848,13 +2866,13 @@ test.describe('OMP Desktop desktop smoke', () => {
       ],
     } })}\n`)
     await expect(page.locator('.transcript').getByText('專案已整理完成', { exact: true })).toBeVisible()
-    if (await page.locator('.inspector').count()) await page.getByRole('button', { name: 'Toggle inspector' }).click()
+    if (await page.locator('.inspector').count()) await chooseToolbarAction('Toggle inspector')
     for (const theme of ['light', 'dark'] as const) {
       await page.evaluate(async (theme) => window.desktop.settings.update({ theme, reasoningExpandedByDefault: true }), theme)
       await page.reload()
       await expect(page.locator('.app-shell')).toHaveAttribute('data-ready', 'true')
       await expect(page.locator('html')).toHaveAttribute('data-theme', theme)
-      if (await page.locator('.inspector').count()) await page.getByRole('button', { name: 'Toggle inspector' }).click()
+      if (await page.locator('.inspector').count()) await chooseToolbarAction('Toggle inspector')
       for (const width of [1440, 680]) {
         await page.setViewportSize({ width, height: 950 })
         const alignment = await page.locator('.transcript .work-timeline').last().evaluate((element) => {
@@ -2968,16 +2986,15 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(page.locator('.sidebar')).toHaveCount(0)
     await expect.poll(() => page.evaluate(async () => (await window.desktop.settings.get()).sidebarOpen)).toBe(false)
 
-    const inspectorToggle = page.getByRole('button', { name: 'Toggle inspector' })
-    await inspectorToggle.click()
+    await chooseToolbarAction('Toggle inspector')
     await expect(page.locator('.inspector')).toBeVisible()
     await expect(page.locator('.title-toolbar')).not.toHaveAttribute('inert')
-    await inspectorToggle.click()
+    await chooseToolbarAction('Toggle inspector')
     await expect(page.locator('.inspector')).toHaveCount(0)
     await expect.poll(() => page.evaluate(async () => (await window.desktop.settings.get()).inspectorOpen)).toBe(false)
 
     await page.setViewportSize({ width: 721, height: 700 })
-    await inspectorToggle.click()
+    await chooseToolbarAction('Toggle inspector')
     await expect(page.locator('.inspector')).toBeVisible()
     await page.setViewportSize({ width: 720, height: 700 })
     await expect(page.locator('.inspector')).toHaveCount(0)
