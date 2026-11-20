@@ -159,6 +159,69 @@ fn seed_two_sessions(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
     (home, older, newer)
 }
 
+fn search_workspace_data(root: &Path) -> WorkspaceData {
+    let home = root.join("home");
+    let bucket = home.join(".omp/agent/sessions/-omp-project");
+    std::fs::create_dir_all(&bucket).expect("search session bucket");
+    let project = root.join("project");
+    let at = "2026-04-01T01:00:00.000Z";
+    let title = json!({ "type": "title", "v": 1, "title": "Search", "updatedAt": at });
+    let header = json!({
+        "type": "session", "version": 3, "id": "search", "timestamp": at,
+        "cwd": project.display().to_string(),
+    });
+    let padding = "tall transcript padding ".repeat(45);
+    let records = [
+        json!({ "type": "message", "id": "m0", "timestamp": at, "message": {
+            "role": "assistant", "content": [{"type": "text", "text": format!("intro {padding}")}]
+        }}),
+        json!({ "type": "message", "id": "m1", "timestamp": at, "message": {
+            "role": "assistant", "content": [{"type": "text", "text": format!("needle first {padding}")}]
+        }}),
+        json!({ "type": "message", "id": "m2", "timestamp": at, "message": {
+            "role": "assistant", "content": [{"type": "text", "text": format!("other {padding}")}]
+        }}),
+        json!({ "type": "message", "id": "m3", "timestamp": at, "message": {
+            "role": "assistant", "content": [{"type": "toolCall", "id": "call-3", "name": "needle-tool", "arguments": {"path": "/tmp/needle"}}]
+        }}),
+        json!({ "type": "message", "id": "m4", "timestamp": at, "message": {
+            "role": "assistant", "content": [{"type": "text", "text": format!("needle second {padding}")}]
+        }}),
+        json!({ "type": "message", "id": "m5", "timestamp": at, "message": {
+            "role": "assistant", "content": [{"type": "text", "text": format!("later {padding}")}]
+        }}),
+        json!({ "type": "message", "id": "m6", "timestamp": at, "message": {
+            "role": "assistant", "content": [
+                {"type": "text", "text": format!("concealed answer {padding}")},
+                {"type": "thinking", "thinking": "needle hidden reasoning"}
+            ]
+        }}),
+        json!({ "type": "message", "id": "m7", "timestamp": at, "message": {
+            "role": "toolResult", "toolName": "needle-tool", "content": [{"type": "text", "text": "needle tool output"}]
+        }}),
+        json!({ "type": "message", "id": "m8", "timestamp": at, "message": {
+            "role": "assistant", "content": [{"type": "text", "text": format!("tail {padding}")}]
+        }}),
+    ];
+    let body = records
+        .iter()
+        .map(Value::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(
+        bucket.join("2026-04-01T00-00-00-000Z_019fdf24-cccc-7000-8000-000000000003.jsonl"),
+        format!("{title}\n{header}\n{body}\n"),
+    )
+    .expect("search session");
+    let store = open_store(root);
+    let sessions = omp_core::sessions::list_sessions(&store, &home, false, None);
+    drop(store);
+    let mut data = test_data(root);
+    data.home_dir = home;
+    data.sessions = sessions;
+    data
+}
+
 fn same_path(left: &str, right: &Path) -> bool {
     Path::new(left) == right
 }
@@ -2650,6 +2713,389 @@ fn escape_dismisses_one_layer_then_is_idempotent(cx: &mut TestAppContext) {
         .expect("idempotent idle Escape");
     });
     assert_eq!(read(cx), idle);
+}
+
+#[gpui_kit::test]
+fn transcript_search_scopes_navigates_scrolls_and_reveals_real_rows(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let handle = cx.open_window(size(px(1100.0), px(500.0)), |window, cx| {
+        Workspace::new(window, cx, search_workspace_data(dir.path()))
+    });
+    handle
+        .update(cx, |workspace, _, cx| workspace.select_session(0, cx))
+        .expect("load tall transcript");
+    draw_frame(cx, handle.into());
+    handle
+        .update(cx, |_, window, _| {
+            assert!(window.try_find("thinking-body-m6:").is_none());
+        })
+        .expect("thinking starts collapsed");
+    let composer = handle
+        .update(cx, |workspace, _, _| workspace.composer_entity().clone())
+        .expect("composer");
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            let focus = composer.read(cx).focus_handle(cx);
+            window.focus(&focus, cx);
+            window.press("cmd-f", cx);
+            window.input("   ", cx);
+        })
+        .expect("open search with a blank query");
+    });
+    let state = handle
+        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
+        .expect("blank search");
+    assert_eq!(state["transcriptSearch"]["count"], 0);
+    assert_eq!(state["transcriptSearch"]["results"], json!([]));
+    assert_eq!(state["transcriptSearch"]["activeMatch"], Value::Null);
+
+    let search = handle
+        .update(cx, |workspace, _, _| workspace.transcript_search_entity())
+        .expect("search entity")
+        .expect("search open");
+    handle
+        .update(cx, |_, window, cx| {
+            search.update(cx, |input, cx| input.set_value("", window, cx))
+        })
+        .expect("clear blank query");
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| window.input("needle", cx))
+            .expect("type real query");
+    });
+    let state = handle
+        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
+        .expect("query search");
+    assert_eq!(state["transcriptSearch"]["count"], 5);
+    assert_eq!(
+        state["transcriptSearch"]["results"],
+        json!(["m1", "m3", "m4", "m6", "m7"])
+    );
+    assert_eq!(state["transcriptSearch"]["activeMatch"], "m1");
+
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.press("enter", cx);
+        })
+        .expect("advance result");
+    });
+    let state = handle
+        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
+        .expect("next");
+    assert_eq!(state["transcriptSearch"]["activeMatch"], "m3");
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| window.input(" ", cx))
+            .expect("change query after moving");
+    });
+    let state = handle
+        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
+        .expect("query reset");
+    assert_eq!(state["transcriptSearch"]["activeMatch"], "m1");
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| window.press("backspace", cx))
+            .expect("restore query spelling");
+    });
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.press("shift-enter", cx);
+            window.press("enter", cx);
+        })
+        .expect("wrap backward and forward");
+    });
+    let state = handle
+        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
+        .expect("wrap");
+    assert_eq!(state["transcriptSearch"]["activeMatch"], "m1");
+    click_element(cx, handle, "transcript-search-next");
+    let state = handle
+        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
+        .expect("button next");
+    assert_eq!(state["transcriptSearch"]["activeMatch"], "m3");
+    click_element(cx, handle, "transcript-search-previous");
+    let state = handle
+        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
+        .expect("button back");
+    assert_eq!(state["transcriptSearch"]["activeMatch"], "m1");
+
+    click_element(cx, handle, "transcript-search-scope-tools");
+    let state = handle
+        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
+        .expect("tools scope");
+    assert_eq!(state["transcriptSearch"]["results"], json!(["m3", "m7"]));
+    assert_eq!(state["transcriptSearch"]["index"], 0);
+    click_element(cx, handle, "transcript-search-next");
+    let state = handle
+        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
+        .expect("tools next");
+    assert_eq!(state["transcriptSearch"]["activeMatch"], "m7");
+
+    click_element(cx, handle, "transcript-search-scope-messages");
+    let before_stream = handle
+        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
+        .expect("messages scope");
+    assert_eq!(
+        before_stream["transcriptSearch"]["results"],
+        json!(["m1", "m4"])
+    );
+    assert_eq!(before_stream["transcriptSearch"]["index"], 0);
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.apply_transcript_delta("text_delta", " needle streaming", cx);
+        })
+        .expect("stream new match");
+    let after_stream = handle
+        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
+        .expect("stream count");
+    assert_eq!(after_stream["transcriptSearch"]["count"], 3);
+    assert_eq!(after_stream["transcriptSearch"]["activeMatch"], "m1");
+    assert_eq!(after_stream["transcriptAtBottom"], false);
+
+    click_element(cx, handle, "transcript-search-scope-thinking");
+    draw_frame(cx, handle.into());
+    let state = handle
+        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
+        .expect("thinking reveal");
+    assert_eq!(state["transcriptSearch"]["results"], json!(["m6"]));
+    assert_eq!(state["transcriptSearch"]["scrollChildren"], 10);
+    assert_eq!(state["transcriptSearch"]["activeRow"], 6);
+    assert_eq!(state["transcriptSearch"]["manualThinking"], json!([]));
+    assert_eq!(state["transcriptSearch"]["manualToolResults"], json!([]));
+    assert_eq!(
+        state["transcriptSearch"]["revealedParts"],
+        json!(["m6:"]),
+        "{state}"
+    );
+    let bounds = state["transcriptSearch"]["activeBounds"]
+        .as_array()
+        .expect("active row bounds");
+    let viewport = state["transcriptSearch"]["viewport"]
+        .as_array()
+        .expect("viewport");
+    let scroll_offset_y = state["transcriptSearch"]["scrollOffset"]
+        .as_f64()
+        .expect("scroll offset");
+    // Scroll child bounds are content coordinates. Compare them after applying the current offset.
+    let row_top = bounds[1].as_f64().expect("row top") + scroll_offset_y;
+    let row_bottom = row_top + bounds[3].as_f64().expect("row height");
+    let viewport_top = viewport[1].as_f64().expect("viewport top");
+    let viewport_bottom = viewport_top + viewport[3].as_f64().expect("viewport height");
+    assert!(
+        row_bottom > viewport_top && row_top < viewport_bottom,
+        "later match was not revealed: {state}"
+    );
+    handle
+        .update(cx, |_, window, _| {
+            assert!(window.try_find("thinking-body-m6:").is_some());
+        })
+        .expect("hidden thinking body drawn");
+
+    cx.executor().advance_clock(Duration::from_millis(130));
+    draw_frame(cx, handle.into());
+    click_element(cx, handle, "transcript-jump-latest");
+    let state = handle
+        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
+        .expect("jump with an active search match");
+    assert_eq!(state["transcriptAtBottom"], true);
+    handle
+        .update(cx, |_, window, _| {
+            assert!(window.try_find("transcript-jump-latest").is_none());
+        })
+        .expect("jump stays dismissed under active search");
+
+    handle
+        .update(cx, |_, window, cx| {
+            search.update(cx, |input, cx| input.set_value(" ", window, cx))
+        })
+        .expect("blank active query");
+    draw_frame(cx, handle.into());
+    handle
+        .update(cx, |_, window, _| {
+            assert!(window.try_find("thinking-body-m6:").is_none());
+        })
+        .expect("blank query collapses transient reveal");
+    let state = handle
+        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
+        .expect("blank reveal state");
+    assert_eq!(state["transcriptSearch"]["count"], 0);
+    assert_eq!(state["transcriptSearch"]["manualThinking"], json!([]));
+
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.press("escape", cx);
+            assert_eq!(window.focused(cx), Some(composer.read(cx).focus_handle(cx)));
+        })
+        .expect("close search and restore composer");
+    });
+    let state = handle
+        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
+        .expect("closed search");
+    assert_eq!(state["transcriptSearch"], Value::Null);
+}
+
+#[gpui_kit::test]
+fn transcript_search_restores_workspace_focus_without_a_previous_element(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let handle = cx.add_window(|window, cx| {
+        let mut workspace = Workspace::new(window, cx, test_data(dir.path()));
+        assert!(window.focused(cx).is_none());
+        workspace.open_transcript_search(window, cx);
+        workspace
+    });
+    let search = handle
+        .update(cx, |workspace, _, _| workspace.transcript_search_entity())
+        .expect("initial search entity")
+        .expect("search is open");
+    handle
+        .update(cx, |workspace, window, cx| {
+            let focused = search.read(cx).focus_handle(cx);
+            assert_eq!(window.focused(cx), Some(focused));
+            workspace.close_transcript_search(window, cx);
+            assert!(window.focused(cx).is_some());
+            assert_ne!(window.focused(cx), Some(search.read(cx).focus_handle(cx)));
+        })
+        .expect("workspace fallback focus");
+}
+
+#[gpui_kit::test]
+fn transcript_search_resets_on_view_and_new_session(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let (_, data) = turn_workspace_data(dir.path());
+    let handle = cx.open_window(size(px(1100.0), px(700.0)), |window, cx| {
+        Workspace::new(window, cx, data)
+    });
+    handle
+        .update(cx, |workspace, window, cx| {
+            workspace.open_transcript_search(window, cx);
+            assert!(workspace.transcript_search_entity().is_some());
+            workspace.set_view(AppView::Settings, cx);
+            assert!(workspace.transcript_search_entity().is_none());
+            workspace.set_view(AppView::Workspace, cx);
+            workspace.open_transcript_search(window, cx);
+            assert!(workspace.transcript_search_entity().is_some());
+        })
+        .expect("reset on Settings navigation");
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.press(
+                if cfg!(target_os = "macos") {
+                    "cmd-n"
+                } else {
+                    "ctrl-n"
+                },
+                cx,
+            );
+        })
+        .expect("open a new session");
+    });
+    handle
+        .update(cx, |workspace, _, cx| {
+            assert!(workspace.transcript_search_entity().is_none());
+            assert_eq!(snapshot(workspace, cx)["transcript"], json!([]));
+        })
+        .expect("reset on new session");
+}
+
+/// This drives the input protocol, not a native OS IME.
+#[gpui_kit::test]
+fn transcript_search_ime_guard_blocks_enter_and_escape(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let handle = cx.open_window(size(px(1100.0), px(500.0)), |window, cx| {
+        Workspace::new(window, cx, search_workspace_data(dir.path()))
+    });
+    handle
+        .update(cx, |workspace, _, cx| workspace.select_session(0, cx))
+        .expect("transcript");
+    draw_frame(cx, handle.into());
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| window.press("ctrl-f", cx))
+            .expect("open search");
+    });
+    let search = handle
+        .update(cx, |workspace, _, _| workspace.transcript_search_entity())
+        .expect("entity")
+        .expect("open");
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            let bounds = gpui_kit::Bounds::new(point(px(0.0), px(0.0)), size(px(0.0), px(0.0)));
+            let mut input = gpui_kit::test::TestInput::new(
+                gpui_kit::ElementInputHandler::new(bounds, search.clone()),
+                window,
+            );
+            input.compose_text(None, "needle", Some(6..6), cx);
+            assert!(input.marked_text_range(cx).is_some());
+            window.press("enter", cx);
+            window.press("escape", cx);
+        })
+        .expect("composition keys");
+    });
+    let state = handle
+        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
+        .expect("guarded");
+    assert_eq!(state["transcriptSearch"]["activeMatch"], "m1");
+    assert_ne!(state["transcriptSearch"], Value::Null);
+
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            let bounds = gpui_kit::Bounds::new(point(px(0.0), px(0.0)), size(px(0.0), px(0.0)));
+            let mut input = gpui_kit::test::TestInput::new(
+                gpui_kit::ElementInputHandler::new(bounds, search.clone()),
+                window,
+            );
+            input.unmark_text(cx);
+            window.press("enter", cx);
+        })
+        .expect("settle-window Enter");
+    });
+    let state = handle
+        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
+        .expect("settle guarded");
+    assert_eq!(state["transcriptSearch"]["activeMatch"], "m1");
+    std::thread::sleep(Duration::from_millis(IME_POST_COMPOSITION_GUARD_MS));
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| window.press("enter", cx))
+            .expect("post-guard Enter");
+    });
+    let state = handle
+        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
+        .expect("post guard");
+    assert_eq!(state["transcriptSearch"]["activeMatch"], "m3");
+}
+
+#[gpui_kit::test]
+fn transcript_search_suppresses_the_native_browser_until_it_closes(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let handle = cx.open_window(size(px(1200.0), px(800.0)), |window, cx| {
+        Workspace::new(window, cx, test_data(dir.path()))
+    });
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.set_right_pane("browser", cx)
+        })
+        .expect("browser");
+    draw_frame(cx, handle.into());
+    let before = handle
+        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
+        .expect("browser before");
+    assert_eq!(before["browser"]["visible"], true);
+    click_element(cx, handle, "transcript-search-open");
+    draw_frame(cx, handle.into());
+    let during = handle
+        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
+        .expect("browser during");
+    assert_eq!(during["browser"]["visible"], false);
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| window.press("escape", cx))
+            .expect("close search");
+    });
+    draw_frame(cx, handle.into());
+    let after = handle
+        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
+        .expect("browser after");
+    assert_eq!(after["browser"]["visible"], true);
 }
 
 /// This is not native-IME proof.

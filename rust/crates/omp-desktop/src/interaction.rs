@@ -2,10 +2,99 @@ use std::time::Duration;
 
 use gpui_kit::base::{ReduceMotionPreference, set_reduce_motion_preference};
 use gpui_kit::{Animation, App, Keystroke};
+use omp_core::sessions::{TranscriptMessage, TranscriptPart};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum SearchScope {
+    All,
+    Messages,
+    Tools,
+    Thinking,
+}
+
+impl SearchScope {
+    pub(super) const ALL: [Self; 4] = [Self::All, Self::Messages, Self::Tools, Self::Thinking];
+
+    pub(super) fn name(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Messages => "messages",
+            Self::Tools => "tools",
+            Self::Thinking => "thinking",
+        }
+    }
+
+    pub(super) fn label_key(self) -> &'static str {
+        match self {
+            Self::All => "transcript.searchScope.all",
+            Self::Messages => "transcript.searchScope.messages",
+            Self::Tools => "transcript.searchScope.tools",
+            Self::Thinking => "transcript.searchScope.thinking",
+        }
+    }
+}
+
+fn searchable_part(part: &TranscriptPart, scope: SearchScope) -> Option<String> {
+    match (part.kind.as_str(), scope) {
+        ("text", SearchScope::All | SearchScope::Messages)
+        | ("thinking", SearchScope::All | SearchScope::Thinking)
+        | ("toolResult", SearchScope::All | SearchScope::Tools)
+        | ("agentMessage", SearchScope::All) => part.text.clone(),
+        ("compaction", SearchScope::All) => part.summary.clone(),
+        ("toolCall", SearchScope::All | SearchScope::Tools) => {
+            let name = part.name.as_deref().unwrap_or_default();
+            let args = part
+                .args
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()
+                .ok()??;
+            Some(match (name.is_empty(), args.is_empty()) {
+                (true, true) => return None,
+                (false, true) => name.to_string(),
+                (true, false) => args,
+                (false, false) => format!("{name} {args}"),
+            })
+        }
+        _ => None,
+    }
+}
+
+pub(super) fn part_matches_search(
+    part: &TranscriptPart,
+    normalized_query: &str,
+    scope: SearchScope,
+) -> bool {
+    !normalized_query.is_empty()
+        && searchable_part(part, scope)
+            .is_some_and(|text| text.to_lowercase().contains(normalized_query))
+}
+
+pub(super) fn search_transcript(
+    messages: &[TranscriptMessage],
+    query: &str,
+    scope: SearchScope,
+) -> Vec<String> {
+    let needle = query.trim().to_lowercase();
+    if needle.is_empty() {
+        return Vec::new();
+    }
+    messages
+        .iter()
+        .filter(|message| {
+            message
+                .parts
+                .iter()
+                .any(|part| part_matches_search(part, &needle, scope))
+        })
+        .map(|message| message.id.clone())
+        .collect()
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum WorkspaceCommand {
     OpenPalette,
+    OpenSearch,
     NewSession,
     OpenProjects,
     OpenActivity,
@@ -44,6 +133,7 @@ impl WorkspaceCommand {
         }
         match (key.as_str(), modifiers.shift) {
             ("k", false) => Some(Self::OpenPalette),
+            ("f", false) => Some(Self::OpenSearch),
             ("n", false) => Some(Self::NewSession),
             ("b", true) => Some(Self::OpenBrowser),
             ("b", false) => Some(Self::ToggleSidebar),
@@ -62,7 +152,9 @@ impl WorkspaceCommand {
             Self::OpenBrowser => "browser",
             Self::ToggleSidebar => "sidebar",
             Self::OpenSettings => "settings",
-            Self::OpenPalette | Self::Dismiss => unreachable!("not a palette command"),
+            Self::OpenPalette | Self::OpenSearch | Self::Dismiss => {
+                unreachable!("not a palette command")
+            }
         }
     }
 
@@ -76,7 +168,9 @@ impl WorkspaceCommand {
             Self::OpenBrowser => "rightPane.browser",
             Self::ToggleSidebar => "commandPalette.toggleSidebar",
             Self::OpenSettings => "sidebar.settings",
-            Self::OpenPalette | Self::Dismiss => unreachable!("not a palette command"),
+            Self::OpenPalette | Self::OpenSearch | Self::Dismiss => {
+                unreachable!("not a palette command")
+            }
         }
     }
 }
@@ -266,8 +360,11 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        Easing, Motion, Playback, StreamFeedback, WorkspaceCommand, cyclic_index, motion_spec,
+        Easing, Motion, Playback, SearchScope, StreamFeedback, WorkspaceCommand, cyclic_index,
+        motion_spec, search_transcript,
     };
+    use omp_core::sessions::{TranscriptMessage, TranscriptPart};
+    use serde_json::json;
 
     fn assert_close(actual: f32, expected: f32) {
         assert!(
@@ -281,6 +378,8 @@ mod tests {
         let cases = [
             ("cmd-k", WorkspaceCommand::OpenPalette),
             ("ctrl-k", WorkspaceCommand::OpenPalette),
+            ("cmd-f", WorkspaceCommand::OpenSearch),
+            ("ctrl-f", WorkspaceCommand::OpenSearch),
             ("cmd-n", WorkspaceCommand::NewSession),
             ("ctrl-shift-b", WorkspaceCommand::OpenBrowser),
             ("cmd-b", WorkspaceCommand::ToggleSidebar),
@@ -295,6 +394,110 @@ mod tests {
             let key = gpui_kit::Keystroke::parse(key).expect("valid keystroke");
             assert_eq!(WorkspaceCommand::from_keystroke(&key), None);
         }
+    }
+
+    fn search_message(id: &str, parts: Vec<TranscriptPart>) -> TranscriptMessage {
+        TranscriptMessage {
+            id: id.to_string(),
+            role: "assistant".to_string(),
+            timestamp: None,
+            agent_name: None,
+            parts,
+        }
+    }
+
+    #[test]
+    fn transcript_search_applies_the_scope_matrix_without_blank_or_duplicate_matches() {
+        let messages = vec![
+            search_message("message", vec![TranscriptPart::text("Needle needle")]),
+            search_message(
+                "thinking",
+                vec![TranscriptPart {
+                    kind: "thinking".to_string(),
+                    text: Some("hidden NEEDLE".to_string()),
+                    ..TranscriptPart::text("")
+                }],
+            ),
+            search_message(
+                "call",
+                vec![TranscriptPart {
+                    kind: "toolCall".to_string(),
+                    name: Some("needle-tool".to_string()),
+                    args: Some(json!({ "path": "/tmp/needle" })),
+                    ..TranscriptPart::text("")
+                }],
+            ),
+            search_message(
+                "result",
+                vec![TranscriptPart {
+                    kind: "toolResult".to_string(),
+                    text: Some("tool says needle".to_string()),
+                    ..TranscriptPart::text("")
+                }],
+            ),
+            search_message(
+                "empty-tool",
+                vec![TranscriptPart {
+                    kind: "toolCall".to_string(),
+                    ..TranscriptPart::text("")
+                }],
+            ),
+        ];
+        for blank in ["", " ", "\t\n"] {
+            assert!(search_transcript(&messages, blank, SearchScope::All).is_empty());
+        }
+        for scope in [
+            SearchScope::Messages,
+            SearchScope::Tools,
+            SearchScope::Thinking,
+        ] {
+            assert!(search_transcript(&messages, " ", scope).is_empty());
+        }
+        assert_eq!(
+            search_transcript(&messages, "needle", SearchScope::All),
+            ["message", "thinking", "call", "result"]
+        );
+        assert_eq!(
+            search_transcript(&messages, "needle", SearchScope::Messages),
+            ["message"]
+        );
+        assert_eq!(
+            search_transcript(&messages, "needle", SearchScope::Tools),
+            ["call", "result"]
+        );
+        assert_eq!(
+            search_transcript(&messages, "needle", SearchScope::Thinking),
+            ["thinking"]
+        );
+        assert!(search_transcript(&messages, "/tmp", SearchScope::Messages).is_empty());
+        assert!(search_transcript(&messages, "needle-tool", SearchScope::Tools).len() == 1);
+        assert!(search_transcript(&messages, "null", SearchScope::Tools).is_empty());
+    }
+
+    #[test]
+    fn transcript_search_all_includes_agent_and_compaction_text_only() {
+        let agent = search_message(
+            "agent",
+            vec![TranscriptPart {
+                kind: "agentMessage".to_string(),
+                text: Some("needle".to_string()),
+                ..TranscriptPart::text("")
+            }],
+        );
+        let compaction = search_message(
+            "compaction",
+            vec![TranscriptPart {
+                kind: "compaction".to_string(),
+                summary: Some("needle summary".to_string()),
+                ..TranscriptPart::text("")
+            }],
+        );
+        let messages = [agent, compaction];
+        assert_eq!(
+            search_transcript(&messages, "needle", SearchScope::All).len(),
+            2
+        );
+        assert!(search_transcript(&messages, "needle", SearchScope::Messages).is_empty());
     }
 
     #[test]

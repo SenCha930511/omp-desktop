@@ -837,9 +837,19 @@ struct CommandPaletteState {
     previous_focus: Option<FocusHandle>,
 }
 
+struct TranscriptSearch {
+    input: Entity<InputState>,
+    scope: interaction::SearchScope,
+    index: usize,
+    previous_focus: Option<FocusHandle>,
+    revealed_target: Option<(String, String, interaction::SearchScope)>,
+}
+
 pub struct Workspace {
     command_palette: Option<CommandPaletteState>,
     palette_subscription: Option<Subscription>,
+    transcript_search: Option<TranscriptSearch>,
+    transcript_search_subscription: Option<Subscription>,
     workspace_focus: FocusHandle,
     ime_guard: CompositionGuard,
     last_seen_composing: bool,
@@ -1184,6 +1194,8 @@ impl Workspace {
         let mut workspace = Self {
             command_palette: None,
             palette_subscription: None,
+            transcript_search: None,
+            transcript_search_subscription: None,
             workspace_focus,
             ime_guard: CompositionGuard::default(),
             last_seen_composing: false,
@@ -1330,6 +1342,11 @@ impl Workspace {
 
     pub fn transcript_messages(&self) -> &[TranscriptMessage] {
         &self.transcript
+    }
+
+    pub fn apply_transcript_delta(&mut self, kind: &str, delta: &str, cx: &mut Context<Self>) {
+        self.append_assistant_delta(kind, delta);
+        cx.notify();
     }
 
     /// Copies the visible transcript as plain text, one block per message.
@@ -1656,6 +1673,9 @@ impl Workspace {
         if let Some(palette) = &self.command_palette {
             inputs.push(&palette.input);
         }
+        if let Some(search) = &self.transcript_search {
+            inputs.push(&search.input);
+        }
         inputs
             .into_iter()
             .find(|input| input.read(cx).focus_handle(cx) == focused)
@@ -1746,17 +1766,136 @@ impl Workspace {
         cx.notify();
     }
 
+    fn transcript_search_status(&self, cx: &App) -> (Vec<String>, usize, Option<usize>) {
+        let Some(search) = &self.transcript_search else {
+            return (Vec::new(), 0, None);
+        };
+        let query = search.input.read(cx).value();
+        let matches = interaction::search_transcript(&self.transcript, &query, search.scope);
+        let index = if matches.is_empty() {
+            0
+        } else {
+            search.index % matches.len()
+        };
+        let active_row = matches
+            .get(index)
+            .and_then(|id| self.transcript.iter().position(|message| &message.id == id));
+        (matches, index, active_row)
+    }
+
+    pub fn open_transcript_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(search) = &self.transcript_search {
+            let input = search.input.clone();
+            input.update(cx, |input, cx| {
+                input.select_all(window, cx);
+                let focus = input.focus_handle(cx);
+                window.focus(&focus, cx);
+            });
+            cx.notify();
+            return;
+        }
+        let previous_focus = window.focused(cx);
+        let input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(i18n::t(self.language(), "transcript.searchPlaceholder"))
+                .submit_on_enter(true)
+        });
+        input.update(cx, |input, cx| {
+            let focus = input.focus_handle(cx);
+            window.focus(&focus, cx);
+        });
+        self.transcript_search_subscription =
+            Some(cx.subscribe(&input, |this, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change)
+                    && let Some(search) = this.transcript_search.as_mut()
+                {
+                    search.index = 0;
+                    search.revealed_target = None;
+                    cx.notify();
+                }
+            }));
+        self.transcript_search = Some(TranscriptSearch {
+            input,
+            scope: interaction::SearchScope::All,
+            index: 0,
+            previous_focus,
+            revealed_target: None,
+        });
+        cx.notify();
+    }
+
+    pub fn close_transcript_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(search) = self.transcript_search.take() else {
+            return;
+        };
+        self.transcript_search_subscription = None;
+        let focus = search
+            .previous_focus
+            .unwrap_or_else(|| self.workspace_focus.clone());
+        window.focus(&focus, cx);
+        if window.focused(cx).is_none() {
+            window.focus(&self.workspace_focus, cx);
+        }
+        cx.notify();
+    }
+
+    fn set_transcript_search_scope(
+        &mut self,
+        scope: interaction::SearchScope,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(search) = &mut self.transcript_search {
+            search.scope = scope;
+            search.index = 0;
+            search.revealed_target = None;
+        }
+        cx.notify();
+    }
+
+    fn move_transcript_search(&mut self, forward: bool, cx: &mut Context<Self>) {
+        let (matches, index, _) = self.transcript_search_status(cx);
+        if let Some(next) = interaction::cyclic_index(index, matches.len(), forward)
+            && let Some(search) = &mut self.transcript_search
+        {
+            search.index = next;
+            search.revealed_target = None;
+            self.transcript_at_bottom = false;
+        }
+        cx.notify();
+    }
+
+    fn reset_transcript_search(&mut self, cx: &mut Context<Self>) {
+        if self.transcript_search.take().is_some() {
+            self.transcript_search_subscription = None;
+            cx.notify();
+        }
+    }
+
+    pub fn transcript_search_entity(&self) -> Option<Entity<InputState>> {
+        self.transcript_search
+            .as_ref()
+            .map(|search| search.input.clone())
+    }
+
     fn execute_workspace_command(
         &mut self,
         command: interaction::WorkspaceCommand,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if command == interaction::WorkspaceCommand::OpenPalette && self.transcript_search.is_some()
+        {
+            self.close_transcript_search(window, cx);
+        }
         if self.command_palette.is_some() {
             self.close_command_palette(window, cx);
         }
         match command {
             interaction::WorkspaceCommand::OpenPalette => self.open_command_palette(window, cx),
+            interaction::WorkspaceCommand::OpenSearch => {
+                self.set_view(AppView::Workspace, cx);
+                self.open_transcript_search(window, cx);
+            }
             interaction::WorkspaceCommand::NewSession => {
                 self.set_view(AppView::Workspace, cx);
                 if let Some(project) = self.projects.first().cloned() {
@@ -1802,6 +1941,10 @@ impl Workspace {
         }
         if self.command_palette.is_some() {
             self.close_command_palette(window, cx);
+            return true;
+        }
+        if self.transcript_search.is_some() {
+            self.close_transcript_search(window, cx);
             return true;
         }
         for menu in [&mut self.mention_menu_open, &mut self.model_menu_open] {
@@ -1894,6 +2037,29 @@ impl Workspace {
                         cx.stop_propagation();
                     }
                     return;
+                }
+            }
+        }
+        if self.transcript_search.is_some() {
+            match key.as_str() {
+                "enter" | "escape" => {
+                    cx.stop_propagation();
+                    if guarded {
+                        return;
+                    }
+                    if key == "enter" {
+                        self.move_transcript_search(!event.keystroke.modifiers.shift, cx);
+                    } else {
+                        self.dismiss_one_layer(window, cx);
+                    }
+                    return;
+                }
+                _ => {
+                    if interaction::WorkspaceCommand::from_keystroke(&event.keystroke)
+                        .is_some_and(|command| command != interaction::WorkspaceCommand::Dismiss)
+                    {
+                        cx.stop_propagation();
+                    }
                 }
             }
         }
@@ -2012,6 +2178,7 @@ impl Workspace {
             .iter()
             .map(|message| {
                 json!({
+                    "id": message.id,
                     "role": message.role,
                     "parts": message
                         .parts
@@ -2243,6 +2410,7 @@ impl Workspace {
                     .map_or(0, TerminalTabSpecs::len),
             },
             "browser": {
+                "visible": self.browser_is_visible(),
                 "webviewPending": self.browser.needs_webview(),
                 "annotation": {
                     "error": self.browser.annotation_error(),
@@ -2366,7 +2534,91 @@ impl Workspace {
                     "commands": commands.iter().map(|command| command.id()).collect::<Vec<_>>(),
                 })
             });
+        let (search_matches, search_index, search_row) = self.transcript_search_status(cx);
+        snapshot["transcriptSearch"] =
+            self.transcript_search
+                .as_ref()
+                .map_or(Value::Null, |search| {
+                    let active_match = search_row.map(|row| self.transcript[row].id.clone());
+                    let active_bounds = search_row
+                        .and_then(|row| self.transcript_scroll.bounds_for_item(row))
+                        .map(|bounds| {
+                            json!([
+                                f32::from(bounds.origin.x),
+                                f32::from(bounds.origin.y),
+                                f32::from(bounds.size.width),
+                                f32::from(bounds.size.height),
+                            ])
+                        })
+                        .unwrap_or(Value::Null);
+                    let viewport = self.transcript_scroll.bounds();
+                    let query = search.input.read(cx).value().to_string();
+                    let needle = query.trim().to_lowercase();
+                    let revealed_parts = search_row
+                        .map(|row| {
+                            self.transcript[row]
+                                .parts
+                                .iter()
+                                .filter(|part| {
+                                    matches!(part.kind.as_str(), "thinking" | "toolResult")
+                                        && interaction::part_matches_search(
+                                            part,
+                                            &needle,
+                                            search.scope,
+                                        )
+                                })
+                                .map(|part| {
+                                    format!(
+                                        "{}:{}",
+                                        search_row
+                                            .map(|row| self.transcript[row].id.clone())
+                                            .unwrap_or_default(),
+                                        part.id.clone().unwrap_or_else(|| {
+                                            part.name.clone().unwrap_or_default()
+                                        })
+                                    )
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    let mut manual_thinking = self.expanded_thinking.iter().collect::<Vec<_>>();
+                    manual_thinking.sort();
+                    let mut manual_tools = self.expanded_tool_results.iter().collect::<Vec<_>>();
+                    manual_tools.sort();
+                    json!({
+                        "open": true,
+                        "query": query,
+                        "scope": search.scope.name(),
+                        "index": search_index,
+                        "count": search_matches.len(),
+                        "results": search_matches,
+                        "activeMatch": active_match,
+                        "activeRow": search_row,
+                        "activeBounds": active_bounds,
+                        "viewport": [
+                            f32::from(viewport.origin.x),
+                            f32::from(viewport.origin.y),
+                            f32::from(viewport.size.width),
+                            f32::from(viewport.size.height),
+                        ],
+                        "scrollChildren": self.transcript_scroll.children_count(),
+                        "scrollOffset": f32::from(self.transcript_scroll.offset().y),
+                        "revealedParts": revealed_parts,
+                        "manualThinking": manual_thinking,
+                        "manualToolResults": manual_tools,
+                    })
+                });
         snapshot
+    }
+
+    fn browser_is_visible(&self) -> bool {
+        self.view == AppView::Workspace
+            && (self.layout.right_pane_docked
+                || self.active_drawer == Some(CollapsedPane::RightPane))
+            && self.right_pane == RightPane::Browser
+            && self.close_prompt.is_none()
+            && self.command_palette.is_none()
+            && self.transcript_search.is_none()
     }
 
     fn track_bounds(&mut self, window: &Window, cx: &mut Context<Self>) {
@@ -2427,6 +2679,7 @@ impl Workspace {
         &self,
         part: &TranscriptPart,
         message_id: &str,
+        reveal: bool,
         colors: ThemeColor,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -2436,7 +2689,7 @@ impl Workspace {
                 .clone()
                 .unwrap_or_else(|| part.name.clone().unwrap_or_default())
         );
-        let expanded = self.expanded_tool_results.contains(&key);
+        let expanded = reveal || self.expanded_tool_results.contains(&key);
         let text = part.text.clone().unwrap_or_default();
         let preview: String = text
             .lines()
@@ -2557,11 +2810,18 @@ impl Workspace {
         &self,
         part: &TranscriptPart,
         message_id: &str,
+        reveal: bool,
         colors: ThemeColor,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let key = format!("{message_id}:{}", part.id.clone().unwrap_or_default());
-        let expanded = self.expanded_thinking.contains(&key);
+        let key = format!(
+            "{message_id}:{}",
+            part.id
+                .clone()
+                .or_else(|| part.name.clone())
+                .unwrap_or_default()
+        );
+        let expanded = reveal || self.expanded_thinking.contains(&key);
         let text = part.text.clone().unwrap_or_default();
         let preview: String = text
             .lines()
@@ -2571,6 +2831,7 @@ impl Workspace {
             .take(120)
             .collect();
         let toggle_key = key.clone();
+        let body_key = key.clone();
         div()
             .flex()
             .flex_col()
@@ -2616,12 +2877,14 @@ impl Workspace {
             .when(expanded, |element| {
                 element.child(
                     div()
+                        .id(format!("thinking-body-{body_key}"))
                         .ml(px(24.0))
                         .mt(px(1.5))
                         .text_size(px(13.0))
                         .line_height(px(21.0))
                         .text_color(colors.muted_foreground)
                         .child(text)
+                        .test_support()
                         .with_animation(
                             "thinking-body",
                             interaction::motion_spec(interaction::Motion::Timeline).animation(),
@@ -3572,6 +3835,24 @@ impl Workspace {
                     .child(status),
             )
             .child(div().flex_1())
+            .child(
+                div()
+                    .id("transcript-search-trigger")
+                    .aria_label(self.t("transcript.search"))
+                    .child(self.toolbar_icon(
+                        "transcript-search-open",
+                        IconName::Search,
+                        if self.transcript_search.is_some() {
+                            colors.primary
+                        } else {
+                            colors.foreground
+                        },
+                        cx.listener(|this, _, window, cx| {
+                            this.open_transcript_search(window, cx);
+                        }),
+                    ))
+                    .test_support(),
+            )
             .child(self.toolbar_icon(
                 "session-menu",
                 IconName::EllipsisVertical,
@@ -3613,9 +3894,16 @@ impl Workspace {
         color: gpui::Hsla,
         on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
     ) -> impl IntoElement {
+        let label = match id {
+            "transcript-search-open" => self.t("transcript.search"),
+            "transcript-search-previous" => self.t("common.previous"),
+            "transcript-search-next" => self.t("common.next"),
+            "transcript-search-close" => self.t("common.close"),
+            _ => id,
+        };
         div()
             .id(id)
-            .aria_label(id)
+            .aria_label(label)
             .flex()
             .items_center()
             .justify_center()
@@ -3625,7 +3913,11 @@ impl Workspace {
             .text_color(color)
             .hover(|style| style.bg(color.opacity(0.12)))
             .child(icon)
-            .on_click(on_click)
+            .on_click(move |event, window, cx| {
+                on_click(event, window, cx);
+                cx.stop_propagation();
+            })
+            .test_support()
     }
 
     /// The one-line result of the last capture: the saved path, or the error
@@ -4175,6 +4467,7 @@ impl Workspace {
     }
 
     pub fn select_session(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.reset_transcript_search(cx);
         if let Some(runtime_id) = self.runtime_id.take() {
             self.agents.stop(&runtime_id);
         }
@@ -4440,6 +4733,7 @@ impl Workspace {
     }
 
     fn start_new_session(&mut self, project: ProjectRecord, cx: &mut Context<Self>) {
+        self.reset_transcript_search(cx);
         if let Some(runtime_id) = self.runtime_id.take() {
             self.agents.stop(&runtime_id);
         }
@@ -5553,7 +5847,111 @@ impl Workspace {
         cx.notify();
     }
 
-    fn transcript(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn transcript_search_bar(&self, cx: &mut Context<Self>) -> AnyElement {
+        let colors = cx.theme().colors;
+        let Some(search) = &self.transcript_search else {
+            return div().into_any_element();
+        };
+        let input = search.input.clone();
+        let scope = search.scope;
+        let (matches, index, _) = self.transcript_search_status(cx);
+        let count = if matches.is_empty() {
+            "0/0".to_string()
+        } else {
+            format!("{}/{}", index + 1, matches.len())
+        };
+        div()
+            .id("transcript-search")
+            .aria_label(self.t("transcript.search"))
+            .test_support()
+            .absolute()
+            .top(px(8.0))
+            .left(px(16.0))
+            .right(px(16.0))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .w_full()
+                    .max_w(px(680.0))
+                    .mx_auto()
+                    .rounded(px(10.0))
+                    .border_1()
+                    .border_color(colors.border)
+                    .bg(colors.popover)
+                    .p_2()
+                    .text_size(px(12.0))
+                    .child(IconName::Search)
+                    .child(
+                        div().flex_1().min_w(px(80.0)).child(
+                            Input::new(&input)
+                                .appearance(false)
+                                .bordered(false)
+                                .aria_label(self.t("transcript.searchPlaceholder")),
+                        ),
+                    )
+                    .child(
+                        div()
+                            .id("transcript-search-count")
+                            .aria_label(count.clone())
+                            .text_color(colors.muted_foreground)
+                            .child(count),
+                    )
+                    .children(interaction::SearchScope::ALL.into_iter().map(|candidate| {
+                        div()
+                            .id(format!("transcript-search-scope-{}", candidate.name()))
+                            .aria_label(format!(
+                                "{}: {}",
+                                self.t("transcript.searchScope"),
+                                self.t(candidate.label_key())
+                            ))
+                            .px_2()
+                            .py_1()
+                            .rounded(px(6.0))
+                            .bg(if candidate == scope {
+                                colors.selection
+                            } else {
+                                colors.background
+                            })
+                            .text_color(if candidate == scope {
+                                colors.foreground
+                            } else {
+                                colors.muted_foreground
+                            })
+                            .hover(|style| style.bg(colors.accent))
+                            .child(self.t(candidate.label_key()))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.set_transcript_search_scope(candidate, cx);
+                                cx.stop_propagation();
+                            }))
+                            .test_support()
+                    }))
+                    .child(self.toolbar_icon(
+                        "transcript-search-previous",
+                        IconName::ChevronUp,
+                        colors.foreground,
+                        cx.listener(|this, _, _, cx| this.move_transcript_search(false, cx)),
+                    ))
+                    .child(self.toolbar_icon(
+                        "transcript-search-next",
+                        IconName::ChevronDown,
+                        colors.foreground,
+                        cx.listener(|this, _, _, cx| this.move_transcript_search(true, cx)),
+                    ))
+                    .child(self.toolbar_icon(
+                        "transcript-search-close",
+                        IconName::X,
+                        colors.foreground,
+                        cx.listener(|this, _, window, cx| {
+                            this.close_transcript_search(window, cx);
+                        }),
+                    )),
+            )
+            .into_any_element()
+    }
+
+    fn transcript(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.theme().colors;
         if let Some(error) = &self.transcript_error {
             return div()
@@ -5598,6 +5996,42 @@ impl Workspace {
                         .child(self.t("transcript.welcomeBody")),
                 )
                 .into_any_element();
+        }
+        let (_, _, active_search_row) = self.transcript_search_status(cx);
+        let active_search_id = active_search_row.map(|row| self.transcript[row].id.clone());
+        let (search_needle, search_scope) = self
+            .transcript_search
+            .as_ref()
+            .map(|search| {
+                (
+                    search.input.read(cx).value().trim().to_lowercase(),
+                    search.scope,
+                )
+            })
+            .unwrap_or_else(|| (String::new(), interaction::SearchScope::All));
+        if let Some(row) = active_search_row {
+            let target = self.transcript_search.as_ref().map(|search| {
+                (
+                    self.transcript[row].id.clone(),
+                    search.input.read(cx).value().to_string(),
+                    search.scope,
+                )
+            });
+            let should_scroll = self
+                .transcript_search
+                .as_ref()
+                .is_some_and(|search| search.revealed_target != target);
+            if should_scroll {
+                // GPUI's FirstVisible strategy is the closest available equivalent to
+                // Electron's centered reveal; it does not promise vertical centering.
+                self.transcript_at_bottom = false;
+                self.transcript_scroll.scroll_to_item(row);
+                if let Some(search) = &mut self.transcript_search {
+                    search.revealed_target = target;
+                }
+            }
+        } else if let Some(search) = &mut self.transcript_search {
+            search.revealed_target = None;
         }
         let todo_phases = latest_todo_phases(&self.transcript);
         let todo_total: usize = todo_phases.iter().map(|phase| phase.tasks.len()).sum();
@@ -5755,125 +6189,127 @@ impl Workspace {
                 }
             }))
             .p_6()
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(0.0))
-                    .w_full()
-                    .max_w(px(960.0))
-                    .mx_auto()
-                    .children(self.transcript.iter().enumerate().map(|(index, message)| {
-                        let is_user = message.role == "user";
-                        let is_assistant = message.role == "assistant";
-                        let is_toolish = message.parts.is_empty()
-                            || message.parts.iter().all(|part| {
-                                part.kind == "thinking"
-                                    || part.kind == "toolResult"
-                                    || part.kind == "toolCall"
-                            });
-                        let message_group = format!("message-{}", message.id);
-                        let copy_text = transcript_row_text(message);
-                        let copy = (!copy_text.is_empty()).then(|| {
-                            let text = copy_text.clone();
-                            div()
-                                .id(format!("transcript-copy-{}", message.id))
-                                .aria_label(self.t("transcript.copy"))
-                                .text_size(px(10.5))
-                                .text_color(colors.muted_foreground)
-                                .hover(|style| style.text_color(colors.foreground))
-                                .child(self.t("transcript.copy"))
-                                .on_click(cx.listener(move |_, _, _, cx| {
-                                    cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
-                                }))
-                        });
-                        let forkable = forkable_transcript_row(message);
-                        let fork = forkable.then(|| {
-                            let entry_id = message.id.clone();
-                            div()
-                                .id(format!("transcript-fork-{}", message.id))
-                                .aria_label(self.t("transcript.fork"))
-                                .text_size(px(10.5))
-                                .text_color(colors.muted_foreground)
-                                .hover(|style| style.text_color(colors.foreground))
-                                .child(self.t("transcript.fork"))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.fork_from_message(&entry_id, cx);
-                                }))
-                        });
-                        let parts: Vec<AnyElement> = message
-                            .parts
-                            .iter()
-                            .filter(|part| part.kind != "toolCall")
-                            .map(|part| {
-                                if part.kind == "thinking" {
-                                    self.thinking_part_element(part, &message.id, colors, cx)
-                                } else if part.kind == "toolResult" {
-                                    self.tool_result_element(part, &message.id, colors, cx)
-                                } else {
-                                    transcript_part_element(part, &message.role, colors)
-                                }
-                            })
-                            .collect();
-                        let body = if is_user {
-                            div().flex().flex_col().items_end().w_full().child(
-                                div()
-                                    .max_w(px(640.0))
-                                    .px(px(14.0))
-                                    .py(px(9.0))
-                                    .rounded(px(18.0))
-                                    .bg(colors.tab)
-                                    .text_size(px(13.0))
-                                    .flex()
-                                    .flex_col()
-                                    .gap_1()
-                                    .children(parts),
-                            )
+            .gap(px(0.0))
+            .children(self.transcript.iter().enumerate().map(|(index, message)| {
+                let is_user = message.role == "user";
+                let is_assistant = message.role == "assistant";
+                let is_toolish = message.parts.is_empty()
+                    || message.parts.iter().all(|part| {
+                        part.kind == "thinking"
+                            || part.kind == "toolResult"
+                            || part.kind == "toolCall"
+                    });
+                let message_group = format!("message-{}", message.id);
+                let copy_text = transcript_row_text(message);
+                let copy = (!copy_text.is_empty()).then(|| {
+                    let text = copy_text.clone();
+                    div()
+                        .id(format!("transcript-copy-{}", message.id))
+                        .aria_label(self.t("transcript.copy"))
+                        .text_size(px(10.5))
+                        .text_color(colors.muted_foreground)
+                        .hover(|style| style.text_color(colors.foreground))
+                        .child(self.t("transcript.copy"))
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+                        }))
+                });
+                let forkable = forkable_transcript_row(message);
+                let fork = forkable.then(|| {
+                    let entry_id = message.id.clone();
+                    div()
+                        .id(format!("transcript-fork-{}", message.id))
+                        .aria_label(self.t("transcript.fork"))
+                        .text_size(px(10.5))
+                        .text_color(colors.muted_foreground)
+                        .hover(|style| style.text_color(colors.foreground))
+                        .child(self.t("transcript.fork"))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.fork_from_message(&entry_id, cx);
+                        }))
+                });
+                let parts: Vec<AnyElement> = message
+                    .parts
+                    .iter()
+                    .filter(|part| part.kind != "toolCall")
+                    .map(|part| {
+                        let reveal = active_search_id.as_deref() == Some(message.id.as_str())
+                            && interaction::part_matches_search(part, &search_needle, search_scope);
+                        if part.kind == "thinking" {
+                            self.thinking_part_element(part, &message.id, reveal, colors, cx)
+                        } else if part.kind == "toolResult" {
+                            self.tool_result_element(part, &message.id, reveal, colors, cx)
                         } else {
-                            div().flex().flex_col().gap_2().w_full().children(parts)
-                        };
-                        let actions = div()
-                            .flex()
-                            .items_center()
-                            .gap_1()
-                            .opacity(0.0)
-                            .group_hover(message_group.clone(), |style| style.opacity(1.0))
-                            .when(is_assistant, |element| element.justify_start())
-                            .when(!is_assistant, |element| element.justify_end())
-                            .when_some(copy, |element, copy| element.child(copy))
-                            .when_some(fork, |element, fork| element.child(fork));
-                        let body = if index >= self.transcript_animation_floor {
-                            let (motion, distance) = if is_user {
-                                (interaction::Motion::UserEnter, 6.0)
-                            } else {
-                                (interaction::Motion::AssistantEnter, 10.0)
-                            };
-                            body.with_animation(
-                                format!("message-enter-{}", message.id),
-                                interaction::motion_spec(motion).animation(),
-                                move |element, delta| {
-                                    element
-                                        .opacity(delta.clamp(0.0, 1.0))
-                                        .relative()
-                                        .top(px(distance * (1.0 - delta)))
-                                },
-                            )
-                            .into_any_element()
-                        } else {
-                            body.into_any_element()
-                        };
+                            transcript_part_element(part, &message.role, colors)
+                        }
+                    })
+                    .collect();
+                let body = if is_user {
+                    div().flex().flex_col().items_end().w_full().child(
                         div()
+                            .max_w(px(640.0))
+                            .px(px(14.0))
+                            .py(px(9.0))
+                            .rounded(px(18.0))
+                            .bg(colors.tab)
+                            .text_size(px(13.0))
                             .flex()
                             .flex_col()
                             .gap_1()
-                            .w_full()
-                            .pb(px(if is_toolish { 10.0 } else { 32.0 }))
-                            .group(message_group)
-                            .child(body)
-                            .child(actions)
-                            .into_any_element()
-                    })),
-            );
+                            .children(parts),
+                    )
+                } else {
+                    div().flex().flex_col().gap_2().w_full().children(parts)
+                };
+                let actions = div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .opacity(0.0)
+                    .group_hover(message_group.clone(), |style| style.opacity(1.0))
+                    .when(is_assistant, |element| element.justify_start())
+                    .when(!is_assistant, |element| element.justify_end())
+                    .when_some(copy, |element, copy| element.child(copy))
+                    .when_some(fork, |element, fork| element.child(fork));
+                let body = if index >= self.transcript_animation_floor {
+                    let (motion, distance) = if is_user {
+                        (interaction::Motion::UserEnter, 6.0)
+                    } else {
+                        (interaction::Motion::AssistantEnter, 10.0)
+                    };
+                    body.with_animation(
+                        format!("message-enter-{}", message.id),
+                        interaction::motion_spec(motion).animation(),
+                        move |element, delta| {
+                            element
+                                .opacity(delta.clamp(0.0, 1.0))
+                                .relative()
+                                .top(px(distance * (1.0 - delta)))
+                        },
+                    )
+                    .into_any_element()
+                } else {
+                    body.into_any_element()
+                };
+                div()
+                    .id(format!("transcript-message-{}", message.id))
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .w_full()
+                    .max_w(px(960.0))
+                    .mx_auto()
+                    .rounded(px(8.0))
+                    .when(
+                        active_search_id.as_deref() == Some(message.id.as_str()),
+                        |row| row.bg(colors.selection),
+                    )
+                    .pb(px(if is_toolish { 10.0 } else { 32.0 }))
+                    .group(message_group)
+                    .child(body)
+                    .child(actions)
+                    .into_any_element()
+            }));
         // The rows and the `Jump to latest` control share one box, so the
         // control floats over the transcript instead of taking height away
         // from it and shifting what the reader was looking at.
@@ -5904,6 +6340,7 @@ impl Workspace {
                                 .text_color(colors.muted_foreground)
                                 .hover(|style| style.bg(colors.accent))
                                 .child(self.t("transcript.jumpLatest"))
+                                .test_support()
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.jump_to_transcript_latest(cx);
                                 }))
@@ -6972,6 +7409,9 @@ impl Workspace {
     }
 
     pub fn set_view(&mut self, view: AppView, cx: &mut Context<Self>) {
+        if view != AppView::Workspace {
+            self.reset_transcript_search(cx);
+        }
         self.view = view;
         if view == AppView::Schedules {
             self.refresh_schedules();
@@ -11802,11 +12242,7 @@ impl Render for Workspace {
         // A native webview keeps its last frame when the pane stops rendering, and on Windows
         // it covers everything in its bounds, so it is shown only while the pane is on screen
         // and no confirmation is covering it.
-        let browser_visible = self.view == AppView::Workspace
-            && (show_right || show_details)
-            && self.right_pane == RightPane::Browser
-            && !close_prompt
-            && self.command_palette.is_none();
+        let browser_visible = self.browser_is_visible();
         self.browser.set_visible(browser_visible, cx);
         if browser_visible {
             if self.browser.needs_webview() {
@@ -11930,7 +12366,18 @@ impl Render for Workspace {
                         self.capture_path.is_some() || self.capture_error.is_some(),
                         |element| element.child(self.capture_status_row(cx)),
                     )
-                    .child(self.transcript(cx))
+                    .child(
+                        div()
+                            .relative()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_h(px(0.0))
+                            .child(self.transcript(cx))
+                            .when(self.transcript_search.is_some(), |element| {
+                                element.child(self.transcript_search_bar(cx))
+                            }),
+                    )
                     .when(self.terminal_open, |element| {
                         element.child(self.terminal_panel(cx))
                     })
