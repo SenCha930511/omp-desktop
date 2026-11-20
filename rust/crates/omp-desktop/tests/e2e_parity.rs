@@ -228,6 +228,65 @@ fn catalog_order_drives_session_selection(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn sidebar_groups_sessions_under_granted_and_inferred_projects(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let home = root.join("home");
+    let project = seed_project(root);
+    let other = root.join("other-project");
+    std::fs::create_dir_all(&other).expect("other project");
+    let bucket = home.join(".omp/agent/sessions/-omp-project");
+    write_session(
+        &bucket,
+        "2026-04-01T00-00-00-000Z_019fdf24-aaaa-7000-8000-000000000011.jsonl",
+        "Granted",
+        "2026-04-01T01:00:00.000Z",
+        "granted prompt",
+        "granted reply",
+        &project,
+    );
+    write_session(
+        &bucket,
+        "2026-04-01T00-00-00-000Z_019fdf24-bbbb-7000-8000-000000000012.jsonl",
+        "Inferred",
+        "2026-04-01T02:00:00.000Z",
+        "inferred prompt",
+        "inferred reply",
+        &other,
+    );
+
+    let mut store = open_store(root);
+    omp_core::projects::grant_project(
+        &mut store,
+        &home,
+        Platform::current(),
+        project.to_str().expect("project path"),
+    )
+    .expect("grant");
+    let projects = omp_core::projects::list_projects(&store);
+    let catalog = omp_core::sessions::list_sessions(&store, &home, false, None);
+    drop(store);
+
+    let mut data = test_data(root);
+    data.home_dir = home;
+    data.projects = projects;
+    data.sessions = catalog;
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    handle
+        .update(cx, |workspace, _, cx| {
+            let state = snapshot(workspace, cx);
+            let groups = state["sidebarGroups"].as_array().expect("sidebar groups");
+            assert_eq!(groups.len(), 2);
+            assert_eq!(groups[0]["name"], "project");
+            assert_eq!(groups[0]["sessions"], json!([1]));
+            assert_eq!(groups[1]["name"], "other-project");
+            assert_eq!(groups[1]["sessions"], json!([0]));
+        })
+        .expect("workspace window");
+}
+
+#[gpui_kit::test]
 fn settings_patches_round_trip_through_the_state_file(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let dir = tempfile::TempDir::new().expect("temp dir");
@@ -1716,19 +1775,13 @@ fn live_voice_snapshot_starts_idle_without_a_runtime(cx: &mut TestAppContext) {
         .expect("workspace window");
 }
 
-/// The terminal panel opens and closes from the toolbar without a shell.
+/// The terminal panel opens and closes from its own header without a shell.
 ///
-/// `set_right_pane("terminal")` opens the panel; the only close control is the
-/// toolbar's terminal icon, which is not registered with gpui-kit, so it is
-/// clicked at its measured window-local position in a 1280x800 window. The
-/// center column starts after the 248px sidebar and ends 12px before the right
-/// pane; five 28px icons sit on an 8px gap, so `terminal-panel` (second from the
-/// left) centres on x=786, y=22.
+/// `set_right_pane("terminal")` opens the panel; its close button is registered
+/// with gpui-kit, so the scenario clicks it by id instead of a measured toolbar
+/// position.
 #[gpui_kit::test]
 fn terminal_panel_opens_and_closes_without_spawning_a_shell(cx: &mut TestAppContext) {
-    const TERMINAL_ICON_X: f32 = 786.0;
-    const TOOLBAR_Y: f32 = 22.0;
-
     cx.update(gpui_kit::init);
     let dir = tempfile::TempDir::new().expect("temp dir");
     let root = dir.path();
@@ -1747,7 +1800,7 @@ fn terminal_panel_opens_and_closes_without_spawning_a_shell(cx: &mut TestAppCont
         })
         .expect("workspace window");
 
-    click_at(cx, handle, TERMINAL_ICON_X, TOOLBAR_Y);
+    click_element(cx, handle, "terminal-close");
 
     handle
         .update(cx, |workspace, _, cx| {

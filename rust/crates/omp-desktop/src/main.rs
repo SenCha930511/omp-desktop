@@ -15,7 +15,7 @@ use omp_core::settings::AppSettings;
 use omp_core::state::{
     CURRENT_DESKTOP_STATE_FILENAME, LEGACY_DESKTOP_STATE_FILENAME, Platform, StateStore,
 };
-use omp_desktop::app::{CloseGuard, CloseIntent, Workspace, WorkspaceData};
+use omp_desktop::app::{AppView, CloseGuard, CloseIntent, Workspace, WorkspaceData};
 
 const APP_ID: &str = "com.omp.desktop.rust.dev";
 const SMOKE_URL: &str = "omp-desktop://app/index.html";
@@ -155,6 +155,25 @@ fn arm_tray_smoke_marker(window: &mut Window, path: PathBuf, tray: tray::Tray, f
     });
 }
 
+/// Captures a frame after the workspace has painted, then quits.
+fn arm_capture_frame(
+    window: &mut Window,
+    workspace: gpui_kit::WeakEntity<Workspace>,
+    path: PathBuf,
+    frames: u8,
+) {
+    window.on_next_frame(move |window, cx| {
+        if frames > 1 {
+            arm_capture_frame(window, workspace.clone(), path.clone(), frames - 1);
+            return;
+        }
+        let _ = workspace.update(cx, |this, cx| {
+            this.capture_to_path(path, window, cx);
+            cx.quit();
+        });
+    });
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let user_data_dir = parse_arg(&args, "--user-data-dir=")
@@ -165,6 +184,12 @@ fn main() {
     // path has run, then quits.
     let tray_smoke_path = parse_arg(&args, "--tray-smoke=").map(PathBuf::from);
     let dump_layout_path = parse_arg(&args, "--dump-layout=").map(PathBuf::from);
+    let capture_frame_path = parse_arg(&args, "--capture-frame=").map(PathBuf::from);
+    let select_session =
+        parse_arg(&args, "--select-session=").and_then(|value| value.parse::<usize>().ok());
+    let grant_project = parse_arg(&args, "--grant-project=");
+    let view = parse_arg(&args, "--view=");
+    let right_pane = parse_arg(&args, "--right-pane=");
     let data = load_workspace_data(&user_data_dir);
     let geometry_for_dump = data.geometry.clone();
     let options = window_options(&data.geometry);
@@ -218,6 +243,31 @@ fn main() {
             }
         };
         if let Some((window, workspace)) = opened {
+            if let Some(path) = grant_project {
+                let _ = workspace.update(cx, |this, cx| {
+                    this.grant_project(Path::new(&path), cx);
+                });
+            }
+            if let Some(index) = select_session {
+                let _ = workspace.update(cx, |this, cx| this.select_session(index, cx));
+            }
+            if let Some(view) = view {
+                let view = match view.as_str() {
+                    "settings" => AppView::Settings,
+                    "plugins" => AppView::Plugins,
+                    "schedules" => AppView::Schedules,
+                    _ => AppView::Workspace,
+                };
+                let _ = workspace.update(cx, |this, cx| this.set_view(view, cx));
+            }
+            if let Some(pane) = right_pane {
+                let _ = workspace.update(cx, |this, cx| this.set_right_pane(&pane, cx));
+            }
+            if let Some(path) = capture_frame_path {
+                let _ = window.update(cx, |_, window, _| {
+                    arm_capture_frame(window, workspace.clone(), path, 3);
+                });
+            }
             // The handler stays non-blocking: with no agent run the view says
             // yes and the window closes at once; with one it parks the question
             // in the confirmation overlay and the close is refused for now.

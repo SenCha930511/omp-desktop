@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -36,6 +36,8 @@ use serde_json::{Value, json};
 
 #[path = "browser.rs"]
 mod browser;
+#[path = "markdown.rs"]
+mod markdown;
 
 use browser::BrowserPane;
 #[path = "terminal.rs"]
@@ -116,6 +118,25 @@ impl RightPane {
     }
 }
 
+/// One project-shaped row in the sidebar: a granted project, or the project
+/// inferred from a session whose folder was never granted.
+struct SidebarGroup {
+    key: String,
+    name: String,
+    path: String,
+    project_id: Option<String>,
+    sessions: Vec<usize>,
+}
+
+/// The presentation fields of one sidebar navigation row.
+struct SidebarNavItem {
+    id: &'static str,
+    icon: IconName,
+    label: &'static str,
+    shortcut: Option<&'static str>,
+    active: bool,
+}
+
 /// Window width below which the workspace draws the compact layout.
 ///
 /// The geometry module keeps its own breakpoints for the persisted pane
@@ -129,6 +150,114 @@ pub const COMPACT_LAYOUT_BREAKPOINT: f32 = 1100.0;
 /// window; `Workspace` stores the answer it read from its bounds.
 pub fn compact_layout(width: f32) -> bool {
     width < COMPACT_LAYOUT_BREAKPOINT
+}
+
+fn session_path_is_inside(session_path: &str, project: &ProjectRecord) -> bool {
+    let session_path = Path::new(session_path);
+    let canonical = omp_core::paths::canonicalize(session_path).ok();
+    project
+        .folders
+        .iter()
+        .chain(std::iter::once(&project.primary_folder))
+        .any(|folder| {
+            !folder.is_empty()
+                && (session_path.starts_with(Path::new(folder))
+                    || canonical
+                        .as_ref()
+                        .is_some_and(|path| path.starts_with(Path::new(folder))))
+        })
+}
+
+fn sidebar_project_name(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or(path)
+        .to_string()
+}
+
+/// Replaces gpui-kit's stock palette with the Electron theme the redesign
+/// references. The component tokens are written too: an input or menu that
+/// kept the old surface would break the three-pane color rhythm.
+fn apply_electron_palette(cx: &mut Context<Workspace>, accent: &str) {
+    let dark = cx.theme().mode == ThemeMode::Dark;
+    Theme::update(cx, |theme| {
+        let (canvas, sidebar, subtle, hover, selected, raised) = if dark {
+            (0x171716, 0x20201f, 0x242423, 0x2b2b29, 0x333330, 0x222220)
+        } else {
+            (0xffffff, 0xf3f3f1, 0xf7f7f5, 0xececea, 0xe5e5e2, 0xffffff)
+        };
+        let (text, secondary, tertiary, border, strong) = if dark {
+            (0xf5f5f2, 0xbabab4, 0xa1a19b, 0x343431, 0x474743)
+        } else {
+            (0x20201e, 0x686863, 0x6f6f69, 0xe3e3df, 0xd3d3ce)
+        };
+        let prime = match (accent, dark) {
+            ("blue", true) => 0x7da2ff,
+            ("blue", false) => 0x2563eb,
+            ("teal", true) => 0x5eead4,
+            ("teal", false) => 0x0d9488,
+            ("green", true) => 0x7ee2a0,
+            ("green", false) => 0x1e8e3e,
+            ("orange", true) => 0xffb77d,
+            ("orange", false) => 0xea580c,
+            ("pink", true) => 0xff8fd0,
+            ("pink", false) => 0xdb2777,
+            (_, true) => 0xa595ff,
+            (_, false) => 0x5f4bd3,
+        };
+        let (focus, danger, success, warning) = if dark {
+            (0x82b5ff, 0xed8a82, 0x75c897, 0xdeb967)
+        } else {
+            (0x6aa9ff, 0xa93b34, 0x21754d, 0x7a520b)
+        };
+        theme.colors.background = gpui::rgb(canvas).into();
+        theme.colors.sidebar = gpui::rgb(sidebar).into();
+        theme.colors.foreground = gpui::rgb(text).into();
+        theme.colors.muted = gpui::rgb(secondary).into();
+        theme.colors.muted_foreground = gpui::rgb(tertiary).into();
+        theme.colors.border = gpui::rgb(border).into();
+        theme.colors.accent = gpui::rgb(hover).into();
+        theme.colors.accent_foreground = gpui::rgb(text).into();
+        theme.colors.primary = gpui::rgb(prime).into();
+        theme.colors.primary_foreground = gpui::rgb(canvas).into();
+        theme.colors.danger = gpui::rgb(danger).into();
+        theme.colors.danger_foreground = gpui::rgb(canvas).into();
+        theme.colors.success = gpui::rgb(success).into();
+        theme.colors.warning = gpui::rgb(warning).into();
+        theme.colors.info = gpui::rgb(focus).into();
+        theme.colors.link = gpui::rgb(focus).into();
+        theme.colors.ring = gpui::rgb(focus).into();
+        theme.colors.caret = gpui::rgb(prime).into();
+        theme.colors.popover = gpui::rgb(raised).into();
+        theme.colors.popover_foreground = gpui::rgb(text).into();
+        theme.colors.selection = gpui::rgb(selected).into();
+        theme.colors.scrollbar = gpui::rgb(border).into();
+        theme.colors.scrollbar_thumb = gpui::rgb(strong).into();
+        theme.colors.tab = gpui::rgb(subtle).into();
+        theme.colors.tab_active = gpui::rgb(raised).into();
+        theme.colors.tab_bar = gpui::rgb(canvas).into();
+        theme.colors.title_bar = gpui::rgb(canvas).into();
+        theme.colors.title_bar_border = gpui::rgb(border).into();
+        theme.colors.status_bar = gpui::rgb(sidebar).into();
+        theme.colors.button = gpui::rgb(raised).into();
+        theme.colors.button_hover = gpui::rgb(hover).into();
+        theme.colors.button_active = gpui::rgb(selected).into();
+        theme.colors.button_foreground = gpui::rgb(text).into();
+        theme.colors.button_primary = gpui::rgb(prime).into();
+        theme.colors.button_primary_hover = gpui::rgb(prime).into();
+        theme.colors.button_primary_active = gpui::rgb(prime).into();
+        theme.colors.button_primary_foreground = gpui::rgb(canvas).into();
+        theme.colors.button_secondary = gpui::rgb(subtle).into();
+        theme.colors.button_secondary_hover = gpui::rgb(hover).into();
+        theme.colors.button_secondary_active = gpui::rgb(selected).into();
+        theme.colors.button_secondary_foreground = gpui::rgb(text).into();
+        theme.radius = px(8.0);
+        theme.radius_lg = px(12.0);
+        theme.font_size = px(13.0);
+        theme.mono_font_size = px(12.0);
+    });
 }
 
 /// Which entry point asked to close, so the confirmation's `Close anyway`
@@ -672,6 +801,7 @@ pub struct Workspace {
     // How many times an external change re-read the transcript. The parity
     // harness reads this back to prove a check really reloaded the file.
     transcript_reloads: u64,
+    transcript_animation_floor: usize,
     transcript_task: Option<Task<()>>,
     runtime_error: Option<String>,
     // The composer banner's last fork outcome. A successful fork leaves the
@@ -682,6 +812,10 @@ pub struct Workspace {
     // session switch, so the dial never shows another session's fill.
     context_usage: Option<ContextUsage>,
     selected_session: Option<usize>,
+    collapsed_projects: HashSet<String>,
+    sidebar_search_open: bool,
+    sidebar_filter: Entity<InputState>,
+    _sidebar_filter_subscription: Subscription,
     composer: Entity<InputState>,
     _composer_subscription: Subscription,
     submit_requested: Option<bool>,
@@ -895,6 +1029,14 @@ impl Workspace {
                 _ => {}
             },
         );
+        let sidebar_filter =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Search sessions…"));
+        let sidebar_filter_subscription =
+            cx.subscribe(&sidebar_filter, |_this, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    cx.notify();
+                }
+            });
         let store = StateStore::open(
             data.user_data_dir.join(CURRENT_DESKTOP_STATE_FILENAME),
             Some(data.user_data_dir.join(LEGACY_DESKTOP_STATE_FILENAME)),
@@ -930,6 +1072,7 @@ impl Workspace {
             omp_core::settings::Theme::System => ThemeMode::from(window.appearance()),
         };
         Theme::change(theme_mode, Some(window), cx);
+        apply_electron_palette(cx, &data.settings.accent_color);
         let browser = BrowserPane::new(window, cx);
         let mut workspace = Self {
             geometry: data.geometry,
@@ -958,11 +1101,16 @@ impl Workspace {
             transcript_stamp: None,
             transcript_failure: None,
             transcript_reloads: 0,
+            transcript_animation_floor: 0,
             transcript_task: None,
             runtime_error: None,
             fork_status: None,
             context_usage: None,
             selected_session: None,
+            collapsed_projects: HashSet::new(),
+            sidebar_search_open: false,
+            sidebar_filter,
+            _sidebar_filter_subscription: sidebar_filter_subscription,
             composer,
             _composer_subscription: composer_subscription,
             submit_requested: None,
@@ -1105,18 +1253,10 @@ impl Workspace {
         if !self.transcript_at_bottom {
             return;
         }
-        let Some(last) = self.transcript.len().checked_sub(1) else {
-            return;
-        };
-        if self.transcript_scroll.bounds().size.height <= px(0.0) {
-            // Before the first layout the handle has no bounds, so an item
-            // request would be consumed by a prepaint that cannot scroll yet.
-            // The bottom flag is applied by the same frame's paint, which is
-            // where the content size first becomes known.
-            self.transcript_scroll.scroll_to_bottom();
-        } else {
-            self.transcript_scroll.scroll_to_item(last);
-        }
+        // Scroll to the content edge, not the last item's top: a tool card
+        // taller than the viewport would otherwise leave its bottom (and the
+        // jump control's target) below the fold.
+        self.transcript_scroll.scroll_to_bottom();
     }
 
     /// Why the transcript could not be read, while the pane shows it.
@@ -1133,6 +1273,7 @@ impl Workspace {
     /// never watched under the next selection.
     fn clear_transcript(&mut self) {
         self.transcript.clear();
+        self.transcript_animation_floor = 0;
         self.transcript_file = None;
         self.transcript_stamp = None;
         self.transcript_failure = None;
@@ -1214,6 +1355,7 @@ impl Workspace {
             .collect();
         self.transcript = messages;
         self.transcript.extend(carried);
+        self.transcript_animation_floor = self.transcript.len();
         // A carried streaming row keeps its slot, so the next delta grows it
         // instead of minting a second reply.
         self.streaming_index =
@@ -1262,6 +1404,38 @@ impl Workspace {
             .render_to_image()
             .map_err(|error| format!("Capture failed: {error}"));
         self.finish_capture(frame, cx);
+    }
+
+    /// Captures one rendered frame to an explicit path. The visual-parity
+    /// check uses this instead of OS screen capture, which needs a separate
+    /// privacy grant and can miss a background window.
+    pub fn capture_to_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let saved = match window.render_to_image() {
+            Ok(frame) => {
+                if let Some(parent) = path.parent()
+                    && let Err(error) = std::fs::create_dir_all(parent)
+                {
+                    self.capture_error = Some(format!("Capture failed: {error}"));
+                    cx.notify();
+                    return;
+                }
+                frame
+                    .save(&path)
+                    .map_err(|error| format!("Capture failed: {error}"))
+            }
+            Err(error) => Err(format!("Capture failed: {error}")),
+        };
+        match saved {
+            Ok(()) => {
+                self.capture_path = Some(path);
+                self.capture_error = None;
+            }
+            Err(error) => {
+                self.capture_path = None;
+                self.capture_error = Some(error);
+            }
+        }
+        cx.notify();
     }
 
     /// Saves a rendered frame and parks the result in the status row: the path
@@ -1456,6 +1630,19 @@ impl Workspace {
                 })
             })
             .collect();
+        let sidebar_groups: Vec<Value> = self
+            .sidebar_groups()
+            .iter()
+            .map(|group| {
+                json!({
+                    "key": group.key,
+                    "name": group.name,
+                    "path": group.path,
+                    "projectId": group.project_id,
+                    "sessions": group.sessions,
+                })
+            })
+            .collect();
         // The Settings picker's view of the catalog: the bounded list the page
         // draws, the provider chips above it, the persisted selection the
         // composer footer reads, and why the list is empty when it is.
@@ -1513,6 +1700,7 @@ impl Workspace {
                 "overlay": self.layout.overlay,
             },
             "projects": projects,
+            "sidebarGroups": sidebar_groups,
             // Which project row has its menu open, if any.
             "projectMenu": self.project_menu,
             "sessions": sessions,
@@ -1764,8 +1952,155 @@ impl Workspace {
         }));
     }
 
+    /// Builds the sidebar's project rows: granted projects first, then one
+    /// row per session folder that was never granted. Session indices stay
+    /// the catalog's, so a row click still selects the same record.
+    fn sidebar_groups(&self) -> Vec<SidebarGroup> {
+        let mut groups: Vec<SidebarGroup> = Vec::new();
+        let mut assigned = vec![false; self.sessions.len()];
+        for project in &self.projects {
+            let mut sessions = Vec::new();
+            for (index, session) in self.sessions.iter().enumerate() {
+                if assigned[index] {
+                    continue;
+                }
+                if session_path_is_inside(&session.project_path, project) {
+                    assigned[index] = true;
+                    sessions.push(index);
+                }
+            }
+            groups.push(SidebarGroup {
+                key: project.id.clone(),
+                name: project.name.clone(),
+                path: project.primary_folder.clone(),
+                project_id: Some(project.id.clone()),
+                sessions,
+            });
+        }
+        for (index, session) in self.sessions.iter().enumerate() {
+            if assigned[index] {
+                continue;
+            }
+            if let Some(group) = groups
+                .iter_mut()
+                .find(|group| group.project_id.is_none() && group.path == session.project_path)
+            {
+                group.sessions.push(index);
+            } else {
+                groups.push(SidebarGroup {
+                    key: format!("inferred:{}", session.project_path),
+                    name: sidebar_project_name(&session.project_path),
+                    path: session.project_path.clone(),
+                    project_id: None,
+                    sessions: vec![index],
+                });
+            }
+        }
+        groups
+    }
+
+    pub fn toggle_project_collapsed(&mut self, key: &str, cx: &mut Context<Self>) {
+        if !self.collapsed_projects.remove(key) {
+            self.collapsed_projects.insert(key.to_string());
+        }
+        cx.notify();
+    }
+
+    fn sidebar_nav_row(
+        &self,
+        item: SidebarNavItem,
+        colors: ThemeColor,
+        on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> impl IntoElement {
+        div()
+            .id(item.id)
+            .aria_label(item.label)
+            .flex()
+            .items_center()
+            .gap_2()
+            .h(px(32.0))
+            .px_2()
+            .rounded(px(7.0))
+            .text_size(px(13.0))
+            .text_color(colors.foreground)
+            .when(item.active, |element| element.bg(colors.accent))
+            .hover(|style| style.bg(colors.accent))
+            .child(
+                div()
+                    .text_size(px(16.0))
+                    .text_color(colors.muted_foreground)
+                    .child(item.icon),
+            )
+            .child(div().flex_1().child(item.label))
+            .when_some(item.shortcut, |element, shortcut| {
+                element.child(
+                    div()
+                        .text_size(px(10.5))
+                        .text_color(colors.muted_foreground)
+                        .child(shortcut),
+                )
+            })
+            .on_click(on_click)
+    }
+
+    fn sidebar_session_row(
+        &self,
+        index: usize,
+        session: &SessionRecord,
+        colors: ThemeColor,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::Stateful<gpui_kit::Div> {
+        let selected = self.selected_session == Some(index);
+        div()
+            .id(format!("session-{index}"))
+            .aria_label(session.title.clone())
+            .flex()
+            .items_center()
+            .h(px(32.0))
+            .pl(px(26.0))
+            .pr_2()
+            .rounded(px(7.0))
+            .text_size(px(13.0))
+            .text_color(if selected {
+                colors.foreground
+            } else {
+                colors.muted_foreground
+            })
+            .when(selected, |element| element.bg(colors.accent))
+            .hover(|style| style.bg(colors.accent))
+            .child(
+                div()
+                    .flex_1()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .child(session.title.clone()),
+            )
+            .when(session.unread, |element| {
+                element.child(div().size(px(6.0)).rounded(px(999.0)).bg(colors.primary))
+            })
+            .on_click(cx.listener(move |this, _, _, cx| this.select_session(index, cx)))
+    }
+
     fn sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.theme().colors;
+        let query = self.sidebar_filter.read(cx).value().trim().to_lowercase();
+        let groups: Vec<SidebarGroup> = self
+            .sidebar_groups()
+            .into_iter()
+            .filter_map(|mut group| {
+                if !query.is_empty() {
+                    group.sessions.retain(|index| {
+                        let session = &self.sessions[*index];
+                        session.title.to_lowercase().contains(&query)
+                            || session.project_path.to_lowercase().contains(&query)
+                    });
+                    if group.sessions.is_empty() {
+                        return None;
+                    }
+                }
+                Some(group)
+            })
+            .collect();
         div()
             .flex()
             .flex_col()
@@ -1780,127 +2115,288 @@ impl Workspace {
             .border_color(colors.border)
             .child(
                 div()
-                    .id("new-session")
-                    .aria_label("New session")
+                    .h(px(52.0))
                     .flex()
                     .items_center()
-                    .gap_2()
-                    .px_3()
-                    .py_3()
-                    .hover(|style| style.bg(colors.accent))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        if let Some(project) = this.projects.first().cloned() {
-                            this.start_new_session(project, cx);
-                        }
-                    }))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .size(px(28.0))
-                            .rounded(px(8.0))
-                            .bg(colors.accent)
-                            .text_color(colors.accent_foreground)
-                            .text_size(px(16.0))
-                            .child(IconName::SquarePen),
-                    )
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(colors.foreground)
-                            .child("New session"),
-                    )
-                    .child(
-                        div()
-                            .ml_auto()
-                            .text_xs()
-                            .text_color(colors.muted_foreground)
-                            .child("⌘N"),
-                    ),
+                    .gap_1()
+                    .pr_2()
+                    .child(div().w(px(84.0)))
+                    .child(div().flex_1())
+                    .child(self.toolbar_icon(
+                        "sidebar-search",
+                        IconName::Search,
+                        colors.muted_foreground,
+                        cx.listener(|this, _, _, cx| {
+                            this.sidebar_search_open = !this.sidebar_search_open;
+                            cx.notify();
+                        }),
+                    ))
+                    .child(self.toolbar_icon(
+                        "sidebar-add-project",
+                        IconName::Plus,
+                        colors.muted_foreground,
+                        cx.listener(|this, _, window, cx| this.add_project(window, cx)),
+                    )),
             )
             .child(
                 div()
                     .flex()
                     .flex_col()
+                    .gap_0p5()
+                    .px_2()
+                    .pb_2()
+                    .border_b_1()
+                    .border_color(colors.border)
+                    .child(self.sidebar_nav_row(
+                        SidebarNavItem {
+                            id: "new-session",
+                            icon: IconName::SquarePen,
+                            label: "New session",
+                            shortcut: Some("⌘N"),
+                            active: false,
+                        },
+                        colors,
+                        cx.listener(|this, _, window, cx| {
+                            if let Some(project) = this.projects.first().cloned() {
+                                this.start_new_session(project, cx);
+                            } else {
+                                this.add_project(window, cx);
+                            }
+                        }),
+                    ))
+                    .child(self.sidebar_nav_row(
+                        SidebarNavItem {
+                            id: "search-nav",
+                            icon: IconName::Search,
+                            label: "Search",
+                            shortcut: None,
+                            active: self.sidebar_search_open,
+                        },
+                        colors,
+                        cx.listener(|this, _, _, cx| {
+                            this.sidebar_search_open = !this.sidebar_search_open;
+                            cx.notify();
+                        }),
+                    ))
+                    .child(self.sidebar_nav_row(
+                        SidebarNavItem {
+                            id: "projects-nav",
+                            icon: IconName::Folder,
+                            label: "Projects",
+                            shortcut: None,
+                            active: self.view == AppView::Workspace
+                                && self.selected_session.is_none()
+                                && !self.sidebar_search_open,
+                        },
+                        colors,
+                        cx.listener(|this, _, _, cx| {
+                            this.sidebar_search_open = false;
+                            this.set_view(AppView::Workspace, cx);
+                        }),
+                    ))
+                    .child(self.sidebar_nav_row(
+                        SidebarNavItem {
+                            id: "activity-nav",
+                            icon: IconName::Activity,
+                            label: "Activity",
+                            shortcut: None,
+                            active: self.right_pane == RightPane::Activity,
+                        },
+                        colors,
+                        cx.listener(|this, _, _, cx| this.set_right_pane("activity", cx)),
+                    ))
+                    .child(self.sidebar_nav_row(
+                        SidebarNavItem {
+                            id: "schedules-nav",
+                            icon: IconName::Clock,
+                            label: "Schedules",
+                            shortcut: None,
+                            active: self.view == AppView::Schedules,
+                        },
+                        colors,
+                        cx.listener(|this, _, _, cx| this.set_view(AppView::Schedules, cx)),
+                    ))
+                    .child(self.sidebar_nav_row(
+                        SidebarNavItem {
+                            id: "capabilities-nav",
+                            icon: IconName::Puzzle,
+                            label: "Capabilities",
+                            shortcut: None,
+                            active: self.view == AppView::Plugins,
+                        },
+                        colors,
+                        cx.listener(|this, _, _, cx| this.set_view(AppView::Plugins, cx)),
+                    ))
+                    .when(self.sidebar_search_open, |element| {
+                        element.child(div().px_2().pb_1().child(Input::new(&self.sidebar_filter)))
+                    }),
+            )
+            .child(
+                div()
+                    .id("sidebar-scroll")
+                    .flex()
+                    .flex_col()
                     .flex_1()
-                    .overflow_hidden()
+                    .min_h(px(0.0))
+                    .overflow_y_scroll()
                     .px_2()
                     .child(
                         div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
                             .px_2()
                             .py_1()
-                            .text_xs()
-                            .text_color(colors.muted_foreground)
-                            .child("PROJECTS"),
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(colors.muted_foreground)
+                                    .child("PROJECTS"),
+                            )
+                            .child(
+                                div()
+                                    .id("add-project")
+                                    .aria_label("Add project")
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .size(px(22.0))
+                                    .rounded(px(6.0))
+                                    .text_color(colors.muted_foreground)
+                                    .hover(|style| style.bg(colors.accent))
+                                    .child(IconName::Plus)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.add_project(window, cx);
+                                    })),
+                            ),
                     )
-                    .children(self.projects.iter().map(|project| {
-                        let project = project.clone();
-                        let row_id = project.id.clone();
-                        let menu_id = project.id.clone();
-                        let remove_id = project.id.clone();
-                        let open = self.project_menu.as_deref() == Some(project.id.as_str());
+                    .when(groups.is_empty(), |element| {
+                        element.child(
+                            div()
+                                .px_2()
+                                .py_3()
+                                .text_size(px(12.0))
+                                .text_color(colors.muted_foreground)
+                                .child(if query.is_empty() {
+                                    "No projects yet. Add a folder to begin."
+                                } else {
+                                    "No sessions match."
+                                }),
+                        )
+                    })
+                    .children(groups.into_iter().map(|group| {
+                        let key = group.key.clone();
+                        let header_key = key.clone();
+                        let menu_key = key.clone();
+                        let collapsed = self.collapsed_projects.contains(&key);
+                        let project_id = group.project_id.clone();
+                        let project = project_id.as_ref().and_then(|id| {
+                            self.projects
+                                .iter()
+                                .find(|project| &project.id == id)
+                                .cloned()
+                        });
+                        let menu_open = project_id.is_some()
+                            && project_id.as_deref() == self.project_menu.as_deref();
                         div()
                             .flex()
                             .flex_col()
                             .gap_0p5()
                             .child(
                                 div()
-                                    .id(format!("project-{row_id}"))
+                                    .id(format!("project-group-{key}"))
+                                    .aria_label(group.name.clone())
                                     .flex()
                                     .items_center()
-                                    .gap_2()
-                                    .px_2()
-                                    .py_1()
+                                    .gap_1()
+                                    .h(px(28.0))
+                                    .px_1()
                                     .rounded(px(6.0))
-                                    .text_sm()
-                                    .text_color(colors.foreground)
                                     .hover(|style| style.bg(colors.accent))
-                                    .child(IconName::Folder)
-                                    .child(project.name.clone())
                                     .child(
                                         div()
-                                            .id(format!("project-menu-{menu_id}"))
-                                            .aria_label("Project menu")
-                                            .ml_auto()
-                                            .rounded(px(4.0))
+                                            .text_size(px(14.0))
                                             .text_color(colors.muted_foreground)
-                                            .hover(|style| style.bg(colors.background))
-                                            .child(IconName::EllipsisVertical)
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.toggle_project_menu(&menu_id, cx);
-                                                // The row under the button starts a
-                                                // new session; its menu must not.
-                                                cx.stop_propagation();
-                                            })),
+                                            .child(if collapsed {
+                                                IconName::ChevronRight
+                                            } else {
+                                                IconName::ChevronDown
+                                            }),
                                     )
+                                    .child(IconName::Folder)
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .overflow_hidden()
+                                            .text_ellipsis()
+                                            .text_size(px(13.0))
+                                            .child(group.name.clone()),
+                                    )
+                                    .when_some(project.clone(), |element, project| {
+                                        element.child(
+                                            div()
+                                                .id(format!("project-new-{}", project.id))
+                                                .aria_label("New session")
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .size(px(22.0))
+                                                .rounded(px(5.0))
+                                                .text_color(colors.muted_foreground)
+                                                .hover(|style| style.bg(colors.background))
+                                                .child(IconName::SquarePen)
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.start_new_session(project.clone(), cx);
+                                                    cx.stop_propagation();
+                                                })),
+                                        )
+                                    })
+                                    .when_some(project_id.clone(), |element, id| {
+                                        element.child(
+                                            div()
+                                                .id(format!("project-menu-{id}"))
+                                                .aria_label("Project menu")
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .size(px(22.0))
+                                                .rounded(px(5.0))
+                                                .text_color(colors.muted_foreground)
+                                                .hover(|style| style.bg(colors.background))
+                                                .child(IconName::EllipsisVertical)
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.toggle_project_menu(&id, cx);
+                                                    cx.stop_propagation();
+                                                })),
+                                        )
+                                    })
                                     .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.start_new_session(project.clone(), cx);
+                                        this.toggle_project_collapsed(&header_key, cx);
                                     })),
                             )
-                            .when(open, |element| {
+                            .when(menu_open, |element| {
+                                let menu_key = menu_key.clone();
                                 element.child(
                                     div()
-                                        .id(format!("project-menu-panel-{row_id}"))
+                                        .id(format!("project-menu-panel-{menu_key}"))
                                         .ml(px(24.0))
                                         .flex()
                                         .flex_col()
                                         .gap_0p5()
                                         .child(
                                             div()
-                                                .id(format!("project-remove-{remove_id}"))
+                                                .id(format!("project-remove-{menu_key}"))
                                                 .aria_label("Remove project")
                                                 .px_2()
                                                 .py_1()
                                                 .rounded(px(6.0))
-                                                .text_sm()
+                                                .text_size(px(12.0))
                                                 .text_color(colors.foreground)
                                                 .hover(|style| style.bg(colors.accent))
                                                 .child("Remove project")
                                                 .on_click(cx.listener(move |this, _, _, cx| {
                                                     this.project_menu_action(
-                                                        &remove_id,
+                                                        &menu_key,
                                                         "Remove project",
                                                         cx,
                                                     );
@@ -1908,259 +2404,141 @@ impl Workspace {
                                         ),
                                 )
                             })
-                    }))
-                    .child(
-                        div()
-                            .px_2()
-                            .py_1()
-                            .text_xs()
-                            .text_color(colors.muted_foreground)
-                            .child("SESSIONS"),
-                    )
-                    .children(self.sessions.iter().enumerate().map(|(index, session)| {
-                        let selected = self.selected_session == Some(index);
-                        div()
-                            .id(format!("session-{index}"))
-                            .aria_label(session.title.clone())
-                            .flex()
-                            .flex_col()
-                            .gap_0p5()
-                            .px_2()
-                            .py_1()
-                            .rounded(px(6.0))
-                            .when(selected, |element| element.bg(colors.accent))
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(colors.foreground)
-                                    .child(session.title.clone()),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(colors.muted_foreground)
-                                    .child(session.project_path.clone()),
-                            )
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.select_session(index, cx);
-                            }))
+                            .when(!collapsed, |element| {
+                                element.children(group.sessions.into_iter().map(|index| {
+                                    self.sidebar_session_row(
+                                        index,
+                                        &self.sessions[index],
+                                        colors,
+                                        cx,
+                                    )
+                                }))
+                            })
                     })),
             )
             .child(
-                div().border_t_1().border_color(colors.border).p_2().child(
-                    div()
-                        .id("schedules-nav")
-                        .aria_label("Schedules")
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .px_2()
-                        .py_1()
-                        .rounded(px(6.0))
-                        .text_sm()
-                        .text_color(colors.foreground)
-                        .when(self.view == AppView::Schedules, |element| {
-                            element.bg(colors.accent)
-                        })
-                        .hover(|style| style.bg(colors.accent))
-                        .child(IconName::Clock)
-                        .child("Schedules")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.set_view(AppView::Schedules, cx);
-                        })),
-                ),
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_0p5()
+                    .border_t_1()
+                    .border_color(colors.border)
+                    .p_2()
+                    .child(
+                        div()
+                            .id("update-nav")
+                            .aria_label("Check for updates")
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .h(px(32.0))
+                            .px_2()
+                            .rounded(px(7.0))
+                            .text_size(px(13.0))
+                            .text_color(colors.foreground)
+                            .hover(|style| style.bg(colors.accent))
+                            .child(
+                                div()
+                                    .text_size(px(16.0))
+                                    .text_color(colors.muted_foreground)
+                                    .child(IconName::Download),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .child(self.update_check.label()),
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.start_update_check(cx);
+                            })),
+                    )
+                    .child(self.sidebar_nav_row(
+                        SidebarNavItem {
+                            id: "settings-nav",
+                            icon: IconName::Settings,
+                            label: "Settings",
+                            shortcut: None,
+                            active: self.view == AppView::Settings,
+                        },
+                        colors,
+                        cx.listener(|this, _, _, cx| this.set_view(AppView::Settings, cx)),
+                    )),
             )
     }
 
     fn toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.theme().colors;
-        let title = self
+        let selected = self
             .selected_session
-            .and_then(|index| self.sessions.get(index))
+            .and_then(|index| self.sessions.get(index));
+        let title = selected
             .map(|session| session.title.clone())
             .unwrap_or_else(|| "OMP Desktop".to_string());
+        let branch = selected
+            .and_then(|session| {
+                self.projects
+                    .iter()
+                    .find(|project| session_path_is_inside(&session.project_path, project))
+            })
+            .and_then(|project| project.git_branch.clone());
+        let panel_active = if self.compact_layout {
+            self.details_open
+        } else {
+            self.geometry.right_pane_open
+        };
+        let (status, status_color, status_bg) = if self.running {
+            ("Working", colors.success, colors.success.opacity(0.14))
+        } else {
+            ("Idle", colors.muted_foreground, colors.accent)
+        };
         div()
             .flex()
             .items_center()
             .gap_2()
-            .h(px(44.0))
+            .h(px(52.0))
             .px_3()
             .border_b_1()
             .border_color(colors.border)
             .child(
                 div()
-                    .text_sm()
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_size(px(12.5))
+                    .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(colors.foreground)
                     .child(title),
             )
+            .when_some(branch, |element, branch| {
+                element.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .h(px(24.0))
+                        .max_w(px(180.0))
+                        .overflow_hidden()
+                        .px_2()
+                        .rounded(px(6.0))
+                        .border_1()
+                        .border_color(colors.border)
+                        .bg(colors.accent)
+                        .text_size(px(11.5))
+                        .text_color(colors.muted_foreground)
+                        .child(IconName::GitBranch)
+                        .child(div().overflow_hidden().text_ellipsis().child(branch)),
+                )
+            })
             .child(
                 div()
                     .px_2()
                     .py_0p5()
                     .rounded(px(999.0))
-                    .bg(colors.accent)
-                    .text_xs()
-                    .text_color(colors.accent_foreground)
-                    .child("idle"),
+                    .bg(status_bg)
+                    .text_size(px(10.5))
+                    .text_color(status_color)
+                    .child(status),
             )
-            .child(
-                div()
-                    .id("copy-transcript")
-                    .aria_label("Copy transcript")
-                    .px_2()
-                    .py_0p5()
-                    .rounded(px(6.0))
-                    .border_1()
-                    .border_color(colors.border)
-                    .text_xs()
-                    .text_color(colors.foreground)
-                    .hover(|style| style.bg(colors.accent))
-                    .child("Copy transcript")
-                    .on_click(cx.listener(|this, _, _, cx| this.copy_transcript(cx))),
-            )
-            // The left-hand actions grow left to right, so adding this before
-            // the flexible spacer leaves the right-hand icons' positions alone.
-            .child(
-                div()
-                    .id("capture-workspace")
-                    .aria_label("Capture workspace")
-                    .px_2()
-                    .py_0p5()
-                    .rounded(px(6.0))
-                    .border_1()
-                    .border_color(colors.border)
-                    .text_xs()
-                    .text_color(colors.foreground)
-                    .hover(|style| style.bg(colors.accent))
-                    .child("Capture workspace")
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.capture_workspace(window, cx);
-                    })),
-            )
-            // Below the breakpoint the right pane has no column of its own, so
-            // this toggle is its door: it draws the pane over the transcript
-            // and closes it again. A wide window keeps the docked pane and
-            // never draws the toggle.
-            .when(self.compact_layout, |element| {
-                element.child(
-                    div()
-                        .id("details-toggle")
-                        .aria_label("Details")
-                        .px_2()
-                        .py_0p5()
-                        .rounded(px(6.0))
-                        .border_1()
-                        .border_color(if self.details_open {
-                            colors.primary
-                        } else {
-                            colors.border
-                        })
-                        .text_xs()
-                        .text_color(colors.foreground)
-                        .hover(|style| style.bg(colors.accent))
-                        .child("Details")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.details_open = !this.details_open;
-                            cx.notify();
-                        }))
-                        .test_support(),
-                )
-            })
-            // The dial joins the left-hand group: it is drawn only once a
-            // reading arrived, so the right-hand icons keep their measured
-            // positions and an unread session shows nothing.
-            .when_some(self.context_usage, |element, usage| {
-                element.child(context_usage_dial(usage, colors))
-            })
             .child(div().flex_1())
-            // The bell carries the unread count as a pill: opening the
-            // Activity pane marks the list read, which drops the pill.
-            .child({
-                let unread = self.unread_notifications();
-                div()
-                    .relative()
-                    .child(self.toolbar_icon(
-                        "notifications",
-                        IconName::Bell,
-                        if self.right_pane == RightPane::Activity {
-                            colors.primary
-                        } else {
-                            colors.foreground
-                        },
-                        cx.listener(|this, _, _, cx| {
-                            if this.right_pane == RightPane::Activity {
-                                this.right_pane = RightPane::Launcher;
-                                cx.notify();
-                            } else {
-                                this.set_right_pane("activity", cx);
-                            }
-                        }),
-                    ))
-                    .when(unread > 0, |element| {
-                        element.child(
-                            div()
-                                .id("notifications-badge")
-                                .aria_label("Unread notifications")
-                                .absolute()
-                                .top(px(-2.0))
-                                .right(px(-2.0))
-                                .min_w(px(14.0))
-                                .h(px(14.0))
-                                .px_0p5()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .rounded(px(999.0))
-                                .bg(colors.danger)
-                                .text_size(px(9.0))
-                                .text_color(colors.danger_foreground)
-                                .child(unread.to_string()),
-                        )
-                    })
-            })
-            .child(self.toolbar_icon(
-                "live-voice",
-                IconName::Mic,
-                if self.right_pane == RightPane::LiveVoice {
-                    colors.primary
-                } else {
-                    colors.foreground
-                },
-                cx.listener(|this, _, _, cx| {
-                    if this.right_pane == RightPane::LiveVoice {
-                        this.right_pane = RightPane::Launcher;
-                    } else {
-                        this.right_pane = RightPane::LiveVoice;
-                        if this.compact_layout {
-                            this.details_open = true;
-                        }
-                        this.geometry.right_pane_open = true;
-                        if let Some(bounds) = this.last_bounds {
-                            this.layout = this.geometry.resolve(bounds.2 as f64);
-                        }
-                        this.resize_terminal();
-                        this.schedule_geometry_save(cx);
-                    }
-                    cx.notify();
-                }),
-            ))
-            .child(self.toolbar_icon(
-                "terminal-panel",
-                IconName::Terminal,
-                if self.terminal_open {
-                    colors.primary
-                } else {
-                    colors.foreground
-                },
-                cx.listener(|this, _, _, cx| {
-                    if this.terminal_open {
-                        this.close_terminal(cx);
-                    } else {
-                        this.start_terminal(cx);
-                    }
-                }),
-            ))
             .child(self.toolbar_icon(
                 "session-menu",
                 IconName::EllipsisVertical,
@@ -2173,20 +2551,30 @@ impl Workspace {
             .child(self.toolbar_icon(
                 "overview",
                 IconName::Menu,
-                colors.foreground,
+                if self.overview_open {
+                    colors.primary
+                } else {
+                    colors.foreground
+                },
                 cx.listener(|this, _, _, cx| {
                     this.overview_open = !this.overview_open;
                     cx.notify();
                 }),
             ))
             .child(self.toolbar_icon(
-                "right-pane",
+                if self.compact_layout {
+                    "details-toggle"
+                } else {
+                    "right-pane-toggle"
+                },
                 IconName::PanelRight,
-                colors.foreground,
+                if panel_active {
+                    colors.primary
+                } else {
+                    colors.foreground
+                },
                 cx.listener(|this, _, _, cx| {
                     if this.compact_layout {
-                        // There is no docked column to toggle here, so the
-                        // panel button raises the Details overlay instead.
                         this.details_open = !this.details_open;
                     } else {
                         this.geometry.right_pane_open = !this.geometry.right_pane_open;
@@ -2220,6 +2608,7 @@ impl Workspace {
             .text_color(color)
             .hover(|style| style.bg(color.opacity(0.12)))
             .child(icon)
+            .test_support()
             .on_click(on_click)
     }
 
@@ -2696,6 +3085,7 @@ impl Workspace {
                             .rounded(px(6.0))
                             .hover(|style| style.bg(colors.accent))
                             .child(IconName::X)
+                            .test_support()
                             .on_click(cx.listener(|this, _, _, cx| this.close_terminal(cx))),
                     ),
             )
@@ -2811,6 +3201,7 @@ impl Workspace {
             // The stamp is recorded whether the read succeeded or not: a file
             // that is still broken is not retried until it changes, and a file
             // that becomes readable again is what recovers the view.
+            self.transcript_animation_floor = self.transcript.len();
             self.transcript_stamp = transcript_stamp(Path::new(&file_path));
             self.transcript_file = Some(file_path);
         }
@@ -2859,6 +3250,7 @@ impl Workspace {
             Ok(_) => {
                 self.projects = projects::list_projects(&store);
                 self.transcript_error = None;
+                self.ensure_runtime(cx);
             }
             Err(error) => self.transcript_error = Some(error.message),
         }
@@ -4152,6 +4544,10 @@ impl Workspace {
         let colors = cx.theme().colors;
         if let Some(error) = &self.transcript_error {
             return div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_h(px(0.0))
                 .p_6()
                 .text_sm()
                 .text_color(colors.danger)
@@ -4165,12 +4561,68 @@ impl Workspace {
                 "Select a session or create a new one."
             };
             return div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_h(px(0.0))
                 .p_6()
                 .text_sm()
                 .text_color(colors.muted_foreground)
                 .child(text)
                 .into_any_element();
         }
+        let status_row = div()
+            .flex()
+            .items_center()
+            .h(px(40.0))
+            .px_6()
+            .border_b_1()
+            .border_color(colors.border)
+            .child(div().flex_1())
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_size(px(10.5))
+                    .text_color(if self.running {
+                        colors.success
+                    } else {
+                        colors.muted_foreground
+                    })
+                    .child(if self.running {
+                        div()
+                            .size(px(6.0))
+                            .rounded(px(999.0))
+                            .bg(colors.success)
+                            .with_animation(
+                                "status-pulse",
+                                Animation::new(Duration::from_millis(1200)).repeat(),
+                                |element, delta| {
+                                    element.opacity(0.35 + 0.65 * (1.0 - (2.0 * delta - 1.0).abs()))
+                                },
+                            )
+                            .into_any_element()
+                    } else {
+                        div()
+                            .size(px(6.0))
+                            .rounded(px(999.0))
+                            .bg(colors.muted_foreground)
+                            .into_any_element()
+                    })
+                    .child(if self.running {
+                        "Working…"
+                    } else {
+                        "Completed"
+                    }),
+            )
+            .child(div().flex_1())
+            .child(
+                div()
+                    .text_size(px(10.5))
+                    .text_color(colors.muted_foreground)
+                    .child(format!("Subagents {}", self.agents.list().len())),
+            );
         let scroll = div()
             .id("transcript-scroll")
             .flex()
@@ -4189,52 +4641,101 @@ impl Workspace {
                     cx.notify();
                 }
             }))
-            .gap_4()
             .p_6()
-            .children(self.transcript.iter().map(|message| {
-                // A row the harness wrote carries its own id, which is what
-                // `fork` wants to continue from; a row the view minted itself
-                // (a streaming reply, a queued follow-up, a compaction) has
-                // none, so it gets no action.
-                let forkable = forkable_transcript_row(message);
-                let fork = forkable.then(|| {
-                    let entry_id = message.id.clone();
-                    div()
-                        .id(format!("transcript-fork-{}", message.id))
-                        .aria_label("Fork from here")
-                        .text_xs()
-                        .text_color(colors.muted_foreground)
-                        .hover(|style| style.text_color(colors.foreground))
-                        .child("Fork from here")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.fork_from_message(&entry_id, cx);
-                        }))
-                });
+            .child(
                 div()
                     .flex()
                     .flex_col()
-                    .gap_1()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .text_color(colors.muted_foreground)
-                                    .child(transcript_role_label(message)),
-                            )
-                            .when_some(fork, |element, fork| element.child(fork)),
-                    )
-                    .children(
-                        message
+                    .gap_4()
+                    .w_full()
+                    .max_w(px(960.0))
+                    .mx_auto()
+                    .children(self.transcript.iter().enumerate().map(|(index, message)| {
+                        let is_user = message.role == "user";
+                        let is_assistant = message.role == "assistant";
+                        let forkable = forkable_transcript_row(message);
+                        let fork = forkable.then(|| {
+                            let entry_id = message.id.clone();
+                            div()
+                                .id(format!("transcript-fork-{}", message.id))
+                                .aria_label("Fork from here")
+                                .text_size(px(10.5))
+                                .text_color(colors.muted_foreground)
+                                .hover(|style| style.text_color(colors.foreground))
+                                .child("Fork from here")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.fork_from_message(&entry_id, cx);
+                                }))
+                        });
+                        let parts: Vec<AnyElement> = message
                             .parts
                             .iter()
-                            .map(|part| transcript_part_element(part, colors)),
-                    )
-            }));
+                            .map(|part| transcript_part_element(part, &message.role, colors))
+                            .collect();
+                        let body = if is_user {
+                            div().flex().flex_col().items_end().w_full().child(
+                                div()
+                                    .max_w(px(640.0))
+                                    .px(px(14.0))
+                                    .py(px(9.0))
+                                    .rounded(px(18.0))
+                                    .bg(colors.tab)
+                                    .text_size(px(13.0))
+                                    .flex()
+                                    .flex_col()
+                                    .gap_1()
+                                    .children(parts),
+                            )
+                        } else {
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_2()
+                                .w_full()
+                                .when(!is_assistant, |element| {
+                                    element.child(
+                                        div()
+                                            .text_size(px(10.5))
+                                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                                            .text_color(colors.muted_foreground)
+                                            .child(transcript_role_label(message)),
+                                    )
+                                })
+                                .children(parts)
+                        };
+                        let row = div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .w_full()
+                            .child(body)
+                            .when_some(fork, |element, fork| {
+                                element.child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .when(is_assistant, |element| element.justify_start())
+                                        .when(!is_assistant, |element| element.justify_end())
+                                        .child(fork),
+                                )
+                            });
+                        if index >= self.transcript_animation_floor {
+                            row.with_animation(
+                                format!("message-enter-{}", message.id),
+                                Animation::new(Duration::from_millis(420)),
+                                |element, delta| {
+                                    element
+                                        .opacity(delta)
+                                        .relative()
+                                        .top(px(8.0 * (1.0 - delta)))
+                                },
+                            )
+                            .into_any_element()
+                        } else {
+                            row.into_any_element()
+                        }
+                    })),
+            );
         // The rows and the `Jump to latest` control share one box, so the
         // control floats over the transcript instead of taking height away
         // from it and shifting what the reader was looking at.
@@ -4244,6 +4745,7 @@ impl Workspace {
             .flex_col()
             .flex_1()
             .min_h(px(0.0))
+            .child(status_row)
             .child(scroll)
             .when(!self.transcript_at_bottom, |element| {
                 element.child(
@@ -4270,7 +4772,12 @@ impl Workspace {
                                 .child("Jump to latest")
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.jump_to_transcript_latest(cx);
-                                })),
+                                }))
+                                .with_animation(
+                                    "jump-latest",
+                                    Animation::new(Duration::from_millis(130)),
+                                    |element, delta| element.opacity(delta),
+                                ),
                         ),
                 )
             })
@@ -4414,9 +4921,22 @@ impl Workspace {
             .flex()
             .flex_col()
             .gap_2()
-            .p_4()
-            .border_t_1()
+            .mx(px(24.0))
+            .mt(px(8.0))
+            .mb(px(13.0))
+            .min_h(px(92.0))
+            .p(px(10.0))
+            .rounded(px(18.0))
+            .border_1()
             .border_color(colors.border)
+            .bg(colors.popover)
+            .shadow(vec![gpui::BoxShadow {
+                color: black().opacity(0.28),
+                offset: point(px(0.0), px(4.0)),
+                blur_radius: px(20.0),
+                spread_radius: px(0.0),
+                inset: false,
+            }])
             .when_some(banner, |element, (text, color)| {
                 element.child(
                     div()
@@ -4427,6 +4947,35 @@ impl Workspace {
                         .child(text),
                 )
             })
+            .when(
+                self.runtime_error
+                    .as_deref()
+                    .is_some_and(|error| error.contains("not inside a granted project")),
+                |element| {
+                    element.child(
+                        div()
+                            .id("grant-session-project")
+                            .aria_label("Add this project folder")
+                            .self_start()
+                            .px_2()
+                            .py_1()
+                            .rounded(px(6.0))
+                            .bg(colors.primary)
+                            .text_size(px(11.0))
+                            .text_color(colors.primary_foreground)
+                            .child("Add this folder")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                let path = this
+                                    .selected_session
+                                    .and_then(|index| this.sessions.get(index))
+                                    .map(|session| session.project_path.clone());
+                                if let Some(path) = path {
+                                    this.grant_project(Path::new(&path), cx);
+                                }
+                            })),
+                    )
+                },
+            )
             // The pending attachment sits above the input as one chip: the
             // file the next prompt will carry, and the control that drops it.
             .when_some(self.pending_image.clone(), |element, image| {
@@ -4552,41 +5101,49 @@ impl Workspace {
                 )
             })
             .child(
+                div().flex().items_center().min_h(px(36.0)).child(
+                    div()
+                        .flex_1()
+                        .child(Input::new(&self.composer).appearance(false).bordered(false)),
+                ),
+            )
+            .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap_2()
-                    .child(div().flex_1().child(Input::new(&self.composer)))
+                    .gap_1p5()
+                    .text_xs()
+                    .text_color(colors.muted_foreground)
                     .child(
                         div()
                             .id("mention-session")
                             .aria_label("Mention session")
-                            .px_2()
-                            .py_1()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .size(px(28.0))
                             .rounded(px(6.0))
-                            .border_1()
-                            .border_color(colors.border)
-                            .text_sm()
                             .text_color(if self.mention_menu_open {
                                 colors.primary
                             } else {
-                                colors.foreground
+                                colors.muted_foreground
                             })
-                            .child("@")
+                            .hover(|style| style.bg(colors.accent))
+                            .child(IconName::AtSign)
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_mention_menu(cx))),
                     )
                     .child(
                         div()
                             .id("attach-image")
                             .aria_label("Attach image")
-                            .px_2()
-                            .py_1()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .size(px(28.0))
                             .rounded(px(6.0))
-                            .border_1()
-                            .border_color(colors.border)
-                            .text_sm()
-                            .text_color(colors.foreground)
-                            .child("📎")
+                            .text_color(colors.muted_foreground)
+                            .hover(|style| style.bg(colors.accent))
+                            .child(IconName::Paperclip)
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.pick_image(window, cx)),
                             ),
@@ -4595,31 +5152,37 @@ impl Workspace {
                         div()
                             .id("dictate")
                             .aria_label(self.dictation_label())
-                            .px_3()
-                            .py_1()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .size(px(28.0))
                             .rounded(px(6.0))
-                            .border_1()
-                            .border_color(colors.border)
-                            .text_sm()
                             .text_color(if self.dictation_active {
                                 colors.danger
                             } else {
-                                colors.foreground
+                                colors.muted_foreground
                             })
-                            .child(self.dictation_label())
+                            .hover(|style| style.bg(colors.accent))
+                            .child(IconName::Mic)
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_dictation(cx))),
                     )
+                    .child(div().flex_1())
+                    .when_some(self.context_usage, |element, usage| {
+                        element.child(context_usage_dial(usage, colors))
+                    })
+                    .child(self.model_footer())
                     .child(
                         div()
                             .id("send-prompt")
                             .aria_label("Send prompt")
-                            .px_3()
-                            .py_1()
-                            .rounded(px(6.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .size(px(32.0))
+                            .rounded(px(999.0))
                             .bg(colors.primary)
                             .text_color(colors.primary_foreground)
-                            .text_sm()
-                            .child("Send")
+                            .child(IconName::ArrowUp)
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.send_prompt(window, cx)),
                             ),
@@ -4627,18 +5190,10 @@ impl Workspace {
             )
             .child(
                 div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .text_xs()
+                    .text_size(px(9.5))
                     .text_color(colors.muted_foreground)
-                    .child(if self.running {
-                        "Running · Enter to queue a follow-up"
-                    } else {
-                        "Enter to send · Ctrl+Enter to follow up"
-                    })
-                    .child(div().flex_1())
-                    .child(self.model_footer()),
+                    .text_center()
+                    .child("OMP can make mistakes. Review commands and changes before submitting."),
             )
     }
 
@@ -5491,6 +6046,10 @@ impl Workspace {
             .flex()
             .flex_col()
             .flex_1()
+            .min_w(px(0.0))
+            .w_full()
+            .max_w(px(960.0))
+            .mx_auto()
             .h_full()
             .p_6()
             .gap_3()
@@ -5959,6 +6518,10 @@ impl Workspace {
             .flex()
             .flex_col()
             .flex_1()
+            .min_w(px(0.0))
+            .w_full()
+            .max_w(px(960.0))
+            .mx_auto()
             .h_full()
             .p_6()
             .gap_3()
@@ -6256,6 +6819,10 @@ impl Workspace {
             .flex()
             .flex_col()
             .flex_1()
+            .min_w(px(0.0))
+            .w_full()
+            .max_w(px(760.0))
+            .mx_auto()
             .h_full()
             .p_6()
             .gap_4()
@@ -6294,12 +6861,14 @@ impl Workspace {
                 };
                 this.update_setting(json!({ "theme": next }), cx);
                 Theme::change(mode, Some(window), cx);
+                apply_electron_palette(cx, &this.settings.accent_color);
             }))
             .child(self.settings_row("Accent", self.settings.accent_color.clone(), colors, cx, |this, _window, cx| {
                 let colors = ["prime", "blue", "teal", "green", "orange", "pink"];
                 let index = colors.iter().position(|color| *color == this.settings.accent_color).unwrap_or(0);
                 let next = colors[(index + 1) % colors.len()];
                 this.update_setting(json!({ "accentColor": next }), cx);
+                apply_electron_palette(cx, &this.settings.accent_color);
             }))
             .child(self.settings_row("Interface font scale", format!("{}%", self.settings.interface_font_scale), colors, cx, |this, _window, cx| {
                 let next = match this.settings.interface_font_scale {
@@ -6405,7 +6974,7 @@ impl Workspace {
         let items = [
             (RightPane::Summary, "Summary", IconName::FileText),
             (RightPane::Review, "Review", IconName::GitBranch),
-            (RightPane::Files, "Files", IconName::Folder),
+            (RightPane::Files, "Open File", IconName::Folder),
             (RightPane::Browser, "Browser", IconName::Globe),
             (
                 RightPane::SideQuestion,
@@ -6414,11 +6983,6 @@ impl Workspace {
             ),
             (RightPane::Subagents, "Subagents", IconName::Bot),
         ];
-        let unread = self
-            .notifications
-            .iter()
-            .filter(|notification| !notification.read)
-            .count();
         let content = match self.right_pane {
             RightPane::Launcher => None,
             RightPane::Summary => Some(self.summary_content(cx).into_any_element()),
@@ -6435,7 +6999,7 @@ impl Workspace {
             RightPane::Launcher => "Overview",
             RightPane::Summary => "Summary",
             RightPane::Review => "Review",
-            RightPane::Files => "Files",
+            RightPane::Files => "Open File",
             RightPane::Browser => "Browser",
             RightPane::SideQuestion => "Side Question",
             RightPane::Ask => "Ask",
@@ -6462,22 +7026,33 @@ impl Workspace {
             .border_color(colors.border)
             .p_3()
             .gap_1()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .px_2()
-                    .py_2()
-                    .rounded(px(8.0))
-                    .bg(colors.background)
-                    .border_1()
-                    .border_color(colors.border)
-                    .text_xs()
-                    .text_color(colors.muted_foreground)
-                    .child(IconName::Search)
-                    .child("Search or enter a URL"),
-            )
+            .when(self.right_pane == RightPane::Launcher, |element| {
+                element.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .px_2()
+                        .py_2()
+                        .rounded(px(8.0))
+                        .bg(colors.background)
+                        .border_1()
+                        .border_color(colors.border)
+                        .text_xs()
+                        .text_color(colors.muted_foreground)
+                        .child(IconName::Search)
+                        .child(div().flex_1().child("Search or enter a URL"))
+                        .child(self.toolbar_icon(
+                            "right-pane-menu",
+                            IconName::EllipsisVertical,
+                            colors.foreground,
+                            cx.listener(|this, _, _, cx| {
+                                this.menu_open = !this.menu_open;
+                                cx.notify();
+                            }),
+                        )),
+                )
+            })
             .when(self.right_pane != RightPane::Launcher, |element| {
                 element.child(
                     div()
@@ -6607,7 +7182,7 @@ impl Workspace {
                     .text_color(colors.foreground)
                     .hover(|style| style.bg(colors.accent))
                     .child(IconName::Activity)
-                    .child("Activity")
+                    .child("Background Tasks")
                     .child(div().flex_1())
                     .child(
                         div()
@@ -6615,13 +7190,18 @@ impl Workspace {
                             .rounded(px(999.0))
                             .bg(colors.accent)
                             .text_xs()
-                            .child(unread.to_string()),
+                            .child(self.attention_count.to_string()),
                     )
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.set_right_pane("activity", cx);
                     })),
             )
             .test_support()
+            .with_animation(
+                format!("right-pane-{}", self.right_pane.name()),
+                Animation::new(Duration::from_millis(160)),
+                |element, delta| element.opacity(delta),
+            )
     }
 
     /// The compact layout's right pane, drawn over the transcript from the
@@ -6639,6 +7219,11 @@ impl Workspace {
                 omp_core::geometry::clamp_right_pane(self.geometry.right_pane_width) as f32,
             ))
             .child(self.right_pane(cx))
+            .with_animation(
+                "details-overlay",
+                Animation::new(Duration::from_millis(160)),
+                |element, delta| element.opacity(delta),
+            )
     }
 
     fn files_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -7747,7 +8332,7 @@ impl Workspace {
         let colors = cx.theme().colors;
         div()
             .absolute()
-            .top(px(48.0))
+            .top(px(56.0))
             .right(px(48.0))
             .w(px(220.0))
             .rounded(px(10.0))
@@ -7771,7 +8356,7 @@ impl Workspace {
                 [
                     ("Summary", "summary"),
                     ("Review", "review"),
-                    ("Files", "files"),
+                    ("Open File", "files"),
                     ("Browser", "browser"),
                     ("Side Question", "side-question"),
                     ("Subagents", "subagents"),
@@ -7780,15 +8365,55 @@ impl Workspace {
                 .map(|(label, id)| {
                     div()
                         .id(id)
+                        .aria_label(label)
                         .px_2()
                         .py_1()
                         .rounded(px(6.0))
                         .hover(|style| style.bg(colors.accent))
                         .child(label)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.set_right_pane(id, cx);
+                            this.overview_open = false;
+                            if id == "browser" {
+                                this.browser.ensure(window, cx);
+                            }
+                            cx.notify();
+                        }))
                 }),
             )
             .child(div().h(px(1.0)).my_1().bg(colors.border))
-            .child(div().px_2().py_1().child("Background Tasks"))
+            .child(
+                div()
+                    .id("background-tasks")
+                    .aria_label("Background Tasks")
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_2()
+                    .py_1()
+                    .rounded(px(6.0))
+                    .hover(|style| style.bg(colors.accent))
+                    .child("Background Tasks")
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .px_2()
+                            .rounded(px(999.0))
+                            .bg(colors.accent)
+                            .text_xs()
+                            .child(self.attention_count.to_string()),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.set_right_pane("activity", cx);
+                        this.overview_open = false;
+                        cx.notify();
+                    })),
+            )
+            .with_animation(
+                "overview-popover",
+                Animation::new(Duration::from_millis(140)),
+                |element, delta| element.opacity(delta),
+            )
     }
 
     fn session_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -7823,17 +8448,55 @@ impl Workspace {
                     }))
             }))
             .child(div().h(px(1.0)).my_1().bg(colors.border))
-            .children(
-                ["Session Tree", "Copy ›", "Project Scripts ›"]
-                    .into_iter()
-                    .map(|label| {
-                        div()
-                            .px_2()
-                            .py_1()
-                            .rounded(px(6.0))
-                            .hover(|style| style.bg(colors.accent))
-                            .child(label)
-                    }),
+            .child(
+                div()
+                    .id("menu-copy-transcript")
+                    .aria_label("Copy transcript")
+                    .px_2()
+                    .py_1()
+                    .rounded(px(6.0))
+                    .hover(|style| style.bg(colors.accent))
+                    .child("Copy transcript")
+                    .on_click(cx.listener(|this, _, _, cx| this.copy_transcript(cx))),
+            )
+            .child(
+                div()
+                    .id("menu-capture-workspace")
+                    .aria_label("Capture workspace")
+                    .px_2()
+                    .py_1()
+                    .rounded(px(6.0))
+                    .hover(|style| style.bg(colors.accent))
+                    .child("Capture workspace")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.capture_workspace(window, cx);
+                    })),
+            )
+            .child(
+                div()
+                    .id("menu-terminal")
+                    .aria_label("Terminal")
+                    .px_2()
+                    .py_1()
+                    .rounded(px(6.0))
+                    .hover(|style| style.bg(colors.accent))
+                    .child(if self.terminal_open {
+                        "Close terminal"
+                    } else {
+                        "Terminal"
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if this.terminal_open {
+                            this.close_terminal(cx);
+                        } else {
+                            this.start_terminal(cx);
+                        }
+                    })),
+            )
+            .with_animation(
+                "session-menu",
+                Animation::new(Duration::from_millis(140)),
+                |element, delta| element.opacity(delta),
             )
     }
 
@@ -7908,6 +8571,11 @@ fn close_confirmation(
         // A modal: the backdrop takes the clicks that miss the card, so the
         // view underneath cannot be driven while the question is open.
         .on_click(|_, _, _| {})
+        .with_animation(
+            "close-confirmation",
+            Animation::new(Duration::from_millis(160)),
+            |element, delta| element.opacity(delta),
+        )
         .child(
             div()
                 .w(px(380.0))
@@ -8371,42 +9039,215 @@ fn math_span(segment: &MathSegment, colors: ThemeColor) -> AnyElement {
 /// always was; a part with math is wrapped spans, its prose untouched and each
 /// math run in its own chip. Only the drawing splits, so `Copy transcript`
 /// still yields the message as written.
-fn transcript_part_element(part: &TranscriptPart, colors: ThemeColor) -> AnyElement {
-    let text = transcript_part_text(part);
-    let text_color = if part.kind == "queued" {
-        colors.muted_foreground
-    } else {
-        colors.foreground
-    };
-    let segments = math_segments(&text);
-    if segments
-        .iter()
-        .all(|segment| segment.kind == MathSegmentKind::Text)
-    {
-        return div()
-            .text_sm()
-            .text_color(text_color)
-            .child(text)
-            .into_any_element();
+fn transcript_part_element(part: &TranscriptPart, role: &str, colors: ThemeColor) -> AnyElement {
+    match part.kind.as_str() {
+        "text" => {
+            let text = part.text.clone().unwrap_or_default();
+            if text.is_empty() {
+                return div().into_any_element();
+            }
+            if role == "tool" {
+                return div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .w_full()
+                    .child(
+                        div()
+                            .id("tool-message-scroll")
+                            .max_h(px(220.0))
+                            .overflow_y_scroll()
+                            .rounded(px(8.0))
+                            .border_1()
+                            .border_color(colors.border)
+                            .bg(colors.tab)
+                            .p_2()
+                            .font_family("Menlo")
+                            .text_size(px(11.5))
+                            .text_color(colors.muted_foreground)
+                            .child(text),
+                    )
+                    .into_any_element();
+            }
+            let size = if role == "user" { 13.0 } else { 14.0 };
+            if role == "assistant" {
+                return markdown::render_markdown(&text, colors);
+            }
+            let segments = math_segments(&text);
+            if segments
+                .iter()
+                .all(|segment| segment.kind == MathSegmentKind::Text)
+            {
+                return div()
+                    .text_size(px(size))
+                    .text_color(colors.foreground)
+                    .child(text)
+                    .into_any_element();
+            }
+            div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .text_size(px(size))
+                .text_color(colors.foreground)
+                .children(
+                    segments
+                        .into_iter()
+                        .filter(|segment| !segment.text.is_empty())
+                        .map(|segment| match segment.kind {
+                            MathSegmentKind::Text => div().child(segment.text).into_any_element(),
+                            MathSegmentKind::InlineMath | MathSegmentKind::DisplayMath => {
+                                math_span(&segment, colors)
+                            }
+                        }),
+                )
+                .into_any_element()
+        }
+        "thinking" => div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .w_full()
+            .p_2()
+            .rounded(px(8.0))
+            .bg(colors.tab)
+            .child(
+                div()
+                    .text_size(px(10.5))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(colors.muted_foreground)
+                    .child("Thinking"),
+            )
+            .child(
+                div()
+                    .text_size(px(12.5))
+                    .text_color(colors.muted_foreground)
+                    .child(part.text.clone().unwrap_or_default()),
+            )
+            .into_any_element(),
+        "toolCall" => {
+            let name = part.name.clone().unwrap_or_else(|| "tool".to_string());
+            let command = part
+                .args
+                .as_ref()
+                .and_then(|args| {
+                    args.get("command")
+                        .or_else(|| args.get("cmd"))
+                        .or_else(|| args.get("description"))
+                })
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .w_full()
+                .px_2()
+                .py_1()
+                .rounded(px(8.0))
+                .border_1()
+                .border_color(colors.border)
+                .bg(colors.tab)
+                .child(IconName::Wrench)
+                .child(
+                    div()
+                        .text_size(px(12.0))
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .child(name),
+                )
+                .when(!command.is_empty(), |element| {
+                    element.child(
+                        div()
+                            .flex_1()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .font_family("Menlo")
+                            .text_size(px(11.0))
+                            .text_color(colors.muted_foreground)
+                            .child(command),
+                    )
+                })
+                .child(div().flex_1())
+                .when_some(part.status.clone(), |element, status| {
+                    element.child(
+                        div()
+                            .text_size(px(10.5))
+                            .text_color(colors.muted_foreground)
+                            .child(status),
+                    )
+                })
+                .into_any_element()
+        }
+        "toolResult" => {
+            let text = part.text.clone().unwrap_or_default();
+            let color = if part.is_error == Some(true) {
+                colors.danger
+            } else {
+                colors.muted_foreground
+            };
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .w_full()
+                .child(
+                    div()
+                        .id("tool-result-scroll")
+                        .max_h(px(260.0))
+                        .overflow_y_scroll()
+                        .rounded(px(8.0))
+                        .border_1()
+                        .border_color(colors.border)
+                        .bg(colors.background)
+                        .p_2()
+                        .font_family("Menlo")
+                        .text_size(px(11.5))
+                        .text_color(color)
+                        .child(text),
+                )
+                .into_any_element()
+        }
+        "compaction" => div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .w_full()
+            .py_1()
+            .child(div().h(px(1.0)).flex_1().bg(colors.border))
+            .child(
+                div()
+                    .text_size(px(10.5))
+                    .text_color(colors.muted_foreground)
+                    .child(format!(
+                        "Context compacted · {} → {} tokens",
+                        part.tokens_before.unwrap_or(0),
+                        part.tokens_after.unwrap_or(0)
+                    )),
+            )
+            .child(div().h(px(1.0)).flex_1().bg(colors.border))
+            .into_any_element(),
+        "queued" => div()
+            .text_size(px(12.0))
+            .text_color(colors.muted_foreground)
+            .child(format!("Queued: {}", part.text.clone().unwrap_or_default()))
+            .into_any_element(),
+        "image" => div()
+            .px_2()
+            .py_1()
+            .rounded(px(6.0))
+            .border_1()
+            .border_color(colors.border)
+            .text_size(px(11.5))
+            .text_color(colors.muted_foreground)
+            .child("[image]")
+            .into_any_element(),
+        other => div()
+            .text_size(px(13.0))
+            .text_color(colors.muted_foreground)
+            .child(format!("[{other}]"))
+            .into_any_element(),
     }
-    div()
-        .flex()
-        .flex_wrap()
-        .items_center()
-        .text_sm()
-        .text_color(text_color)
-        .children(
-            segments
-                .into_iter()
-                .filter(|segment| !segment.text.is_empty())
-                .map(|segment| match segment.kind {
-                    MathSegmentKind::Text => div().child(segment.text).into_any_element(),
-                    MathSegmentKind::InlineMath | MathSegmentKind::DisplayMath => {
-                        math_span(&segment, colors)
-                    }
-                }),
-        )
-        .into_any_element()
 }
 
 /// The folder under the user data directory that captures land in.
@@ -11800,7 +12641,7 @@ mod tests {
                 div()
                     .w(px(240.0))
                     .debug_selector(|| "math-part".to_string())
-                    .child(transcript_part_element(&part, colors))
+                    .child(transcript_part_element(&part, "assistant", colors))
             },
         );
         let bounds = window.debug_bounds("math-part").expect("part bounds");

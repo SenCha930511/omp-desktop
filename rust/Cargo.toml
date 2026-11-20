@@ -13,6 +13,9 @@ base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
 hmac = "0.12"
+# The transcript's markdown renderer (crates/omp-desktop/src/markdown.rs) reads
+# CommonMark events; the HTML writer and the `pulldown-cmark` binary are not used.
+pulldown-cmark = { version = "0.13", default-features = false }
 rrule = "0.14"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }

@@ -41,6 +41,10 @@ async-channel = "2"
 # The tray icon is derived from the bundled app icon at runtime, so no separate
 # tray asset ships. Only the PNG decoder is needed.
 image = { version = "0.25", default-features = false, features = ["png"] }
+# Assistant transcript text is CommonMark; `src/markdown.rs` turns its events into
+# GPUI elements. Only the parser is used, so the default `html`/`getopts`
+# features (an HTML writer and a CLI) stay off.
+pulldown-cmark.workspace = true
 
 # The terminal panel (src/terminal.rs) runs the user's login shell in a real
 # pseudo terminal and parses its ANSI output into a screen buffer. `portable-pty`
