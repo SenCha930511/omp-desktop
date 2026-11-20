@@ -2060,12 +2060,15 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(page.locator('.transcript .user-bubble')).toHaveCount(0)
     expect(existsSync(join(fixtureRoot, 'prompt-args.json'))).toBe(false)
 
+    await composer.fill('first prompt after the side-question hint')
+    await composer.press('Enter')
     // A real prompt starts the session its daemon created; the sidebar row
-    // appears only after admission.
+    // appears only after admission and the hint is covered by the turn.
     await expect(page.locator('.conversation-hint')).toHaveCount(0)
     await expect(page.locator('.session-row-wrap.is-placeholder')).toHaveCount(0)
     await expect(page.locator('.session-row-wrap.is-selected')).toHaveCount(1)
-    await expect(page.locator('.transcript .user-bubble').filter({ hasText: '/modelpreset list' })).toHaveCount(0)
+    await expect.poll(() => existsSync(join(fixtureRoot, 'prompt-args.json'))).toBe(true)
+    expect(JSON.parse(readFileSync(join(fixtureRoot, 'prompt-args.json'), 'utf8'))).toMatchObject({ message: 'first prompt after the side-question hint' })
   })
 
   test('starts the session on the first prompt and selects its row', async () => {
@@ -2338,7 +2341,7 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(page.getByTitle('New session (⌘N)')).toHaveCount(2)
     await expect(page.getByTitle('Add project')).toHaveCount(1)
     await expect(projectRow.getByTitle('New session in Multi-folder fixture')).toHaveCount(1)
-    await expect(page.getByTitle('Delete Hermetic desktop fixture')).toHaveCount(1)
+    await expect(page.locator('.project-group').getByTitle('Delete Hermetic desktop fixture')).toHaveCount(1)
 
     await app!.evaluate(() => {
       ;(globalThis as { __e2eMenuChoice?: string }).__e2eMenuChoice = 'remove'
