@@ -1,11 +1,14 @@
 import { constants as fsConstants, readdirSync, statSync } from 'node:fs'
 import { access, readdir } from 'node:fs/promises'
 import { delimiter, posix, win32 } from 'node:path'
-import { spawn, type ChildProcess } from 'node:child_process'
+import { execFile, spawn, type ChildProcess } from 'node:child_process'
 import { homedir } from 'node:os'
+import { promisify } from 'node:util'
 import { createAdmissionQueue } from './lib/async'
 import type { HarnessDescriptor } from './harness'
 import type { ProcessFailureReason, ProcessOutcome } from '../../src/types/api'
+
+const execFileAsync = promisify(execFile)
 
 export interface ProcessResult {
   code: number
@@ -106,6 +109,30 @@ function runWindowsTaskkill(pid: number): Promise<void> {
     child.once('error', finish)
     child.once('close', finish)
   })
+}
+
+/**
+ * Snapshot of every live descendant of `rootPid`. Shell children can detach
+ * from the process group, so callers signal this list alongside the group.
+ * Windows has no portable `ps`, so it resolves empty there.
+ */
+export async function processTree(rootPid: number): Promise<number[]> {
+  if (process.platform === 'win32') return []
+  let output = ''
+  try {
+    const result = await execFileAsync('/bin/ps', ['-axo', 'pid=,ppid='], { encoding: 'utf8', timeout: 2_000, maxBuffer: 4 * 1024 * 1024 })
+    output = result.stdout
+  } catch { return [] }
+  const children = new Map<number, number[]>()
+  for (const line of output.split('\n')) {
+    const [pidValue, parentValue] = line.trim().split(/\s+/).map(Number)
+    if (!Number.isSafeInteger(pidValue) || !Number.isSafeInteger(parentValue)) continue
+    const entries = children.get(parentValue) ?? []; entries.push(pidValue); children.set(parentValue, entries)
+  }
+  const descendants: number[] = []
+  const visit = (pid: number) => { for (const child of children.get(pid) ?? []) { visit(child); descendants.push(child) } }
+  visit(rootPid)
+  return descendants
 }
 
 /**

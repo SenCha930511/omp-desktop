@@ -1,6 +1,6 @@
 import { IPC_CHANNELS, type IpcChannel } from '../../src/types/ipc'
 import { contextBridge, ipcRenderer } from 'electron'
-import type { AgentBrowserActivityEvent, AgentBrowserPointerEvent, AgentBrowserState, AppUpdateState, HarnessUpdateState, PrimeEventEnvelope, DesktopApi, ScheduleChangeEvent, SessionChangeEvent, TerminalDataEvent, TerminalExitEvent } from '../../src/types/api'
+import type { AgentBrowserActivityEvent, AgentBrowserPointerEvent, AgentBrowserState, AppUpdateState, HarnessUpdateState, PrimeEventEnvelope, DesktopApi, ProjectScriptExitEvent, ProjectScriptOutputEvent, ScheduleChangeEvent, SessionChangeEvent, TerminalDataEvent, TerminalExitEvent } from '../../src/types/api'
 
 function subscribe<T>(channel: IpcChannel, callback: (payload: T) => void): () => void {
   if (typeof callback !== 'function') throw new TypeError('callback must be a function')
@@ -113,6 +113,12 @@ const api: DesktopApi = {
     kill: (terminalId) => invoke(IPC_CHANNELS.terminal.kill, terminalId),
     onData: (callback) => subscribe<TerminalDataEvent>(IPC_CHANNELS.terminal.onData, callback),
     onExit: (callback) => subscribe<TerminalExitEvent>(IPC_CHANNELS.terminal.onExit, callback),
+  },
+  projectScripts: {
+    start: (options) => invoke(IPC_CHANNELS.projectScripts.start, options),
+    stop: (runId) => invoke(IPC_CHANNELS.projectScripts.stop, runId),
+    onOutput: (callback) => subscribe<ProjectScriptOutputEvent>(IPC_CHANNELS.projectScripts.onOutput, callback),
+    onExit: (callback) => subscribe<ProjectScriptExitEvent>(IPC_CHANNELS.projectScripts.onExit, callback),
   },
   git: {
     status: (cwd) => invoke(IPC_CHANNELS.git.status, cwd),

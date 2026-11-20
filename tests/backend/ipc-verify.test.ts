@@ -37,6 +37,7 @@ function services(): Record<string, unknown> {
     sessions: { ...serviceStub(), onDidChange: vi.fn(() => () => undefined) },
     agents: serviceStub(),
     terminals: { ...serviceStub(), input: vi.fn(), killOwner: vi.fn(async () => undefined) },
+    projectScripts: { ...serviceStub(), killOwner: vi.fn(async () => undefined), killForSession: vi.fn(async () => undefined) },
     git: serviceStub(),
     plugins: serviceStub(),
     providers: serviceStub(),

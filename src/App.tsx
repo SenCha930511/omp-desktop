@@ -117,14 +117,12 @@ interface TerminalSessionMount {
   initialCommand?: { id: string; command: string; label: string; onExit(exitCode: number): void }
 }
 interface ActiveProjectScriptRun {
-  requestId: string
+  /** Renderer-chosen id, so exit events match even before `start` resolves. */
+  runId: string
   projectId: string
   kind: ProjectScriptKind
   command: string
   harness: HarnessId
-  drawerId?: string
-  tabId?: string
-  ownsDrawer: boolean
 }
 type ProjectScriptRunOutcome = { cancelled: true } | { exitCode: number }
 
@@ -366,7 +364,6 @@ export default function App() {
     : `${activeProject?.id ?? 'no-project'}:new:${workspace.workspaceGeneration}`
   const activeTerminalSessionPath = workspace.runtime?.sessionFile ?? activeSession?.filePath
   const [terminalSessions, setTerminalSessions] = useState<TerminalSessionMount[]>([])
-  const [terminalDrawerRevision, setTerminalDrawerRevision] = useState(0)
   const activeTerminalSession = useMemo(
     () => terminalSessions.find((terminal) => terminal.workspaceKey === terminalSessionKey || Boolean(activeTerminalSessionPath && terminal.sessionPath === activeTerminalSessionPath)),
     [activeTerminalSessionPath, terminalSessionKey, terminalSessions],
@@ -631,7 +628,7 @@ export default function App() {
   }, [])
   const finishProjectScriptRun = useCallback(
     (run: ActiveProjectScriptRun, outcome: ProjectScriptRunOutcome) => {
-      if (activeProjectScriptRunRef.current?.requestId !== run.requestId) return
+      if (activeProjectScriptRunRef.current?.runId !== run.runId) return
       activeProjectScriptRunRef.current = undefined
       setActiveProjectScriptRun(undefined)
       if ('cancelled' in outcome) return
@@ -658,6 +655,16 @@ export default function App() {
     },
     [bridge, patchProjectScripts, reportError, t],
   )
+  // The headless runner reports one exit per run; a stop already cleared the
+  // run, so a cancelled outcome for a known run only clears it.
+  useEffect(() => {
+    if (!bridge) return
+    return bridge.projectScripts.onExit((event) => {
+      const run = activeProjectScriptRunRef.current
+      if (!run || run.runId !== event.runId) return
+      finishProjectScriptRun(run, event.cancelled ? { cancelled: true } : { exitCode: event.exitCode })
+    })
+  }, [bridge, finishProjectScriptRun])
 
   // 使用即最近:開啟 session 的時間戳(僅記憶體),側欄據此把剛使用的
   // session 排到所屬群組最上面,所屬專案也會跳到「最近活動」排序頂端。
@@ -735,9 +742,6 @@ export default function App() {
     refreshSchedules,
     resetBrowserView: () => setBrowserGeneration((value) => value + 1),
     closeTerminalForSession: (sessionPath) => {
-      const removed = terminalSessions.find((terminal) => terminal.sessionPath === sessionPath)
-      const projectRun = activeProjectScriptRunRef.current
-      if (removed && projectRun?.drawerId === removed.id) finishProjectScriptRun(projectRun, { cancelled: true })
       setTerminalSessions((current) => current.filter((terminal) => terminal.sessionPath !== sessionPath))
     },
     clearSessionAttention,
@@ -868,13 +872,11 @@ export default function App() {
 
   const closeTerminal = useCallback(
     (id: string) => {
-      const projectRun = activeProjectScriptRunRef.current
-      if (projectRun?.drawerId === id) finishProjectScriptRun(projectRun, { cancelled: true })
       terminalDrawerRefs.current.delete(id)
       setTerminalSessions((current) => current.filter((terminal) => terminal.id !== id))
       if (activeTerminalSession?.id === id) setTerminalSelection(undefined)
     },
-    [activeTerminalSession?.id, finishProjectScriptRun],
+    [activeTerminalSession?.id],
   )
   const toggleTerminal = useCallback(async () => {
     if (activeTerminalSession) {
@@ -1041,6 +1043,13 @@ export default function App() {
       if (!bridge || !activeProject || !activeCwd) throw new Error('Project scripts are available in the desktop app for an active project.')
       if (activeProjectScriptRunRef.current || projectScriptStartingRef.current) throw new ProjectScriptBusyError()
       projectScriptStartingRef.current = true
+      const run: ActiveProjectScriptRun = {
+        runId: crypto.randomUUID(),
+        projectId: activeProject.id,
+        harness: activeProject.harness,
+        kind,
+        command: '',
+      }
       try {
         const project = activeProject.inferred ? await grantProject(activeProject) : activeProject
         const command = project.scripts?.[kind]?.trim() ?? ''
@@ -1049,39 +1058,32 @@ export default function App() {
           const scripts = await bridge.projects.markSetupStarted(project.id, command, project.harness)
           patchProjectScripts(project.id, scripts)
         }
-        const run: ActiveProjectScriptRun = { requestId: crypto.randomUUID(), projectId: project.id, harness: project.harness, kind, command, ownsDrawer: false }
-        const existing = terminalSessions.find((terminal) => terminal.workspaceKey === terminalSessionKey || Boolean(activeTerminalSessionPath && terminal.sessionPath === activeTerminalSessionPath))
-        if (existing) {
-          const pending = { ...run, drawerId: existing.id, ownsDrawer: false }
-          activeProjectScriptRunRef.current = pending
-          setActiveProjectScriptRun(pending)
-        } else {
-          const drawerId = crypto.randomUUID()
-          const tabId = crypto.randomUUID()
-          const started = { ...run, drawerId, tabId, ownsDrawer: true }
-          activeProjectScriptRunRef.current = started
-          setActiveProjectScriptRun(started)
-          setTerminalSessions((current) => [
-            ...current,
-            {
-              id: drawerId,
-              workspaceKey: terminalSessionKey,
-              cwd: activeCwd,
-              sessionPath: activeTerminalSessionPath,
-              initialCommand: {
-                id: tabId,
-                command,
-                label: kind === 'setup' ? 'Setup' : 'Run',
-                onExit: (exitCode) => finishProjectScriptRun(started, exitCode === undefined ? { cancelled: true } : { exitCode }),
-              },
-            },
-          ])
+        const started = { ...run, projectId: project.id, harness: project.harness, command }
+        activeProjectScriptRunRef.current = started
+        setActiveProjectScriptRun(started)
+        await bridge.projectScripts.start({
+          runId: started.runId,
+          projectId: started.projectId,
+          kind,
+          cwd: activeCwd,
+          command,
+          sessionPath: activeTerminalSessionPath,
+        })
+        if (activeProjectScriptRunRef.current?.runId !== started.runId) {
+          // Stopped while the main process was authorizing and spawning.
+          await bridge.projectScripts.stop(started.runId).catch(() => undefined)
         }
+      } catch (error) {
+        if (activeProjectScriptRunRef.current?.runId === run.runId) {
+          activeProjectScriptRunRef.current = undefined
+          setActiveProjectScriptRun(undefined)
+        }
+        throw error
       } finally {
         projectScriptStartingRef.current = false
       }
     },
-    [activeCwd, activeProject, activeTerminalSessionPath, bridge, finishProjectScriptRun, grantProject, patchProjectScripts, terminalSessionKey, terminalSessions],
+    [activeCwd, activeProject, activeTerminalSessionPath, bridge, grantProject, patchProjectScripts],
   )
   const saveProjectScripts = useCallback(
     async (scripts: { setup: string; run: string }) => {
@@ -1094,38 +1096,18 @@ export default function App() {
   )
   const stopProjectScript = useCallback(() => {
     const run = activeProjectScriptRunRef.current
-    if (!run) return
+    if (!run || !bridge) return
     finishProjectScriptRun(run, { cancelled: true })
-    if (!run.drawerId || !run.tabId) return
-    const drawer = terminalDrawerRefs.current.get(run.drawerId)
-    if (drawer) drawer.stopCommand(run.tabId)
-    else setTerminalSessions((current) => current.filter((terminal) => terminal.id !== run.drawerId))
-  }, [finishProjectScriptRun])
+    void bridge.projectScripts.stop(run.runId).catch(reportError)
+  }, [bridge, finishProjectScriptRun, reportError])
+  // The run is headless, so leaving the thread view must still stop it.
   useEffect(() => {
     if (view === 'session') return
     const run = activeProjectScriptRunRef.current
-    if (!run) return
+    if (!run || !bridge) return
     finishProjectScriptRun(run, { cancelled: true })
-    if (!run.drawerId) return
-    const drawer = terminalDrawerRefs.current.get(run.drawerId)
-    if (!run.ownsDrawer && drawer && run.tabId) drawer.stopCommand(run.tabId)
-    if (run.ownsDrawer) setTerminalSessions((current) => current.filter((terminal) => terminal.id !== run.drawerId))
-  }, [finishProjectScriptRun, view])
-  useEffect(() => {
-    const run = activeProjectScriptRun
-    if (!run || run.tabId || !run.drawerId) return
-    const drawer = terminalDrawerRefs.current.get(run.drawerId)
-    if (!drawer) return
-    try {
-      const tabId = drawer.runCommand(run.command, run.kind === 'setup' ? 'Setup' : 'Run', (exitCode) => finishProjectScriptRun(run, exitCode === undefined ? { cancelled: true } : { exitCode }))
-      const started = { ...run, tabId }
-      activeProjectScriptRunRef.current = started
-      setActiveProjectScriptRun(started)
-    } catch (error) {
-      finishProjectScriptRun(run, { cancelled: true })
-      reportError(error)
-    }
-  }, [activeProjectScriptRun, finishProjectScriptRun, reportError, terminalDrawerRevision])
+    void bridge.projectScripts.stop(run.runId).catch(reportError)
+  }, [bridge, finishProjectScriptRun, reportError, view])
   useEffect(() => {
     const scripts = activeProject?.scripts
     if (!activeProject || !scripts || !setupNeedsRun(scripts) || activeProjectScriptRunRef.current) return
@@ -1651,7 +1633,6 @@ export default function App() {
                           onError={reportError}
                           onInitialCommandConsumed={() => setTerminalSessions((current) => current.map((item) => (item.id === terminal.id ? { ...item, initialCommand: undefined } : item)))}
                           onOpenLink={openTerminalLink}
-                          onReady={() => setTerminalDrawerRevision((revision) => revision + 1)}
                           onSelectionChange={(selection) => {
                             if (terminal.id === activeTerminalSession?.id) setTerminalSelection(selection)
                           }}

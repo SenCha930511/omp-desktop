@@ -1,9 +1,9 @@
 import { CheckCircle2, ChevronDown, CircleAlert, LoaderCircle, Play, RotateCcw, Square } from 'lucide-react'
 import { useEffect, useId, useRef, useState } from 'react'
 import { useI18n } from '@/lib/i18n'
-import type { ProjectRecord } from '@/types/api'
+import type { ProjectRecord, ProjectScriptKind } from '@/types/api'
 
-export type ProjectScriptKind = 'setup' | 'run'
+export type { ProjectScriptKind }
 
 interface ProjectRunControlProps {
   project: ProjectRecord

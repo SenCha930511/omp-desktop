@@ -1,5 +1,11 @@
 import type { DesktopApi } from './api'
 
+/**
+ * The project-script bridge keeps its camelCase domain name but uses the
+ * kebab-case wire namespace, so the contract below stays exact.
+ */
+type WireNamespace<Domain extends keyof DesktopApi> = Domain extends 'projectScripts' ? 'project-scripts' : Domain
+
 /** Fixed channel names shared by main and preload; every bridge member must have an entry. */
 export const IPC_CHANNELS = {
   app: {
@@ -83,6 +89,12 @@ export const IPC_CHANNELS = {
     onData: 'terminal:data',
     onExit: 'terminal:exit',
   },
+  projectScripts: {
+    start: 'project-scripts:start',
+    stop: 'project-scripts:stop',
+    onOutput: 'project-scripts:output',
+    onExit: 'project-scripts:exit',
+  },
   git: {
     status: 'git:status',
     diff: 'git:diff',
@@ -128,6 +140,6 @@ export const IPC_CHANNELS = {
     runNow: 'schedules:run-now',
     onChanged: 'schedules:changed',
   },
-} as const satisfies { [Domain in keyof DesktopApi]: { [Method in keyof DesktopApi[Domain]]: `${Domain}:${string}` } }
+} as const satisfies { [Domain in keyof DesktopApi]: { [Method in keyof DesktopApi[Domain]]: `${WireNamespace<Domain>}:${string}` } }
 
 export type IpcChannel = { [Domain in keyof typeof IPC_CHANNELS]: typeof IPC_CHANNELS[Domain][keyof typeof IPC_CHANNELS[Domain]] }[keyof typeof IPC_CHANNELS]

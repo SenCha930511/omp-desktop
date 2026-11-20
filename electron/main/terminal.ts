@@ -1,14 +1,12 @@
 import { IPC_CHANNELS } from '../../src/types/ipc'
 import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { basename, isAbsolute, join } from 'node:path'
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
 import { randomUUID } from 'node:crypto'
 import type { WebContents } from 'electron'
 import * as pty from 'node-pty'
 import type { TerminalActiveContext, TerminalDataEvent, TerminalExitEvent } from '../../src/types/api'
 import type { WorkspaceUseLease, WorkspaceUseOwner } from './repository-use-gate'
-import { killProcessTree, safeChildEnvironment } from './process-utils'
+import { killProcessTree, processTree, safeChildEnvironment } from './process-utils'
 import { canonicalSessionPath } from './session-paths'
 import { isPathWithin, rejectUnknownKeys, requireInteger, requireRecord, requireString } from './validation'
 
@@ -60,28 +58,6 @@ const MAX_TERMINAL_IPC_CHUNK_BYTES = 1024 * 1024
 export const TERMINAL_OUTPUT_HIGH_WATER = 256 * 1024
 const TERMINAL_OUTPUT_LOW_WATER = 64 * 1024
 const MAX_TERMINAL_CONTEXT_CHARS = 48 * 1024
-
-const execFileAsync = promisify(execFile)
-
-async function processTree(rootPid: number): Promise<number[]> {
-  if (process.platform === 'win32') return []
-  let output = ''
-  try {
-    const result = await execFileAsync('/bin/ps', ['-axo', 'pid=,ppid='], { encoding: 'utf8', timeout: 2_000, maxBuffer: 4 * 1024 * 1024 })
-    output = result.stdout
-  } catch { return [] }
-  const children = new Map<number, number[]>()
-  for (const line of output.split('\n')) {
-    const [pidValue, parentValue] = line.trim().split(/\s+/).map(Number)
-    if (!Number.isSafeInteger(pidValue) || !Number.isSafeInteger(parentValue)) continue
-    const entries = children.get(parentValue) ?? []; entries.push(pidValue); children.set(parentValue, entries)
-  }
-  const descendants: number[] = []
-  const visit = (pid: number) => { for (const child of children.get(pid) ?? []) { visit(child); descendants.push(child) } }
-  visit(rootPid)
-  return descendants
-}
-
 function shellArguments(shell: string, command?: string): string[] {
   if (process.platform !== 'win32') return command === undefined ? ['-l'] : ['-lc', command]
   const name = basename(shell).toLowerCase()
