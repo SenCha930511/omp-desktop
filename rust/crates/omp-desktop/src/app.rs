@@ -34,7 +34,7 @@ use omp_core::state::{
     CURRENT_DESKTOP_STATE_FILENAME, LEGACY_DESKTOP_STATE_FILENAME, NotificationRecord, Platform,
     StateStore,
 };
-use omp_core::turn_changes::{TurnBaseline, TurnChanges, compute_turn_changes};
+use omp_core::turn_changes::{TurnBaseline, TurnChanges, TurnFileKind, compute_turn_changes};
 use serde_json::{Value, json};
 
 #[path = "browser.rs"]
@@ -120,6 +120,44 @@ impl RightPane {
             "activity" => RightPane::Activity,
             _ => return None,
         })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum TurnUndoTarget {
+    WholeTurn,
+    File(String),
+}
+
+/// Expansion, dismissal and confirmation are mutually exclusive: a dismissed
+/// card cannot regain an expander through a redraw, and only this state can
+/// authorize the destructive Undo action.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+enum TurnCardState {
+    #[default]
+    Collapsed,
+    Expanded,
+    Dismissed,
+    ConfirmingUndo {
+        target: TurnUndoTarget,
+    },
+}
+
+impl TurnCardState {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Collapsed => "collapsed",
+            Self::Expanded => "expanded",
+            Self::Dismissed => "dismissed",
+            Self::ConfirmingUndo { .. } => "confirmingUndo",
+        }
+    }
+
+    fn undo_target(&self) -> Option<&TurnUndoTarget> {
+        match self {
+            Self::ConfirmingUndo { target } => Some(target),
+            _ => None,
+        }
     }
 }
 
@@ -1007,6 +1045,9 @@ pub struct Workspace {
     project_menu: Option<String>,
     turn_changes: TurnChanges,
     turn_baseline: Option<TurnBaseline>,
+    turn_card: TurnCardState,
+    turn_card_error: Option<String>,
+    review_focus_path: Option<String>,
     review_status: Option<GitStatus>,
     review_error: Option<String>,
     last_bounds: Option<(f32, f32, f32, f32)>,
@@ -1259,6 +1300,9 @@ impl Workspace {
             project_menu: None,
             turn_changes: TurnChanges::default(),
             turn_baseline: None,
+            turn_card: TurnCardState::default(),
+            turn_card_error: None,
+            review_focus_path: None,
             review_status: None,
             review_error: None,
             last_bounds: None,
@@ -2108,6 +2152,7 @@ impl Workspace {
                 "density": self.settings.conversation_density,
                 // The persisted model selection the composer footer reads.
                 "selectedModel": selected_model,
+                "showFileChangesPopup": self.settings.show_file_changes_popup,
             },
             // The Settings picker: the bounded catalog list, the provider
             // chips that filter it, the selection it highlights, and a load
@@ -2206,7 +2251,8 @@ impl Workspace {
                 "tabs": self.browser.tab_count(),
                 "activeTab": self.browser.active_tab(),
             },
-            "review": {
+                       "review": {
+                "selectedPath": self.review_focus_path,
                 "status": self.review_status,
                 "error": self.review_error,
             },
@@ -2266,6 +2312,17 @@ impl Workspace {
         });
         // The render's breakpoint decision and whether the compact layout is
         // drawing the right pane as an overlay over the transcript.
+        snapshot["turnCard"] = json!({
+            "state": self.turn_card.name(),
+            "visible": self.turn_card_visible(),
+            "baselinePending": self.turn_baseline.is_some(),
+            "changes": self.turn_changes,
+            "undoTarget": self.turn_card.undo_target().map(|target| match target {
+                TurnUndoTarget::WholeTurn => json!({ "kind": "wholeTurn" }),
+                TurnUndoTarget::File(path) => json!({ "kind": "file", "path": path }),
+            }),
+            "error": self.turn_card_error,
+        });
         snapshot["compactLayout"] = json!(self.compact_layout);
         snapshot["detailsOpen"] =
             json!(self.compact_layout && self.active_drawer == Some(CollapsedPane::RightPane));
@@ -4130,8 +4187,7 @@ impl Workspace {
         self.running = false;
         self.queued_follow_ups.clear();
         self.runtime_error = None;
-        self.turn_baseline = None;
-        self.turn_changes = TurnChanges::default();
+        self.clear_turn_state();
         // The dial reports the session it was read from, never the previous one.
         self.context_usage = None;
         // The mention list is a view of this catalog, so a switch closes it
@@ -4313,8 +4369,7 @@ impl Workspace {
                 self.clear_transcript();
                 // The session that reported the window is gone with its project.
                 self.context_usage = None;
-                self.turn_baseline = None;
-                self.turn_changes = TurnChanges::default();
+                self.clear_turn_state();
                 self.terminal_specs.remove(&session_id);
                 self.terminals.clear();
                 self.terminal_tasks.clear();
@@ -4407,8 +4462,7 @@ impl Workspace {
         self.transcript_at_bottom = true;
         self.transcript_error = None;
         self.runtime_error = None;
-        self.turn_baseline = None;
-        self.turn_changes = TurnChanges::default();
+        self.clear_turn_state();
         // A new session's window starts empty; nothing carries over from the
         // session it replaced.
         self.context_usage = None;
@@ -5394,9 +5448,9 @@ impl Workspace {
         // behind the running turn instead of rejecting the prompt. Ctrl+Enter
         // asks for the same queue on an idle turn.
         let queued = follow_up || self.running;
-        if !queued && self.turn_baseline.is_none() {
-            self.turn_changes = TurnChanges::default();
-            self.turn_baseline = self.capture_turn_baseline();
+        let begin_new_turn = !self.running && self.turn_baseline.is_none();
+        if begin_new_turn {
+            self.begin_turn();
         }
         // An attachment rides with both a prompt and a follow-up: the harness
         // reads `images` on either, and a queued turn must not lose its image
@@ -5419,7 +5473,7 @@ impl Workspace {
             Ok(response) => {
                 // A queued send never starts a turn, so the running turn keeps
                 // its baseline; only a rejected prompt drops the new one.
-                if !queued {
+                if !queued || begin_new_turn {
                     self.turn_baseline = None;
                 }
                 let message = response
@@ -5439,7 +5493,7 @@ impl Workspace {
                 return;
             }
             Err(error) => {
-                if !queued {
+                if !queued || begin_new_turn {
                     self.turn_baseline = None;
                 }
                 // A follow-up is never retried as a prompt: a harness that
@@ -5915,6 +5969,27 @@ impl Workspace {
             })
     }
 
+    fn clear_turn_state(&mut self) {
+        self.turn_baseline = None;
+        self.turn_changes = TurnChanges::default();
+        self.turn_card = TurnCardState::default();
+        self.turn_card_error = None;
+        self.review_focus_path = None;
+    }
+
+    /// An idle prompt or follow-up gets a fresh baseline; an already-running turn keeps one.
+    /// The parity harness edits between this capture and `finish_turn` rather than substituting data.
+    pub fn begin_turn(&mut self) {
+        self.clear_turn_state();
+        self.turn_baseline = self.capture_turn_baseline();
+    }
+
+    fn turn_card_visible(&self) -> bool {
+        !self.turn_changes.is_empty()
+            && self.settings.show_file_changes_popup
+            && self.turn_card != TurnCardState::Dismissed
+    }
+
     fn capture_turn_baseline(&self) -> Option<TurnBaseline> {
         let store = self.store.as_ref()?;
         let cwd = self.project_cwd()?;
@@ -5923,7 +5998,7 @@ impl Workspace {
         Some(TurnBaseline::capture(files))
     }
 
-    fn finish_turn(&mut self) {
+    pub fn finish_turn(&mut self) {
         let Some(baseline) = self.turn_baseline.take() else {
             return;
         };
@@ -5959,8 +6034,260 @@ impl Workspace {
         }
     }
 
+    pub fn open_turn_review(&mut self, path: Option<&str>, cx: &mut Context<Self>) {
+        self.review_focus_path = path.map(str::to_string);
+        self.set_right_pane("review", cx);
+    }
+
+    pub fn toggle_turn_card(&mut self, cx: &mut Context<Self>) {
+        self.turn_card = match &self.turn_card {
+            TurnCardState::Collapsed => TurnCardState::Expanded,
+            TurnCardState::Expanded => TurnCardState::Collapsed,
+            TurnCardState::Dismissed => TurnCardState::Dismissed,
+            TurnCardState::ConfirmingUndo { target } => TurnCardState::ConfirmingUndo {
+                target: target.clone(),
+            },
+        };
+        cx.notify();
+    }
+
+    pub fn dismiss_turn_card(&mut self, cx: &mut Context<Self>) {
+        self.turn_card = TurnCardState::Dismissed;
+        self.turn_card_error = None;
+        cx.notify();
+    }
+
+    pub fn request_turn_undo(&mut self, path: Option<&str>, cx: &mut Context<Self>) {
+        if self.turn_changes.is_empty() || self.turn_card == TurnCardState::Dismissed {
+            return;
+        }
+        let language = i18n::resolve(self.settings.locale);
+        let target = path.map_or(TurnUndoTarget::WholeTurn, |path| {
+            TurnUndoTarget::File(path.to_string())
+        });
+        let contains_preexisting = match &target {
+            TurnUndoTarget::WholeTurn => self
+                .turn_changes
+                .files
+                .iter()
+                .any(|file| file.kind == TurnFileKind::PreexistingUntracked),
+            TurnUndoTarget::File(path) => self
+                .turn_changes
+                .files
+                .iter()
+                .find(|file| file.path == *path)
+                .is_some_and(|file| file.kind == TurnFileKind::PreexistingUntracked),
+        };
+        if contains_preexisting {
+            self.turn_card = TurnCardState::Expanded;
+            self.turn_card_error =
+                Some(i18n::t(language, "turnChanges.preexistingUntrackedWarning").to_string());
+            cx.notify();
+            return;
+        }
+        if matches!(&target, TurnUndoTarget::File(path) if !self.turn_changes.files.iter().any(|file| file.path == *path))
+        {
+            return;
+        }
+        self.turn_card_error = None;
+        self.turn_card = TurnCardState::ConfirmingUndo { target };
+        cx.notify();
+    }
+
+    pub fn cancel_turn_undo(&mut self, cx: &mut Context<Self>) {
+        if self.turn_card.undo_target().is_some() {
+            self.turn_card = TurnCardState::Expanded;
+            cx.notify();
+        }
+    }
+
+    pub fn confirm_turn_undo(&mut self, cx: &mut Context<Self>) {
+        let Some(target) = self.turn_card.undo_target().cloned() else {
+            return;
+        };
+        let language = i18n::resolve(self.settings.locale);
+        let files = match &target {
+            TurnUndoTarget::WholeTurn => self.turn_changes.files.clone(),
+            TurnUndoTarget::File(path) => self
+                .turn_changes
+                .files
+                .iter()
+                .filter(|file| file.path == *path)
+                .cloned()
+                .collect(),
+        };
+        // Recheck inside the confirmation boundary: no stale state may turn a
+        // pre-existing untracked file into a restore or deletion target.
+        if files
+            .iter()
+            .any(|file| file.kind == TurnFileKind::PreexistingUntracked)
+        {
+            self.turn_card = TurnCardState::Expanded;
+            self.turn_card_error =
+                Some(i18n::t(language, "turnChanges.preexistingUntrackedWarning").to_string());
+            cx.notify();
+            return;
+        }
+        let cwd = self.project_cwd();
+        let Some(store) = self.store.clone().zip(cwd) else {
+            self.turn_card = TurnCardState::Expanded;
+            self.turn_card_error =
+                Some(i18n::t(language, "turnChanges.undoUnavailable").to_string());
+            cx.notify();
+            return;
+        };
+        let (store, cwd) = store;
+        let mut undo_error = None;
+        {
+            let store = store.lock().expect("state lock");
+            for file in &files {
+                let paths = std::slice::from_ref(&file.path);
+                let result = match file.kind {
+                    TurnFileKind::Tracked | TurnFileKind::Removed => {
+                        match git::unstage(&store, Platform::current(), &cwd, paths) {
+                            Ok(true) => git::restore(&store, Platform::current(), &cwd, paths),
+                            Ok(false) => Ok(false),
+                            Err(error) => Err(error),
+                        }
+                    }
+                    TurnFileKind::CreatedUntracked => {
+                        git::remove_untracked(&store, Platform::current(), &cwd, &file.path)
+                    }
+                    TurnFileKind::PreexistingUntracked => unreachable!("filtered above"),
+                };
+                match result {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        undo_error = Some(format!(
+                            "{} {}",
+                            i18n::t(language, "turnChanges.undoRejected"),
+                            file.path
+                        ));
+                        break;
+                    }
+                    Err(error) => {
+                        undo_error = Some(error.message);
+                        break;
+                    }
+                }
+            }
+        }
+        if let Some(error) = undo_error {
+            self.turn_card = TurnCardState::Expanded;
+            self.turn_card_error = Some(error);
+        } else {
+            match target {
+                TurnUndoTarget::WholeTurn => self.turn_changes = TurnChanges::default(),
+                TurnUndoTarget::File(path) => {
+                    if let Some(index) = self
+                        .turn_changes
+                        .files
+                        .iter()
+                        .position(|file| file.path == path)
+                    {
+                        let removed = self.turn_changes.files.remove(index);
+                        self.turn_changes.additions = self
+                            .turn_changes
+                            .additions
+                            .saturating_sub(removed.additions);
+                        self.turn_changes.deletions = self
+                            .turn_changes
+                            .deletions
+                            .saturating_sub(removed.deletions);
+                    }
+                }
+            }
+            self.turn_card = if self.turn_changes.is_empty() {
+                TurnCardState::Collapsed
+            } else {
+                TurnCardState::Expanded
+            };
+            self.turn_card_error = None;
+            self.review_focus_path = None;
+        }
+        self.refresh_review();
+        cx.notify();
+    }
+
     fn turn_changes_card(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.theme().colors;
+        let expanded = matches!(
+            self.turn_card,
+            TurnCardState::Expanded | TurnCardState::ConfirmingUndo { .. }
+        );
+        let confirmation = self.turn_card.undo_target().cloned();
+        let file_rows: Vec<AnyElement> = self
+            .turn_changes
+            .files
+            .iter()
+            .enumerate()
+            .map(|(index, file)| {
+                let path = file.path.clone();
+                let source = match file.kind {
+                    TurnFileKind::Tracked => self.t("turnChanges.trackedSource"),
+                    TurnFileKind::CreatedUntracked => self.t("turnChanges.createdSource"),
+                    TurnFileKind::PreexistingUntracked => self.t("turnChanges.preexistingSource"),
+                    TurnFileKind::Removed => self.t("turnChanges.removedSource"),
+                };
+                let can_undo = file.kind != TurnFileKind::PreexistingUntracked;
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_2()
+                    .py_1()
+                    .child(
+                        div()
+                            .id(format!("turn-file-{index}"))
+                            .aria_label(self.t("turnChanges.openFileInReview"))
+                            .text_sm()
+                            .text_color(colors.foreground)
+                            .child(path.clone())
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.open_turn_review(Some(&path), cx);
+                            }))
+                            .test_support(),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(10.0))
+                            .text_color(colors.muted_foreground)
+                            .child(source),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(colors.success)
+                            .child(format!("+{}", file.additions)),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(colors.danger)
+                            .child(format!("-{}", file.deletions)),
+                    )
+                    .when(can_undo, |element| {
+                        let path = file.path.clone();
+                        element.child(
+                            div()
+                                .id(format!("turn-file-undo-{index}"))
+                                .aria_label(self.t("turnChanges.undoFile"))
+                                .px_2()
+                                .rounded(px(6.0))
+                                .border_1()
+                                .border_color(colors.border)
+                                .text_xs()
+                                .child(self.t("turnChanges.undo"))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.request_turn_undo(Some(&path), cx);
+                                }))
+                                .test_support(),
+                        )
+                    })
+                    .into_any_element()
+            })
+            .collect();
         div()
             .mx_6()
             .mb_2()
@@ -5971,50 +6298,169 @@ impl Workspace {
             .border_color(colors.border)
             .bg(colors.background)
             .flex()
-            .items_center()
-            .gap_2()
+            .flex_col()
+            .gap_1()
             .child(
                 div()
-                    .text_xs()
-                    .text_color(colors.foreground)
-                    .child(format!("{} file(s) changed", self.turn_changes.files.len())),
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .id("turn-card-toggle")
+                            .aria_label(if expanded {
+                                self.t("turnChanges.collapse")
+                            } else {
+                                self.t("turnChanges.expand")
+                            })
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .text_xs()
+                            .text_color(colors.foreground)
+                            .child(format!(
+                                "{} {}",
+                                self.turn_changes.files.len(),
+                                self.t("turnChanges.filesChanged")
+                            ))
+                            .child(
+                                div()
+                                    .text_color(colors.success)
+                                    .child(format!("+{}", self.turn_changes.additions)),
+                            )
+                            .child(
+                                div()
+                                    .text_color(colors.danger)
+                                    .child(format!("-{}", self.turn_changes.deletions)),
+                            )
+                            .child(if expanded { "⌄" } else { ">" })
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_turn_card(cx)))
+                            .test_support(),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .id("turn-review")
+                            .aria_label(self.t("turnChanges.reviewAria"))
+                            .px_2()
+                            .py_0p5()
+                            .rounded(px(6.0))
+                            .border_1()
+                            .border_color(colors.border)
+                            .text_xs()
+                            .text_color(colors.foreground)
+                            .child(format!("📄+ {}", self.t("rightPane.review")))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.open_turn_review(None, cx);
+                            }))
+                            .test_support(),
+                    )
+                    .child(
+                        div()
+                            .id("turn-dismiss")
+                            .aria_label(self.t("turnChanges.dismiss"))
+                            .px_1()
+                            .text_sm()
+                            .text_color(colors.muted_foreground)
+                            .child("×")
+                            .on_click(cx.listener(|this, _, _, cx| this.dismiss_turn_card(cx)))
+                            .test_support(),
+                    ),
             )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(colors.success)
-                    .child(format!("+{}", self.turn_changes.additions)),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(colors.danger)
-                    .child(format!("-{}", self.turn_changes.deletions)),
-            )
-            .child(div().flex_1())
-            .child(
-                div()
-                    .id("turn-review")
-                    .aria_label("Review this turn's changes")
-                    .px_2()
-                    .py_0p5()
-                    .rounded(px(6.0))
-                    .border_1()
-                    .border_color(colors.border)
-                    .text_xs()
-                    .text_color(colors.foreground)
-                    .child("📄+ Review")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.right_pane = RightPane::Review;
-                        this.geometry.right_pane_open = true;
-                        if let Some(bounds) = this.last_bounds {
-                            this.layout = this.geometry.resolve(bounds.2 as f64);
-                        }
-                        this.resize_terminal();
-                        this.refresh_review();
-                        cx.notify();
-                    })),
-            )
+            .when(expanded, |element| {
+                element.children(file_rows).child(
+                    div().pt_1().child(
+                        div()
+                            .id("turn-undo")
+                            .aria_label(self.t("turnChanges.undoTurn"))
+                            .px_2()
+                            .py_0p5()
+                            .rounded(px(6.0))
+                            .border_1()
+                            .border_color(colors.border)
+                            .text_xs()
+                            .text_color(colors.danger)
+                            .child(self.t("turnChanges.undoTurn"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.request_turn_undo(None, cx);
+                            }))
+                            .test_support(),
+                    ),
+                )
+            })
+            .when_some(confirmation, |element, target| {
+                element.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .p_2()
+                        .rounded(px(6.0))
+                        .border_1()
+                        .border_color(colors.danger)
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(colors.foreground)
+                                .child(match target {
+                                    TurnUndoTarget::WholeTurn => {
+                                        self.t("turnChanges.undoTurn").to_string()
+                                    }
+                                    TurnUndoTarget::File(path) => path,
+                                }),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(colors.danger)
+                                .child(self.t("turnChanges.undoWarning")),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .id("turn-undo-cancel")
+                                        .px_2()
+                                        .py_0p5()
+                                        .rounded(px(6.0))
+                                        .border_1()
+                                        .border_color(colors.border)
+                                        .text_xs()
+                                        .child(self.t("common.cancel"))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.cancel_turn_undo(cx);
+                                        }))
+                                        .test_support(),
+                                )
+                                .child(
+                                    div()
+                                        .id("turn-undo-confirm")
+                                        .px_2()
+                                        .py_0p5()
+                                        .rounded(px(6.0))
+                                        .bg(colors.danger)
+                                        .text_xs()
+                                        .text_color(colors.primary_foreground)
+                                        .child(self.t("common.confirm"))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.confirm_turn_undo(cx);
+                                        }))
+                                        .test_support(),
+                                ),
+                        ),
+                )
+            })
+            .when_some(self.turn_card_error.clone(), |element, error| {
+                element.child(
+                    div()
+                        .px_2()
+                        .text_xs()
+                        .text_color(colors.danger)
+                        .child(error),
+                )
+            })
     }
 
     fn cycle_effort(&mut self, cx: &mut Context<Self>) {
@@ -9404,6 +9850,7 @@ impl Workspace {
             .children(status.files.iter().map(|file| {
                 let path = file.path.clone();
                 let staged = file.staged;
+                let selected = self.review_focus_path.as_deref() == Some(path.as_str());
                 div()
                     .flex()
                     .items_center()
@@ -9411,6 +9858,7 @@ impl Workspace {
                     .px_2()
                     .py_1()
                     .rounded(px(6.0))
+                    .when(selected, |element| element.bg(colors.accent))
                     .hover(|style| style.bg(colors.accent))
                     .child(
                         div()
@@ -10040,6 +10488,7 @@ impl Workspace {
                 self.active_terminal = 0;
                 self.selected_session = None;
                 self.clear_transcript();
+                self.clear_turn_state();
                 // Nothing is selected any more, so nothing has a window to report.
                 self.context_usage = None;
             }
@@ -11485,7 +11934,7 @@ impl Render for Workspace {
                     .when(self.terminal_open, |element| {
                         element.child(self.terminal_panel(cx))
                     })
-                    .when(!self.turn_changes.is_empty(), |element| {
+                    .when(self.turn_card_visible(), |element| {
                         element.child(self.turn_changes_card(cx))
                     })
                     .child(self.composer(cx)),

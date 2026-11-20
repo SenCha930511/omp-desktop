@@ -106,6 +106,29 @@ fn lookup(language: Language, key: &'static str) -> Option<&'static str> {
             "sidebar.sessionsPlaceholder" => "Search sessions…",
             "rightPane.summary" => "Summary",
             "rightPane.review" => "Review",
+            "turnChanges.filesChanged" => "file(s) changed",
+            "turnChanges.expand" => "Show files changed in this turn",
+            "turnChanges.collapse" => "Hide files changed in this turn",
+            "turnChanges.dismiss" => "Dismiss this turn's changes",
+            "turnChanges.reviewAria" => "Review this turn's changes",
+            "turnChanges.openFileInReview" => "Open this file in Review",
+            "turnChanges.trackedSource" => "Tracked",
+            "turnChanges.createdSource" => "New untracked",
+            "turnChanges.preexistingSource" => "Pre-existing untracked",
+            "turnChanges.removedSource" => "Removed tracked",
+            "turnChanges.undo" => "Undo",
+            "turnChanges.undoFile" => "Undo this file",
+            "turnChanges.undoTurn" => "Undo this turn",
+            "turnChanges.undoWarning" => {
+                "Undo restores tracked files to their last commit and deletes files created during this turn. Other pre-turn dirty changes in those files can be lost."
+            }
+            "turnChanges.preexistingUntrackedWarning" => {
+                "Undo is unavailable because a file was already untracked before the turn. It will not be deleted or restored."
+            }
+            "turnChanges.undoRejected" => "Git could not undo",
+            "turnChanges.undoUnavailable" => {
+                "The repository is unavailable. No files were changed."
+            }
             "rightPane.files" => "Files",
             "rightPane.browser" => "Browser",
             "rightPane.sideQuestion" => "Side Question",
@@ -224,6 +247,27 @@ fn lookup(language: Language, key: &'static str) -> Option<&'static str> {
             "sidebar.sessionsPlaceholder" => "搜尋工作階段…",
             "rightPane.summary" => "摘要",
             "rightPane.review" => "變更",
+            "turnChanges.filesChanged" => "個檔案變更",
+            "turnChanges.expand" => "顯示本回合變更的檔案",
+            "turnChanges.collapse" => "隱藏本回合變更的檔案",
+            "turnChanges.dismiss" => "關閉本回合變更通知",
+            "turnChanges.reviewAria" => "檢視本回合變更",
+            "turnChanges.openFileInReview" => "在變更中開啟此檔案",
+            "turnChanges.trackedSource" => "已追蹤",
+            "turnChanges.createdSource" => "新增未追蹤",
+            "turnChanges.preexistingSource" => "回合前已有未追蹤",
+            "turnChanges.removedSource" => "已刪除的追蹤檔案",
+            "turnChanges.undo" => "復原",
+            "turnChanges.undoFile" => "復原此檔案",
+            "turnChanges.undoTurn" => "復原本回合",
+            "turnChanges.undoWarning" => {
+                "復原會將已追蹤檔案還原至最後一次提交，並刪除本回合新建的檔案。這些檔案中其他回合前的未提交變更也可能遺失。"
+            }
+            "turnChanges.preexistingUntrackedWarning" => {
+                "檔案在回合前已是未追蹤狀態，因此無法復原；系統不會刪除或還原該檔案。"
+            }
+            "turnChanges.undoRejected" => "Git 無法復原",
+            "turnChanges.undoUnavailable" => "儲存庫無法使用，未變更任何檔案。",
             "rightPane.files" => "檔案",
             "rightPane.browser" => "瀏覽器",
             "rightPane.sideQuestion" => "側邊提問",
@@ -340,6 +384,27 @@ fn lookup(language: Language, key: &'static str) -> Option<&'static str> {
             "sidebar.sessionsPlaceholder" => "搜索会话…",
             "rightPane.summary" => "摘要",
             "rightPane.review" => "变更",
+            "turnChanges.filesChanged" => "个文件变更",
+            "turnChanges.expand" => "显示本轮变更的文件",
+            "turnChanges.collapse" => "隐藏本轮变更的文件",
+            "turnChanges.dismiss" => "关闭本轮变更通知",
+            "turnChanges.reviewAria" => "查看本轮变更",
+            "turnChanges.openFileInReview" => "在变更中打开此文件",
+            "turnChanges.trackedSource" => "已跟踪",
+            "turnChanges.createdSource" => "新增未跟踪",
+            "turnChanges.preexistingSource" => "本轮前已有未跟踪",
+            "turnChanges.removedSource" => "已删除的跟踪文件",
+            "turnChanges.undo" => "撤销",
+            "turnChanges.undoFile" => "撤销此文件",
+            "turnChanges.undoTurn" => "撤销本轮",
+            "turnChanges.undoWarning" => {
+                "撤销会将已跟踪文件还原到最后一次提交，并删除本轮新建的文件。这些文件中其他轮次前的未提交更改也可能丢失。"
+            }
+            "turnChanges.preexistingUntrackedWarning" => {
+                "文件在本轮前已是未跟踪状态，因此无法撤销；系统不会删除或还原该文件。"
+            }
+            "turnChanges.undoRejected" => "Git 无法撤销",
+            "turnChanges.undoUnavailable" => "仓库不可用，未更改任何文件。",
             "rightPane.files" => "文件",
             "rightPane.browser" => "浏览器",
             "rightPane.sideQuestion" => "侧边提问",

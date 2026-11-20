@@ -2843,6 +2843,390 @@ fn turn_diff_is_empty_before_a_turn_and_reports_a_seeded_change(cx: &mut TestApp
     assert_eq!(snapshot["deletions"], 0);
 }
 
+/// A granted repository and two real session records for turn-card scenarios.
+/// Every test edits only this temporary repository and drives the production
+/// baseline capture/finish path around its writes.
+fn turn_workspace_data(root: &Path) -> (PathBuf, WorkspaceData) {
+    let repo = seed_repo(root);
+    let home = root.join("home");
+    let bucket = home.join(".omp/agent/sessions/-repo");
+    write_session(
+        &bucket,
+        "2026-04-01T00-00-00-000Z_019fdf24-eeee-7000-8000-000000000001.jsonl",
+        "Turn Card",
+        "2026-04-01T02:00:00.000Z",
+        "turn prompt",
+        "turn reply",
+        &repo,
+    );
+    write_session(
+        &bucket,
+        "2026-04-01T00-00-00-000Z_019fdf24-eeee-7000-8000-000000000002.jsonl",
+        "Other Session",
+        "2026-04-01T01:00:00.000Z",
+        "other prompt",
+        "other reply",
+        &repo,
+    );
+    let mut store = open_store(root);
+    omp_core::projects::grant_project(
+        &mut store,
+        &home,
+        Platform::current(),
+        repo.to_str().expect("repo path"),
+    )
+    .expect("grant");
+    let mut data = test_data(root);
+    data.home_dir = home.clone();
+    data.projects = omp_core::projects::list_projects(&store);
+    data.sessions = omp_core::sessions::list_sessions(&store, &home, false, None);
+    drop(store);
+    (repo, data)
+}
+
+#[gpui_kit::test]
+fn turn_card_expands_navigates_dismisses_and_obeys_settings(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let (repo, data) = turn_workspace_data(dir.path());
+    let handle = cx.open_window(size(px(1280.0), px(800.0)), |window, cx| {
+        Workspace::new(window, cx, data)
+    });
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.select_session(0, cx);
+            workspace.begin_turn();
+            assert_eq!(
+                snapshot(workspace, cx)["turnCard"]["baselinePending"],
+                json!(true)
+            );
+            std::fs::write(repo.join("a.txt"), "line1\nturn edit\n").expect("turn edit");
+            workspace.finish_turn();
+            let state = snapshot(workspace, cx);
+            assert_eq!(state["turnCard"]["state"], "collapsed");
+            assert_eq!(state["turnCard"]["visible"], true);
+            assert_eq!(state["turnCard"]["baselinePending"], false);
+            assert_eq!(state["turnCard"]["changes"]["files"][0]["kind"], "tracked");
+            assert_eq!(state["turnCard"]["changes"]["files"][0]["additions"], 1);
+        })
+        .expect("finish seeded turn");
+
+    click_element(cx, handle, "turn-card-toggle");
+    handle
+        .update(cx, |workspace, _, cx| {
+            assert_eq!(snapshot(workspace, cx)["turnCard"]["state"], "expanded");
+        })
+        .expect("expanded card");
+    click_element(cx, handle, "turn-file-0");
+    handle
+        .update(cx, |workspace, _, cx| {
+            let state = snapshot(workspace, cx);
+            assert_eq!(state["rightPane"], "review");
+            assert_eq!(state["review"]["selectedPath"], "a.txt");
+            workspace.update_setting(json!({ "showFileChangesPopup": false }), cx);
+            let hidden = snapshot(workspace, cx);
+            assert_eq!(hidden["turnCard"]["visible"], false);
+            assert_eq!(hidden["turnCard"]["state"], "expanded");
+            assert_eq!(
+                hidden["turnCard"]["changes"]["files"]
+                    .as_array()
+                    .map(Vec::len),
+                Some(1)
+            );
+            workspace.update_setting(json!({ "showFileChangesPopup": true }), cx);
+            let restored = snapshot(workspace, cx);
+            assert_eq!(restored["turnCard"]["visible"], true);
+            assert_eq!(restored["turnCard"]["state"], "expanded");
+        })
+        .expect("settings suppression preserves card data");
+
+    click_element(cx, handle, "turn-dismiss");
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.refresh_review();
+            workspace.toggle_turn_card(cx);
+            let dismissed = snapshot(workspace, cx);
+            assert_eq!(dismissed["turnCard"]["state"], "dismissed");
+            assert_eq!(dismissed["turnCard"]["visible"], false);
+            assert_eq!(
+                dismissed["turnCard"]["changes"]["files"]
+                    .as_array()
+                    .map(Vec::len),
+                Some(1)
+            );
+            workspace.begin_turn();
+            let next = snapshot(workspace, cx);
+            assert_eq!(next["turnCard"]["state"], "collapsed");
+            assert_eq!(next["turnCard"]["visible"], false);
+            assert_eq!(next["turnCard"]["baselinePending"], true);
+            assert_eq!(next["turnCard"]["changes"]["files"], json!([]));
+        })
+        .expect("dismissal and next-turn reset");
+}
+
+#[gpui_kit::test]
+fn turn_card_confirmed_undo_restores_tracked_and_removes_created_untracked(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let (repo, data) = turn_workspace_data(dir.path());
+    let handle = cx.open_window(size(px(1280.0), px(800.0)), |window, cx| {
+        Workspace::new(window, cx, data)
+    });
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.select_session(0, cx);
+            std::fs::write(repo.join("a.txt"), "line1\npre-turn dirty\n").expect("dirty file");
+            workspace.begin_turn();
+            std::fs::write(repo.join("a.txt"), "line1\npre-turn dirty\nturn tracked\n")
+                .expect("tracked edit");
+            std::fs::write(repo.join("b.txt"), "created during turn\n").expect("new file");
+            workspace.finish_turn();
+            let state = snapshot(workspace, cx);
+            assert_eq!(state["turnCard"]["changes"]["files"][0]["kind"], "tracked");
+            assert_eq!(
+                state["turnCard"]["changes"]["files"][1]["kind"],
+                "createdUntracked"
+            );
+        })
+        .expect("tracked and untracked turn changes");
+    click_element(cx, handle, "turn-card-toggle");
+    click_element(cx, handle, "turn-file-undo-0");
+    handle
+        .update(cx, |workspace, _, cx| {
+            let pending = snapshot(workspace, cx);
+            assert_eq!(pending["turnCard"]["state"], "confirmingUndo");
+            assert_eq!(pending["turnCard"]["undoTarget"]["path"], "a.txt");
+        })
+        .expect("per-file confirmation");
+    click_element(cx, handle, "turn-undo-cancel");
+    assert_eq!(
+        std::fs::read_to_string(repo.join("a.txt")).expect("tracked after cancel"),
+        "line1\npre-turn dirty\nturn tracked\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(repo.join("b.txt")).expect("untracked after cancel"),
+        "created during turn\n"
+    );
+
+    click_element(cx, handle, "turn-file-undo-0");
+    click_element(cx, handle, "turn-undo-confirm");
+    handle
+        .update(cx, |workspace, _, cx| {
+            assert_eq!(
+                std::fs::read_to_string(repo.join("a.txt")).expect("restored tracked"),
+                "line1\n"
+            );
+            assert_eq!(
+                std::fs::read_to_string(repo.join("b.txt")).expect("other file survives"),
+                "created during turn\n"
+            );
+            let state = snapshot(workspace, cx);
+            assert_eq!(
+                state["turnCard"]["changes"]["files"]
+                    .as_array()
+                    .map(Vec::len),
+                Some(1)
+            );
+            assert_eq!(state["turnCard"]["changes"]["files"][0]["path"], "b.txt");
+        })
+        .expect("confirmed per-file undo");
+    click_element(cx, handle, "turn-undo");
+    click_element(cx, handle, "turn-undo-confirm");
+    handle
+        .update(cx, |workspace, _, cx| {
+            assert!(!repo.join("b.txt").exists());
+            assert_eq!(
+                std::fs::read_to_string(repo.join("a.txt")).expect("tracked stays restored"),
+                "line1\n"
+            );
+            let state = snapshot(workspace, cx);
+            assert_eq!(state["turnCard"]["changes"]["files"], json!([]));
+            assert_eq!(state["turnCard"]["visible"], false);
+        })
+        .expect("confirmed whole-turn undo");
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn turn_card_idle_follow_up_gets_a_fresh_baseline(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let (repo, mut data) = turn_workspace_data(dir.path());
+    data.omp_executable = install_fixture_omp(dir.path());
+    let handle = cx.open_window(size(px(1280.0), px(800.0)), |window, cx| {
+        Workspace::new(window, cx, data)
+    });
+    handle
+        .update(cx, |workspace, window, cx| {
+            workspace.select_session(0, cx);
+            let composer = workspace.composer_entity().clone();
+            composer.update(cx, |state, cx| state.set_value("initial turn", window, cx));
+            workspace.send_prompt(window, cx);
+            std::fs::write(repo.join("a.txt"), "line1\nfirst turn\n").expect("first-turn edit");
+        })
+        .expect("send initial turn");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        std::thread::sleep(Duration::from_millis(20));
+        let running = handle
+            .update(cx, |workspace, _, cx| {
+                workspace.drain_agent_events();
+                snapshot(workspace, cx)["running"].as_bool().unwrap_or(true)
+            })
+            .expect("drain initial turn");
+        if !running {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "initial fixture turn did not finish"
+        );
+    }
+    let composer = handle
+        .update(cx, |workspace, window, cx| {
+            let initial = snapshot(workspace, cx);
+            assert_eq!(initial["turnCard"]["baselinePending"], json!(false));
+            assert_eq!(initial["turnCard"]["changes"]["files"][0]["additions"], 1);
+            std::fs::write(repo.join("a.txt"), "line1\nfirst turn\nfollow-up turn\n")
+                .expect("follow-up edit");
+            let composer = workspace.composer_entity().clone();
+            composer.update(cx, |state, cx| {
+                state.set_value("idle follow-up", window, cx)
+            });
+            composer
+        })
+        .expect("draft idle follow-up");
+    cx.update(|cx| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            let focus = composer.read(cx).focus_handle(cx);
+            window.focus(&focus, cx);
+            window.press(
+                if cfg!(target_os = "macos") {
+                    "cmd-enter"
+                } else {
+                    "ctrl-enter"
+                },
+                cx,
+            );
+        })
+        .expect("queue idle follow-up");
+    });
+    handle
+        .update(cx, |workspace, _, cx| {
+            let queued = snapshot(workspace, cx);
+            assert_eq!(queued["turnCard"]["baselinePending"], json!(true));
+            assert_eq!(queued["turnCard"]["changes"]["files"], json!([]));
+            assert_eq!(queued["turnCard"]["state"], "collapsed");
+
+            std::fs::write(
+                repo.join("a.txt"),
+                "line1\nfirst turn\nfollow-up turn\nagent output\n",
+            )
+            .expect("post-baseline agent edit");
+            workspace.finish_turn();
+            let finished = snapshot(workspace, cx);
+            assert_eq!(finished["turnCard"]["baselinePending"], json!(false));
+            assert_eq!(
+                finished["turnCard"]["changes"]["files"][0]["additions"], 1,
+                "{finished}"
+            );
+            assert_eq!(
+                finished["turnCard"]["changes"]["additions"], 1,
+                "{finished}"
+            );
+        })
+        .expect("fresh follow-up baseline");
+}
+
+#[gpui_kit::test]
+fn turn_card_uses_dirty_deltas_and_preserves_preexisting_untracked(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let (repo, data) = turn_workspace_data(dir.path());
+    let handle = cx.open_window(size(px(1280.0), px(800.0)), |window, cx| {
+        Workspace::new(window, cx, data)
+    });
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.select_session(0, cx);
+            std::fs::write(repo.join("a.txt"), "line1\npre-turn\n").expect("dirty baseline");
+            std::fs::write(repo.join("p.txt"), "pre-existing\n").expect("pre-existing file");
+            workspace.begin_turn();
+            std::fs::write(repo.join("a.txt"), "line1\npre-turn\nturn one\nturn two\n")
+                .expect("turn growth");
+            std::fs::write(repo.join("p.txt"), "pre-existing\nturn append\n")
+                .expect("pre-existing append");
+            workspace.finish_turn();
+            let state = snapshot(workspace, cx);
+            assert_eq!(state["turnCard"]["changes"]["files"][0]["path"], "a.txt");
+            assert_eq!(state["turnCard"]["changes"]["files"][0]["additions"], 2);
+            assert_eq!(
+                state["turnCard"]["changes"]["files"][1]["kind"],
+                "preexistingUntracked"
+            );
+
+            workspace.request_turn_undo(Some("p.txt"), cx);
+            let blocked = snapshot(workspace, cx);
+            assert_eq!(blocked["turnCard"]["undoTarget"], json!(null));
+            assert_ne!(blocked["turnCard"]["error"], json!(null));
+            assert_eq!(
+                std::fs::read_to_string(repo.join("p.txt")).expect("pre-existing survives"),
+                "pre-existing\nturn append\n"
+            );
+
+            workspace.request_turn_undo(None, cx);
+            let whole_blocked = snapshot(workspace, cx);
+            assert_eq!(whole_blocked["turnCard"]["undoTarget"], json!(null));
+            assert_eq!(
+                std::fs::read_to_string(repo.join("a.txt")).expect("whole undo did not run"),
+                "line1\npre-turn\nturn one\nturn two\n"
+            );
+            assert_eq!(
+                std::fs::read_to_string(repo.join("p.txt")).expect("whole undo leaves file"),
+                "pre-existing\nturn append\n"
+            );
+        })
+        .expect("pre-existing untracked non-destructive guard");
+}
+
+#[gpui_kit::test]
+fn turn_card_clears_on_session_switch_and_ignores_finish_without_baseline(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let (repo, data) = turn_workspace_data(dir.path());
+    let handle = cx.open_window(size(px(1280.0), px(800.0)), |window, cx| {
+        Workspace::new(window, cx, data)
+    });
+    handle
+        .update(cx, |workspace, _, cx| {
+            workspace.select_session(0, cx);
+            workspace.begin_turn();
+            std::fs::write(repo.join("a.txt"), "line1\nfirst session\n").expect("first edit");
+            workspace.finish_turn();
+            workspace.dismiss_turn_card(cx);
+            assert_eq!(snapshot(workspace, cx)["turnCard"]["state"], "dismissed");
+
+            workspace.select_session(1, cx);
+            let switched = snapshot(workspace, cx);
+            assert_eq!(switched["turnCard"]["state"], "collapsed");
+            assert_eq!(switched["turnCard"]["baselinePending"], false);
+            assert_eq!(switched["turnCard"]["changes"]["files"], json!([]));
+
+            std::fs::write(repo.join("a.txt"), "line1\nno baseline\n").expect("mid-turn edit");
+            workspace.finish_turn();
+            let pending = snapshot(workspace, cx);
+            assert_eq!(pending["turnCard"]["visible"], false);
+            assert_eq!(pending["turnCard"]["changes"]["files"], json!([]));
+            assert_eq!(
+                std::fs::read_to_string(repo.join("a.txt")).expect("no destructive fallback"),
+                "line1\nno baseline\n"
+            );
+        })
+        .expect("session reset and pending-baseline behavior");
+}
+
 /// The session menu's Pin action toggles back off and never reorders the
 /// catalog: `Older` keeps its index and the state file agrees at both ends.
 #[gpui_kit::test]
