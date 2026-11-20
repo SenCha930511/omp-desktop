@@ -1,5 +1,5 @@
 import { createElement, memo, useEffect, useMemo, useRef, useState } from 'react'
-import type { StampedActivityEvent, StampedPointerEvent } from '@/hooks/useAgentBrowserTabs'
+import type { StampedPointerEvent } from '@/hooks/useAgentBrowserTabs'
 import { type AgentBrowserTabRecord, BROWSER_PARTITION } from '@/types/api'
 
 export interface AgentSlotRect {
@@ -23,8 +23,8 @@ interface AgentBrowserLayerProps {
   onAttach(tabId: string, webContentsId: number): void
   /** Session keys the user is currently looking at; their guests are never released. */
   activeSessionFiles?: readonly string[]
-  /** Latest agent browser action; it wakes its tab and restarts that tab's idle clock. */
-  activityEvent?: StampedActivityEvent | null
+  /** Per-tab activity sequence; every changed tab wakes and restarts its idle clock. */
+  activityByTab?: ReadonlyMap<string, number>
   /** How long a background session's tab may sit idle before its guest is released. */
   idleUnloadMs?: number
 }
@@ -62,7 +62,7 @@ export function AgentBrowserLayer({
   pointerEvent,
   onAttach,
   activeSessionFiles,
-  activityEvent = null,
+  activityByTab,
   idleUnloadMs = DEFAULT_IDLE_UNLOAD_MS,
 }: AgentBrowserLayerProps) {
   const style = rect ? { left: rect.left, top: rect.top, width: rect.width, height: rect.height } : undefined
@@ -70,17 +70,20 @@ export function AgentBrowserLayer({
   const activeSessions = useMemo(() => new Set(activeSessionFiles ?? []), [activeSessionFiles])
   const lastActivityRef = useRef(new Map<string, number>())
   const unloadTimersRef = useRef(new Map<string, ScheduledUnload>())
-  const lastActivitySeqRef = useRef(0)
+  const lastActivitySeqRef = useRef(new Map<string, number>())
 
   useEffect(() => {
     const timers = unloadTimersRef.current
     const activity = lastActivityRef.current
     const now = Date.now()
     let wake: string | null = null
-    if (activityEvent && activityEvent.seq !== lastActivitySeqRef.current) {
-      lastActivitySeqRef.current = activityEvent.seq
-      activity.set(activityEvent.tabId, now)
-      wake = activityEvent.tabId
+    if (activityByTab) {
+      for (const [tabId, seq] of activityByTab) {
+        if (lastActivitySeqRef.current.get(tabId) === seq) continue
+        lastActivitySeqRef.current.set(tabId, seq)
+        activity.set(tabId, now)
+        wake = tabId
+      }
     }
     const live = new Set(tabs.map((tab) => tab.tabId))
     for (const [tabId, scheduled] of [...timers]) {
@@ -132,7 +135,7 @@ export function AgentBrowserLayer({
         return next
       })
     }
-  }, [tabs, visibleTabId, activeSessions, idleUnloadMs, unloaded, activityEvent])
+  }, [tabs, visibleTabId, activeSessions, idleUnloadMs, unloaded, activityByTab])
 
   useEffect(
     () => () => {

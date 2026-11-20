@@ -4,7 +4,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentBrowserLayer } from '../../src/components/AgentBrowserLayer'
-import type { StampedActivityEvent } from '../../src/hooks/useAgentBrowserTabs'
+
 import type { AgentBrowserTabRecord } from '../../src/types/api'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
@@ -47,7 +47,7 @@ interface RenderOptions {
   tabs?: AgentBrowserTabRecord[]
   activeSessionFiles?: string[]
   visibleTabId?: string | null
-  activityEvent?: StampedActivityEvent | null
+  activityByTab?: ReadonlyMap<string, number>
 }
 
 async function renderLayer(options: RenderOptions = {}) {
@@ -60,7 +60,7 @@ async function renderLayer(options: RenderOptions = {}) {
         pointerEvent={null}
         onAttach={onAttach}
         activeSessionFiles={options.activeSessionFiles ?? ['/sessions/active.jsonl']}
-        activityEvent={options.activityEvent ?? null}
+        activityByTab={options.activityByTab}
         idleUnloadMs={IDLE_MS}
       />,
     )
@@ -83,8 +83,8 @@ function webviewOf(tabId: string): HTMLElement {
   return element
 }
 
-function activityEvent(tabId: string, seq: number): StampedActivityEvent {
-  return { sessionFile: '/sessions/background.jsonl', tabId, seq }
+function activityByTab(tabId: string, seq: number): ReadonlyMap<string, number> {
+  return new Map([[tabId, seq]])
 }
 
 beforeEach(() => {
@@ -145,7 +145,7 @@ describe('AgentBrowserLayer idle guest release', () => {
     await advance(IDLE_MS + 1)
     expect(mountedTabIds()).toEqual(['bt-active'])
 
-    await renderLayer({ activityEvent: activityEvent('bt-background', 1) })
+    await renderLayer({ activityByTab: activityByTab('bt-background', 1) })
     expect(mountedTabIds()).toEqual(['bt-active', 'bt-background'])
 
     await advance(IDLE_MS - 1)

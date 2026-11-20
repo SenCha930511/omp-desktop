@@ -1814,7 +1814,7 @@ export default function App() {
               pointerEvent={agentBrowser.pointerEvent}
               onAttach={agentBrowser.attach}
               activeSessionFiles={activeAgentSessionFiles}
-              activityEvent={agentBrowser.activityEvent}
+              activityByTab={agentBrowser.activityByTab}
             />
           ) : null}
         </div>
