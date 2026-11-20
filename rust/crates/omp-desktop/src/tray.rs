@@ -22,6 +22,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use gpui_kit::{AnyWindowHandle, App, AsyncApp};
+use omp_desktop::i18n::{self, Language};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
@@ -111,7 +112,12 @@ pub fn init(cx: &mut App, window: AnyWindowHandle) -> Result<Tray, TrayError> {
             return Err(TrayError::new("GTK could not be initialized for the tray"));
         }
     }
-    let menu = build_menu()?;
+    let language = window
+        .downcast::<omp_desktop::app::Workspace>()
+        .and_then(|workspace| workspace.read(cx).ok())
+        .map(|workspace| i18n::resolve(workspace.settings().locale))
+        .unwrap_or(Language::En);
+    let menu = build_menu(language)?;
     let rgba = tray_icon_rgba(ICON_PNG, ICON_PIXELS)?;
     let icon = Icon::from_rgba(rgba, ICON_PIXELS, ICON_PIXELS)
         .map_err(|err| TrayError::new(format!("tray icon was rejected: {err}")))?;
@@ -166,18 +172,21 @@ pub fn init(cx: &mut App, window: AnyWindowHandle) -> Result<Tray, TrayError> {
     Ok(Tray { sender, handled })
 }
 
-fn build_menu() -> Result<Menu, TrayError> {
+fn build_menu(language: Language) -> Result<Menu, TrayError> {
+    let (open, quit) = menu_labels(language);
     let menu = Menu::new();
-    menu.append(&MenuItem::with_id(
-        OPEN_MENU_ID,
-        "Open OMP Desktop",
-        true,
-        None,
-    ))
-    .and_then(|()| menu.append(&PredefinedMenuItem::separator()))
-    .and_then(|()| menu.append(&MenuItem::with_id(QUIT_MENU_ID, "Quit", true, None)))
-    .map_err(|err| TrayError::new(format!("tray menu could not be built: {err}")))?;
+    menu.append(&MenuItem::with_id(OPEN_MENU_ID, open, true, None))
+        .and_then(|()| menu.append(&PredefinedMenuItem::separator()))
+        .and_then(|()| menu.append(&MenuItem::with_id(QUIT_MENU_ID, quit, true, None)))
+        .map_err(|err| TrayError::new(format!("tray menu could not be built: {err}")))?;
     Ok(menu)
+}
+
+fn menu_labels(language: Language) -> (&'static str, &'static str) {
+    (
+        i18n::t(language, "tray.open"),
+        i18n::t(language, "tray.quit"),
+    )
 }
 
 /// Installs the process-wide menu handler once. Later calls are no-ops (`muda` keeps
@@ -282,6 +291,13 @@ mod tests {
         assert_eq!(command_for(OPEN_MENU_ID), Some(TrayCommand::OpenWindow));
         assert_eq!(command_for(QUIT_MENU_ID), Some(TrayCommand::Quit));
         assert_eq!(command_for("omp-desktop.tray.unknown"), None);
+    }
+
+    #[test]
+    fn menu_labels_use_the_saved_shell_language() {
+        assert_eq!(menu_labels(Language::En), ("Open OMP Desktop", "Quit"));
+        assert_eq!(menu_labels(Language::ZhTw), ("開啟 OMP Desktop", "結束"));
+        assert_eq!(menu_labels(Language::ZhCn), ("打开 OMP Desktop", "退出"));
     }
 
     #[test]

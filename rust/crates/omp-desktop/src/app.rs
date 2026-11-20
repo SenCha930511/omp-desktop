@@ -1050,7 +1050,7 @@ impl Workspace {
         });
         let side_input = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("Ask a side question…")
+                .placeholder(i18n::t(language, "sideQuestion.placeholder"))
                 .submit_on_enter(true)
         });
         let side_input_subscription =
@@ -1062,7 +1062,7 @@ impl Workspace {
             });
         let terminal_input = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("Run a shell command…")
+                .placeholder(i18n::t(language, "terminal.placeholder"))
                 .submit_on_enter(true)
         });
         let terminal_input_subscription =
@@ -1074,7 +1074,7 @@ impl Workspace {
             });
         let plugin_source = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("npm:package-name or a plugin path")
+                .placeholder(i18n::t(language, "plugin.sourcePlaceholder"))
                 .submit_on_enter(true)
         });
         let plugin_source_subscription = cx.subscribe(
@@ -1092,8 +1092,10 @@ impl Workspace {
                 _ => {}
             },
         );
-        let sidebar_filter =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Search sessions…"));
+        let sidebar_filter = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(i18n::t(language, "sidebar.sessionsPlaceholder"))
+        });
         let sidebar_filter_subscription =
             cx.subscribe(&sidebar_filter, |_this, _, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
@@ -2250,6 +2252,18 @@ impl Workspace {
             "schedules": self.schedules,
             "notifications": self.notifications,
         });
+        snapshot["settings"]["locale"] = json!(self.settings.locale);
+        snapshot["shell"] = json!({
+            "rightPaneTitle": self.right_pane_title(),
+            "placeholders": {
+                "composer": self.composer.read(cx).presentation().placeholder().to_string(),
+                "rightPaneSearch": self.right_pane_search.read(cx).presentation().placeholder().to_string(),
+                "sideQuestion": self.side_input.read(cx).presentation().placeholder().to_string(),
+                "terminal": self.terminal_input.read(cx).presentation().placeholder().to_string(),
+                "pluginSource": self.plugin_source.read(cx).presentation().placeholder().to_string(),
+                "sidebar": self.sidebar_filter.read(cx).presentation().placeholder().to_string(),
+            },
+        });
         // The render's breakpoint decision and whether the compact layout is
         // drawing the right pane as an overlay over the transcript.
         snapshot["compactLayout"] = json!(self.compact_layout);
@@ -3182,6 +3196,61 @@ impl Workspace {
 
     fn t(&self, key: &'static str) -> &'static str {
         i18n::t(self.language(), key)
+    }
+
+    fn sync_localized_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let language = self.language();
+        let inputs = [
+            (&self.composer, "composer.placeholder"),
+            (&self.right_pane_search, "rightPane.searchPlaceholder"),
+            (&self.side_input, "sideQuestion.placeholder"),
+            (&self.terminal_input, "terminal.placeholder"),
+            (&self.plugin_source, "plugin.sourcePlaceholder"),
+            (&self.sidebar_filter, "sidebar.sessionsPlaceholder"),
+        ];
+        for (input, key) in inputs {
+            let placeholder = i18n::t(language, key);
+            if input.read(cx).presentation().placeholder().as_str() == placeholder {
+                continue;
+            }
+            input.update(cx, |state, cx| {
+                state.set_placeholder(placeholder, window, cx);
+            });
+        }
+
+        let placeholder = i18n::t(language, "ask.answerPlaceholder");
+        for input in self.ask_inputs.values().cloned().collect::<Vec<_>>() {
+            if input.read(cx).presentation().placeholder().as_str() == placeholder {
+                continue;
+            }
+            input.update(cx, |state, cx| {
+                state.set_placeholder(placeholder, window, cx);
+            });
+        }
+    }
+
+    fn right_pane_title(&self) -> &'static str {
+        match self.right_pane {
+            RightPane::Launcher => self.t("rightPane.overview"),
+            RightPane::Summary => self.t("rightPane.summary"),
+            RightPane::Review => self.t("rightPane.review"),
+            RightPane::Files => self.t("rightPane.files"),
+            RightPane::Browser => self.t("rightPane.browser"),
+            RightPane::SideQuestion => self.t("rightPane.sideQuestion"),
+            RightPane::Ask => self.t("rightPane.ask"),
+            RightPane::Subagents => self.t("rightPane.subagents"),
+            RightPane::LiveVoice => self.t("rightPane.liveVoice"),
+            RightPane::Activity => self.t("sidebar.activity"),
+        }
+    }
+
+    fn locale_label(&self) -> &'static str {
+        match self.settings.locale {
+            omp_core::settings::Locale::System => self.t("settings.locale.system"),
+            omp_core::settings::Locale::En => "en",
+            omp_core::settings::Locale::ZhTw => "zh-TW",
+            omp_core::settings::Locale::ZhCn => "zh-CN",
+        }
     }
 
     fn reflow_panes(&mut self) {
@@ -5050,8 +5119,8 @@ impl Workspace {
             if self.ask_inputs.contains_key(&id) {
                 continue;
             }
-            let input =
-                cx.new(|cx| InputState::new(window, cx).placeholder("Type your own answer…"));
+            let placeholder = self.t("ask.answerPlaceholder");
+            let input = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
             self.ask_inputs.insert(id, input);
         }
     }
@@ -8158,6 +8227,21 @@ impl Workspace {
                     .flex_col()
                     .gap_3()
                     .child(self.settings_row(
+                        self.t("settings.language"),
+                        self.locale_label().to_string(),
+                        colors,
+                        cx,
+                        |this, _window, cx| {
+                            let next = match this.settings.locale {
+                                omp_core::settings::Locale::System => "en",
+                                omp_core::settings::Locale::En => "zh-TW",
+                                omp_core::settings::Locale::ZhTw => "zh-CN",
+                                omp_core::settings::Locale::ZhCn => "system",
+                            };
+                            this.update_setting(json!({ "locale": next }), cx);
+                        },
+                    ))
+                    .child(self.settings_row(
                         "Conversation density",
                         density.to_string(),
                         colors,
@@ -8612,18 +8696,7 @@ impl Workspace {
             RightPane::LiveVoice => Some(self.live_voice_content(cx).into_any_element()),
             RightPane::Activity => Some(self.activity_content(cx).into_any_element()),
         };
-        let title = match self.right_pane {
-            RightPane::Launcher => self.t("rightPane.overview"),
-            RightPane::Summary => self.t("rightPane.summary"),
-            RightPane::Review => self.t("rightPane.review"),
-            RightPane::Files => self.t("rightPane.files"),
-            RightPane::Browser => self.t("rightPane.browser"),
-            RightPane::SideQuestion => self.t("rightPane.sideQuestion"),
-            RightPane::Ask => "Ask",
-            RightPane::Subagents => self.t("rightPane.subagents"),
-            RightPane::LiveVoice => "Live Voice",
-            RightPane::Activity => self.t("sidebar.activity"),
-        };
+        let title = self.right_pane_title();
         div()
             .id("right-pane")
             .flex()
@@ -9591,7 +9664,7 @@ impl Workspace {
                             .bg(colors.primary)
                             .text_color(colors.primary_foreground)
                             .text_sm()
-                            .child("Ask")
+                            .child(self.t("rightPane.ask"))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.ask_side_question(window, cx);
                             })),
@@ -9671,7 +9744,7 @@ impl Workspace {
                     .text_sm()
                     .text_color(colors.foreground)
                     .child(IconName::Mic)
-                    .child("Live Voice")
+                    .child(self.t("rightPane.liveVoice"))
                     .child(div().flex_1())
                     .child(
                         div()
@@ -11192,6 +11265,9 @@ fn session_hidden(dismissed: &[String], granted: &[String], project_path: &str) 
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // InputState's live setter needs a window, so settings changes reach
+        // existing placeholders here. Unchanged values avoid a notify loop.
+        self.sync_localized_inputs(window, cx);
         // The guard is `main`'s and the tray's view of "an agent is live"; this
         // view owns the truth, so every frame mirrors it and the confirmation
         // below only exists while a close is being asked about.

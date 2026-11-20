@@ -25,7 +25,7 @@ use gpui_kit::px;
 use gpui_kit::size;
 use gpui_kit::test::{TestEventExt as _, TestWindowExt as _};
 use omp_core::geometry::{CENTER_MIN_WIDTH, UiGeometry};
-use omp_core::settings::{AppSettings, ConversationDensity, MessageEnterAction, Theme};
+use omp_core::settings::{AppSettings, ConversationDensity, Locale, MessageEnterAction, Theme};
 use omp_core::state::{CURRENT_DESKTOP_STATE_FILENAME, NotificationRecord, Platform, StateStore};
 use omp_core::turn_changes::{TurnBaseline, compute_turn_changes};
 use omp_desktop::app::{
@@ -499,6 +499,130 @@ fn settings_patches_round_trip_through_the_state_file(cx: &mut TestAppContext) {
         store.settings().conversation_density,
         ConversationDensity::Compact
     );
+}
+
+#[gpui_kit::test]
+fn locale_setting_relabels_live_inputs_and_survives_a_reload(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let mut data = test_data(root);
+    data.settings.locale = Locale::En;
+    let handle = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    handle
+        .update(cx, |workspace, _, cx| workspace.set_right_pane("ask", cx))
+        .expect("open Ask");
+    draw_frame(cx, handle.into());
+    handle
+        .update(cx, |workspace, _, cx| {
+            let state = snapshot(workspace, cx);
+            assert_eq!(state["settings"]["locale"], "en");
+            assert_eq!(state["shell"]["rightPaneTitle"], "Ask");
+            assert_eq!(state["shell"]["placeholders"]["composer"], "Ask OMP…");
+            assert_eq!(
+                workspace
+                    .composer_entity()
+                    .read(cx)
+                    .presentation()
+                    .placeholder()
+                    .as_str(),
+                "Ask OMP…"
+            );
+            workspace.update_setting(json!({ "locale": "zh-TW" }), cx);
+        })
+        .expect("English shell and live locale transition");
+
+    draw_frame(cx, handle.into());
+    handle
+        .update(cx, |workspace, _, cx| {
+            let state = snapshot(workspace, cx);
+            assert_eq!(state["settings"]["locale"], "zh-TW");
+            assert_eq!(state["shell"]["rightPaneTitle"], "詢問");
+            assert_eq!(
+                state["shell"]["placeholders"],
+                json!({
+                    "composer": "詢問 OMP 任何問題,@ 提及工作階段與技能,/ 使用命令",
+                    "rightPaneSearch": "搜尋或輸入網址",
+                    "sideQuestion": "輸入側邊問題…",
+                    "terminal": "執行 shell 命令…",
+                    "pluginSource": "npm:package-name 或外掛路徑",
+                    "sidebar": "搜尋工作階段…",
+                })
+            );
+            assert_eq!(
+                workspace
+                    .composer_entity()
+                    .read(cx)
+                    .presentation()
+                    .placeholder()
+                    .as_str(),
+                "詢問 OMP 任何問題,@ 提及工作階段與技能,/ 使用命令"
+            );
+        })
+        .expect("Traditional Chinese live shell");
+
+    let store = open_store(root);
+    assert_eq!(store.settings().locale, Locale::ZhTw);
+    let mut data = test_data(root);
+    data.settings = store.settings();
+    drop(store);
+    let reopened = cx.add_window(|window, cx| Workspace::new(window, cx, data));
+    reopened
+        .update(cx, |workspace, _, cx| {
+            workspace.set_right_pane("live-voice", cx)
+        })
+        .expect("open Live Voice");
+    draw_frame(cx, reopened.into());
+    reopened
+        .update(cx, |workspace, _, cx| {
+            let state = snapshot(workspace, cx);
+            assert_eq!(state["settings"]["locale"], "zh-TW");
+            assert_eq!(state["shell"]["rightPaneTitle"], "即時語音");
+            assert_eq!(
+                state["shell"]["placeholders"]["rightPaneSearch"],
+                "搜尋或輸入網址"
+            );
+            assert_eq!(
+                workspace
+                    .plugin_source_entity()
+                    .read(cx)
+                    .presentation()
+                    .placeholder()
+                    .as_str(),
+                "npm:package-name 或外掛路徑"
+            );
+            workspace.update_setting(json!({ "locale": "zh-CN" }), cx);
+        })
+        .expect("persisted Traditional Chinese and second transition");
+
+    draw_frame(cx, reopened.into());
+    reopened
+        .update(cx, |workspace, _, cx| {
+            let state = snapshot(workspace, cx);
+            assert_eq!(state["settings"]["locale"], "zh-CN");
+            assert_eq!(state["shell"]["rightPaneTitle"], "实时语音");
+            assert_eq!(
+                state["shell"]["placeholders"]["composer"],
+                "询问 OMP 任何问题,@ 提及会话与技能,/ 使用命令"
+            );
+            assert_eq!(
+                state["shell"]["placeholders"]["pluginSource"],
+                "npm:package-name 或插件路径"
+            );
+        })
+        .expect("Simplified Chinese live shell");
+    assert_eq!(open_store(root).settings().locale, Locale::ZhCn);
+    reopened
+        .update(cx, |workspace, _, cx| {
+            workspace.update_setting(json!({ "locale": "system" }), cx);
+        })
+        .expect("return to system locale");
+    draw_frame(cx, reopened.into());
+    let state = reopened
+        .update(cx, |workspace, _, cx| snapshot(workspace, cx))
+        .expect("system locale snapshot");
+    assert_eq!(state["settings"]["locale"], "system");
+    assert_eq!(open_store(root).settings().locale, Locale::System);
 }
 
 #[gpui_kit::test]
