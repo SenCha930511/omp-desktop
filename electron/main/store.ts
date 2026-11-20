@@ -569,6 +569,29 @@ export class JsonStateStore {
     return structuredClone(this.state.settings)
   }
 
+  /**
+   * Internal readonly views. `update()` replaces `state` wholesale with a fresh
+   * `structuredClone` draft, so a reference read here is a stable snapshot that
+   * later updates never mutate. Callers MUST still treat the returned array and
+   * its records as immutable: writing to them would corrupt the committed state.
+   * Renderer-facing reads (`snapshot()`, `getProjects()`, `getSchedules()`, …)
+   * keep cloning at the IPC boundary.
+   */
+  projectsReadonly(): readonly PersistedProject[] {
+    this.assertCompatible()
+    return this.state.projects
+  }
+
+  dismissedProjectPathsReadonly(): readonly string[] {
+    this.assertCompatible()
+    return this.state.dismissedProjectPaths
+  }
+
+  schedulesReadonly(): readonly AutomationScheduleRecord[] {
+    this.assertCompatible()
+    return this.state.schedules
+  }
+
   getProjects(): PersistedProject[] {
     this.assertCompatible()
     return structuredClone(this.state.projects)

@@ -73,6 +73,50 @@ describe('JsonStateStore', () => {
     expect(store.getSchedules()).toEqual([])
     await store.beginShutdown()
   })
+  it('serves internal readonly reads from the committed state without cloning', async () => {
+    const store = new JsonStateStore(join(makeDirectory(), 'state.json'))
+    await store.ready()
+    const initialProjects = store.projectsReadonly()
+    const initialSchedules = store.schedulesReadonly()
+    const initialDismissed = store.dismissedProjectPathsReadonly()
+    expect(initialProjects).toEqual([])
+    // Repeat reads hand back the committed arrays instead of fresh copies.
+    expect(store.projectsReadonly()).toBe(initialProjects)
+    expect(store.schedulesReadonly()).toBe(initialSchedules)
+    expect(store.dismissedProjectPathsReadonly()).toBe(initialDismissed)
+
+    const now = '2026-01-01T00:00:00.000Z'
+    await store.update((state) => {
+      state.projects.push({
+        id: 'project-one', harness: 'omp', name: 'One', path: '/one', folders: ['/one'], primaryFolder: '/one',
+        pinned: false, createdAt: now, lastOpenedAt: now,
+      })
+      state.dismissedProjectPaths.push('/dismissed')
+      state.schedules.push({
+        schemaVersion: 1, id: 'schedule-one', harness: 'omp', revision: 1, title: 'One', prompt: 'Review issues',
+        target: { kind: 'project', projectId: 'project-one' }, timing: { kind: 'once', at: '2026-01-02T00:00:00.000Z' },
+        execution: { model: 'auto', thinking: 'auto', speed: 'normal' }, status: 'active', createdBy: 'user',
+        createdAt: now, updatedAt: now, nextRunAt: '2026-01-02T00:00:00.000Z', runs: [],
+      })
+    })
+
+    const projects = store.projectsReadonly()
+    expect(projects).not.toBe(initialProjects)
+    expect(projects.map((project) => project.id)).toEqual(['project-one'])
+    expect(store.dismissedProjectPathsReadonly()).toEqual(['/dismissed'])
+    expect(store.schedulesReadonly().map((task) => task.id)).toEqual(['schedule-one'])
+    // Copy-on-write: the snapshot read before the update is never mutated.
+    expect(initialProjects).toEqual([])
+    expect(initialDismissed).toEqual([])
+    expect(initialSchedules).toEqual([])
+    // Renderer-facing getters keep handing out isolated clones.
+    expect(store.getProjects()).not.toBe(projects)
+    expect(store.getProjects()[0]).not.toBe(projects[0])
+    expect(store.getSchedules()).not.toBe(store.schedulesReadonly())
+    expect(store.getSchedules()[0]).not.toBe(store.schedulesReadonly()[0])
+    expect(store.getProjectAuthorizationState().dismissedProjectPaths).not.toBe(store.dismissedProjectPathsReadonly())
+    await store.beginShutdown()
+  })
   it('keeps ask_user off on a fresh install and preserves an explicit opt-in', async () => {
     const dir = makeDirectory()
     const path = join(dir, 'state.json')
