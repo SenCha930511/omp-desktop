@@ -741,7 +741,7 @@ test.describe('OMP Desktop desktop smoke', () => {
   })
 
   test('runs slash commands and inspects a subagent transcript', async () => {
-    await page.locator('.session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
+    await page.locator('.project-group .session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
     const composer = page.getByRole('combobox', { name: 'Message OMP' })
     await page.getByRole('button', { name: 'Add context', exact: true }).click()
     await page.getByRole('option', { name: 'Commands Choose a command for this conversation' }).click()
@@ -816,7 +816,7 @@ test.describe('OMP Desktop desktop smoke', () => {
   })
 
   test('renders a manual compact in the live transcript', async () => {
-    await page.locator('.session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
+    await page.locator('.project-group .session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
     // The compact command starts a runtime, which needs a resolved model.
     await expect(page.locator('.model-picker__trigger')).toHaveAccessibleName('Model: Claude Fixture')
     const composer = page.getByRole('combobox', { name: 'Message OMP' })
@@ -854,7 +854,7 @@ test.describe('OMP Desktop desktop smoke', () => {
   })
 
   test('offers auto effort and persists the thinking disclosure setting', async () => {
-    await page.locator('.session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
+    await page.locator('.project-group .session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
     const effortTrigger = page.locator('.effort-picker__trigger')
     await expect(effortTrigger.locator('span')).toHaveText(/^Auto( · .+)?$/)
     await effortTrigger.click()
@@ -864,7 +864,7 @@ test.describe('OMP Desktop desktop smoke', () => {
     await page.reload()
     await expect(page.locator('.app-shell')).toHaveAttribute('data-ready', 'true')
     expect(await page.evaluate(async () => (await window.desktop!.settings.get()).reasoningExpandedByDefault)).toBe(true)
-    await page.locator('.session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
+    await page.locator('.project-group .session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
     const composer = page.getByRole('combobox', { name: 'Message OMP' })
     await composer.fill('subagent fixture')
     await page.getByRole('button', { name: 'Send message', exact: true }).click()
@@ -968,7 +968,7 @@ test.describe('OMP Desktop desktop smoke', () => {
       parent = assistantId
     }
     writeFileSync(join(sessionDir, '2026-04-02T00-00-00-000Z_019fdf24-eeee-7000-8000-000000000005.jsonl'), [ompTitleSlot('Scroll history fixture', '2026-04-02T00:00:00.000Z'), ...entries, ''].join('\n'))
-    await page.locator('.session-row-wrap').filter({ hasText: 'Scroll history fixture' }).locator('.session-row').click()
+    await page.locator('.project-group .session-row-wrap').filter({ hasText: 'Scroll history fixture' }).locator('.session-row').click()
     const transcript = page.locator('.transcript')
     await expect(transcript.locator('.message').first()).toBeVisible({ timeout: 15_000 })
     await expect.poll(() => transcript.evaluate((element) => element.scrollTop)).toBeGreaterThan(1_000)
@@ -1231,7 +1231,7 @@ test.describe('OMP Desktop desktop smoke', () => {
       await page.evaluate(async (locale) => window.desktop!.settings.update({ locale }), locale)
       await page.reload()
       await expect(page.locator('.app-shell')).toHaveAttribute('data-ready', 'true')
-      const row = page.locator('.session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' })
+      const row = page.locator('.project-group .session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' })
       await row.locator('.session-row').click()
       await expect(page.locator('.subagents__roster-toggle')).toContainText('子代理')
       await page.locator('.composer-input textarea').fill('/context')
@@ -1247,7 +1247,7 @@ test.describe('OMP Desktop desktop smoke', () => {
   })
 
   test('steers the active turn with Ctrl+Enter', async () => {
-    await page.locator('.session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
+    await page.locator('.project-group .session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
     await expect(page.locator('.model-picker__trigger')).toHaveAccessibleName('Model: Claude Fixture')
     const composer = page.getByRole('combobox', { name: 'Message OMP' })
     await composer.fill('stay busy while I steer')
@@ -1287,7 +1287,7 @@ test.describe('OMP Desktop desktop smoke', () => {
   })
 
   test('admits a queued prompt across the OMP terminal-event barrier', async () => {
-    await page.locator('.session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
+    await page.locator('.project-group .session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
     await expect(page.locator('.model-picker__trigger')).toHaveAccessibleName('Model: Claude Fixture')
     const composer = page.getByRole('combobox', { name: 'Message OMP' })
     await composer.fill('barrier turn')
@@ -1328,7 +1328,7 @@ test.describe('OMP Desktop desktop smoke', () => {
 
 
   test('clears the queued tray through the state poll when delivery is silent', async () => {
-    await page.locator('.session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
+    await page.locator('.project-group .session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
     await expect(page.locator('.model-picker__trigger')).toHaveAccessibleName('Model: Claude Fixture')
     const composer = page.getByRole('combobox', { name: 'Message OMP' })
     await composer.fill('silent drain turn')
@@ -1352,7 +1352,7 @@ test.describe('OMP Desktop desktop smoke', () => {
   })
 
   test('re-anchors the transcript to the sent message after scrolling up', async () => {
-    await page.locator('.session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
+    await page.locator('.project-group .session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
     await expect(page.locator('.model-picker__trigger')).toHaveAccessibleName('Model: Claude Fixture')
     // Grow the transcript past the viewport so the scroller can park away
     // from the tail, the way a reader catching up on history does.
@@ -1381,7 +1381,7 @@ test.describe('OMP Desktop desktop smoke', () => {
   })
 
   test('switches model presets from the model picker', async () => {
-    await page.locator('.session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
+    await page.locator('.project-group .session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
     await expect(page.locator('.model-picker__trigger')).toHaveAccessibleName('Model: Claude Fixture')
     await page.locator('.model-picker__trigger').click()
     const presetsGroup = page.locator('.model-picker__group--presets')
@@ -1401,7 +1401,7 @@ test.describe('OMP Desktop desktop smoke', () => {
   })
 
   test('preserves a renderer fork as an OMP fork command', async () => {
-    await page.locator('.session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
+    await page.locator('.project-group .session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
     await expect(page.locator('.model-picker__trigger')).toHaveAccessibleName('Model: Claude Fixture')
     const composer = page.getByRole('combobox', { name: 'Message OMP' })
     await composer.fill('Start a turn to fork')
@@ -1415,7 +1415,7 @@ test.describe('OMP Desktop desktop smoke', () => {
   })
 
   test('centers the compact context-usage dial', async () => {
-    await page.locator('.session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
+    await page.locator('.project-group .session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
     const dial = page.locator('.context-usage-dial')
     await expect(dial).toBeVisible()
     // The dial toggles the context popover; the cursor must say so instead
@@ -1446,7 +1446,7 @@ test.describe('OMP Desktop desktop smoke', () => {
   })
 
   test('renders LaTeX math in transcript messages', async () => {
-    await page.locator('.session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
+    await page.locator('.project-group .session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
     const timestamp = new Date().toISOString()
     appendFileSync(fixtureSessionFile, `${[
       JSON.stringify({ type: 'message', id: 'math-user', parentId: 'fixture-goal-summary', timestamp, message: { role: 'user', content: 'Derive the identity.', timestamp } }),
@@ -1469,7 +1469,7 @@ test.describe('OMP Desktop desktop smoke', () => {
   })
 
   test('reassembles base64 rpc_chunk frames into a transcript message', async () => {
-    await page.locator('.session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
+    await page.locator('.project-group .session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
     await expect(page.locator('.model-picker__trigger')).toHaveAccessibleName('Model: Claude Fixture')
     const composer = page.getByRole('combobox', { name: 'Message OMP' })
     await composer.fill('Send a chunked reply')
@@ -1481,7 +1481,7 @@ test.describe('OMP Desktop desktop smoke', () => {
   })
 
   test('picks, previews, and removes an image in the composer', async () => {
-    await page.locator('.session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
+    await page.locator('.project-group .session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
     const imagePath = join(fixtureRoot, 'picker.png')
     writeFileSync(imagePath, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64'))
 
@@ -1496,7 +1496,7 @@ test.describe('OMP Desktop desktop smoke', () => {
   })
 
   test('collapses composer selectors and keeps the checkout menu usable in a narrow conversation pane', async () => {
-    await page.locator('.session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
+    await page.locator('.project-group .session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
     await page.locator('.conversation-column').evaluate((node) => {
       node.style.flex = '0 0 560px'
       const pane = node.querySelector<HTMLElement>('.conversation-pane')
@@ -1654,17 +1654,17 @@ test.describe('OMP Desktop desktop smoke', () => {
 
   test('lists the OMP session catalog and opens a saved thread', async () => {
     await expect(page.locator('.sidebar__brand')).toHaveCount(0)
-    await expect(page.locator('.session-row__title').filter({ hasText: 'Hermetic desktop fixture' })).toBeVisible()
-    await expect(page.locator('.session-row__title').filter({ hasText: 'Primary workspace fixture' })).toBeVisible()
-    await expect(page.locator('.session-row__title').filter({ hasText: 'OMP hermetic fixture' })).toBeVisible()
+    await expect(page.locator('.project-group .session-row__title').filter({ hasText: 'Hermetic desktop fixture' })).toBeVisible()
+    await expect(page.locator('.project-group .session-row__title').filter({ hasText: 'Primary workspace fixture' })).toBeVisible()
+    await expect(page.locator('.project-group .session-row__title').filter({ hasText: 'OMP hermetic fixture' })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Scheduled' })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Capabilities' })).toBeVisible()
-    await page.locator('.session-row__title').filter({ hasText: 'OMP hermetic fixture' }).click()
+    await page.locator('.project-group .session-row__title').filter({ hasText: 'OMP hermetic fixture' }).click()
     await expect(page.getByRole('main').getByText('OMP fixture reply.')).toBeVisible()
   })
 
   test('wraps an unbroken user-message token inside its chat bubble', async () => {
-    await page.locator('.session-row__title').filter({ hasText: 'OMP hermetic fixture' }).click()
+    await page.locator('.project-group .session-row__title').filter({ hasText: 'OMP hermetic fixture' }).click()
 
     const bubble = page.locator('.user-bubble').filter({ hasText: ISSUE_131_LONG_TOKEN })
     await expect(bubble).toBeVisible()
@@ -1676,7 +1676,7 @@ test.describe('OMP Desktop desktop smoke', () => {
   })
 
   test('searches and filters the custom model picker by provider', async () => {
-    await page.locator('.session-row__title').filter({ hasText: 'OMP hermetic fixture' }).click()
+    await page.locator('.project-group .session-row__title').filter({ hasText: 'OMP hermetic fixture' }).click()
 
     const picker = page.locator('.model-picker')
     await picker.locator('.model-picker__trigger').click()
@@ -1735,7 +1735,7 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(page.getByText('OMP is ready', { exact: true })).toBeVisible()
 
     await page.getByRole('button', { name: 'Back to session' }).click()
-    await page.locator('.session-row__title').filter({ hasText: 'OMP hermetic fixture' }).click()
+    await page.locator('.project-group .session-row__title').filter({ hasText: 'OMP hermetic fixture' }).click()
     await expect(page.locator('.model-picker__trigger')).toHaveAccessibleName('Model: Claude Fixture')
     const composer = page.getByRole('combobox', { name: 'Message OMP' })
     await composer.fill('Connect to the newly installed harness')
@@ -1757,7 +1757,7 @@ test.describe('OMP Desktop desktop smoke', () => {
   })
 
   test('keeps thread order stable and mutes acknowledged failure indicators', async () => {
-    const titles = page.locator('.session-row__title')
+    const titles = page.locator('.project-group .session-row__title')
     await expect(titles.nth(0)).toHaveText('Hermetic desktop fixture')
     await expect(titles.nth(1)).toHaveText('Primary workspace fixture')
     const primaryFile = fixturePrimarySessionFile
@@ -1766,7 +1766,7 @@ test.describe('OMP Desktop desktop smoke', () => {
       message: { role: 'assistant', content: 'Background work failed.', stopReason: 'error' },
     })}\n`)
 
-    const primaryRow = page.locator('.session-row-wrap').filter({ hasText: 'Primary workspace fixture' })
+    const primaryRow = page.locator('.project-group .session-row-wrap').filter({ hasText: 'Primary workspace fixture' })
     await expect(primaryRow).toHaveClass(/has-attention/)
     const activityCount = page.locator('.sidebar__primary button[title="Activity"] .nav-count')
     await expect(activityCount).toHaveText('1')
@@ -1820,7 +1820,7 @@ test.describe('OMP Desktop desktop smoke', () => {
       message: { role: 'assistant', content: 'Archive this failed work.', stopReason: 'error' },
     })}\n`)
 
-    const primaryRow = page.locator('.session-row-wrap').filter({ hasText: 'Primary workspace fixture' })
+    const primaryRow = page.locator('.project-group .session-row-wrap').filter({ hasText: 'Primary workspace fixture' })
     await expect(primaryRow).toHaveClass(/has-attention/)
     const activityCount = page.locator('.sidebar__primary button[title="Activity"] .nav-count')
     await expect(activityCount).toHaveText('1')
@@ -1842,7 +1842,7 @@ test.describe('OMP Desktop desktop smoke', () => {
   })
 
   test('destroys an open session browser guest when its thread is deleted', async () => {
-    const sessionRow = page.locator('.session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' })
+    const sessionRow = page.locator('.project-group .session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' })
     await sessionRow.locator('.session-row').click()
     await page.getByRole('tab', { name: 'Browser' }).click()
     const preview = page.locator('.browser-preview webview[partition="persist:omp-desktop-browser"]')
@@ -1870,7 +1870,7 @@ test.describe('OMP Desktop desktop smoke', () => {
   })
 
   test('stops a dev server launched from the thread terminal when deleted', async () => {
-    const sessionRow = page.locator('.session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' })
+    const sessionRow = page.locator('.project-group .session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' })
     await sessionRow.locator('.session-row').click()
     await page.getByLabel(/Toggle terminal/).click()
     const terminal = page.locator('.terminal-drawer:not([hidden])')
@@ -1942,7 +1942,7 @@ test.describe('OMP Desktop desktop smoke', () => {
 
   test('reflects an external JSONL append without reselecting the live session', async () => {
     await expect(page.locator('.transcript').getByText('Hermetic desktop fixture', { exact: true })).toBeVisible()
-    const selectedSession = page.locator('.session-row-wrap.is-selected')
+    const selectedSession = page.locator('.project-group .session-row-wrap.is-selected')
     await expect(selectedSession).toHaveCount(1)
 
     const nonce = `${Date.now()}-${Math.random().toString(36).slice(2)}`
@@ -1980,7 +1980,7 @@ test.describe('OMP Desktop desktop smoke', () => {
   })
 
   test('reveals session options on hover and starts a new session from a hovered project', async () => {
-    const sessionRowWrap = page.locator('.session-row-wrap').first()
+    const sessionRowWrap = page.locator('.project-group .session-row-wrap').first()
     const sessionOptions = sessionRowWrap.locator('.session-row__more')
     await expect(sessionOptions).toBeAttached()
     await expect.poll(() => sessionOptions.evaluate((node) => getComputedStyle(node).opacity)).toBe('0')
@@ -2000,22 +2000,22 @@ test.describe('OMP Desktop desktop smoke', () => {
 
     // The empty draft selects the project row and fabricates no session row.
     await expect(projectRow).toHaveClass(/is-selected/)
-    await expect(page.locator('.session-row-wrap.is-selected')).toHaveCount(0)
-    await expect(page.locator('.session-row-wrap.is-placeholder')).toHaveCount(0)
+    await expect(page.locator('.project-group .session-row-wrap.is-selected')).toHaveCount(0)
+    await expect(page.locator('.project-group .session-row-wrap.is-placeholder')).toHaveCount(0)
     await expect(page.getByRole('combobox', { name: 'Message OMP' })).toHaveValue('')
   })
 
   test('switches to a fresh session when the displayed session is deleted', async () => {
-    const sessionRowWrap = page.locator('.session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' })
+    const sessionRowWrap = page.locator('.project-group .session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' })
     await sessionRowWrap.locator('.session-row').click()
-    await expect(page.locator('.session-row-wrap.is-selected')).toHaveCount(1)
+    await expect(page.locator('.project-group .session-row-wrap.is-selected')).toHaveCount(1)
 
     await sessionRowWrap.getByRole('button', { name: /^Delete / }).click()
     await page.getByRole('dialog').getByRole('button', { name: 'Delete permanently', exact: true }).click()
 
     // Deleting the session on screen leaves an empty draft; the project row
     // carries selection and no session row is fabricated.
-    await expect(page.locator('.session-row-wrap.is-placeholder')).toHaveCount(0)
+    await expect(page.locator('.project-group .session-row-wrap.is-placeholder')).toHaveCount(0)
     await expect(page.locator('.project-row').first()).toHaveClass(/is-selected/)
     const composer = page.getByRole('combobox', { name: 'Message OMP' })
     await expect(composer).toHaveValue('')
@@ -2025,7 +2025,7 @@ test.describe('OMP Desktop desktop smoke', () => {
   })
 
   test('switches to a fresh session when a live session is deleted mid-turn', async () => {
-    const sessionRowWrap = page.locator('.session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' })
+    const sessionRowWrap = page.locator('.project-group .session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' })
     await sessionRowWrap.locator('.session-row').click()
     await expect(page.locator('.model-picker__trigger')).toHaveAccessibleName('Model: Claude Fixture')
     const composer = page.getByRole('combobox', { name: 'Message OMP' })
@@ -2036,7 +2036,7 @@ test.describe('OMP Desktop desktop smoke', () => {
     await sessionRowWrap.getByRole('button', { name: /^Delete / }).click()
     await page.getByRole('dialog').getByRole('button', { name: 'Delete permanently', exact: true }).click()
 
-    await expect(page.locator('.session-row-wrap.is-placeholder')).toHaveCount(0)
+    await expect(page.locator('.project-group .session-row-wrap.is-placeholder')).toHaveCount(0)
     await expect(page.locator('.project-row').first()).toHaveClass(/is-selected/)
     await expect(composer).toHaveValue('')
     await expect(page.locator('.transcript .user-bubble').first()).toHaveCount(0)
@@ -2050,7 +2050,7 @@ test.describe('OMP Desktop desktop smoke', () => {
     await projectRow.hover()
     await projectSession.click()
     await expect(projectRow).toHaveClass(/is-selected/)
-    await expect(page.locator('.session-row-wrap.is-selected')).toHaveCount(0)
+    await expect(page.locator('.project-group .session-row-wrap.is-selected')).toHaveCount(0)
 
     const composer = page.getByRole('combobox', { name: 'Message OMP' })
     await composer.fill('/btw')
@@ -2065,8 +2065,8 @@ test.describe('OMP Desktop desktop smoke', () => {
     // A real prompt starts the session its daemon created; the sidebar row
     // appears only after admission and the hint is covered by the turn.
     await expect(page.locator('.conversation-hint')).toHaveCount(0)
-    await expect(page.locator('.session-row-wrap.is-placeholder')).toHaveCount(0)
-    await expect(page.locator('.session-row-wrap.is-selected')).toHaveCount(1)
+    await expect(page.locator('.project-group .session-row-wrap.is-placeholder')).toHaveCount(0)
+    await expect(page.locator('.project-group .session-row-wrap.is-selected')).toHaveCount(1)
     await expect.poll(() => existsSync(join(fixtureRoot, 'prompt-args.json'))).toBe(true)
     expect(JSON.parse(readFileSync(join(fixtureRoot, 'prompt-args.json'), 'utf8'))).toMatchObject({ message: 'first prompt after the side-question hint' })
   })
@@ -2074,7 +2074,7 @@ test.describe('OMP Desktop desktop smoke', () => {
   test('starts the session on the first prompt and selects its row', async () => {
     // Let the boot's auto-selection settle first: clicking New during the
     // bootstrap workspace reset races the flight against a generation bump.
-    await expect(page.locator('.session-row-wrap.is-selected')).toHaveCount(1)
+    await expect(page.locator('.project-group .session-row-wrap.is-selected')).toHaveCount(1)
     const projectRow = page.locator('.project-row').first()
     await projectRow.hover()
     await projectRow.getByRole('button', { name: /^New session in / }).click()
@@ -2094,8 +2094,8 @@ test.describe('OMP Desktop desktop smoke', () => {
     // The hermetic daemon reports the fixture session file for fresh starts.
     // The first admitted prompt indexes the row and keeps the turn that
     // created it; no placeholder existed before this point.
-    await expect(page.locator('.session-row-wrap.is-placeholder')).toHaveCount(0)
-    await expect(page.locator('.session-row-wrap.is-selected')).toHaveCount(1)
+    await expect(page.locator('.project-group .session-row-wrap.is-placeholder')).toHaveCount(0)
+    await expect(page.locator('.project-group .session-row-wrap.is-selected')).toHaveCount(1)
     await expect(page.locator('.transcript .user-bubble').filter({ hasText: 'Draft placeholder adoption probe' })).toHaveCount(1)
     await expect(page.locator('.transcript').getByText('Fixture response.', { exact: true })).toBeVisible()
   })
@@ -2284,7 +2284,7 @@ test.describe('OMP Desktop desktop smoke', () => {
         value: { writeText: async (text: string) => { target.__copiedSessionId = text } },
       })
     })
-    const selected = page.locator('.session-row-wrap.is-selected .session-row')
+    const selected = page.locator('.project-group .session-row-wrap.is-selected .session-row')
     await app!.evaluate(() => {
       ;(globalThis as { __e2eMenuChoice?: string }).__e2eMenuChoice = 'copy'
     })
@@ -2319,8 +2319,8 @@ test.describe('OMP Desktop desktop smoke', () => {
       type: 'message', id: 'fixture-session-reference', parentId: 'fixture-goal-summary', timestamp: new Date().toISOString(),
       message: { role: 'user', content: sent.message, timestamp: new Date().toISOString() },
     })}\n`)
-    await page.locator('.session-row-wrap').filter({ hasText: 'Ownership peer fixture' }).locator('.session-row').click()
-    await page.locator('.session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
+    await page.locator('.project-group .session-row-wrap').filter({ hasText: 'Ownership peer fixture' }).locator('.session-row').click()
+    await page.locator('.project-group .session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
     const userMessage = page.locator('.message--user').filter({ hasText: 'Coordinate with @Ownership peer fixture about ownership' })
     await expect(userMessage).toBeVisible()
     await expect(userMessage).not.toContainText('019fdf24-cccc-7000-8000-000000000003')
@@ -2329,7 +2329,7 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(linkedMention).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
     await expect(linkedMention).toHaveCSS('border-top-width', '0px')
     await linkedMention.click()
-    await expect(page.locator('.session-row-wrap').filter({ hasText: 'Ownership peer fixture' })).toHaveClass(/is-selected/)
+    await expect(page.locator('.project-group .session-row-wrap').filter({ hasText: 'Ownership peer fixture' })).toHaveClass(/is-selected/)
   })
 
   test('removes a project from the sidebar through its context menu', async () => {
@@ -2377,7 +2377,7 @@ test.describe('OMP Desktop desktop smoke', () => {
 
 
   test('docks the todo plan at the top and renders compaction as a divider', async () => {
-    await page.locator('.session-row-wrap').filter({ hasText: 'Todo plan fixture' }).locator('.session-row').click()
+    await page.locator('.project-group .session-row-wrap').filter({ hasText: 'Todo plan fixture' }).locator('.session-row').click()
 
     // The plan floats at the top of the conversation pane as a collapsed
     // bar; the user expands it on demand.
@@ -2579,7 +2579,7 @@ test.describe('OMP Desktop desktop smoke', () => {
 
   test('round-trips a grouped OMP ask_user questionnaire', async () => {
     await page.evaluate(() => window.desktop.settings.update({ askUserEnabled: true }))
-    await page.locator('.session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
+    await page.locator('.project-group .session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
     await expect(page.locator('.model-picker__trigger')).toHaveAccessibleName('Model: Claude Fixture')
 
     const composer = page.getByRole('combobox', { name: 'Message OMP' })
@@ -2645,7 +2645,7 @@ test.describe('OMP Desktop desktop smoke', () => {
     await worked.click()
     await expect(page.locator('.activity-line--question')).toContainText('What should OMP optimize for?')
 
-    const completedRow = page.locator('.session-row-wrap').filter({ hasText: 'Post-completion catalog refresh' })
+    const completedRow = page.locator('.project-group .session-row-wrap').filter({ hasText: 'Post-completion catalog refresh' })
     await expect(completedRow).toHaveCount(1)
     await expect(completedRow).toHaveClass(/session-row-wrap--complete/)
     await expect(completedRow).toHaveClass(/is-selected/)
@@ -2953,7 +2953,7 @@ test.describe('OMP Desktop desktop smoke', () => {
     await page.reload()
     await expect(page.locator('.app-shell')).toHaveAttribute('data-ready', 'true')
     await expect(page.locator('.app-shell')).toHaveAttribute('data-density', 'compact')
-    await page.locator('.session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
+    await page.locator('.project-group .session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
     const measured = () => page.locator('.conversation-pane').evaluate((pane) => {
       const dock = pane.querySelector('.conversation-bottom-dock')!
       const transcript = pane.querySelector('.transcript')!
@@ -3029,11 +3029,11 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(page.locator('.file-changes')).toContainText('secondary-change.txt')
     await expect(page.getByRole('button', { name: /Stage$/ }).last()).toBeVisible()
 
-    await page.locator('.session-row').filter({ hasText: 'Primary workspace fixture' }).click()
+    await page.locator('.project-group .session-row').filter({ hasText: 'Primary workspace fixture' }).click()
     await expect(page.locator('.file-changes')).not.toContainText('secondary-change.txt')
     await expect(page.locator('.file-changes')).toContainText('README.md')
 
-    await page.locator('.session-row').filter({ hasText: 'Hermetic desktop fixture' }).click()
+    await page.locator('.project-group .session-row').filter({ hasText: 'Hermetic desktop fixture' }).click()
     await expect(page.locator('.file-changes')).toContainText('secondary-change.txt')
     await page.getByRole('button', { name: /Stage$/ }).last().click()
     await page.getByRole('button', { name: 'Staged', exact: true }).click()
@@ -3041,7 +3041,7 @@ test.describe('OMP Desktop desktop smoke', () => {
     await page.getByRole('button', { name: /Unstage$/ }).last().click()
   })
   test('dismisses the file changes popup, disables it in settings, and undoes a file', async () => {
-    await page.locator('.session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
+    await page.locator('.project-group .session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
     await expect(page.locator('.model-picker__trigger')).toHaveAccessibleName('Model: Claude Fixture')
     const changesCard = page.locator('.changes-card')
     await expect(changesCard).toHaveCount(0)
@@ -3061,7 +3061,7 @@ test.describe('OMP Desktop desktop smoke', () => {
     await popupToggle.press('Space')
     await expect(popupToggle).not.toBeChecked()
     await expect.poll(() => page.evaluate(async () => (await window.desktop.settings.get()).showFileChangesPopup)).toBe(false)
-    await page.locator('.session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
+    await page.locator('.project-group .session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
     await expect(page.locator('.changes-card')).toHaveCount(0)
 
     await page.getByRole('tab', { name: 'Changes' }).click()
@@ -3163,7 +3163,7 @@ test.describe('OMP Desktop desktop smoke', () => {
     await page.keyboard.press('Enter')
     await expect(visibleDrawer.locator('.xterm-rows')).toContainText('secondary-session-state', { timeout: 8_000 })
 
-    await page.locator('.session-row').filter({ hasText: 'Primary workspace fixture' }).click()
+    await page.locator('.project-group .session-row').filter({ hasText: 'Primary workspace fixture' }).click()
     await expect(page.locator('.terminal-drawer:not([hidden])')).toHaveCount(0)
     await page.getByLabel(/Toggle terminal/).click()
     const primaryDrawer = page.locator('.terminal-drawer:not([hidden])')
@@ -3175,12 +3175,12 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(primaryDrawer.locator('.xterm-rows')).toContainText(/omp-desktop-e2e-[^/]+\/project/, { timeout: 8_000 })
     await expect(primaryDrawer.locator('.xterm-rows')).not.toContainText('secondary-session-state')
 
-    await page.locator('.session-row').filter({ hasText: 'Hermetic desktop fixture' }).click()
+    await page.locator('.project-group .session-row').filter({ hasText: 'Hermetic desktop fixture' }).click()
     await expect(page.locator('.terminal-drawer:not([hidden]) .xterm-rows')).toContainText('secondary-session-state')
-    await page.locator('.session-row').filter({ hasText: 'Primary workspace fixture' }).click()
+    await page.locator('.project-group .session-row').filter({ hasText: 'Primary workspace fixture' }).click()
     await expect(page.locator('.terminal-drawer:not([hidden]) .xterm-rows')).toContainText(/omp-desktop-e2e-[^/]+\/project/)
     await page.locator('.terminal-drawer:not([hidden])').getByLabel('Close terminal', { exact: true }).click()
-    await page.locator('.session-row').filter({ hasText: 'Hermetic desktop fixture' }).click()
+    await page.locator('.project-group .session-row').filter({ hasText: 'Hermetic desktop fixture' }).click()
     await page.locator('.terminal-drawer:not([hidden])').getByLabel('Close terminal', { exact: true }).click()
   })
 
@@ -3219,13 +3219,13 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(page.locator('.terminal-surface:not([hidden]) .xterm-rows')).toContainText('first-terminal')
     await expect(page.locator('.terminal-surface:not([hidden]) .xterm-rows')).not.toContainText('second-terminal')
 
-    await page.locator('.session-row').filter({ hasText: 'Primary workspace fixture' }).click()
+    await page.locator('.project-group .session-row').filter({ hasText: 'Primary workspace fixture' }).click()
     await expect(page.locator('.terminal-drawer:not([hidden])')).toHaveCount(0)
     await page.getByLabel(/Toggle terminal/).click()
     await expect(page.getByRole('tablist', { name: 'Terminal tabs' }).getByRole('tab')).toHaveCount(1)
     await expect(page.locator('.terminal-surface:not([hidden]) .xterm-rows')).not.toContainText(/first-terminal|second-terminal/)
 
-    await page.locator('.session-row').filter({ hasText: 'Hermetic desktop fixture' }).click()
+    await page.locator('.project-group .session-row').filter({ hasText: 'Hermetic desktop fixture' }).click()
     await expect(page.getByRole('tablist', { name: 'Terminal tabs' }).getByRole('tab')).toHaveCount(2)
     await page.getByRole('tab', { name: /zsh 1/ }).click()
     await expect(page.locator('.terminal-surface:not([hidden]) .xterm-rows')).toContainText('first-terminal')
@@ -3380,7 +3380,7 @@ test.describe('OMP Desktop desktop smoke', () => {
   })
 
   test('asks before closing and quits after confirmation while an agent runs', async () => {
-    await page.locator('.session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
+    await page.locator('.project-group .session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
     await expect(page.locator('.model-picker__trigger')).toHaveAccessibleName('Model: Claude Fixture')
     const composer = page.getByRole('combobox', { name: 'Message OMP' })
     await composer.fill('stay busy while I close the window')
@@ -3433,7 +3433,7 @@ test.describe('OMP Desktop desktop smoke', () => {
     await page.evaluate(() => window.desktop.settings.update({ keepRunningInBackground: true }))
     await expect.poll(() => app!.evaluate(() => typeof (globalThis as { __trayQuit?: unknown }).__trayQuit)).toBe('function')
 
-    await page.locator('.session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
+    await page.locator('.project-group .session-row-wrap').filter({ hasText: 'Hermetic desktop fixture' }).locator('.session-row').click()
     await expect(page.locator('.model-picker__trigger')).toHaveAccessibleName('Model: Claude Fixture')
     const composer = page.getByRole('combobox', { name: 'Message OMP' })
     await composer.fill('stay busy while I background the window')
