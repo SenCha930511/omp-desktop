@@ -232,6 +232,41 @@ fn lookup(language: Language, key: &'static str) -> Option<&'static str> {
             "transcript.welcomeBody" => "Ask OMP anything, mention a session, or use a command.",
             "session.copyTranscript" => "Copy transcript",
             "session.copyUuid" => "Copy session UUID",
+            "session.copyLastReply" => "Copy last assistant reply",
+            "session.copyLastReply.noRuntime" => {
+                "Open the session with a live OMP runtime before copying its last reply."
+            }
+            "session.copyLastReply.failed" => "OMP could not read the last assistant reply",
+            "session.copyLastReply.missing" => {
+                "OMP has no non-empty assistant reply to copy. The clipboard was not changed."
+            }
+            "session.copyLastReply.success" => "Copied last assistant reply",
+            "session.export" => "Export HTML",
+            "session.export.noRuntime" => {
+                "Open the session with a live OMP runtime before exporting HTML."
+            }
+            "session.actionChanged" => {
+                "The selected session changed. The action was not performed."
+            }
+            "session.export.prompt" => "Choose HTML export folder",
+            "session.export.cancelled" => "HTML export cancelled.",
+            "session.export.invalidDirectory" => {
+                "Choose an existing absolute export folder without parent traversal."
+            }
+            "session.export.invalidName" => {
+                "The session id cannot be made into a safe HTML filename."
+            }
+            "session.export.exists" => {
+                "An HTML file already exists at the destination. Choose another folder; nothing was overwritten."
+            }
+            "session.export.failed" => "OMP could not export HTML",
+            "session.export.badPath" => {
+                "OMP returned an unexpected HTML path, so the export could not be confirmed."
+            }
+            "session.export.missingFile" => {
+                "OMP could not confirm the HTML file at the returned path."
+            }
+            "session.export.success" => "Exported HTML: {path}",
             "session.fork" => "Fork session",
             "session.rename.placeholder" => "Session name",
             "session.rename.empty" => "Session name cannot be empty.",
@@ -448,6 +483,25 @@ fn lookup(language: Language, key: &'static str) -> Option<&'static str> {
             "transcript.welcomeBody" => "詢問 OMP 任何問題、提及工作階段或使用命令。",
             "session.copyTranscript" => "複製逐字稿",
             "session.copyUuid" => "複製工作階段 UUID",
+            "session.copyLastReply" => "複製最後一則助理回覆",
+            "session.copyLastReply.noRuntime" => {
+                "請先以即時 OMP 執行環境開啟工作階段，再複製最後一則回覆。"
+            }
+            "session.copyLastReply.failed" => "OMP 無法讀取最後一則助理回覆",
+            "session.copyLastReply.missing" => "OMP 沒有可複製的非空白助理回覆，剪貼簿未變更。",
+            "session.copyLastReply.success" => "已複製最後一則助理回覆",
+            "session.export" => "匯出 HTML",
+            "session.export.noRuntime" => "請先以即時 OMP 執行環境開啟工作階段，再匯出 HTML。",
+            "session.actionChanged" => "工作階段已變更，因此未執行該操作。",
+            "session.export.prompt" => "選擇 HTML 匯出資料夾",
+            "session.export.cancelled" => "已取消 HTML 匯出。",
+            "session.export.invalidDirectory" => "請選擇不含上層路徑的現有絕對匯出資料夾。",
+            "session.export.invalidName" => "工作階段 ID 無法轉為安全的 HTML 檔名。",
+            "session.export.exists" => "目的地已有 HTML 檔案。請選擇其他資料夾，未覆寫任何檔案。",
+            "session.export.failed" => "OMP 無法匯出 HTML",
+            "session.export.badPath" => "OMP 回傳非預期的 HTML 路徑，因此無法確認匯出結果。",
+            "session.export.missingFile" => "OMP 無法確認回傳路徑中的 HTML 檔案。",
+            "session.export.success" => "已匯出 HTML：{path}",
             "session.fork" => "分支工作階段",
             "session.rename.placeholder" => "工作階段名稱",
             "session.rename.empty" => "工作階段名稱不可為空白。",
@@ -660,6 +714,25 @@ fn lookup(language: Language, key: &'static str) -> Option<&'static str> {
             "transcript.welcomeBody" => "询问 OMP 任何问题、提及会话或使用命令。",
             "session.copyTranscript" => "复制会话记录",
             "session.copyUuid" => "复制会话 UUID",
+            "session.copyLastReply" => "复制最后一条助手回复",
+            "session.copyLastReply.noRuntime" => {
+                "请先通过实时 OMP 运行环境打开会话，再复制最后一条回复。"
+            }
+            "session.copyLastReply.failed" => "OMP 无法读取最后一条助手回复",
+            "session.copyLastReply.missing" => "OMP 没有可复制的非空助手回复，剪贴板未更改。",
+            "session.copyLastReply.success" => "已复制最后一条助手回复",
+            "session.export" => "导出 HTML",
+            "session.export.noRuntime" => "请先通过实时 OMP 运行环境打开会话，再导出 HTML。",
+            "session.actionChanged" => "所选会话已变更，因此未执行该操作。",
+            "session.export.prompt" => "选择 HTML 导出文件夹",
+            "session.export.cancelled" => "已取消 HTML 导出。",
+            "session.export.invalidDirectory" => "请选择不含父级路径的现有绝对导出文件夹。",
+            "session.export.invalidName" => "会话 ID 无法转换为安全的 HTML 文件名。",
+            "session.export.exists" => "目标位置已有 HTML 文件。请选择其他文件夹，未覆盖任何文件。",
+            "session.export.failed" => "OMP 无法导出 HTML",
+            "session.export.badPath" => "OMP 返回了意外的 HTML 路径，因此无法确认导出结果。",
+            "session.export.missingFile" => "OMP 无法确认返回路径中的 HTML 文件。",
+            "session.export.success" => "已导出 HTML：{path}",
             "session.fork" => "创建会话分支",
             "session.rename.placeholder" => "会话名称",
             "session.rename.empty" => "会话名称不能为空。",

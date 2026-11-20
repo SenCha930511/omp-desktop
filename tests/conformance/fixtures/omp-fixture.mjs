@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { createInterface } from 'node:readline'
 
 const args = process.argv.slice(2)
@@ -148,6 +148,14 @@ if (stateDir) {
 
 const resumeIndex = args.indexOf('--resume')
 const sessionFile = (resumeIndex >= 0 ? args[resumeIndex + 1] : undefined) || process.env.OMP_FIXTURE_SESSION_FILE || (stateDir ? join(stateDir, 'default-session.jsonl') : '')
+const sessionHasFixtureMarker = (marker) => {
+  if (!sessionFile) return false
+  try {
+    return readFileSync(sessionFile, 'utf8').includes(marker)
+  } catch {
+    return false
+  }
+}
 
 const modelIndex = args.indexOf('--model')
 const initialModelSelector = modelIndex >= 0 ? args[modelIndex + 1] : 'anthropic/claude-fixture'
@@ -237,6 +245,64 @@ rl.on('line', (line) => {
         cost: 0.42,
         tokens: { input: 1_000, output: 200, cacheRead: 0, cacheWrite: 0, total: 1_200 },
       })
+      break
+    }
+    case 'get_last_assistant_text': {
+      if (!sessionFile || sessionHasFixtureMarker('[last-reply-missing]')) {
+        replySuccess(command)
+      } else if (sessionHasFixtureMarker('[last-reply-malformed]')) {
+        replySuccess(command, { text: 42 })
+      } else if (sessionHasFixtureMarker('[last-reply-blank]')) {
+        replySuccess(command, { text: ' \n\t' })
+      } else {
+        // Deliberately different from the local JSONL reply, with significant
+        // trailing whitespace: the E2E must exercise this real RPC payload.
+        replySuccess(command, { text: 'fixture assistant reply\nsecond line with two spaces  \n' })
+      }
+      break
+    }
+    case 'export_html': {
+      const requested = command.outputPath
+      if (typeof requested !== 'string' || !isAbsolute(requested) || requested !== resolve(requested) || !stateDir) {
+        replyError(command, { message: 'Fixture requires one normalized absolute outputPath' })
+        break
+      }
+      let exportRoot
+      try {
+        exportRoot = realpathSync(resolve(stateDir))
+      } catch (error) {
+        replyError(command, { message: `Fixture export root is unavailable: ${error.message}` })
+        break
+      }
+      const fromRoot = relative(exportRoot, requested)
+      if (!fromRoot || fromRoot === '..' || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot)) {
+        replyError(command, { message: 'Fixture export must stay inside its isolated state directory' })
+        break
+      }
+      if (sessionHasFixtureMarker('[export-failure]')) {
+        replyError(command, { message: 'Fixture export refused by session marker' })
+        break
+      }
+      if (sessionHasFixtureMarker('[export-without-file]')) {
+        replySuccess(command, { path: requested })
+        break
+      }
+      try {
+        writeFileSync(
+          requested,
+          '<!doctype html><meta charset="utf-8"><title>Fixture session</title><p>Fixture HTML export</p>\n',
+          { encoding: 'utf8', flag: 'wx' },
+        )
+      } catch (error) {
+        replyError(command, { message: `Fixture could not write HTML: ${error.message}` })
+        break
+      }
+      // This is a real server-side file write and an absolute data.path reply,
+      // not a projection of success by the desktop test.
+      const reportedPath = sessionHasFixtureMarker('[export-path-mismatch]')
+        ? join(dirname(requested), 'unexpected-result.html')
+        : requested
+      replySuccess(command, { path: reportedPath })
       break
     }
     case 'set_subagent_subscription': {

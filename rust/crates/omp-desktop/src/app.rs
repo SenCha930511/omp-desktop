@@ -44,8 +44,11 @@ mod browser;
 mod interaction;
 #[path = "markdown.rs"]
 mod markdown;
+#[path = "session_export.rs"]
+mod session_export;
 
 use browser::BrowserPane;
+use session_export::{ExportPathError, SessionExportTarget};
 #[path = "terminal.rs"]
 mod terminal;
 
@@ -876,7 +879,15 @@ const MENTION_EMPTY_STATUS: &str = "No sessions to mention yet.";
 /// The session menu's actionable rows, in draw order. `debug_snapshot` reads
 /// this list, so a scenario can prove a new row is wired and drawn without
 /// measuring the popover.
-const SESSION_MENU_ACTIONS: [&str; 5] = ["Rename", "Pin", "Archive", "Delete", "Fork session"];
+const SESSION_MENU_ACTIONS: [&str; 7] = [
+    "Rename",
+    "Pin",
+    "Archive",
+    "Delete",
+    "Fork session",
+    "Copy last reply",
+    "Export HTML",
+];
 
 #[derive(Clone)]
 struct PendingSessionDelete {
@@ -987,6 +998,14 @@ pub struct Workspace {
     fork_status: Option<String>,
     // The last non-error session menu outcome, including offline rename help.
     session_action_status: Option<String>,
+    // A copy/export failure has its own status slot so it renders as an error
+    // instead of looking like another successful session action.
+    session_action_error: Option<String>,
+    // A directory answer is accepted only for the generation and captured
+    // session/runtime that opened it. Selection/runtime changes invalidate it.
+    pending_session_export: Option<SessionExportTarget>,
+    session_export_generation: u64,
+    session_export_path: Option<PathBuf>,
     // The harness's last `get_session_stats` reading. It is cleared on a
     // session switch, so the dial never shows another session's fill.
     context_usage: Option<ContextUsage>,
@@ -1330,6 +1349,10 @@ impl Workspace {
             runtime_error: None,
             fork_status: None,
             session_action_status: None,
+            session_action_error: None,
+            pending_session_export: None,
+            session_export_generation: 0,
+            session_export_path: None,
             context_usage: None,
             selected_session: None,
             collapsed_projects: HashSet::new(),
@@ -1485,6 +1508,322 @@ impl Workspace {
             return;
         };
         cx.write_to_clipboard(ClipboardItem::new_string(session.id.clone()));
+    }
+
+    /// Captures the selected record and live runtime together. Rollovers may
+    /// share a session id, so a path is part of the identity as well.
+    fn current_session_target(&self) -> Option<SessionExportTarget> {
+        let session = self
+            .selected_session
+            .and_then(|index| self.sessions.get(index))?;
+        Some(SessionExportTarget {
+            session_id: session.id.clone(),
+            file_path: session.file_path.clone(),
+            runtime_id: self.runtime_id.clone()?,
+        })
+    }
+
+    /// Invalidates every outstanding directory answer for the old selection.
+    fn invalidate_session_export(&mut self) {
+        self.session_export_generation = self.session_export_generation.wrapping_add(1);
+        self.pending_session_export = None;
+        self.session_export_path = None;
+        self.session_action_error = None;
+    }
+
+    fn session_target_is_current(&self, target: &SessionExportTarget) -> bool {
+        self.current_session_target().as_ref() == Some(target)
+    }
+
+    /// Copies only the live harness's reply. A local transcript is deliberately
+    /// not a fallback: it can be stale and would misreport which reply was read.
+    pub fn copy_last_assistant_reply(&mut self, cx: &mut Context<Self>) {
+        self.menu_open = false;
+        self.runtime_error = None;
+        self.session_action_status = None;
+        self.session_action_error = None;
+        let Some(target) = self.current_session_target() else {
+            self.session_action_error = Some(self.t("session.copyLastReply.noRuntime").to_string());
+            cx.notify();
+            return;
+        };
+        let response = self.agents.command(
+            &target.runtime_id,
+            &json!({ "type": "get_last_assistant_text" }),
+        );
+        // The command is synchronous today, but the identity check is part of
+        // the RPC boundary: a late response can never write another session's
+        // text or success into the newly selected session.
+        if !self.session_target_is_current(&target) {
+            self.session_action_status = None;
+            self.session_action_error = Some(
+                if self.current_session_target().is_some() {
+                    self.t("session.actionChanged")
+                } else {
+                    self.t("session.copyLastReply.noRuntime")
+                }
+                .to_string(),
+            );
+            cx.notify();
+            return;
+        }
+        let response = match response {
+            Ok(response) => response,
+            Err(error) => {
+                self.session_action_error = Some(format!(
+                    "{}: {}",
+                    self.t("session.copyLastReply.failed"),
+                    error.message
+                ));
+                cx.notify();
+                return;
+            }
+        };
+        if response.get("success").and_then(Value::as_bool) != Some(true) {
+            let detail = response
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .unwrap_or("OMP rejected get_last_assistant_text");
+            self.session_action_error = Some(format!(
+                "{}: {detail}",
+                self.t("session.copyLastReply.failed")
+            ));
+            cx.notify();
+            return;
+        }
+        let text = response
+            .pointer("/data/text")
+            .and_then(Value::as_str)
+            .filter(|text| !text.trim().is_empty());
+        let Some(text) = text else {
+            // Missing, blank and malformed text are all a no-copy outcome. In
+            // particular, no synthetic HTML or status-only text reaches the
+            // clipboard, and the old clipboard value remains intact.
+            self.session_action_status = None;
+            self.session_action_error = Some(self.t("session.copyLastReply.missing").to_string());
+            cx.notify();
+            return;
+        };
+        cx.write_to_clipboard(ClipboardItem::new_string(text.to_string()));
+        self.session_action_error = None;
+        self.session_action_status = Some(self.t("session.copyLastReply.success").to_string());
+        cx.notify();
+    }
+
+    /// Captures a live export target before opening the native directory picker.
+    /// The token is also the public test seam for delivering a selected folder;
+    /// tests need not simulate a native dialog to exercise the exact same guard.
+    pub fn begin_session_export(&mut self, cx: &mut Context<Self>) -> Option<u64> {
+        self.runtime_error = None;
+        self.session_action_status = None;
+        self.session_action_error = None;
+        self.session_export_path = None;
+        let Some(target) = self.current_session_target() else {
+            self.session_action_error = Some(self.t("session.export.noRuntime").to_string());
+            cx.notify();
+            return None;
+        };
+        self.session_export_generation = self.session_export_generation.wrapping_add(1);
+        self.pending_session_export = Some(target);
+        cx.notify();
+        Some(self.session_export_generation)
+    }
+
+    /// Opens a user-authorized directory prompt. Its completion carries only a
+    /// generation; `export_html_to_directory` rechecks the session and runtime.
+    fn pick_session_export_directory(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let _ = window;
+        let Some(generation) = self.begin_session_export(cx) else {
+            return;
+        };
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some(self.t("session.export.prompt").into()),
+        });
+        cx.spawn(async move |this, cx| {
+            let result = receiver.await;
+            let _ = this.update(cx, |this, cx| match result {
+                Ok(Ok(Some(paths))) => {
+                    if let Some(path) = paths.first() {
+                        this.export_html_to_directory(generation, path, cx);
+                    } else {
+                        this.cancel_session_export(generation, cx);
+                    }
+                }
+                Ok(Ok(None)) => this.cancel_session_export(generation, cx),
+                Ok(Err(error)) => {
+                    this.fail_session_export_picker(generation, error.to_string(), cx)
+                }
+                Err(_) => this.fail_session_export_picker(generation, String::new(), cx),
+            });
+        })
+        .detach();
+    }
+
+    /// Cancels only the picker answer that belongs to this still-current target.
+    pub fn cancel_session_export(&mut self, generation: u64, cx: &mut Context<Self>) {
+        if generation != self.session_export_generation || self.pending_session_export.is_none() {
+            return;
+        }
+        self.pending_session_export = None;
+        self.session_export_path = None;
+        self.session_action_status = Some(self.t("session.export.cancelled").to_string());
+        self.session_action_error = None;
+        cx.notify();
+    }
+
+    fn fail_session_export_picker(
+        &mut self,
+        generation: u64,
+        detail: String,
+        cx: &mut Context<Self>,
+    ) {
+        if generation != self.session_export_generation || self.pending_session_export.is_none() {
+            return;
+        }
+        self.pending_session_export = None;
+        self.session_export_path = None;
+        self.session_action_status = None;
+        self.session_action_error = Some(if detail.is_empty() {
+            self.t("session.export.failed").to_string()
+        } else {
+            format!("{}: {detail}", self.t("session.export.failed"))
+        });
+        cx.notify();
+    }
+
+    /// Delivers the one directory chosen by the user. No path from the session
+    /// title or server is accepted as a destination. A stale token is entirely
+    /// inert: it cannot fail, cancel or write the newer session's pending flow.
+    pub fn export_html_to_directory(
+        &mut self,
+        generation: u64,
+        directory: &Path,
+        cx: &mut Context<Self>,
+    ) {
+        if generation != self.session_export_generation {
+            return;
+        }
+        let Some(target) = self.pending_session_export.clone() else {
+            return;
+        };
+        if !self.session_target_is_current(&target) {
+            self.pending_session_export = None;
+            self.session_export_path = None;
+            self.session_action_status = None;
+            self.session_action_error = Some(
+                if self.current_session_target().is_some() {
+                    self.t("session.actionChanged")
+                } else {
+                    self.t("session.export.noRuntime")
+                }
+                .to_string(),
+            );
+            cx.notify();
+            return;
+        }
+        self.pending_session_export = None;
+        self.session_action_status = None;
+        self.session_action_error = None;
+        self.session_export_path = None;
+
+        let output_path = match session_export::compose_export_path(directory, &target.session_id) {
+            Ok(path) => path,
+            Err(error) => {
+                let key = match error {
+                    ExportPathError::InvalidDirectory => "session.export.invalidDirectory",
+                    ExportPathError::InvalidSessionId => "session.export.invalidName",
+                    ExportPathError::AlreadyExists => "session.export.exists",
+                };
+                self.session_action_error = Some(self.t(key).to_string());
+                cx.notify();
+                return;
+            }
+        };
+        let Some(output_path_string) = output_path.to_str().map(str::to_string) else {
+            self.session_action_error = Some(self.t("session.export.invalidDirectory").to_string());
+            cx.notify();
+            return;
+        };
+        let response = self.agents.command(
+            &target.runtime_id,
+            &json!({
+                "type": "export_html",
+                "outputPath": output_path_string,
+            }),
+        );
+        if generation != self.session_export_generation {
+            return;
+        }
+        if !self.session_target_is_current(&target) {
+            self.session_export_path = None;
+            self.session_action_status = None;
+            self.session_action_error = Some(
+                if self.current_session_target().is_some() {
+                    self.t("session.actionChanged")
+                } else {
+                    self.t("session.export.noRuntime")
+                }
+                .to_string(),
+            );
+            cx.notify();
+            return;
+        }
+        let response = match response {
+            Ok(response) => response,
+            Err(error) => {
+                self.session_action_error = Some(format!(
+                    "{}: {}",
+                    self.t("session.export.failed"),
+                    error.message
+                ));
+                cx.notify();
+                return;
+            }
+        };
+        if response.get("success").and_then(Value::as_bool) != Some(true) {
+            let detail = response
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .unwrap_or("OMP rejected export_html");
+            self.session_action_error =
+                Some(format!("{}: {detail}", self.t("session.export.failed")));
+            cx.notify();
+            return;
+        }
+        // `success: true` is not enough. Trust only an absolute server-returned
+        // path that is exactly the safe path requested above. A mismatched
+        // result is explicitly unconfirmed even if the server wrote a file.
+        let returned_path = response
+            .pointer("/data/path")
+            .and_then(Value::as_str)
+            .map(PathBuf::from);
+        let Some(returned_path) =
+            returned_path.filter(|path| path.is_absolute() && path == &output_path)
+        else {
+            self.session_action_error = Some(self.t("session.export.badPath").to_string());
+            cx.notify();
+            return;
+        };
+        let is_regular_file = std::fs::symlink_metadata(&returned_path)
+            .is_ok_and(|metadata| metadata.file_type().is_file());
+        if !is_regular_file {
+            self.session_export_path = None;
+            self.session_action_status = None;
+            self.session_action_error = Some(self.t("session.export.missingFile").to_string());
+            cx.notify();
+            return;
+        }
+        let returned = returned_path.display().to_string();
+        self.session_export_path = Some(returned_path);
+        self.session_action_error = None;
+        self.session_action_status = Some(
+            self.t("session.export.success")
+                .replace("{path}", &returned),
+        );
+        cx.notify();
     }
 
     /// Re-pins the transcript to its newest message.
@@ -2310,6 +2649,8 @@ impl Workspace {
             .iter()
             .map(|session| {
                 json!({
+                    "id": session.id,
+                    "filePath": session.file_path,
                     "title": session.title,
                     "pinned": session.pinned,
                     "archived": session.archived,
@@ -2671,17 +3012,22 @@ impl Workspace {
         snapshot["shell"] = json!({
             "rightPaneTitle": self.right_pane_title(),
             "placeholders": {
-                "composer": self.composer.read(cx).placeholder().to_string(),
-                "rightPaneSearch": self.right_pane_search.read(cx).placeholder().to_string(),
-                "sideQuestion": self.side_input.read(cx).placeholder().to_string(),
-                "terminal": self.terminal_input.read(cx).placeholder().to_string(),
-                "pluginSource": self.plugin_source.read(cx).placeholder().to_string(),
-                "sidebar": self.sidebar_filter.read(cx).placeholder().to_string(),
+                "composer": self.composer.read(cx).presentation().placeholder().to_string(),
+                "rightPaneSearch": self.right_pane_search.read(cx).presentation().placeholder().to_string(),
+                "sideQuestion": self.side_input.read(cx).presentation().placeholder().to_string(),
+                "terminal": self.terminal_input.read(cx).presentation().placeholder().to_string(),
+                "pluginSource": self.plugin_source.read(cx).presentation().placeholder().to_string(),
+                "sidebar": self.sidebar_filter.read(cx).presentation().placeholder().to_string(),
             },
         });
         // The render's breakpoint decision and whether the compact layout is
         // drawing the right pane as an overlay over the transcript.
         snapshot["sessionActionStatus"] = json!(self.session_action_status);
+        snapshot["sessionActionError"] = json!(self.session_action_error);
+        snapshot["sessionExport"] = json!({
+            "pending": self.pending_session_export.is_some(),
+            "path": self.session_export_path.as_ref().map(|path| path.display().to_string()),
+        });
         snapshot["sessionMenu"]["deleteConfirmation"] =
             json!(self.pending_delete.as_ref().map(|pending| json!({
                 "sessionId": pending.session_id,
@@ -3798,7 +4144,7 @@ impl Workspace {
         ];
         for (input, key) in inputs {
             let placeholder = i18n::t(language, key);
-            if input.read(cx).placeholder().as_str() == placeholder {
+            if input.read(cx).presentation().placeholder().as_str() == placeholder {
                 continue;
             }
             input.update(cx, |state, cx| {
@@ -3808,7 +4154,7 @@ impl Workspace {
 
         let placeholder = i18n::t(language, "ask.answerPlaceholder");
         for input in self.ask_inputs.values().cloned().collect::<Vec<_>>() {
-            if input.read(cx).placeholder().as_str() == placeholder {
+            if input.read(cx).presentation().placeholder().as_str() == placeholder {
                 continue;
             }
             input.update(cx, |state, cx| {
@@ -4767,6 +5113,7 @@ impl Workspace {
         self.rename_subscription = None;
         self.rename_submit_requested = false;
         self.session_action_status = None;
+        self.invalidate_session_export();
         if let Some(runtime_id) = self.runtime_id.take() {
             self.agents.stop(&runtime_id);
         }
@@ -4952,6 +5299,7 @@ impl Workspace {
         }
         drop(store);
         if removed {
+            self.invalidate_session_export();
             if let Some(session_id) = doomed {
                 // The removed project's session cannot stay open: stop its
                 // runtime and drop the shells filed under it, like the
@@ -5051,6 +5399,7 @@ impl Workspace {
         self.rename_subscription = None;
         self.rename_submit_requested = false;
         self.session_action_status = None;
+        self.invalidate_session_export();
         if let Some(runtime_id) = self.runtime_id.take() {
             self.agents.stop(&runtime_id);
         }
@@ -7320,12 +7669,12 @@ impl Workspace {
             .clone()
             .unwrap_or_else(|| format!("Dictation: {}", self.dictation_phase));
         let dictation_preview = self.dictation_preview.clone();
-        // One status banner above the input: a runtime error outranks a
-        // refused attachment, and the last fork notice comes last. Both
-        // failures are errors; a notice keeps the plain confirmation color.
+        // One status banner above the input: runtime and session-action
+        // failures outrank a refused attachment, and a notice comes last.
         let banner = self
             .runtime_error
             .clone()
+            .or_else(|| self.session_action_error.clone())
             .or_else(|| self.image_error.clone())
             .map(|error| (error, colors.danger))
             .or_else(|| {
@@ -7391,6 +7740,7 @@ impl Workspace {
                 element.child(
                     div()
                         .id("status-banner")
+                        .test_support()
                         .aria_label("Status")
                         .text_xs()
                         .text_color(color)
@@ -12542,6 +12892,7 @@ impl Workspace {
 
         self.pending_delete = None;
         self.runtime_error = None;
+        self.invalidate_session_export();
         self.reset_transcript_search(cx);
         let stopped_runtime = self.runtime_id.take();
         if let Some(runtime_id) = &stopped_runtime {
@@ -12587,6 +12938,15 @@ impl Workspace {
     ) {
         if action == "Rename" {
             self.open_rename_session(window, cx);
+            return;
+        }
+        if action == "Copy last reply" {
+            self.copy_last_assistant_reply(cx);
+            return;
+        }
+        if action == "Export HTML" {
+            self.menu_open = false;
+            self.pick_session_export_directory(window, cx);
             return;
         }
         // A fork needs neither a catalog write nor a selection index: the
@@ -12858,10 +13218,13 @@ impl Workspace {
                             "Archive" => self.t("common.archive"),
                             "Delete" => self.t("common.delete"),
                             "Fork session" => self.t("session.fork"),
+                            "Copy last reply" => self.t("session.copyLastReply"),
+                            "Export HTML" => self.t("session.export"),
                             _ => label,
                         };
                         div()
                             .id(format!("session-action-{label}"))
+                            .test_support()
                             .aria_label(text)
                             .px_2()
                             .py_1()
