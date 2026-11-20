@@ -248,7 +248,7 @@ function parseSettings(value: unknown): AppSettings {
     idleSessionMinutes: IDLE_SESSION_MINUTES.includes(value.idleSessionMinutes as AppSettings['idleSessionMinutes']) ? value.idleSessionMinutes as AppSettings['idleSessionMinutes'] : defaults.idleSessionMinutes,
     keepRunningInBackground: typeof value.keepRunningInBackground === 'boolean' ? value.keepRunningInBackground : defaults.keepRunningInBackground,
     launchAtLogin: typeof value.launchAtLogin === 'boolean' ? value.launchAtLogin : defaults.launchAtLogin,
-    defaultInspectorTab: value.defaultInspectorTab === 'changes' || value.defaultInspectorTab === 'browser' || value.defaultInspectorTab === 'files' || value.defaultInspectorTab === 'summary' || value.defaultInspectorTab === 'agents' ? value.defaultInspectorTab : defaults.defaultInspectorTab,
+    defaultInspectorTab: value.defaultInspectorTab === 'changes' || value.defaultInspectorTab === 'browser' || value.defaultInspectorTab === 'files' || value.defaultInspectorTab === 'summary' || value.defaultInspectorTab === 'agents' || value.defaultInspectorTab === 'tasks' ? value.defaultInspectorTab : defaults.defaultInspectorTab,
     browserHome: typeof value.browserHome === 'string' ? value.browserHome : defaults.browserHome,
     browserAskForDownloads: typeof value.browserAskForDownloads === 'boolean' ? value.browserAskForDownloads : defaults.browserAskForDownloads,
     reduceMotion: typeof value.reduceMotion === 'boolean' ? value.reduceMotion : defaults.reduceMotion,

@@ -967,6 +967,23 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(page.getByRole('tab', { name: 'Agents' })).toHaveAttribute('aria-selected', 'true')
   })
 
+  test('lists every automation in the Background Tasks inspector tab', async () => {
+    if (!(await page.locator('.inspector').count())) await chooseToolbarAction('Toggle inspector')
+    const projectId = await page.evaluate(async () => (await window.desktop.projects.list('omp')).find((project) => !project.inferred)?.id ?? '')
+    expect(projectId).not.toBe('')
+    const task = await page.evaluate(async (id) => window.desktop.schedules.create({
+      title: 'Fixture automation',
+      prompt: 'Summarize the fixture workspace.',
+      target: { kind: 'project', projectId: id },
+      timing: { kind: 'once', at: new Date(Date.now() + 86_400_000).toISOString() },
+      execution: { model: 'auto', thinking: 'auto', speed: 'normal' },
+    }, 'omp'), projectId)
+    await page.getByRole('tab', { name: 'Background Tasks' }).click()
+    await expect(page.locator('#inspector-panel-tasks .background-tasks__list')).toContainText('Fixture automation')
+    await expect(page.locator('#inspector-panel-tasks .background-tasks__header small')).toHaveText('1 task')
+    await page.evaluate((id) => window.desktop.schedules.delete(id), task.id)
+  })
+
   test('moves the transcript on the very first wheel scroll of a long history', async () => {
     // A long code-heavy history keeps the renderer busy right after the
     // session opens, and the transcript is the surface users scroll first.

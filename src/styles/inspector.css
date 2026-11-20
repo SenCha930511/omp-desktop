@@ -197,3 +197,18 @@
 .summary-automation-icon { width: 1.75rem; height: 1.75rem; display: grid; place-items: center; flex: 0 0 auto; border-radius: 0.45rem; color: var(--prime); background: var(--prime-soft); }
 .summary-automation-icon.is-heartbeat { color: var(--success); background: var(--success-soft); }
 .summary-automation-list > .summary-automation-more { min-height: 2.25rem; justify-content: center; color: var(--text-secondary); font-size: 0.68rem; }
+
+/* Background tasks */
+.background-tasks { padding: 22px; }
+.background-tasks__header { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 14px; }
+.background-tasks__header h2 { margin: 0; font-size: 18px; font-weight: 560; letter-spacing: -.01em; }
+.background-tasks__header small { color: var(--text-tertiary); font-size: 11px; }
+.background-tasks__list > button { min-height: 3.25rem; }
+.background-tasks__list strong { font-size: 0.8rem; }
+.background-tasks__list small { font-size: 0.7rem; }
+.background-tasks__blocked { color: var(--danger); text-transform: none; }
+.background-tasks__empty { display: grid; gap: 10px; padding: 18px 0; color: var(--text-secondary); font-size: 12.5px; line-height: 1.5; }
+.background-tasks__empty p { margin: 0; }
+.background-tasks__empty button { min-height: 30px; justify-self: start; padding: 0 12px; border: 1px solid var(--border); border-radius: 7px; color: var(--text); background: var(--surface); font-size: 11.5px; cursor: pointer; }
+.background-tasks__empty button:hover { border-color: var(--border-strong); background: var(--surface-hover); }
+.background-tasks__empty button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }

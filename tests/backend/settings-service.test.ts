@@ -93,9 +93,10 @@ describe('SettingsService.update', () => {
     await expect(service.update({ locale: 'system' })).resolves.toMatchObject({ locale: 'system' })
   })
 
-  it('accepts the Agents inspector tab as a session default', async () => {
+  it('accepts the Agents and Background Tasks inspector tabs as session defaults', async () => {
     const service = makeService()
     await expect(service.update({ defaultInspectorTab: 'agents' })).resolves.toMatchObject({ defaultInspectorTab: 'agents' })
+    await expect(service.update({ defaultInspectorTab: 'tasks' })).resolves.toMatchObject({ defaultInspectorTab: 'tasks' })
   })
 
   it('rejects unknown keys, invalid enums, and malformed values without persisting', async () => {

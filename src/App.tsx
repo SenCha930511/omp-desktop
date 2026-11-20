@@ -848,6 +848,7 @@ export default function App() {
     setScheduleFocusId(id)
     setView('scheduled')
   }, [])
+  const openSchedules = useCallback(() => navigate('scheduled'), [navigate])
   // The Agents tab gets one memoized state bundle: useSubagents returns a fresh
   // object every render, and the inspector's memo boundary should reopen only
   // when the roster or its controls actually change.
@@ -1612,7 +1613,9 @@ export default function App() {
                         transcript={workspace.transcriptStore}
                         git={git}
                         automations={inspectorAutomations}
+                        backgroundTasks={schedules}
                         onOpenAutomation={openAutomation}
+                        onOpenSchedules={openSchedules}
                         browserHome={settingsState.settings.browserHome}
                         browserAnnotations={browserAnnotations}
                         agentBrowserTabs={activeAgentTabs}

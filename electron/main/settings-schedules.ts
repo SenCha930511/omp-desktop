@@ -70,7 +70,7 @@ export class SettingsService {
       browserEnabled: (value) => requireBoolean(value, 'browserEnabled'),
       computerUseEnabled: (value) => requireBoolean(value, 'computerUseEnabled'),
       defaultInspectorTab: (value) => {
-        if (value !== 'summary' && value !== 'changes' && value !== 'browser' && value !== 'files' && value !== 'agents') throw new TypeError('Invalid inspector tab')
+        if (value !== 'summary' && value !== 'changes' && value !== 'browser' && value !== 'files' && value !== 'agents' && value !== 'tasks') throw new TypeError('Invalid inspector tab')
         return value
       },
       messageEnterAction: (value) => {
