@@ -4,11 +4,13 @@ import type { HarnessId, PrimeModelDescriptor, RuntimeInfo, SessionRecord, Trans
 import { assertNoMcpAuthenticationCommand } from '../../../src/lib/mcp-policy'
 import { streamingBehaviorForIntent } from '../../../src/lib/session-actions'
 import type { AgentRpcManager } from '../agent-rpc'
+import type { RpcObject } from '../agent-rpc/types'
 import { CapabilityBridge, type CapabilityClaim } from '../lib/capability-bridge'
 import type { ModelCatalogProvider } from '../model-catalog'
 import { availableModels, rankedModelMatches, resolveModel, resolveReasoning } from '../model-selection'
 import { requireBoolean, requireId, requireInteger, requireString } from '../validation'
 import { encodeGooeyPiAgentMessage } from './message-envelope'
+import { collaborationHostToolScope } from './host-tools'
 
 const MAX_LISTED_SESSIONS = 100
 const MAX_MESSAGES = 40
@@ -204,6 +206,29 @@ export class AgentCollaborationBridge extends CapabilityBridge {
   private bindRuntimeSession(runtimeId: string, sessionFile: string): void {
     const token = this.pendingRuntimeTokens.get(runtimeId)
     if (token) this.bindSession(token, sessionFile, runtimeId)
+  }
+
+  /**
+   * Runs one OMP v19 host tool call for the runtime that owns `sessionPath`.
+   * Host tool frames carry no bearer token, so the claim is resolved from the
+   * session the manager reports for that runtime; a runtime without a live
+   * claim (not bound yet, or revoked) gets a clear error instead of another
+   * thread's session scope.
+   */
+  async hostToolCall(sessionPath: string, method: string, params: Record<string, unknown>): Promise<unknown> {
+    const claim = this.claimForSession(sessionPath)
+    if (!claim) throw new Error('Session collaboration is not available for this session; this runtime has no live collaboration claim')
+    return this.dispatch(method, params, claim)
+  }
+
+  /**
+   * Collaboration host tool definitions and handlers bound to one runtime's
+   * session. A session with no live claim yields no tools: advertising
+   * handlers that could only fail would leave dead tools in the model's list.
+   */
+  hostToolScope(sessionPath: string): { tools: RpcObject[]; handlers: Map<string, (args: Record<string, unknown>) => Promise<Record<string, unknown>>> } {
+    if (!this.claimForSession(sessionPath)) return { tools: [], handlers: new Map() }
+    return collaborationHostToolScope((method, params) => this.hostToolCall(sessionPath, method, params))
   }
 
   protected async dispatch(method: string, params: Record<string, unknown>, claim: CapabilityClaim): Promise<unknown> {

@@ -47,9 +47,9 @@ const expectedRegistrations: Record<string, Registration[]> = {
   // stays an extension tool so base pi runtimes keep it.
   'omp-work-browser.ts': [{ kind: 'tool', name: 'terminal_read' }],
   'omp-work-ask-user.ts': [{ kind: 'tool', name: 'ask_user' }],
-  'omp-work-collaboration.ts': [
-    ...['gooeypi_session_list', 'gooeypi_session_models', 'gooeypi_session_create', 'gooeypi_session_read', 'gooeypi_session_send', 'gooeypi_session_wait'].map((name) => ({ kind: 'tool' as const, name })),
-  ],
+  // The gooeypi_session_* tools are OMP v19 host tools now, so this
+  // extension registers nothing.
+  'omp-work-collaboration.ts': [],
   'omp-work-schedules.ts': [
     ...['scheduled_tasks_list', 'scheduled_task_create_once', 'scheduled_task_create_recurring', 'scheduled_task_update', 'scheduled_task_manage'].map((name) => ({ kind: 'tool' as const, name })),
   ],
