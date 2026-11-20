@@ -61,4 +61,26 @@ describe('OMP v19 session commands', () => {
     await expect(validate({ type: 'set_host_uri_schemes', schemes: [{ scheme: 'db' }, { scheme: 'db' }] })).rejects.toThrow('duplicated')
     await expect(validate({ type: 'set_host_uri_schemes', schemes: [{ scheme: '1db' }] })).rejects.toThrow('invalid')
   })
+
+  it('validates predict_word and feedback', async () => {
+    await expect(validate({ type: 'predict_word', text: 'hello wor', cursor: 9 })).resolves.toEqual({ type: 'predict_word', text: 'hello wor', cursor: 9 })
+    await expect(validate({ type: 'predict_word', text: 'hello', cursor: 6 })).rejects.toThrow('within the text')
+    await expect(validate({ type: 'predict_word_feedback', text: 'hello', cursor: 5, suggestion: ' world', accepted: true })).resolves.toEqual({
+      type: 'predict_word_feedback',
+      text: 'hello',
+      cursor: 5,
+      suggestion: ' world',
+      accepted: true,
+    })
+  })
+
+  it('validates dictation and live voice commands', async () => {
+    await expect(validate({ type: 'dictation_start', captureId: 'capture-1' })).resolves.toEqual({ type: 'dictation_start', captureId: 'capture-1' })
+    await expect(validate({ type: 'dictation_start', captureId: '   ' })).rejects.toThrow('must not be blank')
+    await expect(validate({ type: 'dictation_stop' })).resolves.toEqual({ type: 'dictation_stop' })
+    await expect(validate({ type: 'live_start', voice: 'sol', instructions: 'Greet the user' })).resolves.toEqual({ type: 'live_start', voice: 'sol', instructions: 'Greet the user' })
+    await expect(validate({ type: 'live_connect', sdpOffer: 'v=0', voice: 'sol' })).resolves.toEqual({ type: 'live_connect', sdpOffer: 'v=0', voice: 'sol' })
+    await expect(validate({ type: 'live_mute', muted: true })).resolves.toEqual({ type: 'live_mute', muted: true })
+    await expect(validate({ type: 'live_stop' })).resolves.toEqual({ type: 'live_stop' })
+  })
 })
