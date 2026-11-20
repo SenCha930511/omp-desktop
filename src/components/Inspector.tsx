@@ -28,8 +28,6 @@ export interface InspectorProps {
   automations: AutomationScheduleRecord[]
   onOpenAutomation(id: string): void
   browserHome: string
-  browserNavigationRequest?: { id: number; url: string }
-  onBrowserNavigationRequestHandled?(id: number): void
   browserAnnotations: BrowserAnnotationsApi
   agentBrowserTabs: AgentBrowserTabRecord[]
   activeAgentTabId: string | null
@@ -66,8 +64,6 @@ export const Inspector = memo(function Inspector({
   automations,
   onOpenAutomation,
   browserHome,
-  browserNavigationRequest,
-  onBrowserNavigationRequestHandled,
   browserAnnotations,
   agentBrowserTabs,
   activeAgentTabId,
@@ -139,8 +135,6 @@ export const Inspector = memo(function Inspector({
           <BrowserPanel
             platform={platform}
             home={browserHome}
-            navigationRequest={browserNavigationRequest}
-            onNavigationRequestHandled={onBrowserNavigationRequestHandled}
             onOpenExternal={onOpenExternal}
             annotations={browserAnnotations}
             agentTabs={agentBrowserTabs}

@@ -65,8 +65,6 @@
 .resize-handle:hover > span, .resize-handle:focus-visible > span, .resize-handle[data-resizing="true"] > span { background: var(--prime); box-shadow: 0 0 0 1px color-mix(in srgb, var(--prime) 18%, transparent); }
 .resize-handle:hover > span::after, .resize-handle:focus-visible > span::after, .resize-handle[data-resizing="true"] > span::after { opacity: 1; transform: translate(-50%, -50%) scale(1); }
 .resize-handle:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
-.terminal-drawer > .resize-handle > span { background: var(--terminal-resize); }
-.terminal-drawer > .resize-handle:hover > span, .terminal-drawer > .resize-handle:focus-visible > span, .terminal-drawer > .resize-handle[data-resizing="true"] > span { background: var(--prime); }
 body.is-resizing-vertical, body.is-resizing-vertical * { cursor: col-resize !important; user-select: none !important; }
 body.is-resizing-horizontal, body.is-resizing-horizontal * { cursor: row-resize !important; user-select: none !important; }
 body.is-resizing-vertical .browser-viewport, body.is-resizing-vertical .browser-webview, body.is-resizing-vertical .agent-browser-layer, body.is-resizing-horizontal .browser-viewport, body.is-resizing-horizontal .browser-webview, body.is-resizing-horizontal .agent-browser-layer { pointer-events: none !important; }

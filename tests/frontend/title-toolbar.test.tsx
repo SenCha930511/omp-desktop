@@ -35,8 +35,8 @@ describe('title toolbar identity', () => {
     await act(async () => {
       root.render(
         <TitleToolbar
-          project={project} sessionTitle="Outline WSL architecture" view="session" sidebarOpen inspectorOpen terminalOpen
-          onToggleSidebar={noop} onToggleInspector={noop} onToggleTerminal={noop} onOpenBrowser={noop}
+          project={project} sessionTitle="Outline WSL architecture" view="session" sidebarOpen inspectorOpen
+          onToggleSidebar={noop} onToggleInspector={noop} onOpenBrowser={noop}
         />,
       )
     })
@@ -49,8 +49,8 @@ describe('title toolbar identity', () => {
     await act(async () => {
       root.render(
         <TitleToolbar
-          project={project} view="session" sidebarOpen inspectorOpen terminalOpen
-          onToggleSidebar={noop} onToggleInspector={noop} onToggleTerminal={noop} onOpenBrowser={noop}
+          project={project} view="session" sidebarOpen inspectorOpen
+          onToggleSidebar={noop} onToggleInspector={noop} onOpenBrowser={noop}
         />,
       )
     })

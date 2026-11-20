@@ -7,7 +7,6 @@ import {
   createDraftState,
   normalizeBrowserHome,
   reduceDraftState,
-  terminalShellValidation,
 } from '../../src/pages/settings/draft-state'
 
 describe('settings draft synchronization', () => {
@@ -99,22 +98,20 @@ describe('settings draft synchronization', () => {
 
 describe('queued settings reconciliation', () => {
   it('restores every pending panel field without replacing unrelated transient panel state', () => {
-    const optimisticPanels = { sidebarOpen: false, inspectorOpen: true, terminalOpen: false }
+    const optimisticPanels = { sidebarOpen: false, inspectorOpen: true }
     const savedAfterQueue = {
       ...DEFAULT_SETTINGS,
       sidebarOpen: true,
       inspectorOpen: false,
-      terminalOpen: true,
     }
     const reconciledPanels = {
       ...optimisticPanels,
-      ...confirmedPanelSettings(savedAfterQueue, ['sidebarOpen', 'terminalOpen']),
+      ...confirmedPanelSettings(savedAfterQueue, ['sidebarOpen']),
     }
 
     expect(reconciledPanels).toEqual({
       sidebarOpen: true,
       inspectorOpen: true,
-      terminalOpen: true,
     })
   })
 })
@@ -131,13 +128,6 @@ describe('free-text settings validation', () => {
     expect(browserHomeValidation('https://user:secret@example.com')).toContain('credentials')
     expect(browserHomeValidation('')).toContain('Enter')
   })
-
-  it('performs deterministic local shell validation before privileged validation', () => {
-    expect(terminalShellValidation('/bin/zsh')).toBe('')
-    expect(terminalShellValidation('bin/zsh')).toContain('absolute')
-    expect(terminalShellValidation('')).toContain('Enter')
-    expect(terminalShellValidation(`/bin/zsh\0suffix`)).toContain('NUL')
-  })
 })
 
 describe('settings field ownership', () => {
@@ -153,13 +143,11 @@ describe('settings field ownership', () => {
       showFileChangesPopup: 'general',
       keepRunningInBackground: 'general',
       launchAtLogin: 'general',
-      terminalOpen: 'terminal',
       defaultInspectorTab: 'general',
       browserHome: 'browser',
       checkoutStrategy: 'general',
       idleSessionMinutes: 'general',
       browserAskForDownloads: 'browser',
-      terminalShell: 'terminal',
       reduceMotion: 'appearance',
       showReasoningSummaries: 'agent',
       reasoningExpandedByDefault: 'agent',

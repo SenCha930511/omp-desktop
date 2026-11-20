@@ -1,4 +1,4 @@
-import { GitBranch, ListTree, PanelLeft, PanelRight, PanelRightClose, Terminal } from 'lucide-react'
+import { GitBranch, ListTree, PanelLeft, PanelRight, PanelRightClose } from 'lucide-react'
 import { memo, type MouseEvent } from 'react'
 import { type MessageKey, useI18n } from '@/lib/i18n'
 import { shortcutLabel } from '@/lib/platform-shortcuts'
@@ -37,10 +37,8 @@ export interface TitleToolbarProps {
   productName?: string
   sidebarOpen: boolean
   inspectorOpen: boolean
-  terminalOpen: boolean
   onToggleSidebar(): void
   onToggleInspector(): void
-  onToggleTerminal(): void
   onOpenBrowser(): void
   /** Opens the session tree dialog; only rendered in the session view. */
   onOpenSessionTree?(): void
@@ -59,17 +57,14 @@ function TitleToolbarView({
   productName = 'OMP Desktop',
   sidebarOpen,
   inspectorOpen,
-  terminalOpen,
   onToggleSidebar,
   onToggleInspector,
-  onToggleTerminal,
   onOpenBrowser,
   onOpenSessionTree,
   platform = 'darwin',
 }: TitleToolbarProps) {
   const { t } = useI18n()
   const sidebarShortcut = shortcutLabel(platform, ['Primary', 'B'])
-  const terminalShortcut = shortcutLabel(platform, ['Primary', 'J'])
   const browserShortcut = shortcutLabel(platform, ['Primary', 'Shift', 'B'])
   return (
     <header className="title-toolbar drag-region">
@@ -103,11 +98,6 @@ function TitleToolbarView({
         {view === 'session' && onOpenSessionTree ? (
           <IconButton label={t('toolbar.sessionTree')} onClick={onOpenSessionTree}>
             <ListTree size={17} />
-          </IconButton>
-        ) : null}
-        {view === 'session' ? (
-          <IconButton className={terminalOpen ? 'is-active' : ''} label={t('toolbar.toggleTerminal', { shortcut: terminalShortcut })} onClick={onToggleTerminal}>
-            <Terminal size={17} />
           </IconButton>
         ) : null}
         {view === 'session' ? (

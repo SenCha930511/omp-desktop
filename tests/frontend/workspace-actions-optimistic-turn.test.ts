@@ -115,7 +115,6 @@ function fixture({ workspaceRuntime = null, listedRuntimes = [], sessionStatus =
     setSubmitting: vi.fn(),
     refreshSchedules: vi.fn(),
     resetBrowserView: vi.fn(),
-    closeTerminalForSession: vi.fn(),
     clearSessionAttention: vi.fn(),
     bumpRecentSessionOpen: vi.fn(),
     reportError: vi.fn(),
