@@ -136,6 +136,9 @@ describe('inspector re-render containment', () => {
     expect(last.onGrantProject).toBe(first.onGrantProject)
     expect(last.onOpenAutomation).toBe(first.onOpenAutomation)
     expect(last.onShowBrowserPreview).toBe(first.onShowBrowserPreview)
+    // The Agents tab receives one memoized bundle, so unrelated App renders
+    // never reopen the inspector through a fresh roster object.
+    expect(last.subagents).toBe(first.subagents)
   })
 })
 
@@ -145,11 +148,11 @@ describe('summary tab data flow', () => {
     { id: 'live', role: 'assistant', timestamp: 2, streaming: true, parts: [{ type: 'toolCall', id: 'tool', name: 'Read' }, { type: 'text', text }] },
   ]
 
-  function Harness({ transcript }: { transcript: TranscriptStore }) {
+  function Harness({ transcript, activeTab = 'summary', subagents }: { transcript: TranscriptStore; activeTab?: InspectorProps['activeTab']; subagents?: InspectorProps['subagents'] }) {
     return (
       <WorkspaceInspector
         transcript={transcript}
-        activeTab="summary"
+        activeTab={activeTab}
         onTabChange={() => undefined}
         onClose={() => undefined}
         git={{ isRepo: false, files: [] }}
@@ -171,6 +174,7 @@ describe('summary tab data flow', () => {
         onOpenExternal={() => undefined}
         onRevealPath={() => undefined}
         onGrantProject={() => undefined}
+        subagents={subagents}
       />
     )
   }
@@ -201,6 +205,16 @@ describe('summary tab data flow', () => {
 
     expect(subscribe).not.toHaveBeenCalled()
     expect(getSnapshot).not.toHaveBeenCalled()
+  })
+
+  it('renders the Agents tab roster and selected transcript inside the inspector body', async () => {
+    const { createTranscriptStore } = await import('../../src/app/transcript-store')
+    const store = createTranscriptStore([])
+    const state = { agents: [{ id: 'a', agent: 'Explore', status: 'running', messages: [] }], selectedId: 'a', select: () => undefined }
+    await act(async () => root.render(<Harness transcript={store} activeTab="agents" subagents={{ state, connected: true }} />))
+    expect([...container.querySelectorAll('.inspector__tabs button')].map((button) => button.textContent)).toContain('Agents')
+    expect(container.querySelector('#inspector-panel-agents .subagents__roster')).not.toBeNull()
+    expect(container.querySelector('#inspector-panel-agents .subagents__transcript h2')?.textContent).toBe('Explore')
   })
 })
 

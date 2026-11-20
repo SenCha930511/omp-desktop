@@ -21,10 +21,6 @@ describe('SettingsService.update', () => {
     const service = makeService()
     expect(service.get().reasoningExpandedByDefault).toBe(false)
     expect(service.get().conversationDensity).toBe('comfortable')
-    expect(service.get().subagentsPanelPinned).toBe(false)
-    await service.update({ subagentsPanelPinned: true })
-    expect(service.get().subagentsPanelPinned).toBe(true)
-    await expect(service.update({ subagentsPanelPinned: 'yes' } as never)).rejects.toThrow('subagentsPanelPinned')
     await service.update({ conversationDensity: 'compact' })
     expect(service.get().conversationDensity).toBe('compact')
     await expect(service.update({ conversationDensity: 'dense' } as never)).rejects.toThrow('density')
@@ -97,6 +93,11 @@ describe('SettingsService.update', () => {
     const service = makeService()
     await expect(service.update({ locale: 'zh-TW' })).resolves.toMatchObject({ locale: 'zh-TW' })
     await expect(service.update({ locale: 'system' })).resolves.toMatchObject({ locale: 'system' })
+  })
+
+  it('accepts the Agents inspector tab as a session default', async () => {
+    const service = makeService()
+    await expect(service.update({ defaultInspectorTab: 'agents' })).resolves.toMatchObject({ defaultInspectorTab: 'agents' })
   })
 
   it('rejects unknown keys, invalid enums, and malformed values without persisting', async () => {

@@ -1,4 +1,4 @@
-import { Bot, Pin, PinOff, Users, X, XCircle } from 'lucide-react'
+import { Bot, Users, XCircle } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import type { SubagentSubscriptionLevel, SubagentView } from '@/hooks/useSubagents'
 import { useI18n } from '@/lib/i18n'
@@ -7,9 +7,10 @@ import { ExecutionStatus, EXECUTION_LABELS } from './ExecutionStatus'
 
 const SUBSCRIPTION_LEVELS: readonly SubagentSubscriptionLevel[] = ['off', 'progress', 'events']
 
-export function SubagentRoster({ agents, selectedId, connected, pinned, onPin, onClose, onSelect, unread, onCancel, pendingActions, subscriptionLevel, onSubscriptionChange }: {
-  agents: SubagentView[]; selectedId?: string; connected: boolean; pinned: boolean
-  onPin(): void; onClose(): void; onSelect(id: string): void
+/** Session agent roster. Stacks above the selected transcript inside the inspector's Agents tab. */
+export function SubagentRoster({ agents, selectedId, connected, onSelect, unread, onCancel, pendingActions, subscriptionLevel, onSubscriptionChange }: {
+  agents: SubagentView[]; selectedId?: string; connected: boolean
+  onSelect(id: string): void
   unread: ReadonlySet<string>
   onCancel?(id: string): void; pendingActions?: ReadonlySet<string>
   subscriptionLevel?: SubagentSubscriptionLevel; onSubscriptionChange?(level: SubagentSubscriptionLevel): void
@@ -23,11 +24,8 @@ export function SubagentRoster({ agents, selectedId, connected, pinned, onPin, o
     if (filter === 'completed') return ['completed', 'cancelled'].includes(activity.phase)
     return true
   })
-  return <div className={`subagents__roster ${pinned ? 'is-pinned' : ''}`} aria-label={t('agents.list')}>
-    <div className="subagents__roster-heading"><span>{t('agents.sessionAgents')}</span>
-      <div><button type="button" aria-label={t(pinned ? 'agents.unpin' : 'agents.pin')} aria-pressed={pinned} onClick={onPin}>{pinned ? <PinOff size={14} /> : <Pin size={14} />}</button>
-      <button type="button" aria-label={t('agents.closeList')} onClick={onClose}><X size={14} /></button></div>
-    </div>
+  return <div className="subagents__roster" aria-label={t('agents.list')}>
+    <div className="subagents__roster-heading"><span>{t('agents.sessionAgents')}</span></div>
     <label className="subagents__filter"><select aria-label={t('conversation.agents.filter')} value={filter} onChange={(event) => { const value = event.target.value; if (value === 'all' || value === 'running' || value === 'attention' || value === 'completed') setFilter(value) }}>
       {(['all', 'running', 'attention', 'completed'] as const).map((value) => <option key={value} value={value}>{t(`conversation.agents.${value}`)}</option>)}
     </select></label>
