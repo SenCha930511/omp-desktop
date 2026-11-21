@@ -24,7 +24,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   keepRunningInBackground: false,
   launchAtLogin: false,
   terminalOpen: false,
-  defaultInspectorTab: 'summary',
+  defaultInspectorTab: 'changes',
   browserHome: 'http://localhost:3000',
   browserAskForDownloads: true,
   terminalShell: '/bin/zsh',

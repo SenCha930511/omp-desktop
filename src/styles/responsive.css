@@ -54,8 +54,8 @@
   .sidebar .icon-button { width: 32px; height: 32px; }
   .inspector { top: 52px; left: 0; width: 100vw; max-width: none; }
   .side-chat { top: 52px; left: 0; width: 100vw; max-width: none; }
-  .inspector__tabs { height: 45px; padding-left: 6px; overflow-x: auto; }
-  .inspector__tabs > button:not(.icon-button) { min-width: 60px; min-height: 44px; padding-inline: 5px; }
+  .inspector__tabs { height: 45px; padding-left: 6px; }
+  .inspector-tab__button { min-height: 44px; padding-inline: 5px; }
   .transcript { padding-top: 20px; padding-bottom: 184px; }
   .transcript__inner { padding-inline: 15px; }
   .message--assistant { grid-template-columns: minmax(0, 1fr); }

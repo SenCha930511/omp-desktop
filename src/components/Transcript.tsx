@@ -136,7 +136,7 @@ function TranscriptView({
 
   return (
     <>
-      <TranscriptSearchBar state={search} dockToToolbar />
+      <TranscriptSearchBar state={search} />
       <div ref={scrollRef} tabIndex={-1} className={transcriptClasses} aria-busy={loading} onScroll={updatePinnedState}>
         <div className="sr-only" role="status" aria-live="polite">
           {announcement}

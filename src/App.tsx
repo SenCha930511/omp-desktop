@@ -9,8 +9,6 @@ import { ReasoningExpandedContext } from '@/components/ReasoningDisclosure'
 import { ConversationDock } from '@/components/ConversationDock'
 import { CommandOutputPanel } from '@/components/CommandOutputPanel'
 import { useCommandOutput } from '@/hooks/useCommandOutput'
-import { ConversationToolbar } from '@/components/ConversationToolbar'
-import { conversationExecution } from '@/lib/execution-state'
 import { useSideQuestions } from '@/hooks/useSideQuestions'
 import { useLiveVoice } from '@/hooks/useLiveVoice'
 import { useSubagents, type SubagentPanelState } from '@/hooks/useSubagents'
@@ -131,7 +129,6 @@ export default function App() {
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [submittingKind, setSubmittingKind] = useState<'prompt' | 'compact'>('prompt')
-  const [submittingSince, setSubmittingSince] = useState<number | undefined>(undefined)
   const [restorePrompt, setRestorePrompt] = useState<{ owner: number; id: number; text: string }>()
   const [sessionTreeOpen, setSessionTreeOpen] = useState(false)
   const [liveVoiceOpen, setLiveVoiceOpen] = useState(false)
@@ -707,9 +704,6 @@ export default function App() {
       if (value === true) {
         submissionGenerationRef.current = workspace.workspaceRef.current.generation
         setSubmittingKind(kind)
-        setSubmittingSince(Date.now())
-      } else {
-        setSubmittingSince(undefined)
       }
       setSubmitting(value)
     },
@@ -734,20 +728,9 @@ export default function App() {
   }, [workspace.activeSessionId, sideQuestions])
   const toggleInspectorPanel = useCallback(() => {
     setSideChatOpen(false)
+    if (!settingsState.inspectorOpen || layout.inspectorSuppressed) layout.setSmallestInspectorAllowed(true)
     toggleInspector()
-  }, [toggleInspector])
-  // The conversation toolbar's Agents button opens the inspector on the Agents
-  // tab instead of toggling a split-view roster.
-  const openAgentsTab = () => {
-    setSideChatOpen(false)
-    if (layout.compactLayout && settingsState.sidebarOpen) {
-      layout.setSmallestSidebarAllowed(false)
-      settingsState.setSidebarOpen(false)
-    }
-    layout.setSmallestInspectorAllowed(true)
-    if (!settingsState.inspectorOpen) void settingsState.updateSettings({ inspectorOpen: true })
-    settingsState.selectInspectorTab('agents')
-  }
+  }, [toggleInspector, settingsState.inspectorOpen, layout.inspectorSuppressed, layout.setSmallestInspectorAllowed])
   const askSideQuestion = useCallback(
     (question: string, topicId?: string) => {
       if (!sideChatSessionId) return
@@ -855,6 +838,7 @@ export default function App() {
     setView('scheduled')
   }, [])
   const openSchedules = useCallback(() => navigate('scheduled'), [navigate])
+  const openPlugins = useCallback(() => navigate('plugins'), [navigate])
   // The Agents tab gets one memoized state bundle: useSubagents returns a fresh
   // object every render, and the inspector's memo boundary should reopen only
   // when the roster or its controls actually change.
@@ -1177,15 +1161,6 @@ export default function App() {
   // until a new draft arrives (mirroring how the stop button owns the slot
   // while the model streams).
   const stoppedTurnRetryAvailable = !busy && lastAssistantMessage(workspace.messages)?.outcome === 'cancelled'
-  const execution = conversationExecution({
-    runtime: workspace.runtime,
-    messages: workspace.messages,
-    submitting: submitting && submissionGenerationRef.current === workspace.workspaceGeneration,
-    submittingKind,
-    submittingSince,
-    waiting: Boolean(extension.extensionUi && extension.extensionUi.runtimeId === workspace.runtime?.runtimeId),
-    sessionStatus: activeSession?.status,
-  })
   /* Compare owned status snapshots. A turn already running when a workspace
      opens has no trustworthy baseline, so it cannot produce a changes card. */
   useEffect(() => {
@@ -1419,12 +1394,6 @@ export default function App() {
                   style={{ '--inspector-width': `${layout.inspectorWidth}px`, '--side-chat-width': `${layout.sideChatWidth}px` } as CSSProperties}
                 >
                   <div className={`conversation-column${subagents.selectedId ? ' has-selection' : ''}`}>
-                    <ConversationToolbar
-                      execution={execution}
-                      agentCount={subagents.agents.length}
-                      runningCount={subagents.agents.filter((agent) => agent.status === 'running').length}
-                      onOpenAgents={openAgentsTab}
-                    />
                     <main className="conversation-pane">
                       <Suspense fallback={<LoadingPanel label={t('app.panel.conversation')} />}>
                         <Transcript
@@ -1612,12 +1581,9 @@ export default function App() {
                         activeTab={settingsState.inspectorTab}
                         onTabChange={settingsState.selectInspectorTab}
                         onClose={toggleInspectorPanel}
-                        agentName={HARNESS_AGENT_NAMES[activeHarness]}
-                        shortName={HARNESS_SHORT_NAMES[activeHarness]}
+                        onOpenPlugins={openPlugins}
                         project={activeProject}
                         cwd={activeCwd}
-                        runtime={workspace.runtime}
-                        transcript={workspace.transcriptStore}
                         git={git}
                         automations={inspectorAutomations}
                         backgroundTasks={schedules}

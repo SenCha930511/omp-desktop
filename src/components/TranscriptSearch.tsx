@@ -1,5 +1,4 @@
 import { ArrowDown, ArrowUp, ChevronDown, Search, X } from 'lucide-react'
-import { createPortal } from 'react-dom'
 import { createContext, useEffect, useId, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { isOverlayOpen } from '@/lib/app-shortcuts'
 import { useI18n } from '@/lib/i18n'
@@ -113,27 +112,15 @@ export function useTranscriptSearch(messages: TranscriptMessage[], root: RefObje
     move: (direction: number) => setIndex((current) => (current + direction + Math.max(1, results.length)) % Math.max(1, results.length)) }
 }
 
-export function TranscriptSearchBar({ state, dockToToolbar = false }: { state: ReturnType<typeof useTranscriptSearch>; dockToToolbar?: boolean }) {
+export function TranscriptSearchBar({ state }: { state: ReturnType<typeof useTranscriptSearch> }) {
   const { t } = useI18n()
   const id = useId()
-  // The main conversation docks its trigger into the subagents toolbar. The
-  // slot lives outside this transcript (and outside the clipping pane), so it
-  // is resolved through the DOM and re-resolved on every render — workspace
-  // switches remount the shell around the transcript, replacing the node.
-  const [slot, setSlot] = useState<HTMLElement | null>(null)
-  useEffect(() => {
-    if (!dockToToolbar) return
-    setSlot(document.querySelector<HTMLElement>('.subagents__search-slot'))
-  })
   const trigger = <button type="button" className="conversation-search-trigger" onClick={state.show} aria-label={t('conversation.search.open')} title={t('conversation.search.open')}><Search size={15} /></button>
-  // The docked trigger stays in the toolbar while the bar is open — clicking
-  // it again refocuses the query input instead of the button vanishing.
-  // Undocked (subagent) transcripts keep the old swap: the bar opens in the
-  // trigger's place.
-  const docked = dockToToolbar && slot ? createPortal(trigger, slot) : null
-  if (!state.open) return docked ?? trigger
+  // The bar opens in the trigger's place; the floating trigger sits at the
+  // top-right of the transcript, where it stays until search is dismissed.
+  if (!state.open) return trigger
   const hasMatches = state.total > 0
-  return <>{docked}<section className={`conversation-search ${hasMatches ? 'has-matches' : ''}`} aria-label={t('conversation.search.open')} onKeyDown={(event) => {
+  return <section className={`conversation-search ${hasMatches ? 'has-matches' : ''}`} aria-label={t('conversation.search.open')} onKeyDown={(event) => {
     if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); state.close() }
     if (event.key === 'Enter' && event.target === state.inputRef.current) { event.preventDefault(); state.move(event.shiftKey ? -1 : 1) }
   }}>
@@ -153,5 +140,5 @@ export function TranscriptSearchBar({ state, dockToToolbar = false }: { state: R
       <button type="button" disabled={!state.total} aria-label={t('conversation.search.next')} title={t('conversation.search.next')} onClick={() => state.move(1)}><ArrowDown size={13} /></button>
       <button type="button" className="conversation-search__close" aria-label={t('conversation.search.close')} title={t('conversation.search.close')} onClick={state.close}><X size={13} /></button>
     </div>
-  </section></>
+  </section>
 }

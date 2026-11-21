@@ -13,19 +13,18 @@ import {
   ListFilter,
   LoaderCircle,
   MoreHorizontal,
-  NotebookPen,
   PackageOpen,
   PanelLeftClose,
   Pin,
   Plus,
   Search,
   Settings,
+  SquarePen,
   Trash2,
 } from 'lucide-react'
 import { memo, useEffect, useMemo, useState } from 'react'
 import { sessionAttentionSignature, signatureCleared } from '@/app/session-attention'
 import { HARNESS_PRODUCT_NAMES } from '@/lib/harness'
-import { formatCompactRelative } from '@/lib/data'
 import { type MessageKey, useI18n } from '@/lib/i18n'
 import { shortcutLabel } from '@/lib/platform-shortcuts'
 import { sortProjects } from '@/lib/project-order'
@@ -402,7 +401,6 @@ function SidebarView({
           <span className="session-row__title">{session.title}</span>
         </span>
         <span className="session-row__meta">
-          <span className="session-row__time">{formatCompactRelative(session.updatedAt || session.lastUserMessageAt, { nowLabel: t('sidebar.time.now') })}</span>
           {session.pinned ? <span className="session-row__pin" title={t('sidebar.sessionPinnedAria')}><Pin size={10} fill="currentColor" /></span> : null}
           {session.status === 'running' ? <span className="session-row__spinner" title={t('sidebar.sessionWorking')}><LoaderCircle className="spin" size={13} /></span> : null}
         </span>
@@ -454,9 +452,6 @@ function SidebarView({
       <div className="sidebar__titlebar drag-region">
         <div className="traffic-light-clearance" aria-hidden="true" />
         <div className="sidebar__title-actions no-drag">
-          <IconButton label={t('sidebar.newSessionShortcut', { shortcut: newSessionShortcut })} onClick={() => onNewSession()}>
-            <NotebookPen size={16} />
-          </IconButton>
           <IconButton label={t('sidebar.hideSidebar', { shortcut: sidebarShortcut })} onClick={onClose}>
             <PanelLeftClose size={16} />
           </IconButton>
@@ -465,7 +460,7 @@ function SidebarView({
 
       <nav className="sidebar__primary" aria-label={t('sidebar.primaryAria')}>
         <button type="button" title={t('sidebar.newSessionShortcut', { shortcut: newSessionShortcut })} onClick={() => onNewSession()}>
-          <NotebookPen size={15} />
+          <SquarePen size={15} />
           <span>{t('sidebar.newSession')}</span>
           <kbd>{newSessionShortcut}</kbd>
         </button>
@@ -603,16 +598,6 @@ function SidebarView({
                   <span>{project.name}</span>
                   {project.pinned ? <Pin className="project-row__pin" size={11} fill="currentColor" /> : null}
                 </button>
-                <IconButton
-                  size="small"
-                  className="project-row__new-session row-action"
-                  label={t('sidebar.newSessionIn', { name: project.name })}
-                  onClick={() => {
-                      onNewSession(project)
-                  }}
-                >
-                  <NotebookPen size={13} />
-                </IconButton>
                 {running && isCollapsed ? (
                   <span className="project-working" title={t('sidebar.agentWorking')}>
                     <LoaderCircle className="spin" size={13} />
@@ -654,7 +639,7 @@ function SidebarView({
                               onNewSession(project)
                       }}
                     >
-                      <NotebookPen size={12} /> {t('sidebar.newSession')}
+                      <SquarePen size={12} /> {t('sidebar.newSession')}
                     </button>
                   ) : null}
                 </div>

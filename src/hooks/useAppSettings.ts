@@ -17,7 +17,7 @@ export function useAppSettings({ bridge, reportError }: UseAppSettingsOptions) {
   const [initialized, setInitialized] = useState(!bridge)
   const [sidebarOpen, setSidebarOpenState] = useState(true)
   const [inspectorOpen, setInspectorOpenState] = useState(true)
-  const [inspectorTab, setInspectorTab] = useState<InspectorTab>('summary')
+  const [inspectorTab, setInspectorTab] = useState<InspectorTab>('changes')
   const settingsRef = useRef(settings)
   settingsRef.current = settings
   const confirmedSettingsRef = useRef(settings)

@@ -62,16 +62,6 @@
 .workbench__content { flex: 1; min-height: 0; min-width: 0; }
 .session-workspace { display: flex; height: 100%; min-height: 0; min-width: 0; }
 .conversation-column { position: relative; display: flex; min-height: 0; min-width: 0; flex: 1 1 auto; flex-direction: column; }
-/* Conversation toolbar: execution status on the left, the Agents button and
-   the docked transcript-search trigger on the right. It owns the search-slot
-   the main transcript portals its trigger into. */
-.conversation-toolbar { display: flex; flex-shrink: 0; align-items: center; gap: 4px; min-height: 42px; padding: 0 16px; border-bottom: 1px solid var(--border); color: var(--text-secondary); font-size: 12px; container-type: inline-size; }
-.conversation-toolbar button { display: inline-flex; align-items: center; gap: 6px; padding: 6px 8px; border: 0; border-radius: 6px; color: inherit; background: transparent; font: inherit; white-space: nowrap; cursor: pointer; }
-.conversation-toolbar button:hover { color: var(--text); background: var(--surface-hover); }
-.conversation-toolbar button:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
-.conversation-toolbar__agents { margin-left: auto; }
-.conversation-toolbar .subagents__search-slot { margin-left: 2px; }
-@container (max-width: 620px) { .conversation-toolbar { padding: 0 8px; gap: 0; } }
 .conversation-pane { position: relative; min-width: 360px; min-height: 0; flex: 1 1 auto; background: var(--canvas); overflow: hidden; container-type: inline-size; }
 .conversation-bottom-dock, .transcript__inner, .composer-wrap { max-width: var(--transcript-measure); margin: 0 auto; }
 .conversation-bottom-dock, .composer-wrap { position: absolute; inset: auto 24px 13px; z-index: 10; }
