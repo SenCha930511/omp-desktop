@@ -7,7 +7,7 @@ export const BROWSER_PARTITION = 'persist:omp-desktop-browser'
 
 export type ThemeMode = 'system' | 'light' | 'dark'
 export type WorkspaceView = 'session' | 'projects' | 'activity' | 'scheduled' | 'plugins' | 'settings'
-export type InspectorTab = 'changes' | 'browser' | 'files' | 'agents' | 'tasks'
+export type InspectorTab = 'changes' | 'browser' | 'files' | 'sidechat' | 'agents' | 'tasks'
 export type SessionStatus = 'idle' | 'running' | 'waiting' | 'complete' | 'failed' | 'unknown'
 
 export const HARNESS_IDS = ['omp'] as const
@@ -645,7 +645,6 @@ export interface AppSettings {
   keepRunningInBackground: boolean
   /** Ask the operating system to launch OMP Desktop when the user signs in. */
   launchAtLogin: boolean
-  defaultInspectorTab: InspectorTab
   browserHome: string
   browserAskForDownloads: boolean
   reduceMotion: boolean

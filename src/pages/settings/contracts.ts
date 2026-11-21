@@ -27,7 +27,6 @@ export const SETTINGS_FIELD_SECTIONS = {
   idleSessionMinutes: 'general',
   keepRunningInBackground: 'general',
   launchAtLogin: 'general',
-  defaultInspectorTab: 'general',
   browserHome: 'browser',
   browserAskForDownloads: 'browser',
   reduceMotion: 'appearance',

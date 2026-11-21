@@ -143,7 +143,6 @@ describe('settings field ownership', () => {
       showFileChangesPopup: 'general',
       keepRunningInBackground: 'general',
       launchAtLogin: 'general',
-      defaultInspectorTab: 'general',
       browserHome: 'browser',
       checkoutStrategy: 'general',
       idleSessionMinutes: 'general',

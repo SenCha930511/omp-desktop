@@ -3,8 +3,9 @@
 import { act, type ComponentProps } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createTranscriptStore } from '../../src/app/transcript-store'
 import { TitleToolbar } from '../../src/components/TitleToolbar'
-import type { ProjectRecord } from '../../src/types/api'
+import type { ProjectRecord, RuntimeInfo } from '../../src/types/api'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
@@ -36,7 +37,7 @@ describe('title toolbar identity', () => {
       root.render(
         <TitleToolbar
           project={project} sessionTitle="Outline WSL architecture" view="session" sidebarOpen inspectorOpen
-          onToggleSidebar={noop} onToggleInspector={noop} onOpenBrowser={noop}
+          onToggleSidebar={noop} onToggleInspector={noop}
         />,
       )
     })
@@ -50,7 +51,7 @@ describe('title toolbar identity', () => {
       root.render(
         <TitleToolbar
           project={project} view="session" sidebarOpen inspectorOpen
-          onToggleSidebar={noop} onToggleInspector={noop} onOpenBrowser={noop}
+          onToggleSidebar={noop} onToggleInspector={noop}
         />,
       )
     })
@@ -75,7 +76,6 @@ const renderToolbar = async (props: Partial<ComponentProps<typeof TitleToolbar>>
         inspectorOpen
         onToggleSidebar={noop}
         onToggleInspector={noop}
-        onOpenBrowser={noop}
         {...props}
       />,
     )
@@ -83,142 +83,86 @@ const renderToolbar = async (props: Partial<ComponentProps<typeof TitleToolbar>>
 }
 
 describe('title toolbar session actions', () => {
-  it('keeps the overview and More actions and folds the session tree, browser, and inspector into More', async () => {
-    const onNewSession = vi.fn()
-    await renderToolbar({ onNewSession, onOpenSessionTree: noop })
-
-    expect([...container.querySelectorAll('.title-toolbar__actions button')].map((button) => button.getAttribute('aria-label'))).toEqual(['Overview', 'More'])
-    expect(container.querySelector('button[aria-label="Session tree"]')).toBeNull()
-
-    await click(container.querySelector('button[aria-label="More"]'))
-    const menu = container.querySelector('[role="dialog"]')
-    expect(menu?.getAttribute('aria-label')).toBe('More')
-    expect(menu?.querySelector('button[aria-label="Session tree"]')).not.toBeNull()
-    expect(menu?.querySelector('button[aria-label^="Open browser"]')).not.toBeNull()
-    expect(menu?.querySelector('button[aria-label="Toggle inspector"]')).not.toBeNull()
-
-  })
-
-  it('runs each More action and closes the menu', async () => {
-    const onOpenSessionTree = vi.fn()
-    const onOpenBrowser = vi.fn()
+  it('renders only Overview and Toggle inspector buttons in session view', async () => {
     const onToggleInspector = vi.fn()
-    await renderToolbar({ onOpenSessionTree, onOpenBrowser, onToggleInspector, inspectorOpen: false })
+    await renderToolbar({ inspectorOpen: true, onToggleInspector })
 
-    const choose = async (selector: string) => {
-      await click(container.querySelector('button[aria-label="More"]'))
-      await click(container.querySelector(`[role="dialog"] ${selector}`))
-      expect(container.querySelector('[role="dialog"]')).toBeNull()
-    }
+    expect([...container.querySelectorAll('.title-toolbar__actions button')].map((button) => button.getAttribute('aria-label'))).toEqual(['Overview', 'Toggle inspector'])
+    expect(container.querySelector('button[aria-label="More"]')).toBeNull()
+    expect(container.querySelector('button[aria-label="Session tree"]')).toBeNull()
+    expect(container.querySelector('button[aria-label^="Open browser"]')).toBeNull()
 
-    await choose('button[aria-label="Session tree"]')
-    expect(onOpenSessionTree).toHaveBeenCalledTimes(1)
-    await choose('button[aria-label^="Open browser"]')
-    expect(onOpenBrowser).toHaveBeenCalledTimes(1)
-    await choose('button[aria-label="Toggle inspector"]')
+    const toggle = container.querySelector('button[aria-label="Toggle inspector"]')
+    expect(toggle?.className).toContain('is-active')
+    await click(toggle)
     expect(onToggleInspector).toHaveBeenCalledTimes(1)
-    expect(onOpenSessionTree).toHaveBeenCalledTimes(1)
-    expect(onOpenBrowser).toHaveBeenCalledTimes(1)
-  })
 
-  it('marks the inspector action active while the inspector is open', async () => {
-    await renderToolbar({ inspectorOpen: true })
-    await click(container.querySelector('button[aria-label="More"]'))
-    const action = container.querySelector('[role="dialog"] button[aria-label="Toggle inspector"]')
-    expect(action?.className).toContain('is-active')
-
-    await click(container.querySelector('button[aria-label="More"]'))
     await renderToolbar({ inspectorOpen: false })
-    await click(container.querySelector('button[aria-label="More"]'))
-    expect(container.querySelector('[role="dialog"] button[aria-label="Toggle inspector"]')?.className).not.toContain('is-active')
+    expect(container.querySelector('button[aria-label="Toggle inspector"]')?.className).not.toContain('is-active')
   })
 
-  it('closes the More menu on Escape and on an outside pointer down', async () => {
-    await renderToolbar()
-    const more = container.querySelector('button[aria-label="More"]')
+  it('opens the Session Summary Overview card with status, workspace, activity, clickable subagents, and context', async () => {
+    const onSelectInspectorTab = vi.fn()
+    const onSelectSubagent = vi.fn()
+    const transcript = createTranscriptStore([
+      {
+        id: 'm-1',
+        role: 'assistant',
+        timestamp: '2026-01-01T00:00:00.000Z',
+        parts: [
+          { type: 'toolCall', id: 'tc-1', name: 'read', args: { path: 'src/App.tsx' } },
+          { type: 'text', text: 'Updated the toolbar overview to show live session metrics.' },
+        ],
+      },
+    ])
+    const runtime = {
+      sessionUsage: {
+        cost: 0.42,
+        tokens: { input: 1000, output: 500, cacheRead: 200, cacheWrite: 0, total: 1700 },
+      },
+    } as unknown as RuntimeInfo
 
-    await click(more)
-    expect(container.querySelector('[role="dialog"]')).not.toBeNull()
-    await act(async () => {
-      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await renderToolbar({
+      transcript,
+      runtime,
+      git: {
+        isRepo: true,
+        branch: 'feat/test',
+        files: [{ path: 'src/App.tsx', status: 'M', staged: false, additions: 12, deletions: 4 }],
+      },
+      subagents: [{ id: 'sub-1', agent: 'Explore', status: 'running', messages: [] }],
+      onSelectInspectorTab,
+      onSelectSubagent,
     })
-    expect(container.querySelector('[role="dialog"]')).toBeNull()
 
-    await click(more)
-    expect(container.querySelector('[role="dialog"]')).not.toBeNull()
-    await act(async () => {
-      document.body.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
-    })
-    expect(container.querySelector('[role="dialog"]')).toBeNull()
-
-    await click(more)
-    await act(async () => {
-      container.querySelector('[role="dialog"]')?.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
-    })
-    expect(container.querySelector('[role="dialog"]')).not.toBeNull()
-  })
-
-  it('keeps the Overview and More popovers mutually exclusive', async () => {
-    await renderToolbar()
-
-    await click(container.querySelector('button[aria-label="More"]'))
-    await click(container.querySelector('button[aria-label="Overview"]'))
-    const dialogs = [...container.querySelectorAll('[role="dialog"]')]
-    expect(dialogs.map((dialog) => dialog.getAttribute('aria-label'))).toEqual(['Workspace overview'])
-
-    await click(container.querySelector('button[aria-label="More"]'))
-    expect([...container.querySelectorAll('[role="dialog"]')].map((dialog) => dialog.getAttribute('aria-label'))).toEqual(['More'])
-  })
-
-  it('toggles the Overview popover and reports the workspace counts', async () => {
-    await renderToolbar({ projectCount: 3, sessionCount: 12, agentCount: 4, runningAgentCount: 2, scheduleCount: 1 })
     const overview = container.querySelector<HTMLButtonElement>('button[aria-label="Overview"]')
     expect(overview?.getAttribute('aria-expanded')).toBe('false')
-
     await click(overview)
     expect(overview?.getAttribute('aria-expanded')).toBe('true')
+
     const dialog = container.querySelector('[role="dialog"]')
     expect(dialog?.getAttribute('aria-label')).toBe('Workspace overview')
-    const rows = [...container.querySelectorAll('.toolbar-overview__counts > div')].map((row) => [
-      row.querySelector('dt')?.textContent,
-      row.querySelector('dd')?.textContent,
-    ])
-    expect(rows).toEqual([
-      ['Projects', '3'],
-      ['Sessions', '12'],
-      ['Agents', '4'],
-      ['Running agents', '2'],
-      ['Active schedules', '1'],
-    ])
+    expect(dialog?.querySelector('.summary-hero .run-state')?.textContent).toBe('Ready')
+    expect(dialog?.textContent).toContain('Session overview')
+    expect(dialog?.textContent).toContain('Updated the toolbar overview to show live session metrics.')
+    expect(dialog?.textContent).toContain('My Project')
+    expect(dialog?.textContent).toContain('/project')
+    expect(dialog?.textContent).toContain('1 tool call recorded')
+    expect(dialog?.textContent).toContain('1 files ready to review')
+    expect(dialog?.textContent).toContain('$0.42')
+    expect(dialog?.textContent).toContain('1,000 in / 500 out / 200 cached')
+    expect(dialog?.textContent).toContain('Explore')
+
+    const agentBtn = [...(dialog?.querySelectorAll('button') ?? [])].find((button) => button.textContent?.includes('Explore'))
+    await click(agentBtn)
+    expect(onSelectSubagent).toHaveBeenCalledWith('sub-1')
+    expect(onSelectInspectorTab).toHaveBeenCalledWith('agents')
+    expect(container.querySelector('[role="dialog"]')).toBeNull()
 
     await click(overview)
-    expect(container.querySelector('[role="dialog"]')).toBeNull()
-    expect(overview?.getAttribute('aria-expanded')).toBe('false')
-  })
-
-  it('opens settings from the Overview popover and closes it', async () => {
-    const onOpenSettings = vi.fn()
-    await renderToolbar({ onOpenSettings })
-
-    await click(container.querySelector('button[aria-label="Overview"]'))
-    const dialog = container.querySelector('[role="dialog"]')
-    expect([...(dialog?.querySelectorAll('button') ?? [])].map((button) => button.textContent?.trim())).toEqual(['Open settings'])
-
-    await click(dialog?.querySelector('button'))
-    expect(onOpenSettings).toHaveBeenCalledTimes(1)
-    expect(container.querySelector('[role="dialog"]')).toBeNull()
-  })
-
-  it('starts a new session from the Overview popover and closes it', async () => {
-    const onNewSession = vi.fn()
-    await renderToolbar({ onNewSession, onOpenSettings: noop })
-
-    await click(container.querySelector('button[aria-label="Overview"]'))
-    const dialog = container.querySelector('[role="dialog"]')
-    expect([...(dialog?.querySelectorAll('button') ?? [])].map((button) => button.textContent?.trim())).toEqual(['New session', 'Open settings'])
-
-    await click(dialog?.querySelector('button'))
-    expect(onNewSession).toHaveBeenCalledTimes(1)
+    const seeAllBtn = container.querySelector<HTMLButtonElement>('.toolbar-overview__see-all')
+    await click(seeAllBtn)
+    expect(onSelectInspectorTab).toHaveBeenCalledWith('agents')
     expect(container.querySelector('[role="dialog"]')).toBeNull()
   })
 

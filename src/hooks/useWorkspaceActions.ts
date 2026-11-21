@@ -26,6 +26,7 @@ import { type createSingleFlightAdmission, findProjectForSession, findRuntimeFor
 import type {
   CapabilityMutationInput,
   ExtensionInstallInput,
+  InspectorTab,
   McpConnectionInput,
   McpStateInput,
   DesktopApi,
@@ -1513,25 +1514,21 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
       })
       .catch(reportError)
   }
-  const openBrowser = () => {
+  const openInspectorTab = (tab: InspectorTab) => {
     const { layout, settingsState, setView } = getDeps()
     if (layout.compactLayout && settingsState.sidebarOpen) {
       layout.setSmallestSidebarAllowed(false)
       settingsState.setSidebarOpen(false)
     }
     setView('session')
-    settingsState.selectInspectorTab('browser')
-    if (!settingsState.inspectorOpen) persistPanel({ inspectorOpen: true })
-  }
-  const openChanges = () => {
-    const { layout, settingsState } = getDeps()
-    if (layout.compactLayout && settingsState.sidebarOpen) {
-      layout.setSmallestSidebarAllowed(false)
-      settingsState.setSidebarOpen(false)
+    settingsState.selectInspectorTab(tab)
+    if (!settingsState.inspectorOpen || layout.inspectorSuppressed) {
+      layout.setSmallestInspectorAllowed(true)
+      persistPanel({ inspectorOpen: true })
     }
-    settingsState.selectInspectorTab('changes')
-    if (!settingsState.inspectorOpen) persistPanel({ inspectorOpen: true })
   }
+  const openBrowser = () => openInspectorTab('browser')
+  const openChanges = () => openInspectorTab('changes')
 
   // /mcp reload、/reload-plugins 上游無專用 RPC:以文字 prompt 轉送上游
   // dispatcher。既有 sendPrompt 管線處理 idle admission(/mcp reload 歸類
@@ -1571,6 +1568,7 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     updateSchedule,
     mutateSchedule,
     openScheduledSession,
+    openInspectorTab,
     openBrowser,
     openChanges,
     reloadCapabilities,

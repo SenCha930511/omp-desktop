@@ -14,6 +14,14 @@ const reasoningLabelKeys = {
   max: 'composer.reasoning.max',
 } as const satisfies Record<PrimeEffortSelector, MessageKey>
 
+export function formatReasoningEffortLabel(
+  t: (key: MessageKey, params?: Record<string, string | number>) => string,
+  level: PrimeEffortSelector,
+  resolvedAutoEffort?: PrimeEffortSelector | null,
+): string {
+  return level === 'auto' && resolvedAutoEffort ? t('composer.reasoning.autoResolved', { level: t(reasoningLabelKeys[resolvedAutoEffort]) }) : t(reasoningLabelKeys[level])
+}
+
 interface EffortPickerProps {
   value: PrimeEffortSelector
   levels: readonly PrimeEffortSelector[]
@@ -37,7 +45,7 @@ export const EffortPicker = memo(function EffortPicker({ value, levels, resolved
   const menuRef = useRef<HTMLDivElement>(null)
   const listId = useId()
 
-  const labelFor = (level: PrimeEffortSelector) => (level === 'auto' && resolvedAutoEffort ? t('composer.reasoning.autoResolved', { level: t(reasoningLabelKeys[resolvedAutoEffort]) }) : t(reasoningLabelKeys[level]))
+  const labelFor = (level: PrimeEffortSelector) => formatReasoningEffortLabel(t, level, resolvedAutoEffort)
 
   const close = (restoreFocus = false) => {
     setOpen(false)

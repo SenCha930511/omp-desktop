@@ -5,7 +5,9 @@ import { act, useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '../../src/App'
+import { createTranscriptStore } from '../../src/app/transcript-store'
 import { WorkspaceInspector } from '../../src/components/WorkspaceInspector'
+import { INSPECTOR_ACTIVE_TAB_KEY, INSPECTOR_OPEN_TABS_KEY, readInitialActiveTab, readInitialInspectorTabs } from '../../src/hooks/useAppSettings'
 import { useBrowserAnnotations, type BrowserAnnotationsApi } from '../../src/hooks/useBrowserAnnotations'
 import type { InspectorProps } from '../../src/components/Inspector'
 import type { InspectorTab } from '../../src/types/api'
@@ -110,34 +112,52 @@ describe('inspector re-render containment', () => {
     expect(last).not.toBe(first)
     expect(last.git).toBe(first.git)
     expect(last.browserAnnotations).toBe(first.browserAnnotations)
-    expect(last.automations).toBe(first.automations)
+    expect(last.transcript).toBe(first.transcript)
+    expect(last.commandOutputHistory).toBe(first.commandOutputHistory)
+    expect(last.sideChat).toBe(first.sideChat)
+    expect(last.onCancelBackgroundTask).toBe(first.onCancelBackgroundTask)
+    expect(last.onRefreshBackgroundTasks).toBe(first.onRefreshBackgroundTasks)
     expect(last.onSelectAgentTab).toBe(first.onSelectAgentTab)
     expect(last.onPreviewContext).toBe(first.onPreviewContext)
     expect(last.onNavigateAgentTab).toBe(first.onNavigateAgentTab)
     expect(last.onGrantProject).toBe(first.onGrantProject)
-    expect(last.onOpenAutomation).toBe(first.onOpenAutomation)
-    expect(last.onOpenSchedules).toBe(first.onOpenSchedules)
-    expect(last.backgroundTasks).toBe(first.backgroundTasks)
     expect(last.onShowBrowserPreview).toBe(first.onShowBrowserPreview)
     // The Agents tab receives one memoized bundle, so unrelated App renders
     // never reopen the inspector through a fresh roster object.
     expect(last.subagents).toBe(first.subagents)
   })
 
-  it('lists the full sample automation set on the Background Tasks tab', async () => {
+  it('omits Capabilities from New tab and shows OMP session tasks instead of schedules on Background Tasks', async () => {
     await renderApp()
     const newTab = container.querySelector<HTMLButtonElement>('.inspector__tab-actions button[aria-label="New tab"]')
     expect(newTab).not.toBeNull()
     await act(async () => { newTab?.click() })
-    const tasksTab = [...container.querySelectorAll<HTMLButtonElement>('.inspector-new-tab__item')].find((button) => button.textContent?.includes('Background Tasks'))
+    const items = [...container.querySelectorAll<HTMLButtonElement>('.inspector-new-tab__item')]
+    expect(items.some((button) => button.textContent?.includes('Capabilities'))).toBe(false)
+    const tasksTab = items.find((button) => button.textContent?.includes('Background Tasks'))
     expect(tasksTab).toBeDefined()
     await act(async () => { tasksTab?.click() })
-    expect(container.querySelector('#inspector-panel-tasks .background-tasks__list')?.textContent).toContain('Morning issue triage')
+    expect(container.querySelector('#inspector-panel-tasks .background-tasks')).not.toBeNull()
+    expect(container.querySelector('#inspector-panel-tasks')?.textContent).not.toContain('Morning issue triage')
   })
 })
 
 describe('inspector tabs', () => {
-  function Harness({ initialTab = 'changes', subagents }: { initialTab?: InspectorTab; subagents?: InspectorProps['subagents'] }) {
+  function Harness({
+    initialTab = 'changes',
+    subagents,
+    transcript,
+    isStreaming,
+    hasRuntime,
+    onCancelBackgroundTask,
+  }: {
+    initialTab?: InspectorTab
+    subagents?: InspectorProps['subagents']
+    transcript?: InspectorProps['transcript']
+    isStreaming?: boolean
+    hasRuntime?: boolean
+    onCancelBackgroundTask?: InspectorProps['onCancelBackgroundTask']
+  }) {
     const [activeTab, setActiveTab] = useState<InspectorTab>(initialTab)
     return (
       <WorkspaceInspector
@@ -145,9 +165,10 @@ describe('inspector tabs', () => {
         onTabChange={setActiveTab}
         onClose={() => undefined}
         git={{ isRepo: false, files: [] }}
-        automations={[]}
-        onOpenAutomation={() => undefined}
-        onOpenSchedules={() => undefined}
+        transcript={transcript}
+        isStreaming={isStreaming}
+        hasRuntime={hasRuntime}
+        onCancelBackgroundTask={onCancelBackgroundTask}
         browserHome="about:blank"
         browserAnnotations={useBrowserAnnotations()}
         agentBrowserTabs={[]}
@@ -195,6 +216,156 @@ describe('inspector tabs', () => {
     expect([...container.querySelectorAll('.inspector__tabs button')].some((button) => button.textContent?.includes('Agents'))).toBe(true)
     expect(container.querySelector('#inspector-panel-agents .subagents__roster')).not.toBeNull()
     expect(container.querySelector('#inspector-panel-agents .subagents__transcript h2')?.textContent).toBe('Explore')
+  })
+
+  it('renders active OMP session background jobs on the Background Tasks tab and triggers cancel', async () => {
+    const onCancel = vi.fn()
+    const transcript = createTranscriptStore([
+      {
+        id: 'm-1',
+        role: 'assistant',
+        timestamp: '2026-01-01T00:00:00.000Z',
+        parts: [
+          { type: 'toolCall', id: 'tc-1', name: 'bash', args: { command: 'npm run watch:docs', async: true } },
+          { type: 'toolResult', name: 'bash', text: 'Backgrounded as job job-88' },
+        ],
+      },
+    ])
+    await act(async () => {
+      root.render(<Harness initialTab="tasks" transcript={transcript} hasRuntime onCancelBackgroundTask={onCancel} />)
+    })
+    const list = container.querySelector('#inspector-panel-tasks .background-tasks__list')
+    expect(list?.textContent).toContain('npm run watch:docs')
+    const cancelBtn = list?.querySelector<HTMLButtonElement>('button[aria-label="Cancel task"]')
+    expect(cancelBtn).not.toBeNull()
+    await act(async () => {
+      cancelBtn?.click()
+    })
+    expect(onCancel).toHaveBeenCalledWith(expect.objectContaining({ id: 'job-88', kind: 'job' }))
+  })
+
+  it('opens Browser on URL Enter in New tab, renders Side questions, and supports middle-click and drag reorder', async () => {
+    const sideChat = {
+      state: { supported: true, topics: [], live: {}, activeTopicId: null, sending: false },
+      hasSession: true,
+      onAsk: () => undefined,
+      onCancel: () => undefined,
+      onSelectTopic: () => undefined,
+      onClose: () => undefined,
+    }
+    function ControlledHarness() {
+      const [openTabs, setOpenTabs] = useState<InspectorTab[]>(['changes', 'files'])
+      const [activeTab, setActiveTab] = useState<InspectorTab>('changes')
+      const [reordered, setReordered] = useState<string[]>([])
+      return (
+        <div data-reordered={reordered.join(',')}>
+          <WorkspaceInspector
+            openTabs={openTabs}
+            activeTab={activeTab}
+            onTabChange={(tab) => {
+              setOpenTabs((current) => (current.includes(tab) ? current : [...current, tab]))
+              setActiveTab(tab)
+            }}
+            onCloseTab={(tab) => {
+              const next = openTabs.filter((item) => item !== tab)
+              setOpenTabs(next)
+              if (activeTab === tab && next[0]) setActiveTab(next[0])
+            }}
+            onReorderTabs={(src, dst) => {
+              setReordered([src, dst])
+              setOpenTabs((current) => {
+                const next = [...current]
+                const si = next.indexOf(src)
+                const di = next.indexOf(dst)
+                const [moved] = next.splice(si, 1)
+                next.splice(di, 0, moved)
+                return next
+              })
+            }}
+            onClose={() => undefined}
+            git={{ isRepo: false, files: [] }}
+            browserHome="about:blank"
+            browserAnnotations={useBrowserAnnotations()}
+            agentBrowserTabs={[]}
+            activeAgentTabId={null}
+            agentPreviewSelected={false}
+            onSelectAgentTab={() => undefined}
+            onCloseAgentTab={() => undefined}
+            onShowBrowserPreview={() => undefined}
+            onAgentSlotRect={() => undefined}
+            onPreviewContext={() => undefined}
+            previewPointerEvent={null}
+            onNavigateAgentTab={() => undefined}
+            onRefreshGit={() => undefined}
+            onOpenExternal={() => undefined}
+            onRevealPath={() => undefined}
+            onGrantProject={() => undefined}
+            sideChat={sideChat}
+          />
+        </div>
+      )
+    }
+
+    await act(async () => { root.render(<ControlledHarness />) })
+    const newTab = container.querySelector<HTMLButtonElement>('.inspector__tab-actions button[aria-label="New tab"]')
+    await act(async () => { newTab?.click() })
+
+    const input = container.querySelector<HTMLInputElement>('.inspector-new-tab__search input')
+    expect(input).not.toBeNull()
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+    await act(async () => {
+      setter?.call(input, 'https://example.com')
+      input?.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => {
+      input?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    })
+    expect(container.querySelector('#inspector-panel-browser')).not.toBeNull()
+
+    await act(async () => { newTab?.click() })
+    const sideItem = [...container.querySelectorAll<HTMLButtonElement>('.inspector-new-tab__item')].find((button) => button.textContent?.includes('Side questions'))
+    expect(sideItem).toBeDefined()
+    await act(async () => { sideItem?.click() })
+    expect(container.querySelector('#inspector-panel-sidechat .side-chat')).not.toBeNull()
+
+    const filesTabWrap = container.querySelector('#inspector-tab-files')?.closest('.inspector-tab')
+    const changesTabWrap = container.querySelector('#inspector-tab-changes')?.closest('.inspector-tab')
+    const dataTransfer = { effectAllowed: '', dropEffect: '', setData: () => undefined, getData: () => 'files' }
+    await act(async () => {
+      filesTabWrap?.dispatchEvent(Object.assign(new Event('dragstart', { bubbles: true }), { dataTransfer }))
+    })
+    await act(async () => {
+      changesTabWrap?.dispatchEvent(Object.assign(new Event('dragover', { bubbles: true, cancelable: true }), { dataTransfer }))
+      changesTabWrap?.dispatchEvent(Object.assign(new Event('drop', { bubbles: true, cancelable: true }), { dataTransfer }))
+    })
+    expect(container.querySelector('[data-reordered]')?.getAttribute('data-reordered')).toBe('files,changes')
+
+    const filesButton = container.querySelector<HTMLButtonElement>('#inspector-tab-files')
+    await act(async () => {
+      filesButton?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 1 }))
+    })
+    expect(container.querySelector('#inspector-panel-files')).toBeNull()
+  })
+
+  it('persists inspector open tabs and active tab in localStorage without sidechat', () => {
+    window.localStorage.removeItem(INSPECTOR_OPEN_TABS_KEY)
+    window.localStorage.removeItem(INSPECTOR_ACTIVE_TAB_KEY)
+    expect(readInitialInspectorTabs()).toEqual(['changes'])
+
+    window.localStorage.setItem(INSPECTOR_OPEN_TABS_KEY, JSON.stringify([]))
+    expect(readInitialInspectorTabs()).toEqual([])
+
+    window.localStorage.setItem(INSPECTOR_OPEN_TABS_KEY, JSON.stringify(['files', 'sidechat', 'agents', 'files']))
+    const tabs = readInitialInspectorTabs()
+    expect(tabs).toEqual(['files', 'agents'])
+
+    window.localStorage.setItem(INSPECTOR_ACTIVE_TAB_KEY, 'sidechat')
+    expect(readInitialActiveTab(tabs)).toBe('files')
+
+    window.localStorage.setItem(INSPECTOR_ACTIVE_TAB_KEY, 'agents')
+    expect(readInitialActiveTab(tabs)).toBe('agents')
+    window.localStorage.removeItem(INSPECTOR_OPEN_TABS_KEY)
+    window.localStorage.removeItem(INSPECTOR_ACTIVE_TAB_KEY)
   })
 })
 

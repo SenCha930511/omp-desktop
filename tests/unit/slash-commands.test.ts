@@ -53,6 +53,16 @@ describe('slash command catalog', () => {
     expect(slashSuggestions(commands, '/effort h')).toEqual([{ command: '/effort high', detail: 'Deep' }])
     expect(slashSuggestions(commands, '/effort high extra')).toEqual([])
   })
+  it('matches /skill:<name> entries by both full prefix and bare skill name', () => {
+    const skillCommands = [
+      { name: 'skill:grilling', source: 'skill', description: 'Stress-test a plan' },
+      { name: 'skill:humanizer', source: 'skill', description: 'Rewrite AI prose' },
+      { name: 'compact', source: 'builtin', description: 'Compact context' },
+    ]
+    expect(slashSuggestions(skillCommands, '/grill')).toEqual([{ command: '/skill:grilling', detail: 'Stress-test a plan' }])
+    expect(slashSuggestions(skillCommands, '/skill:hu')).toEqual([{ command: '/skill:humanizer', detail: 'Rewrite AI prose' }])
+    expect(slashSuggestions(skillCommands, '/skill:')).toHaveLength(2)
+  })
   it('separates terminal displays from executable commands', () => {
     expect(deferredSlashCommand('/theme')).toBe('theme')
     expect(deferredSlashCommand('/todo edit')).toBe('todo edit')

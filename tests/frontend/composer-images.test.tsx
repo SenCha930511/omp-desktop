@@ -620,6 +620,65 @@ describe('Composer fallback indicator', () => {
   })
 })
 
+describe('Composer skill slash commands', () => {
+  it('merges enabled user/project skills into / autocomplete and completes /skill:<name>', () => {
+    const skills: SkillRecord[] = [
+      { id: 's1', name: 'grilling', description: 'Grill the plan', kind: 'skill', location: 'user', enabled: true },
+      { id: 's2', name: 'project helper', description: 'Project workflow', kind: 'skill', location: 'project', enabled: true },
+      { id: 's3', name: 'disabled-skill', description: 'Hidden', kind: 'skill', location: 'user', enabled: false },
+      { id: 's4', name: 'bundled-skill', description: 'Bundled', kind: 'skill', location: 'bundled', enabled: true },
+      { id: 'e1', name: 'ext-tool', description: 'Extension', kind: 'extension', location: 'user', enabled: true },
+    ]
+    act(() =>
+      root.render(
+        <Composer
+          busy={false}
+          model="provider/vision"
+          effort="medium"
+          modelsByProvider={modelsByProvider}
+          providers={providers}
+          reasoningLevels={['medium']}
+          fast={false}
+          fastSupported={false}
+          fastAvailable
+          imageInputSupported
+          messageEnterAction="queue"
+          skills={skills}
+          onModelChange={vi.fn()}
+          onEffortChange={vi.fn()}
+          onFastChange={vi.fn()}
+          onSend={vi.fn()}
+          onStop={vi.fn()}
+        />,
+      ),
+    )
+
+    const textarea = container.querySelector('textarea')!
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!
+    act(() => {
+      setter.call(textarea, '/grill')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    const options = [...container.querySelectorAll('[role="listbox"] [role="option"]')]
+    expect(options.map((option) => option.textContent)).toEqual([expect.stringContaining('/skill:grilling')])
+    expect(container.querySelector('[role="listbox"] .lucide-wand-sparkles')).not.toBeNull()
+
+    act(() => textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
+    expect(textarea.value).toBe('/skill:grilling ')
+
+    act(() => {
+      setter.call(textarea, '/skill:')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    const allSkills = [...container.querySelectorAll('[role="listbox"] [role="option"]')].map((option) => option.textContent)
+    expect(allSkills.some((text) => text?.includes('/skill:grilling'))).toBe(true)
+    expect(allSkills.some((text) => text?.includes('/skill:project-helper'))).toBe(true)
+    expect(allSkills.some((text) => text?.includes('disabled-skill'))).toBe(false)
+    expect(allSkills.some((text) => text?.includes('bundled-skill'))).toBe(false)
+    expect(allSkills.some((text) => text?.includes('ext-tool'))).toBe(false)
+  })
+})
+
 describe('Composer memoization', () => {
   const stableProps = {
     busy: false,

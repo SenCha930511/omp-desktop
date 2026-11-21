@@ -105,24 +105,6 @@ export function GeneralSettings({ settings, onUpdate, platform }: SettingsSectio
             <option value="0">{t('general.idleSessions.never')}</option>
           </select>
         </label>
-        <label className="settings-row">
-          <span>
-            <strong>{t('general.inspectorTab.label')}</strong>
-            <small>{t('general.inspectorTab.description')}</small>
-          </span>
-          <select
-            value={settings.defaultInspectorTab}
-            onChange={(event) => {
-              void onUpdate({ defaultInspectorTab: event.target.value as AppSettings['defaultInspectorTab'] })
-            }}
-          >
-            <option value="changes">{t('general.inspectorTab.changes')}</option>
-            <option value="browser">{t('general.inspectorTab.browser')}</option>
-            <option value="files">{t('general.inspectorTab.files')}</option>
-            <option value="agents">{t('general.inspectorTab.agents')}</option>
-            <option value="tasks">{t('general.inspectorTab.tasks')}</option>
-          </select>
-        </label>
       </section>
     </>
   )

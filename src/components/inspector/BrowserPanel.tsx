@@ -70,6 +70,9 @@ interface BrowserPanelProps {
   previewPointerEvent?: StampedPointerEvent | null
   /** User navigation on an agent tab; routed through the main process to the guest. */
   onNavigateAgentTab?(tabId: string, action: 'back' | 'forward' | 'reload' | 'url', url?: string): void
+  /** External URL navigation request (e.g. submitted from Inspector New Tab search). */
+  navigationRequest?: { id: number; url: string } | null
+  onNavigationRequestHandled?(id: number): void
   /** Test hook: how often to poll the page for a clicked element while picking. */
   pollIntervalMs?: number
 }
@@ -100,13 +103,18 @@ export function BrowserPanel({
   onPreviewContext,
   previewPointerEvent = null,
   onNavigateAgentTab,
+  navigationRequest = null,
+  onNavigationRequestHandled,
   pollIntervalMs = 350,
   platform = detectRendererPlatform(),
 }: BrowserPanelProps) {
   const { t } = useI18n()
   const webviewRef = useRef<WebviewElement | null>(null)
-  const [address, setAddress] = useState(home)
-  const [currentUrl, setCurrentUrl] = useState(home)
+  const initialSrcRef = useRef(navigationRequest ? normalizeUrl(navigationRequest.url) : home)
+  const initialNavIdRef = useRef(navigationRequest?.id ?? null)
+  const pendingUrlRef = useRef<string | null>(null)
+  const [address, setAddress] = useState(initialSrcRef.current)
+  const [currentUrl, setCurrentUrl] = useState(initialSrcRef.current)
   const [loading, setLoading] = useState(false)
   const [canBack, setCanBack] = useState(false)
   const [canForward, setCanForward] = useState(false)
@@ -327,10 +335,41 @@ export function BrowserPanel({
     const url = normalizeUrl(value)
     setAddress(url)
     setCurrentUrl(url)
-    void webviewRef.current?.loadURL(url).catch((error: unknown) => {
+    const view = webviewRef.current
+    if (!view || typeof view.loadURL !== 'function') return
+    if (!domReady) {
+      pendingUrlRef.current = url
+      view.setAttribute('src', url)
+      return
+    }
+    pendingUrlRef.current = null
+    void view.loadURL(url).catch((error: unknown) => {
       if (!String(error).includes('ERR_ABORTED')) console.error('Browser navigation failed', error)
     })
-  }, [])
+  }, [domReady])
+
+  useEffect(() => {
+    const pending = pendingUrlRef.current
+    if (!domReady || !pending) return
+    pendingUrlRef.current = null
+    const view = webviewRef.current
+    if (!view || typeof view.loadURL !== 'function') return
+    if (view.getURL() === pending) return
+    void view.loadURL(pending).catch((error: unknown) => {
+      if (!String(error).includes('ERR_ABORTED')) console.error('Browser navigation failed', error)
+    })
+  }, [domReady])
+
+  const handledNavRequestIdRef = useRef<number | null>(null)
+  useEffect(() => {
+    if (!navigationRequest || handledNavRequestIdRef.current === navigationRequest.id) return
+    handledNavRequestIdRef.current = navigationRequest.id
+    if (initialNavIdRef.current !== navigationRequest.id) {
+      navigate(navigationRequest.url)
+    }
+    initialNavIdRef.current = null
+    onNavigationRequestHandled?.(navigationRequest.id)
+  }, [navigate, navigationRequest, onNavigationRequestHandled])
 
   const toggleAnnotation = () => {
     if (picking) {
@@ -373,7 +412,7 @@ export function BrowserPanel({
     ref: (node: WebviewElement | null) => {
       webviewRef.current = node
     },
-    src: home,
+    src: initialSrcRef.current,
     className: 'browser-webview',
     partition: BROWSER_PARTITION,
     webpreferences: 'contextIsolation=yes,sandbox=yes,nodeIntegration=no',

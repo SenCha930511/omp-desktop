@@ -644,11 +644,24 @@ export const Composer = memo(function Composer({
   const mentionQuery = /(?:^|\s)@([^@\n]*)$/.exec(value)?.[1]?.toLocaleLowerCase().trim() ?? ''
 
   // 上游 live catalog 是權威來源;無 bridge / 離線 / catalog 為空時降級為
-  // 寫死的啟始命令清單,兩者經過同一個 desktopSlashCommands 過濾器。
-  const commandCatalog = useMemo(
-    () => desktopSlashCommands(availableCommands.length > 0 ? availableCommands : INITIAL_SLASH_COMMANDS, t),
-    [availableCommands, t],
-  )
+  // 寫死的啟始命令清單,兩者經過同一個 desktopSlashCommands 過濾器,
+  // 並補入已啟用的專案/使用者 skills 作為 `/skill:<name>` 斜線指令。
+  const commandCatalog = useMemo(() => {
+    const base = desktopSlashCommands(availableCommands.length > 0 ? availableCommands : INITIAL_SLASH_COMMANDS, t)
+    const present = new Set(base.map((command) => command.name.toLowerCase()))
+    const extraSkills: SlashCommand[] = []
+    for (const skill of enabledSkills) {
+      if (skill.kind !== 'skill' || skill.location === 'bundled' || skill.location === 'system') continue
+      const token = skill.name.trim().replace(/\s+/g, '-')
+      if (!token) continue
+      const commandName = `skill:${token}`
+      const lowerKey = commandName.toLowerCase()
+      if (present.has(lowerKey) || present.has(token.toLowerCase())) continue
+      present.add(lowerKey)
+      extraSkills.push({ name: commandName, description: skill.description, source: 'skill' })
+    }
+    return extraSkills.length ? [...base, ...extraSkills] : base
+  }, [availableCommands, enabledSkills, t])
   const catalogByName = useMemo(() => {
     const map = new Map<string, SlashCommand>()
     for (const command of commandCatalog) {
@@ -660,20 +673,23 @@ export const Composer = memo(function Composer({
   const suggestions =
     menu === 'command'
       ? slashSuggestions(commandCatalog, value.startsWith('/') ? value : '/')
-          .map((item) => ({
-            key: item.command,
-            label: item.command,
-            detail: item.detail,
-            // get_available_commands 的 source 欄位(builtin/skill/extension/custom/
-            // mcp_prompt/file);subcommand 建議沿用主命令的 source。
-            source: catalogByName.get(item.command.replace(/^\//, '').split(/\s+/)[0])?.source,
-            icon: <Command size={14} />,
-            choose: () => {
-              setValue(`${item.command} ${value.startsWith('/') ? '' : value}`)
-              setMenu(null)
-              textareaRef.current?.focus()
-            },
-          }))
+          .map((item) => {
+            const source = catalogByName.get(item.command.replace(/^\//, '').split(/\s+/)[0])?.source
+            return {
+              key: item.command,
+              label: item.command,
+              detail: item.detail,
+              // get_available_commands 的 source 欄位(builtin/skill/extension/custom/
+              // mcp_prompt/file);subcommand 建議沿用主命令的 source。
+              source,
+              icon: source === 'skill' ? <WandSparkles size={14} /> : <Command size={14} />,
+              choose: () => {
+                setValue(`${item.command} ${value.startsWith('/') ? '' : value}`)
+                setMenu(null)
+                textareaRef.current?.focus()
+              },
+            }
+          })
           // 依來源分組排序,讓視覺分組與鍵盤導覽順序一致(stable sort 保留
           // 同組內既有順序)。
           .sort((left, right) => slashSourceOrder(left.source) - slashSourceOrder(right.source))

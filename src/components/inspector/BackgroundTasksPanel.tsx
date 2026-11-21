@@ -1,48 +1,69 @@
-import { CalendarClock, Clock } from 'lucide-react'
+import { AlertCircle, Ban, CheckCircle2, LoaderCircle, RefreshCw, Terminal, X } from 'lucide-react'
 import { memo } from 'react'
-import { formatRelative } from '@/lib/data'
 import { useI18n } from '@/lib/i18n'
-import type { AutomationScheduleRecord } from '@/types/api'
+import type { OmpBackgroundTask } from '@/lib/omp-background-tasks'
+import { IconButton } from '../ui'
 
 interface BackgroundTasksPanelProps {
-  automations: AutomationScheduleRecord[]
-  onOpenAutomation(id: string): void
-  onOpenSchedules(): void
+  tasks: OmpBackgroundTask[]
+  hasRuntime?: boolean
+  onCancelTask?(task: OmpBackgroundTask): void
+  onRefreshTasks?(): void
 }
 
-/** Full automation list, unsliced unlike the Summary tab's two-row preview. */
-export const BackgroundTasksPanel = memo(function BackgroundTasksPanel({ automations, onOpenAutomation, onOpenSchedules }: BackgroundTasksPanelProps) {
+function StatusIcon({ status }: { status: OmpBackgroundTask['status'] }) {
+  if (status === 'running') return <LoaderCircle size={14} className="spin" />
+  if (status === 'failed') return <AlertCircle size={14} />
+  if (status === 'cancelled') return <Ban size={14} />
+  return <CheckCircle2 size={14} />
+}
+
+/** Shows OMP's active and recent session background tasks rather than scheduled automations. */
+export const BackgroundTasksPanel = memo(function BackgroundTasksPanel({ tasks, hasRuntime = false, onCancelTask, onRefreshTasks }: BackgroundTasksPanelProps) {
   const { t } = useI18n()
   return (
     <div className="inspector-scroll scroll-area background-tasks">
       <header className="background-tasks__header">
-        <h2>{t('inspector.tasks.title')}</h2>
-        <small>{t('inspector.tasks.count', { count: automations.length })}</small>
+        <div>
+          <h2>{t('inspector.tasks.title')}</h2>
+          <small>{t('inspector.tasks.count', { count: tasks.length })}</small>
+        </div>
+        {hasRuntime && onRefreshTasks ? (
+          <IconButton size="small" label={t('inspector.tasks.refresh')} onClick={onRefreshTasks}>
+            <RefreshCw size={13} />
+          </IconButton>
+        ) : null}
       </header>
-      {automations.length ? (
-        <div className="summary-automation-list background-tasks__list">
-          {automations.map((task) => (
-            <button type="button" key={task.id} onClick={() => onOpenAutomation(task.id)}>
-              <span className="summary-automation-icon">
-                {task.blockedReason ? <Clock size={14} /> : <CalendarClock size={14} />}
+      {tasks.length ? (
+        <div className="background-tasks__list">
+          {tasks.map((task) => (
+            <div className={`background-task-row is-${task.status}`} key={task.id}>
+              <span className={`summary-automation-icon background-task-row__icon is-${task.status}`}>
+                {task.kind === 'bash' || task.kind === 'script' ? <Terminal size={14} /> : <StatusIcon status={task.status} />}
               </span>
-              <span>
-                <strong>{task.title}</strong>
+              <span className="background-task-row__copy">
+                <strong title={task.title}>{task.title}</strong>
                 <small>
-                  {task.status}
-                  {task.nextRunAt ? ` · ${t('inspector.tasks.nextRun', { time: formatRelative(task.nextRunAt) })}` : ''}
+                  {task.type} · {t(`inspector.tasks.status.${task.status}`)}
+                  {task.detail ? ` · ${task.detail}` : ''}
                 </small>
-                {task.blockedReason ? <small className="background-tasks__blocked">{t('inspector.tasks.blocked', { reason: task.blockedReason })}</small> : null}
               </span>
-            </button>
+              {task.status === 'running' && task.cancellable && onCancelTask ? (
+                <IconButton size="small" label={t('inspector.tasks.cancel')} onClick={() => onCancelTask(task)}>
+                  <X size={13} />
+                </IconButton>
+              ) : null}
+            </div>
           ))}
         </div>
       ) : (
         <div className="background-tasks__empty">
           <p>{t('inspector.tasks.empty')}</p>
-          <button type="button" onClick={onOpenSchedules}>
-            {t('inspector.tasks.open')}
-          </button>
+          {hasRuntime && onRefreshTasks ? (
+            <button type="button" onClick={onRefreshTasks}>
+              {t('inspector.tasks.refresh')}
+            </button>
+          ) : null}
         </div>
       )}
     </div>

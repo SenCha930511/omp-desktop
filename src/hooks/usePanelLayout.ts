@@ -35,7 +35,6 @@ export function usePanelLayout({
   const [smallestSidebarAllowed, setSmallestSidebarAllowed] = useState(false)
   const [smallestInspectorAllowed, setSmallestInspectorAllowed] = useState(false)
   const [inspectorWidth, setInspectorWidth] = useState(() => readPanelSize('omp-desktop.inspector-width', INSPECTOR_DEFAULT))
-  const [sideChatWidth, setSideChatWidth] = useState(() => readPanelSize('omp-desktop.side-chat-width', INSPECTOR_DEFAULT))
   const [sidebarWidth, setSidebarWidth] = useState(() => readPanelSize('omp-desktop.sidebar-width', SIDEBAR_DEFAULT))
   const [inspectorMax, setInspectorMax] = useState(660)
   const workspaceRowRef = useRef<HTMLDivElement>(null)
@@ -105,9 +104,7 @@ export function usePanelLayout({
   }, [inspectorOpen, view])
 
   useEffect(() => setInspectorWidth((value) => Math.min(inspectorMax, Math.max(INSPECTOR_MIN, value))), [inspectorMax])
-  useEffect(() => setSideChatWidth((value) => Math.min(inspectorMax, Math.max(INSPECTOR_MIN, value))), [inspectorMax])
   useEffect(() => { window.localStorage.setItem('omp-desktop.inspector-width', String(inspectorWidth)) }, [inspectorWidth])
-  useEffect(() => { window.localStorage.setItem('omp-desktop.side-chat-width', String(sideChatWidth)) }, [sideChatWidth])
   useEffect(() => { window.localStorage.setItem('omp-desktop.sidebar-width', String(Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, sidebarWidth)))) }, [sidebarWidth])
   useEffect(() => setSidebarWidth((value) => Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, value))), [])
 
@@ -120,8 +117,6 @@ export function usePanelLayout({
     compactRestoreRef,
     inspectorWidth,
     setInspectorWidth,
-    sideChatWidth,
-    setSideChatWidth,
     sidebarWidth,
     setSidebarWidth,
     inspectorMax,

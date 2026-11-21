@@ -63,7 +63,7 @@ describe('sidebar recent conversations', () => {
 
     const titles = [...container.querySelectorAll<HTMLElement>('.sidebar-recent .session-row__title')].map((row) => row.textContent)
     expect(titles).toEqual(['newest', 'middle', 'oldest'])
-    expect(container.querySelectorAll('.sidebar-recent .session-row__time')).toHaveLength(0)
+    expect(container.querySelectorAll('.sidebar-recent .session-row__time')).toHaveLength(3)
   })
 
   it('sorts by last updated time even when a session is pinned', () => {

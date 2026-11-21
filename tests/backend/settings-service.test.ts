@@ -41,7 +41,6 @@ describe('SettingsService.update', () => {
       checkoutStrategy: 'branch',
       keepRunningInBackground: true,
       launchAtLogin: true,
-      defaultInspectorTab: 'changes',
       browserHome: 'https://example.test/',
       browserAskForDownloads: false,
       reduceMotion: true,
@@ -66,7 +65,7 @@ describe('SettingsService.update', () => {
     })
     expect(next).toMatchObject({
       theme: 'dark', locale: 'zh-CN', interfaceFontScale: 105, projectSortMode: 'alphabetical', sidebarOpen: false, inspectorOpen: true, showFileChangesPopup: false, checkoutStrategy: 'branch', keepRunningInBackground: true, launchAtLogin: true,
-      defaultInspectorTab: 'changes', browserHome: 'https://example.test/',
+      browserHome: 'https://example.test/',
       browserAskForDownloads: false, reduceMotion: true,
       showReasoningSummaries: false, showToolCalls: false, messageEnterAction: 'steer',
       runtimePaths: { omp: '/opt/omp' },
@@ -93,12 +92,6 @@ describe('SettingsService.update', () => {
     await expect(service.update({ locale: 'system' })).resolves.toMatchObject({ locale: 'system' })
   })
 
-  it('accepts the Agents and Background Tasks inspector tabs as session defaults', async () => {
-    const service = makeService()
-    await expect(service.update({ defaultInspectorTab: 'agents' })).resolves.toMatchObject({ defaultInspectorTab: 'agents' })
-    await expect(service.update({ defaultInspectorTab: 'tasks' })).resolves.toMatchObject({ defaultInspectorTab: 'tasks' })
-  })
-
   it('rejects unknown keys, invalid enums, and malformed values without persisting', async () => {
     const service = makeService()
     const before = service.get()
@@ -108,7 +101,6 @@ describe('SettingsService.update', () => {
     await expect(service.update({ locale: 'fr' })).rejects.toThrow(/Invalid locale/)
     await expect(service.update({ interfaceFontScale: 111 })).rejects.toThrow(/Invalid interface font scale/)
     await expect(service.update({ projectSortMode: 'invalid' })).rejects.toThrow(/Invalid project sort mode/)
-    await expect(service.update({ defaultInspectorTab: 'tools' })).rejects.toThrow(/Invalid inspector tab/)
     await expect(service.update({ checkoutStrategy: 'folders' })).rejects.toThrow(/Invalid checkout strategy/)
     await expect(service.update({ messageEnterAction: 'send' })).rejects.toThrow(/Invalid message Enter action/)
     await expect(service.update({ runtimePaths: { prime: 'relative/prime-agent', omp: '' } })).rejects.toThrow(/not supported/)

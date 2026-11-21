@@ -24,6 +24,7 @@ import {
 } from 'lucide-react'
 import { memo, useEffect, useMemo, useState } from 'react'
 import { sessionAttentionSignature, signatureCleared } from '@/app/session-attention'
+import { formatCompactRelative } from '@/lib/data'
 import { HARNESS_PRODUCT_NAMES } from '@/lib/harness'
 import { type MessageKey, useI18n } from '@/lib/i18n'
 import { shortcutLabel } from '@/lib/platform-shortcuts'
@@ -403,6 +404,7 @@ function SidebarView({
         <span className="session-row__meta">
           {session.pinned ? <span className="session-row__pin" title={t('sidebar.sessionPinnedAria')}><Pin size={10} fill="currentColor" /></span> : null}
           {session.status === 'running' ? <span className="session-row__spinner" title={t('sidebar.sessionWorking')}><LoaderCircle className="spin" size={13} /></span> : null}
+          <span className="session-row__time">{formatCompactRelative(session.updatedAt || session.lastUserMessageAt, { nowLabel: t('sidebar.time.now') })}</span>
         </span>
       </button>
       <IconButton

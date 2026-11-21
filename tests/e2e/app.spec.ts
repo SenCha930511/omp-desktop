@@ -576,6 +576,28 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
       send({ type: 'extension_ui_request', id: 'omp-fixture-question-2', method: 'select', title: 'What should OMP optimize for?', options: ['__prime_ask_user__omp-fixture-group:1:2', 'Speed', 'Safety', 'Other (type your own answer)'] })
       return
     }
+    if (message.includes('start fixture background job')) {
+      const completedAt = new Date().toISOString()
+      const parentId = lastEntryId()
+      send({ type: 'agent_start' })
+      send({ type: 'tool_execution_start', toolCallId: 'omp-bg-1', toolName: 'bash', args: { command: 'npm run watch:fixture', async: true } })
+      send({ type: 'tool_execution_end', toolCallId: 'omp-bg-1', toolName: 'bash', result: { content: [{ type: 'text', text: 'Backgrounded as job job-fixture-1\\nUse /jobs to inspect.' }] } })
+      send({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Started background job job-fixture-1.' } })
+      fs.appendFileSync(sessionFile, [
+        JSON.stringify({ type: 'message', id: 'fixture-bg-user', parentId, timestamp: completedAt, message: { role: 'user', content: message } }),
+        JSON.stringify({ type: 'message', id: 'fixture-bg-assistant', parentId: 'fixture-bg-user', timestamp: completedAt, message: { role: 'assistant', timestamp: completedAt, content: [{ type: 'toolCall', id: 'omp-bg-1', name: 'bash', arguments: { command: 'npm run watch:fixture', async: true } }] } }),
+        JSON.stringify({ type: 'message', id: 'fixture-bg-result', parentId: 'fixture-bg-assistant', timestamp: completedAt, message: { role: 'toolResult', timestamp: completedAt, toolCallId: 'omp-bg-1', toolName: 'bash', content: [{ type: 'text', text: 'Backgrounded as job job-fixture-1\\nUse /jobs to inspect.' }] } }),
+        JSON.stringify({ type: 'message', id: 'fixture-bg-final', parentId: 'fixture-bg-result', timestamp: completedAt, message: { role: 'assistant', timestamp: completedAt, content: 'Started background job job-fixture-1.' } }),
+      ].join('\\n') + '\\n')
+      send({ type: 'agent_end' })
+      send({ id: command.id, type: 'response', command: command.type, success: true, data: { agentInvoked: true } })
+      return
+    }
+    if (message.trim() === '/jobs kill job-fixture-1') {
+      send({ type: 'command_output', text: 'Cancelled background job job-fixture-1' })
+      send({ id: command.id, type: 'response', command: command.type, success: true, data: { agentInvoked: false } })
+      return
+    }
     // The adoption-probe flow ends with an authoritative disk reconciliation,
     // which only sees this reused fixture file: persist the probe exchange like
     // a real harness would (user on admission, assistant at completion).
@@ -684,19 +706,9 @@ function hermeticEnvironment(home: string, ompExecutable: string, cuaExecutable:
   return env
 }
 
-/** Opens the title toolbar's More popover, which holds the session tree, browser, and inspector actions. */
-async function openToolbarMore() {
-  await page.locator('.title-toolbar__more > button').click()
-  const menu = page.locator('.toolbar-more')
-  await expect(menu).toBeVisible()
-  return menu
-}
-
-/** Runs one of the toolbar actions folded into the More popover. */
+/** Triggers a top-level action in the title toolbar. */
 async function chooseToolbarAction(name: string | RegExp) {
-  const menu = await openToolbarMore()
-  await menu.getByRole('button', { name }).click()
-  await expect(menu).toHaveCount(0)
+  await page.locator('.title-toolbar__actions').getByRole('button', { name }).click()
 }
 
 /** Opens an inspector tab, creating it from the new-tab page when needed. */
@@ -972,6 +984,7 @@ test.describe('OMP Desktop desktop smoke', () => {
     await page.setViewportSize({ width: 680, height: 850 })
     // Below the smallest breakpoint the inspector is suppressed; the title
     // toolbar reopens it as an overlay, and the helper selects the Agents tab.
+    await expect(page.locator('.inspector')).toHaveCount(0)
     await openAgentsInspector()
     await expect(roster).toBeVisible()
     expect(await roster.evaluate((element) => element.getBoundingClientRect().width)).toBeLessThan(680)
@@ -986,21 +999,20 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(page.getByRole('tab', { name: 'Agents' })).toHaveAttribute('aria-selected', 'true')
   })
 
-  test('lists every automation in the Background Tasks inspector tab', async () => {
+  test('shows active OMP session background tasks in the Background Tasks inspector tab', async () => {
+    const composer = page.getByRole('combobox', { name: 'Message OMP' })
+    await composer.fill('start fixture background job')
+    await composer.press('Enter')
+    await expect(page.locator('.transcript')).toContainText('Started background job job-fixture-1.')
+
     if (!(await page.locator('.inspector').count())) await chooseToolbarAction('Toggle inspector')
-    const projectId = await page.evaluate(async () => (await window.desktop.projects.list('omp')).find((project) => !project.inferred)?.id ?? '')
-    expect(projectId).not.toBe('')
-    const task = await page.evaluate(async (id) => window.desktop.schedules.create({
-      title: 'Fixture automation',
-      prompt: 'Summarize the fixture workspace.',
-      target: { kind: 'project', projectId: id },
-      timing: { kind: 'once', at: new Date(Date.now() + 86_400_000).toISOString() },
-      execution: { model: 'auto', thinking: 'auto', speed: 'normal' },
-    }, 'omp'), projectId)
     await openInspectorTab('Background Tasks')
-    await expect(page.locator('#inspector-panel-tasks .background-tasks__list')).toContainText('Fixture automation')
+    await expect(page.locator('#inspector-panel-tasks .background-tasks__list')).toContainText('npm run watch:fixture')
+    await expect(page.locator('#inspector-panel-tasks .background-tasks__list')).toContainText('Running')
     await expect(page.locator('#inspector-panel-tasks .background-tasks__header small')).toHaveText('1 task')
-    await page.evaluate((id) => window.desktop.schedules.delete(id), task.id)
+
+    await page.locator('#inspector-panel-tasks button[aria-label="Cancel task"]').click()
+    await expect(page.locator('#inspector-panel-tasks .background-tasks__list')).toContainText('Cancelled')
   })
 
   test('moves the transcript on the very first wheel scroll of a long history', async () => {
@@ -1630,7 +1642,7 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(page.locator('.sidebar__footer button[title="Settings"]')).toBeVisible()
   })
 
-  test('opens the title toolbar overview with workspace counts and a New session action', async () => {
+  test('opens the title toolbar overview with session status, workspace, activity, subagents, and context', async () => {
     const overview = page.getByRole('button', { name: 'Overview', exact: true })
     await expect(overview).toHaveAttribute('aria-expanded', 'false')
     await overview.click()
@@ -1638,17 +1650,15 @@ test.describe('OMP Desktop desktop smoke', () => {
     const dialog = page.getByRole('dialog', { name: 'Workspace overview' })
     await expect(dialog).toBeVisible()
     await expect(overview).toHaveAttribute('aria-expanded', 'true')
-    await expect(dialog.locator('.toolbar-overview__counts > div')).toHaveCount(5)
-    for (const label of ['Projects', 'Sessions', 'Agents', 'Running agents', 'Active schedules']) {
-      await expect(dialog.locator('dt').filter({ hasText: new RegExp(`^${label}$`) })).toBeVisible()
+    await expect(dialog.locator('.summary-hero')).toContainText('Session overview')
+    for (const heading of ['Workspace', 'Activity', 'Context']) {
+      await expect(dialog.getByRole('heading', { name: heading, exact: true })).toBeVisible()
     }
-    for (const value of await dialog.locator('dd').allTextContents()) expect(value).toMatch(/^\d+$/)
+    await expect(dialog.locator('.toolbar-overview__section-header')).toContainText('Agents')
 
-    const newSession = dialog.getByRole('button', { name: 'New session', exact: true })
-    await expect(newSession).toBeVisible()
-    await newSession.click()
+    await dialog.locator('.toolbar-overview__see-all').click()
     await expect(dialog).toHaveCount(0)
-    await expect(page.getByRole('combobox', { name: 'Message OMP' })).toBeVisible()
+    await expect(page.locator('#inspector-panel-agents')).toBeVisible()
   })
 
   test('opens General settings when the main process requests Settings', async () => {
@@ -2043,6 +2053,12 @@ test.describe('OMP Desktop desktop smoke', () => {
 
     const projectRow = page.locator('.project-row').first()
     await sessionRowWrap.locator('.session-row').click()
+    const secondRowWrap = page.locator('.project-group .session-row-wrap').nth(1)
+    if (await secondRowWrap.count()) {
+      await secondRowWrap.hover()
+      await expect.poll(() => sessionOptions.evaluate((node) => getComputedStyle(node).opacity)).toBe('0')
+      await expect.poll(() => secondRowWrap.locator('.session-row__more').evaluate((node) => getComputedStyle(node).opacity)).toBe('1')
+    }
     await page.locator('.sidebar__primary').getByRole('button', { name: /^New session/ }).click()
 
     // The empty draft selects the project row and fabricates no session row.
@@ -2157,21 +2173,20 @@ test.describe('OMP Desktop desktop smoke', () => {
     // Wait out the in-flight window — Enter while submitting is dropped.
     await expect(page.locator('.command-output__status')).toHaveText('Completed')
 
-    // The dock opens only from the /btw command — there is no toolbar toggle.
-    await expect(page.getByRole('button', { name: 'Side questions', exact: true })).toHaveCount(0)
+    // The /btw command opens the Side questions tab inside the inspector.
     await composer.fill('/btw')
     await composer.press('Enter')
 
+    await expect(page.getByRole('tab', { name: 'Side questions' })).toHaveAttribute('aria-selected', 'true')
     const sideChatPanel = page.locator('.side-chat')
     await expect(sideChatPanel).toBeVisible()
     await expect(sideChatPanel).toContainText('Ask a side question')
 
-    // The dock has its own resize handle, independent of the inspector width.
-    const resizeHandle = page.getByRole('separator', { name: 'Resize side questions' })
+    // The inspector resize handle governs Side questions just like every other tab.
+    const resizeHandle = page.getByRole('separator', { name: 'Resize inspector' })
     await expect(resizeHandle).toBeVisible()
 
-    // Dragging the handle narrows the dock and persists a dedicated width —
-    // right-anchored panels shrink as the handle moves right.
+    // Dragging the handle narrows the inspector width and persists it.
     const beforeDrag = await sideChatPanel.evaluate((node) => node.getBoundingClientRect().width)
     const handleBox = await resizeHandle.boundingBox()
     expect(handleBox).not.toBeNull()
@@ -2183,8 +2198,7 @@ test.describe('OMP Desktop desktop smoke', () => {
     await page.mouse.up()
     const afterDrag = await sideChatPanel.evaluate((node) => node.getBoundingClientRect().width)
     expect(afterDrag).toBeLessThan(beforeDrag - 40)
-    await expect.poll(async () => page.evaluate(() => Number(localStorage.getItem('omp-desktop.side-chat-width')))).toBeCloseTo(afterDrag, 0)
-    await expect.poll(async () => page.evaluate(() => localStorage.getItem('omp-desktop.inspector-width'))).not.toBeNull()
+    await expect.poll(async () => page.evaluate(() => Number(localStorage.getItem('omp-desktop.inspector-width')))).toBeCloseTo(afterDrag, 0)
 
     // The mini composer reuses the main composer's capsule treatment.
     const radii = await page.evaluate(() => ({
@@ -2203,6 +2217,13 @@ test.describe('OMP Desktop desktop smoke', () => {
     expect(dockBounds).not.toBeNull()
     expect(dockBounds!.panel).toBeLessThan(700)
     expect(dockBounds!.transcript).toBeGreaterThan(240)
+
+    const sideFooter = sideChatPanel.locator('.composer.side-chat__composer .composer__footer')
+    await expect(sideFooter.locator('button.model-picker__trigger')).toBeVisible()
+    await expect(sideFooter.locator('button.model-picker__trigger')).toBeDisabled()
+    await expect(sideFooter.locator('button.effort-picker__trigger')).toBeVisible()
+    await expect(sideFooter.locator('button.effort-picker__trigger')).toBeDisabled()
+    await expect(sideFooter.locator('button[aria-label*="permission" i], button[aria-label*="folder" i]')).toHaveCount(0)
 
     const input = sideChatPanel.locator('.side-chat__input')
     await input.fill('What does this file do?')
@@ -2226,7 +2247,7 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect.poll(() => JSON.parse(readFileSync(join(fixtureRoot, 'btw-command.json'), 'utf8')).recordId).toBe('fixture-topic-1')
     await expect(sideChatPanel.locator('.side-chat__bubble')).toHaveCount(2)
 
-    // Closing returns the dock state to hidden while the inspector stays untouched.
+    // Closing removes the Side questions tab cleanly while the inspector remains available.
     await sideChatPanel.getByRole('button', { name: 'Close side questions', exact: true }).click()
     await expect(sideChatPanel).toHaveCount(0)
 
@@ -2834,11 +2855,8 @@ test.describe('OMP Desktop desktop smoke', () => {
     }
     await expect(page.locator('.workbench')).not.toHaveAttribute('inert')
     await expect(page.locator('.title-toolbar')).not.toHaveAttribute('inert')
-    // The inspector toggle lives in the More popover; keep exercising the keyboard path.
-    const more = page.getByRole('button', { name: 'More', exact: true })
-    await more.focus()
-    await more.press('Enter')
-    const inspectorToggle = page.getByRole('dialog', { name: 'More', exact: true }).getByRole('button', { name: 'Toggle inspector' })
+    // The inspector toggle sits directly in the title toolbar; keep exercising the keyboard path.
+    const inspectorToggle = page.locator('.title-toolbar__actions').getByRole('button', { name: 'Toggle inspector', exact: true })
     await inspectorToggle.focus()
     await inspectorToggle.press('Enter')
     await expect.poll(() => page.locator('.inspector').evaluate((node) => getComputedStyle(node).position)).toBe('fixed')

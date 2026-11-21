@@ -9,7 +9,8 @@ import { ReasoningExpandedContext } from '@/components/ReasoningDisclosure'
 import { ConversationDock } from '@/components/ConversationDock'
 import { CommandOutputPanel } from '@/components/CommandOutputPanel'
 import { useCommandOutput } from '@/hooks/useCommandOutput'
-import { useSideQuestions } from '@/hooks/useSideQuestions'
+import { useSideQuestions, type SideQuestionSessionState } from '@/hooks/useSideQuestions'
+import type { SideChatPanelProps } from '@/components/SideChatPanel'
 import { useSubagents, type SubagentPanelState } from '@/hooks/useSubagents'
 import { NoHarnessPrompt } from '@/components/NoHarnessPrompt'
 import type { ProjectScriptKind } from '@/components/ProjectRunControl'
@@ -41,7 +42,9 @@ import { createAppKeydownHandler } from '@/lib/app-shortcuts'
 import { SAMPLE_GIT, SAMPLE_PROJECTS, SAMPLE_SCHEDULES, SAMPLE_SESSIONS, SAMPLE_SKILLS, SAMPLE_TRANSCRIPT } from '@/lib/data'
 import { openExternalUrl, revealPath } from '@/lib/desktop-actions'
 import { errorMessage } from '@/lib/errors'
+import { formatReasoningEffortLabel } from '@/components/EffortPicker'
 import { HARNESS_AGENT_NAMES, HARNESS_PRODUCT_NAMES, HARNESS_SHORT_NAMES } from '@/lib/harness'
+import type { OmpBackgroundTask } from '@/lib/omp-background-tasks'
 import { continuedSessionKeys } from '@/lib/session-lineage'
 import { isBackgroundedSlashCommand, type SlashCommand } from '@/lib/slash-commands'
 import { I18nProvider, useI18n } from '@/lib/i18n'
@@ -55,6 +58,7 @@ import {
   type GitFileChange,
   HARNESS_IDS,
   type HarnessId,
+  type InspectorTab,
   type MessagePart,
   type OmpApprovalMode,
   type PrimeModelDescriptor,
@@ -71,7 +75,6 @@ import {
 
 const Transcript = lazy(() => import('@/components/ConversationTranscript').then((module) => ({ default: module.ConversationTranscript })))
 const Inspector = lazy(() => import('@/components/WorkspaceInspector').then((module) => ({ default: module.WorkspaceInspector })))
-const SideChatPanel = lazy(() => import('@/components/SideChatPanel').then((module) => ({ default: module.SideChatPanel })))
 const CommandPalette = lazy(() => import('@/components/CommandPalette').then((module) => ({ default: module.CommandPalette })))
 const ExtensionUiModal = lazy(() => import('@/components/ExtensionUiModal').then((module) => ({ default: module.ExtensionUiModal })))
 const ProjectsPage = lazy(() => import('@/pages/ProjectsPage').then((module) => ({ default: module.ProjectsPage })))
@@ -85,6 +88,13 @@ const hasBridge = () => typeof window !== 'undefined' && typeof window.desktop !
 const EMPTY_MODELS: PrimeModelDescriptor[] = []
 const EMPTY_PROVIDERS: PrimeProviderDescriptor[] = []
 const EMPTY_GIT_FILES: GitFileChange[] = []
+const EMPTY_SIDE_CHAT_STATE: SideQuestionSessionState = {
+  supported: undefined,
+  topics: [],
+  live: {},
+  activeTopicId: null,
+  sending: false,
+}
 const HARNESS_PROVIDER_DOCS: Record<HarnessId, string> = {
   omp: 'https://github.com/can1357/oh-my-pi/blob/main/docs/providers.md',
 }
@@ -270,7 +280,6 @@ export default function App() {
   // ever firing against a live harness.
   const sideChatSessionId = workspace.activeSessionId ?? workspace.runtime?.sessionId ?? null
   const sideQuestions = useSideQuestions(bridge, sideChatSessionId, workspace.runtime?.runtimeId ?? null)
-  const [sideChatOpen, setSideChatOpen] = useState(false)
   const [btwHint, setBtwHint] = useState(false)
   const activeSideChat = sideChatSessionId ? sideQuestions.session(sideChatSessionId) : undefined
   // The /btw-without-runtime hint lives in the conversation; the first real
@@ -392,7 +401,6 @@ export default function App() {
     const missing = injected.filter((command) => !present.has(command.name))
     return missing.length ? [...base, ...missing] : base
   }, [workspace.runtime?.availableCommands, sideChatSupported])
-  const sideChatVisible = view === 'session' && sideChatOpen && !layout.inspectorSuppressed
   const extension = useExtensionUi({
     bridge,
     activeRuntimeId: workspace.runtime?.runtimeId,
@@ -673,6 +681,7 @@ export default function App() {
     updateSchedule,
     mutateSchedule,
     openScheduledSession,
+    openInspectorTab,
     openBrowser,
     openChanges,
     reloadCapabilities,
@@ -711,18 +720,25 @@ export default function App() {
     bumpRecentSessionOpen,
     reportError,
   })
-  // Stable so the memoized title toolbar keeps its shallow compare.
-  const openSettings = useCallback(() => navigate('settings'), [navigate])
   // Side chats are transient: closing the panel (its × button or a session
   // switch) drops the visible topics so reopening starts blank, like
   // ChatGPT's temporary side conversation. Harness history is unaffected.
   // The dock has no toolbar toggle — it opens exclusively via /btw.
-  const closeSideChat = useCallback(() => {
-    setSideChatOpen(false)
-    if (workspace.activeSessionId) sideQuestions.clear(workspace.activeSessionId)
-  }, [workspace.activeSessionId, sideQuestions])
+  const closeInspectorTab = useCallback(
+    (tab: InspectorTab) => {
+      settingsState.closeInspectorTab(tab)
+      if (tab === 'sidechat' && workspace.activeSessionId) sideQuestions.clear(workspace.activeSessionId)
+    },
+    [settingsState.closeInspectorTab, sideQuestions, workspace.activeSessionId],
+  )
+  const closeOtherInspectorTabs = useCallback(
+    (tab: InspectorTab) => {
+      settingsState.closeOtherInspectorTabs(tab)
+      if (tab !== 'sidechat' && workspace.activeSessionId) sideQuestions.clear(workspace.activeSessionId)
+    },
+    [settingsState.closeOtherInspectorTabs, sideQuestions, workspace.activeSessionId],
+  )
   const toggleInspectorPanel = useCallback(() => {
-    setSideChatOpen(false)
     if (!settingsState.inspectorOpen || layout.inspectorSuppressed) layout.setSmallestInspectorAllowed(true)
     toggleInspector()
   }, [toggleInspector, settingsState.inspectorOpen, layout.inspectorSuppressed, layout.setSmallestInspectorAllowed])
@@ -777,7 +793,7 @@ export default function App() {
           return Promise.resolve()
         }
         const question = trimmed.slice(4).trim()
-        setSideChatOpen(true)
+        openInspectorTab('sidechat')
         if (question) askSideQuestion(question)
         return Promise.resolve()
       }
@@ -785,7 +801,7 @@ export default function App() {
       if (intent !== 'steer') setBtwHint(false)
       return sendPrompt(prompt, images, intent)
     },
-    [sideChatIntercept, sideChatSessionId, askSideQuestion, sendPrompt],
+    [sideChatIntercept, sideChatSessionId, openInspectorTab, askSideQuestion, sendPrompt],
   )
   useEffect(() => {
     const onOpenSettings = bridge?.app.onOpenSettings
@@ -824,16 +840,6 @@ export default function App() {
   // Stable identities keep the memoized Inspector and Composer from
   // re-rendering at streaming-frame rate; useStableCallback always dispatches
   // to the latest render's closures.
-  const inspectorAutomations = useMemo(
-    () => (activeSession ? schedules.filter((task) => task.harness === activeHarness && task.target.kind === 'session' && task.target.sessionId === activeSession.id) : []),
-    [activeHarness, activeSession, schedules],
-  )
-  const openAutomation = useCallback((id: string) => {
-    setScheduleFocusId(id)
-    setView('scheduled')
-  }, [])
-  const openSchedules = useCallback(() => navigate('scheduled'), [navigate])
-  const openPlugins = useCallback(() => navigate('plugins'), [navigate])
   // The Agents tab gets one memoized state bundle: useSubagents returns a fresh
   // object every render, and the inspector's memo boundary should reopen only
   // when the roster or its controls actually change.
@@ -875,6 +881,71 @@ export default function App() {
       showTools: settingsState.settings.showToolCalls,
     }),
     [subagentPanel, subagentsConnected, settingsState.settings.showReasoningSummaries, settingsState.settings.showToolCalls],
+  )
+  const previousSideChatSessionRef = useRef<string | null>(sideChatSessionId)
+  useEffect(() => {
+    const previous = previousSideChatSessionRef.current
+    previousSideChatSessionRef.current = sideChatSessionId
+    if (previous && previous !== sideChatSessionId) {
+      settingsState.closeInspectorTab('sidechat')
+    }
+  }, [settingsState.closeInspectorTab, sideChatSessionId])
+  const cancelBackgroundTask = useStableCallback((task: OmpBackgroundTask) => {
+    if (task.kind === 'script') {
+      stopProjectScript()
+      return
+    }
+    if (task.kind === 'bash') {
+      const targetId = Number(task.id.slice('bash:'.length))
+      const entry = commandOutput.history.find((item) => item.id === targetId && item.status === 'running')
+      entry?.onAbort?.()
+      return
+    }
+    if (task.kind === 'tool') {
+      void stopRuntime()
+      return
+    }
+    if (task.kind === 'job') {
+      void sendPrompt(`/jobs kill ${task.id}`).catch(() => undefined)
+    }
+  })
+
+  const refreshBackgroundTasks = useStableCallback(() => {
+    void sendPrompt('/jobs').catch(() => undefined)
+  })
+
+  const closeSideChatTab = useCallback(() => closeInspectorTab('sidechat'), [closeInspectorTab])
+  const sideChatModelLabel = provider.selectedModel?.name ?? (provider.model || undefined)
+  const sideChatEffortLabel = formatReasoningEffortLabel(t, provider.effort, provider.resolvedAutoEffort)
+  const sideChatFastSupported = provider.selectedModel?.fastModeSupported ?? false
+  const sideChatAgentName = HARNESS_AGENT_NAMES[activeHarness]
+  const inspectorSideChat = useMemo<SideChatPanelProps>(
+    () => ({
+      state: activeSideChat ?? EMPTY_SIDE_CHAT_STATE,
+      hasSession: Boolean(workspace.runtime),
+      modelLabel: sideChatModelLabel,
+      effortLabel: sideChatEffortLabel,
+      fast: provider.fast,
+      fastSupported: sideChatFastSupported,
+      agentName: sideChatAgentName,
+      onAsk: askSideQuestion,
+      onCancel: cancelSideQuestion,
+      onSelectTopic: selectSideQuestionTopic,
+      onClose: closeSideChatTab,
+    }),
+    [
+      activeSideChat,
+      workspace.runtime,
+      sideChatModelLabel,
+      sideChatEffortLabel,
+      provider.fast,
+      sideChatFastSupported,
+      sideChatAgentName,
+      askSideQuestion,
+      cancelSideQuestion,
+      selectSideQuestionTopic,
+      closeSideChatTab,
+    ],
   )
   const selectAgentTab = useStableCallback((tabId: string) => {
     setAgentPreviewSelected(false)
@@ -1361,23 +1432,22 @@ export default function App() {
               gitBranch={git.branch}
               view={view}
               productName={HARNESS_PRODUCT_NAMES[activeHarness]}
+              shortName={HARNESS_SHORT_NAMES[activeHarness]}
+              agentName={HARNESS_AGENT_NAMES[activeHarness]}
               sidebarOpen={sidebarVisible}
               activeProjectScriptKind={activeProjectScriptKind(activeProjectScriptRun, activeProject?.id)}
               onRunProjectScript={startProjectScript}
               onStopProjectScript={stopProjectScript}
               onSaveProjectScripts={saveProjectScripts}
               onToggleSidebar={toggleSidebar}
-              inspectorOpen={inspectorVisible && !sideChatVisible}
+              inspectorOpen={inspectorVisible}
               onToggleInspector={toggleInspectorPanel}
-              onOpenBrowser={openBrowser}
-              onOpenSessionTree={view === 'session' ? openSessionTree : undefined}
-              onNewSession={newSession}
-              projectCount={projects.length}
-              sessionCount={sessions.length}
-              agentCount={subagents.agents.length}
-              runningAgentCount={subagents.agents.filter((agent) => agent.status === 'running').length}
-              scheduleCount={schedules.filter((schedule) => schedule.status === 'active').length}
-              onOpenSettings={openSettings}
+              onSelectInspectorTab={openInspectorTab}
+              git={git}
+              transcript={workspace.transcriptStore}
+              runtime={workspace.runtime}
+              subagents={subagentAgents}
+              onSelectSubagent={selectSubagent}
               platform={platform}
             />
             <div className="workbench__content">
@@ -1385,7 +1455,7 @@ export default function App() {
                 <div
                   ref={layout.workspaceRowRef}
                   className="session-workspace"
-                  style={{ '--inspector-width': `${layout.inspectorWidth}px`, '--side-chat-width': `${layout.sideChatWidth}px` } as CSSProperties}
+                  style={{ '--inspector-width': `${layout.inspectorWidth}px` } as CSSProperties}
                 >
                   <div className={`conversation-column${subagents.selectedId ? ' has-selection' : ''}`}>
                     <main className="conversation-pane">
@@ -1534,18 +1604,7 @@ export default function App() {
                       </ConversationDock>
                     </main>
                   </div>
-                  {sideChatVisible ? (
-                    <ResizeHandle
-                      orientation="vertical"
-                      label={t('sidechat.resize')}
-                      value={layout.sideChatWidth}
-                      min={INSPECTOR_MIN}
-                      max={layout.inspectorMax}
-                      defaultValue={INSPECTOR_DEFAULT}
-                      onChange={layout.setSideChatWidth}
-                      cssVariable="--side-chat-width"
-                    />
-                  ) : inspectorVisible ? (
+                  {inspectorVisible ? (
                     <ResizeHandle
                       orientation="vertical"
                       label={t('app.resizeInspector')}
@@ -1556,33 +1615,28 @@ export default function App() {
                       onChange={layout.setInspectorWidth}
                     />
                   ) : null}
-                  {sideChatVisible && activeSideChat && sideChatSessionId ? (
-                    <Suspense fallback={<LoadingPanel label={t('sidechat.aria')} />}>
-                      <SideChatPanel
-                        key={`side-chat-${sideChatSessionId}`}
-                        state={activeSideChat}
-                        hasSession={Boolean(workspace.runtime)}
-                        onAsk={askSideQuestion}
-                        onCancel={cancelSideQuestion}
-                        onSelectTopic={selectSideQuestionTopic}
-                        onClose={closeSideChat}
-                      />
-                    </Suspense>
-                  ) : inspectorVisible ? (
+                  {inspectorVisible ? (
                     <Suspense fallback={<LoadingPanel label={t('app.panel.inspector')} />}>
                       <Inspector
                         key={`inspector-${browserGeneration}`}
+                        openTabs={settingsState.inspectorOpenTabs}
                         activeTab={settingsState.inspectorTab}
+                        tabActivationRevision={settingsState.inspectorTabRevision}
                         onTabChange={settingsState.selectInspectorTab}
+                        onCloseTab={closeInspectorTab}
+                        onCloseOtherTabs={closeOtherInspectorTabs}
+                        onReorderTabs={settingsState.reorderInspectorTabs}
                         onClose={toggleInspectorPanel}
-                        onOpenPlugins={openPlugins}
                         project={activeProject}
                         cwd={activeCwd}
                         git={git}
-                        automations={inspectorAutomations}
-                        backgroundTasks={schedules}
-                        onOpenAutomation={openAutomation}
-                        onOpenSchedules={openSchedules}
+                        transcript={workspace.transcriptStore}
+                        isStreaming={busy}
+                        hasRuntime={Boolean(workspace.runtime)}
+                        commandOutputHistory={commandOutput.history}
+                        activeProjectScript={activeProjectScriptRun?.projectId === activeProject?.id ? activeProjectScriptRun : undefined}
+                        onCancelBackgroundTask={cancelBackgroundTask}
+                        onRefreshBackgroundTasks={refreshBackgroundTasks}
                         browserHome={settingsState.settings.browserHome}
                         browserAnnotations={browserAnnotations}
                         agentBrowserTabs={activeAgentTabs}
@@ -1600,14 +1654,14 @@ export default function App() {
                         onOpenExternal={openExternal}
                         onRevealPath={revealInFileManager}
                         onGrantProject={grantActiveProject}
+                        sideChat={inspectorSideChat}
                         subagents={inspectorSubagents}
                         overlay={layout.compactLayout}
                         platform={platform}
                       />
                     </Suspense>
                   ) : null}
-                  {sideChatVisible ? <button type="button" className="panel-scrim panel-scrim--inspector" aria-label={t('sidechat.close')} onClick={closeSideChat} /> : null}
-                  {!sideChatVisible && inspectorVisible ? (
+                  {inspectorVisible ? (
                     <button type="button" className="panel-scrim panel-scrim--inspector" aria-label={t('app.closeInspector')} onClick={toggleInspectorPanel} />
                   ) : null}
                 </div>
