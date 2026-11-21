@@ -1,5 +1,5 @@
 import { ChevronDown, LoaderCircle } from 'lucide-react'
-import { memo, useMemo, useRef } from 'react'
+import { memo, useEffect, useMemo, useRef } from 'react'
 import { createAssistantTurnCoalescer } from '@/lib/assistant-turns'
 import { HARNESS_SHORT_NAMES } from '@/lib/harness'
 import { useI18n } from '@/lib/i18n'
@@ -109,21 +109,26 @@ function TranscriptView({
   }
   const entering = (id: string) => entranceRef.current.hydrated && !entranceRef.current.initial.has(id)
   const activeAssistantId = useMemo(() => (active && groupedMessages.at(-1)?.role === 'assistant' ? groupedMessages.at(-1)?.id : undefined), [active, groupedMessages])
-  // Rows that are done moving opt into content-visibility so off-screen
-  // history skips layout and paint. The streaming tail, the row holding the
-  // active turn, and the current search hit stay fully rendered; the tiny
-  // divider/notice rows are excluded because a 240px intrinsic placeholder
-  // would mis-size them.
-  const settledRow = (message: TranscriptMessage) =>
-    !message.streaming && message.id !== activeAssistantId && search.matchId !== message.id && message.kind !== 'steer-read-marker' && !isAgentNoticeKind(message.kind)
-  // Footer clearance is owned by ConversationDock: it measures the whole
-  // dock (composer, queue tray, attachments, command output) into
-  // `--conversation-dock-height` on the pane, and conversation.css spends
-  // that on `.conversation-pane .transcript` padding-bottom,
-  // scroll-padding-bottom and the jump-to-bottom offset. A second
-  // ResizeObserver here only re-measured the composer on every frame of the
-  // same layout, so it is gone; `--footer-clearance` stays as the fallback
-  // for a transcript rendered outside a pane.
+  // Footer clearance: the composer (and its queue tray) flow below the
+  // absolutely-positioned transcript, so their combined height is the real
+  // bottom padding the last message needs to rest snugly above them. A
+  // static 325px left the model text floating far above a one-row tray;
+  // measuring live keeps padding, scroll anchoring and the jump-to-bottom
+  // button aligned whether zero or five messages are queued.
+  useEffect(() => {
+    const root = scrollRef.current
+    if (!root) return
+    const scope = root.closest('.conversation-pane') ?? root.parentElement
+    const footer = scope?.querySelector('.composer-wrap')
+    if (!footer) return
+    const apply = () => {
+      root.style.setProperty('--footer-clearance', `${Math.max(footer.getBoundingClientRect().height + 16, 190)}px`)
+    }
+    apply()
+    const observer = new ResizeObserver(apply)
+    observer.observe(footer)
+    return () => observer.disconnect()
+  }, [scrollRef])
   const transcriptClasses = [
     'transcript',
     'scroll-area',
@@ -171,7 +176,7 @@ function TranscriptView({
             </button>
           ) : null}
           {visibleMessages.map((message) => (
-            <SearchMessage key={message.id} id={message.id} reveal={search.matchId === message.id} settled={settledRow(message)}>
+            <SearchMessage key={message.id} id={message.id} reveal={search.matchId === message.id}>
             <ErrorBoundary
               key={message.id}
               fallback={

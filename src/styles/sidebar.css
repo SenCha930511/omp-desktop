@@ -86,16 +86,10 @@
 .session-row--expand:hover { color: var(--text-secondary); }
 .session-row--expand svg { flex: 0 0 auto; transition: transform 140ms var(--ease-out); }
 .session-row--expand svg.is-expanded { transform: rotate(180deg); }
-/* Working halo: a scaled pseudo ring instead of an animated box-shadow.
-   Shadow animation repaints the badge every frame; transform + opacity stay
-   on the compositor. The ring sits behind the spinner (negative z-index in
-   the badge's own stacking context) and peaks at ~3px past the 16px badge,
-   matching the old 0 → 3px spread. */
-.project-working { position: relative; isolation: isolate; width: 16px; height: 16px; display: inline-grid; place-items: center; flex: 0 0 auto; border-radius: 50%; color: var(--prime); background: color-mix(in srgb, var(--prime) 13%, transparent); }
-.project-working::before { position: absolute; z-index: -1; inset: 0; border-radius: 50%; background: color-mix(in srgb, var(--prime) 24%, transparent); content: ''; animation: status-halo-breathe 2.4s ease-in-out infinite; }
+.project-working { width: 16px; height: 16px; display: inline-grid; place-items: center; flex: 0 0 auto; border-radius: 50%; color: var(--prime); background: color-mix(in srgb, var(--prime) 13%, transparent); animation: status-halo-breathe 2.4s ease-in-out infinite; }
 @keyframes status-halo-breathe {
-  0%, 100% { transform: scale(1); opacity: 0; }
-  50% { transform: scale(1.375); opacity: .58; }
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--prime) 24%, transparent); }
+  50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--prime) 14%, transparent); }
 }
 .sidebar__footer { flex: 0 0 auto; padding: 7px 8px 9px; border-top: var(--border-hairline, 1px) solid var(--border); }
 .sidebar__footer > .sidebar-update { opacity: 1; }

@@ -2,10 +2,10 @@
 .conversation-search-trigger { position: absolute; z-index: 11; top: 12px; right: 28px; display: grid; place-items: center; width: var(--conversation-control-height); height: var(--conversation-control-height); border: var(--border-hairline) solid transparent; border-radius: var(--conversation-control-radius); background: color-mix(in srgb, var(--canvas) 78%, transparent); backdrop-filter: blur(10px); color: var(--text-tertiary); cursor: pointer; transition: background 140ms var(--ease-out), color 140ms var(--ease-out), border-color 140ms var(--ease-out), transform 100ms var(--ease-out); }
 .conversation-search-trigger:hover { background: var(--surface-hover); border-color: var(--border); color: var(--text); }
 .conversation-search-trigger:active { transform: scale(.94); }
-.conversation-search { position: absolute; z-index: 12; top: 10px; right: 24px; display: flex; align-items: center; gap: 5px; max-width: calc(100% - 48px); min-height: 36px; padding: 4px 6px 4px 10px; border: var(--border-hairline) solid var(--border); border-radius: 12px; background: color-mix(in srgb, var(--surface-raised) 96%, transparent); box-shadow: var(--shadow-composer); font-size: var(--conversation-control-font); color: var(--text-secondary); animation: search-bar-enter 160ms var(--ease-out); transition: border-color 160ms var(--ease-out), box-shadow 160ms var(--ease-out), background 160ms var(--ease-out); }
+.conversation-search { position: absolute; z-index: 12; top: 10px; right: 24px; display: flex; align-items: center; gap: 5px; max-width: calc(100% - 48px); min-height: 36px; padding: 4px 6px 4px 10px; border: var(--border-hairline) solid var(--border); border-radius: 12px; background: color-mix(in srgb, var(--surface-raised) 88%, transparent); backdrop-filter: blur(18px) saturate(1.2); box-shadow: var(--shadow-composer); font-size: var(--conversation-control-font); color: var(--text-secondary); animation: search-bar-enter 160ms var(--ease-out); transition: border-color 160ms var(--ease-out), box-shadow 160ms var(--ease-out), background 160ms var(--ease-out); }
 @keyframes search-bar-enter { from { opacity: 0; transform: translateY(-4px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
 .conversation-search:hover { border-color: var(--border-strong); box-shadow: var(--shadow-composer-hover); }
-.conversation-search:focus-within { border-color: color-mix(in srgb, var(--prime) 55%, var(--border-strong)); box-shadow: 0 6px 24px rgba(0, 0, 0, .28), 0 0 0 1px color-mix(in srgb, var(--prime) 38%, transparent); background: color-mix(in srgb, var(--surface-raised) 99%, transparent); }
+.conversation-search:focus-within { border-color: color-mix(in srgb, var(--prime) 55%, var(--border-strong)); box-shadow: 0 6px 24px rgba(0, 0, 0, .28), 0 0 0 1px color-mix(in srgb, var(--prime) 38%, transparent); background: color-mix(in srgb, var(--surface-raised) 95%, transparent); }
 .conversation-search__icon { flex: 0 0 auto; color: var(--text-tertiary); transition: color 150ms var(--ease-out); }
 .conversation-search:focus-within .conversation-search__icon, .conversation-search.has-matches .conversation-search__icon { color: var(--prime); }
 .conversation-search input { flex: 1 1 70px; min-width: 56px; width: 156px; padding: 3px 4px; border: 0; outline: none; background: transparent; color: var(--text); font: inherit; font-size: 12.5px; caret-color: var(--prime); }
@@ -32,12 +32,6 @@
 .subagents__heading { padding-right: 36px; }
 .search-message { display: flow-root; }
 .search-message.is-search-match { outline: 1px solid color-mix(in srgb, var(--prime) 38%, transparent); outline-offset: 5px; border-radius: var(--conversation-control-radius); }
-/* Settled history rows skip layout and paint until they approach the
-   viewport; `auto` in contain-intrinsic-size remembers each row's real
-   height once measured, so the scrollbar settles after one pass. Streaming
-   tails and search hits never get `is-settled` — they are laid out and
-   painted for real. */
-.search-message.is-settled { content-visibility: auto; contain-intrinsic-size: auto 240px; }
 ::highlight(conversation-search) { background-color: color-mix(in srgb, var(--prime) 38%, transparent); color: inherit; }
 .turn-recovery { display: flex; align-items: center; flex-wrap: wrap; gap: var(--conversation-control-gap); padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--danger) 25%, var(--border)); border-radius: var(--conversation-panel-radius); background: var(--surface-subtle); font-size: var(--conversation-control-font); }
 .turn-recovery__title { color: var(--danger); font-weight: 500; white-space: nowrap; flex-shrink: 0; }

@@ -179,13 +179,8 @@ kbd { color: var(--text-tertiary); font: 10.5px/1.2 "SFMono-Regular", "SF Mono",
 .scroll-area::-webkit-scrollbar-track { background: transparent; }
 .scroll-area::-webkit-scrollbar-thumb { background: var(--border-strong); border: 2px solid transparent; background-clip: padding-box; border-radius: 10px; }
 
-/* CDS 7-stop non-linear edge fade (y ≈ x^1.5). This used to ride a
-   scroll(self block) timeline that animated a registered custom property:
-   that update can only happen on the main thread, which demoted these
-   panes from threaded scrolling and swallowed the first wheel gesture on a
-   busy renderer. The fade is now static — same curve, no per-frame paint,
-   no layout change. Only the bottom edge is masked: a static top fade
-   would dim the first row even when the pane is parked at scrollTop 0. */
+/* CDS 7-stop non-linear scroll fade mask (y ≈ x^1.5) driven by scroll(self block).
+   When a container does not overflow, initial-value 0px keeps both edges unmasked. */
 @property --scroll-fade-top {
   syntax: '<length>';
   inherits: false;
@@ -196,20 +191,42 @@ kbd { color: var(--text-tertiary); font: 10.5px/1.2 "SFMono-Regular", "SF Mono",
   inherits: false;
   initial-value: 0px;
 }
+@keyframes scroll-fade-edges {
+  0% { --scroll-fade-top: 0px; --scroll-fade-bottom: 18px; }
+  3% { --scroll-fade-top: 18px; }
+  97% { --scroll-fade-bottom: 18px; }
+  100% { --scroll-fade-top: 18px; --scroll-fade-bottom: 0px; }
+}
+@keyframes scroll-fade-top-only {
+  0% { --scroll-fade-top: 0px; }
+  3%, 100% { --scroll-fade-top: 28px; }
+}
 .sidebar__scroll, .inspector-scroll, .file-changes, .file-tree, .command-results, .model-picker__results, .worktree-picker__options {
+  animation: scroll-fade-edges linear both;
+  animation-timeline: scroll(self block);
   mask-image: linear-gradient(
     to bottom,
-    #000 calc(100% - 18px),
-    rgba(0, 0, 0, .77) calc(100% - 18px * .83),
-    rgba(0, 0, 0, .55) calc(100% - 18px * .66),
-    rgba(0, 0, 0, .35) calc(100% - 18px * .5),
-    rgba(0, 0, 0, .18) calc(100% - 18px * .33),
-    rgba(0, 0, 0, .06) calc(100% - 18px * .16),
+    transparent 0px,
+    rgba(0, 0, 0, .06) calc(var(--scroll-fade-top) * .16),
+    rgba(0, 0, 0, .18) calc(var(--scroll-fade-top) * .33),
+    rgba(0, 0, 0, .35) calc(var(--scroll-fade-top) * .5),
+    rgba(0, 0, 0, .55) calc(var(--scroll-fade-top) * .66),
+    rgba(0, 0, 0, .77) calc(var(--scroll-fade-top) * .83),
+    #000 var(--scroll-fade-top),
+    #000 calc(100% - var(--scroll-fade-bottom)),
+    rgba(0, 0, 0, .77) calc(100% - var(--scroll-fade-bottom) * .83),
+    rgba(0, 0, 0, .55) calc(100% - var(--scroll-fade-bottom) * .66),
+    rgba(0, 0, 0, .35) calc(100% - var(--scroll-fade-bottom) * .5),
+    rgba(0, 0, 0, .18) calc(100% - var(--scroll-fade-bottom) * .33),
+    rgba(0, 0, 0, .06) calc(100% - var(--scroll-fade-bottom) * .16),
     transparent 100%
   );
 }
-/* The transcript scroller never carries a scroll()-driven animation for the
-   same reason: the scroll hook toggles `is-scrolled` instead. */
+/* The transcript scroller never carries a scroll()-driven animation: a
+   registered custom property animates only on the main thread, which
+   demotes the scroller from threaded scrolling, and the first wheel
+   gesture landing on a busy renderer (streaming session, heavy history)
+   is then swallowed. The scroll hook toggles `is-scrolled` instead. */
 .transcript.is-scrolled {
   --scroll-fade-top: 28px;
   mask-image: linear-gradient(

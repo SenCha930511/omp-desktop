@@ -8,12 +8,7 @@ import './conversation-controls.css'
 
 export const SearchRevealContext = createContext(false)
 
-/**
- * Wraps one transcript row. `settled` marks history that is no longer
- * moving: those rows opt into content-visibility so off-screen turns skip
- * layout and paint. The streaming tail and search hits stay unsettled.
- */
-export function SearchMessage({ id, reveal, settled = false, children }: { id: string; reveal: boolean; settled?: boolean; children: ReactNode }) {
+export function SearchMessage({ id, reveal, children }: { id: string; reveal: boolean; children: ReactNode }) {
   const ref = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (!reveal || !ref.current) return
@@ -21,7 +16,7 @@ export function SearchMessage({ id, reveal, settled = false, children }: { id: s
     for (const element of closed) element.open = true
     return () => { for (const element of closed) element.open = false }
   }, [reveal])
-  return <SearchRevealContext.Provider value={reveal}><div ref={ref} className={`search-message ${reveal ? 'is-search-match' : ''}${settled ? ' is-settled' : ''}`} data-message-id={id}>{children}</div></SearchRevealContext.Provider>
+  return <SearchRevealContext.Provider value={reveal}><div ref={ref} className={`search-message ${reveal ? 'is-search-match' : ''}`} data-message-id={id}>{children}</div></SearchRevealContext.Provider>
 }
 
 function highlightResult(element: HTMLElement, query: string): Highlight | undefined {

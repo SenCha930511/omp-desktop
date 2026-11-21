@@ -213,7 +213,9 @@
 .activity-tool__summary { width: 100%; min-height: 20px; display: flex; align-items: center; gap: 8px; padding: 1px 0; color: inherit; background: transparent; text-align: left; }
 .activity-tool__summary:disabled { opacity: 1; pointer-events: none; }
 .activity-tool__preview { min-width: 0; flex: 0 1 auto; max-width: 72ch; overflow: hidden; color: var(--text-tertiary); background: transparent; border: 0; padding: 0; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; }
-/* While a call runs, the preview line pulses with the header's live cue. */
+/* While a call runs, the preview line rides the header's shine: syntax tokens
+   go transparent so the gradient light passes over the whole line uniformly. */
+.activity-tool__preview.shine-sweep, .activity-tool__preview.shine-sweep * { color: transparent; -webkit-text-fill-color: transparent; }
 .activity-tool__summary .activity-tool__preview::before { content: '·'; margin-right: 8px; color: var(--text-tertiary); }
 .activity-tool__state { margin-left: auto; display: inline-flex; align-items: center; gap: 3px; color: var(--text-tertiary); font-size: 10px; white-space: nowrap; }
 .activity-line.is-done .activity-tool__state { color: var(--success); }
@@ -281,15 +283,12 @@
 .streaming-state { display: flex; align-items: center; gap: 8px; margin-top: 10px; color: var(--text-tertiary); font-size: 12px; font-weight: 500; }
 /* Same "label · 12s" shape as the work-disclosure header row. */
 .streaming-state .shine-sweep + .live-elapsed::before { content: '·'; margin-right: 8px; color: var(--text-tertiary); }
-/* Live status words breathe on a slow beat so long runs read as moving,
-   never hung. This used to sweep `background-position` through a
-   `background-clip: text` gradient, which re-rasterized the label — and,
-   for tool previews, every syntax token — on each frame. Opacity is a
-   compositor-only property: one paint at mount, no main-thread work after. */
-.shine-sweep { animation: shine-breathe 2.2s ease-in-out infinite; }
-@keyframes shine-breathe { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
+/* CLI-style shine sweep on live status words: a light band glides across the
+   text on a slow beat so long runs read as moving, never hung. */
+.shine-sweep { background: linear-gradient(90deg, var(--text-tertiary) 42%, color-mix(in srgb, var(--text) 65%, #ffffff) 50%, var(--text-tertiary) 58%); background-size: 240% 100%; -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; color: transparent; animation: shine-sweep 2.2s linear infinite; }
+@keyframes shine-sweep { 0% { background-position: 120% 0; } 100% { background-position: -20% 0; } }
 @media (prefers-reduced-motion: reduce) {
-  .shine-sweep { animation: none; opacity: 1; }
+  .shine-sweep { animation: none; background: none; -webkit-text-fill-color: currentColor; color: currentColor; }
 }
 .transcript-active-placeholder { align-items: center; }
 .transcript-active-placeholder .streaming-state { margin-top: 0; }
@@ -297,7 +296,7 @@
 .thinking-dots > span { width: 5px; height: 5px; border-radius: 50%; background: var(--prime); opacity: .34; animation: thinking-dot 1.15s cubic-bezier(.45, 0, .55, 1) infinite; }
 .thinking-dots > span:nth-child(2) { animation-delay: 140ms; }
 .thinking-dots > span:nth-child(3) { animation-delay: 280ms; }
-@keyframes thinking-dot { 0%, 62%, 100% { transform: translateY(1px) scale(.72); opacity: .3; } 31% { transform: translateY(-4px) scale(1); opacity: 1; } }
+@keyframes thinking-dot { 0%, 62%, 100% { transform: translateY(1px) scale(.72); opacity: .3; } 31% { transform: translateY(-4px) scale(1); opacity: 1; box-shadow: 0 4px 8px color-mix(in srgb, var(--prime) 24%, transparent); } }
 .message-actions { min-height: 24px; display: flex; align-items: center; gap: 5px; margin-top: 3px; opacity: 0; transition: opacity 130ms ease-out; }
 .message:hover .message-actions, .message:focus-within .message-actions { opacity: 1; }
 .message-actions button, .message-actions span { min-height: 23px; display: inline-flex; align-items: center; gap: 4px; padding: 0 6px; border-radius: 5px; color: var(--text-tertiary); background: transparent; font-size: 10.5px; }
