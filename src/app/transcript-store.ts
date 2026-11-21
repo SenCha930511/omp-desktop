@@ -2,29 +2,82 @@ import type { Dispatch, SetStateAction } from 'react'
 import { activityState, conversationExecution } from '@/lib/execution-state'
 import type { TranscriptMessage } from '@/types/api'
 
-/**
- * One reverse walk settles everything a reader needs from the transcript: the
- * newest assistant message, the newest assistant text, whether anything streams
- * and how many tool calls ran. Streaming frames therefore never rescan the
- * transcript outside this store.
- */
-function summarize(messages: TranscriptMessage[]) {
+const MAX_SUMMARY_PREVIEW_CHARS = 220
+
+function truncateSummaryText(text: string): string {
+  return text.length > MAX_SUMMARY_PREVIEW_CHARS ? `${text.slice(0, MAX_SUMMARY_PREVIEW_CHARS)}…` : text
+}
+
+function messageToolCount(message: TranscriptMessage): number {
+  let count = 0
+  for (const part of message.parts) if (part.type === 'toolCall') count += 1
+  return count
+}
+
+function messageLastText(message: TranscriptMessage): string | undefined {
+  if (message.role !== 'assistant') return undefined
+  const parts = message.parts
+  for (let cursor = parts.length - 1; cursor >= 0; cursor -= 1) {
+    const part = parts[cursor]
+    if (part.type === 'text') return truncateSummaryText(part.text)
+  }
+  return undefined
+}
+
+interface PrefixSummaryCache {
+  messages: TranscriptMessage[]
+  prefixLength: number
+  toolCount: number
+  streaming: boolean
+  assistant: TranscriptMessage | undefined
+  lastText: string | undefined
+}
+
+function computePrefixSummary(messages: TranscriptMessage[], prefixLength: number): PrefixSummaryCache {
   let assistant: TranscriptMessage | undefined
   let lastText: string | undefined
   let streaming = false
   let toolCount = 0
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
+  for (let index = prefixLength - 1; index >= 0; index -= 1) {
     const message = messages[index]
     if (message.streaming) streaming = true
-    const parts = message.parts
-    for (const part of parts) if (part.type === 'toolCall') toolCount += 1
+    toolCount += messageToolCount(message)
     if (message.role !== 'assistant') continue
     assistant ??= message
-    if (lastText !== undefined) continue
-    for (let cursor = parts.length - 1; cursor >= 0; cursor -= 1) {
-      const part = parts[cursor]
-      if (part.type === 'text') { lastText = part.text; break }
+    lastText ??= messageLastText(message)
+  }
+  return { messages, prefixLength, toolCount, streaming, assistant, lastText }
+}
+
+/**
+ * Summarizes the transcript with an O(1) tail fast path when only the newest
+ * message changes (streaming deltas), while keeping prefix totals and preview
+ * truncation exact. Streaming frames therefore never rescan earlier history.
+ */
+function summarize(messages: TranscriptMessage[], cache?: { current: PrefixSummaryCache | null }) {
+  let assistant: TranscriptMessage | undefined
+  let lastText: string | undefined
+  let streaming = false
+  let toolCount = 0
+  if (messages.length === 0) {
+    if (cache) cache.current = null
+  } else {
+    const prefixLength = messages.length - 1
+    const tail = messages[prefixLength]
+    let prefix = cache?.current ?? null
+    const cacheMatches = prefix !== null
+      && prefix.prefixLength === prefixLength
+      && (prefixLength === 0 || (messages[0] === prefix.messages[0] && messages[prefixLength - 1] === prefix.messages[prefixLength - 1]))
+    if (cacheMatches && prefix !== null) {
+      prefix.messages = messages
+    } else {
+      prefix = computePrefixSummary(messages, prefixLength)
+      if (cache) cache.current = prefix
     }
+    streaming = prefix.streaming || Boolean(tail.streaming)
+    toolCount = prefix.toolCount + messageToolCount(tail)
+    assistant = tail.role === 'assistant' ? tail : prefix.assistant
+    lastText = messageLastText(tail) ?? prefix.lastText
   }
   const activity = activityState(assistant?.parts ?? [])
   return {
@@ -59,7 +112,8 @@ function sameFields(a: object, b: object): boolean {
 /** Summary subscribers see every new latest reply; execution subscribers update only when execution semantics change. */
 export function createTranscriptStore(initial: TranscriptMessage[]) {
   let messages = initial
-  let summary = summarize(initial)
+  const prefixCache: { current: PrefixSummaryCache | null } = { current: null }
+  let summary = summarize(initial, prefixCache)
   let execution = executionSummaryOf(summary)
   const listeners = new Set<() => void>()
   const summaryListeners = new Set<() => void>()
@@ -68,7 +122,7 @@ export function createTranscriptStore(initial: TranscriptMessage[]) {
     const next = typeof value === 'function' ? value(messages) : value
     if (next === messages) return
     messages = next
-    const nextSummary = summarize(next)
+    const nextSummary = summarize(next, prefixCache)
     const nextExecution = executionSummaryOf(nextSummary)
     const summaryChanged = !sameFields(summary, nextSummary)
     const executionChanged = !sameFields(execution, nextExecution)

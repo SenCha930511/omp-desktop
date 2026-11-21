@@ -683,6 +683,42 @@ describe('streaming markdown parse throttling', () => {
       expect(store.getExecutionSummary()).not.toHaveProperty('lastText')
     } finally { offSummary(); offExecution(); offMessages() }
   })
+
+  it('bounds lastText to 220 chars so post-preview streaming tokens stop waking summary subscribers', async () => {
+    const { createTranscriptStore } = await import('../../src/app/transcript-store')
+    const baseText = 'a'.repeat(221)
+    const olderParts = [{ type: 'toolCall' as const, id: 'old-1', name: 'Read' }]
+    const olderMessage: TranscriptMessage = { id: 'older', role: 'assistant', timestamp: 1, parts: olderParts }
+    const store = createTranscriptStore([
+      olderMessage,
+      { id: 'live', role: 'assistant', timestamp: 2, streaming: true, parts: [{ type: 'text', text: baseText }] },
+    ])
+    expect(store.getSummary().lastText).toBe(`${'a'.repeat(220)}…`)
+    expect(store.getSummary().toolCount).toBe(1)
+
+    const summaryNotifies = vi.fn()
+    const offSummary = store.subscribeSummary(summaryNotifies)
+    try {
+      store.update((current) => [current[0]!, { ...current[1]!, parts: [{ type: 'text', text: `${baseText} more tokens` }] }])
+      expect(summaryNotifies).not.toHaveBeenCalled()
+      expect(store.getSummary().lastText).toBe(`${'a'.repeat(220)}…`)
+
+      // Adding a tool call or changing message count still recomputes accurate toolCount and notifies summary subscribers.
+      store.update((current) => [
+        current[0]!,
+        { ...current[1]!, parts: [{ type: 'text', text: `${baseText} more tokens` }, { type: 'toolCall', id: 'new-1', name: 'Write' }] },
+      ])
+      expect(summaryNotifies).toHaveBeenCalledTimes(1)
+      expect(store.getSummary().toolCount).toBe(2)
+
+      store.update((current) => [
+        ...current,
+        { id: 'tail-2', role: 'assistant', timestamp: 3, streaming: true, parts: [{ type: 'text', text: 'Next turn' }] },
+      ])
+      expect(summaryNotifies).toHaveBeenCalledTimes(2)
+      expect(store.getSummary()).toMatchObject({ toolCount: 2, lastText: 'Next turn' })
+    } finally { offSummary() }
+  })
 })
 
 describe('git refresh scheduling', () => {

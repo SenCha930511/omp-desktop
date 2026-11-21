@@ -302,6 +302,9 @@ export class RpcRuntime {
     // The desktop now renders native ask requests and validates their answer
     // shape. Older engines can retain their select/editor fallback.
     void this.request({ type: 'set_ask_dialog', enabled: true }, 5_000).catch(() => undefined)
+    // Suppress redundant cumulative message snapshots during streaming deltas when
+    // supported by the harness (omp >= 19.0.0); older builds ignore/reject safely.
+    void this.request({ type: 'set_event_filter', messageUpdates: 'delta' }, 5_000).catch(() => undefined)
     const contextDeadline = new Promise<void>((resolve) => {
       const timer = setTimeout(resolve, 250)
       timer.unref()

@@ -713,6 +713,7 @@ export class AgentBrowserService {
     // Serialize actions per tab so concurrent tool calls cannot interleave input events.
     const run = tab.serial.tail.then(() => this.withActivity(async () => {
       this.assertActionAuthority(tab, sessionKey, generation)
+      if (tab.webContentsId === null) this.emitActivity(tab)
       const guest = await this.waitForGuest(tab)
       this.extendBackgroundActivity(guest)
       this.assertActionAuthority(tab, sessionKey, generation)

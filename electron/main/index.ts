@@ -1,5 +1,5 @@
 import { IPC_CHANNELS } from '../../src/types/ipc'
-import { app, BrowserWindow, dialog, Menu, nativeTheme, protocol, safeStorage, session, webContents } from 'electron'
+import { app, BrowserWindow, dialog, Menu, nativeTheme, protocol, safeStorage, screen, session, webContents } from 'electron'
 import type { BrowserWindowConstructorOptions, Input, WebContents } from 'electron'
 import { extname, isAbsolute, join, relative, resolve, win32 as win32Path } from 'node:path'
 import { readFile, writeFile } from 'node:fs/promises'
@@ -41,6 +41,7 @@ import { VoiceService, voiceSecretStorageStatus } from './voice'
 import { isAllowedRendererAudioPermission } from './voice-permissions'
 import { createManualUpdateCheck, getAutoUpdater, isDeveloperIdSigned, UpdateService } from './updates'
 import { HarnessUpdateService } from './harness-update'
+import { bindWindowGeometryPersistence, readWindowGeometry, WINDOW_GEOMETRY_FILENAME } from './window-geometry'
 
 // Development builds run the rebranded Electron bundle, whose product name
 // matches the packaged app, so both resolve to the same userData directory
@@ -70,6 +71,7 @@ let confirmingShutdown = false
 let trustedRendererUrl = ''
 let packagedSmokeMarkerFile: string | null = null
 let windowCreation: Promise<BrowserWindow | null> | null = null
+let windowGeometryPersistence: { flush(): Promise<void>; dispose(): void } | null = null
 let startInBackground = false
 const keepTestWindowsHidden = process.env.OMP_DESKTOP_E2E_HIDE_WINDOWS === '1'
 
@@ -378,9 +380,12 @@ export function setTitleBarTheme(sender: WebContents, theme: ResolvedTheme): boo
 
 async function createWindow(): Promise<BrowserWindow | null> {
   if (shutdownStarted) return null
+  const geometryPath = join(app.getPath('userData'), WINDOW_GEOMETRY_FILENAME)
+  const geometry = readWindowGeometry(geometryPath, screen.getAllDisplays())
   const window = new BrowserWindow({
-    width: 1440,
-    height: 920,
+    width: geometry.width,
+    height: geometry.height,
+    ...(geometry.x !== undefined && geometry.y !== undefined ? { x: geometry.x, y: geometry.y } : {}),
     minWidth: 960,
     minHeight: 640,
     show: false,
@@ -400,6 +405,12 @@ async function createWindow(): Promise<BrowserWindow | null> {
     },
   })
   mainWindow = window
+  const geometryPersistence = bindWindowGeometryPersistence(window, geometryPath)
+  windowGeometryPersistence = geometryPersistence
+  const showWindow = () => {
+    if (geometry.maximized && !window.isMaximized()) window.maximize()
+    window.show()
+  }
   const renderer = window.webContents
   const rendererId = renderer.id
   hardenRenderer(window)
@@ -423,7 +434,7 @@ async function createWindow(): Promise<BrowserWindow | null> {
   let readyToShow = false
   window.once('ready-to-show', () => {
     readyToShow = true
-    if (!keepTestWindowsHidden && !backgroundMode?.isBackgrounded() && rendererLoaded && !shutdownStarted && !window.isDestroyed() && mainWindow === window) window.show()
+    if (!keepTestWindowsHidden && !backgroundMode?.isBackgrounded() && rendererLoaded && !shutdownStarted && !window.isDestroyed() && mainWindow === window) showWindow()
   })
   window.on('close', (event) => {
     if (shutdownStarted || shutdownApproved) return
@@ -436,25 +447,26 @@ async function createWindow(): Promise<BrowserWindow | null> {
     event.preventDefault()
     if (!confirmingShutdown) requestShutdown(window, prompt)
   })
-  window.on('closed', () => {
+  const detachWindowBinding = () => {
+    geometryPersistence.dispose()
+    if (windowGeometryPersistence === geometryPersistence) windowGeometryPersistence = null
     ipc?.revoke(rendererId)
     if (mainWindow === window) mainWindow = null
-  })
+  }
+  window.on('closed', detachWindowBinding)
   try {
     await loadInitialRenderer(window, trustedRendererUrl)
   } catch (error) {
-    ipc?.revoke(rendererId)
-    if (mainWindow === window) mainWindow = null
+    detachWindowBinding()
     throw error
   }
   if (shutdownStarted || window.isDestroyed() || mainWindow !== window) {
-    ipc?.revoke(rendererId)
+    detachWindowBinding()
     if (!window.isDestroyed()) window.destroy()
-    if (mainWindow === window) mainWindow = null
     return null
   }
   rendererLoaded = true
-  if (!keepTestWindowsHidden && !backgroundMode?.isBackgrounded() && readyToShow) window.show()
+  if (!keepTestWindowsHidden && !backgroundMode?.isBackgrounded() && readyToShow) showWindow()
   return window
 }
 
@@ -1010,6 +1022,7 @@ app.on('before-quit', (event) => {
     automation?.stop() ?? Promise.resolve(),
     projectScripts?.killAll() ?? Promise.resolve(),
     agents?.stopAll() ?? Promise.resolve(),
+    windowGeometryPersistence?.flush() ?? Promise.resolve(),
     stopChildProcesses(),
   ]).then(async () => {
     // Await the drain so the final persist lands before the process exits.

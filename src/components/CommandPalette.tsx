@@ -1,4 +1,4 @@
-import { Bell, CalendarClock, Folder, LayoutPanelLeft, NotebookPen, PackageOpen, Search, Settings } from 'lucide-react'
+import { Bell, CalendarClock, Folder, LayoutPanelLeft, PackageOpen, Search, Settings, SquarePen } from 'lucide-react'
 import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useI18n } from '@/lib/i18n'
@@ -43,7 +43,7 @@ export function CommandPalette({
   const composingRef = useRef(false)
   const lastCompositionEndAtRef = useRef<number | null>(null)
   const commands: Command[] = [
-    { id: 'new', label: t('palette.newSession'), detail: t('palette.newSessionDetail'), shortcut: shortcutLabel(platform, ['Primary', 'N']), icon: <NotebookPen size={14} />, run: onNewSession },
+    { id: 'new', label: t('palette.newSession'), detail: t('palette.newSessionDetail'), shortcut: shortcutLabel(platform, ['Primary', 'N']), icon: <SquarePen size={14} />, run: onNewSession },
     { id: 'projects', label: t('palette.openProjects'), detail: t('palette.openProjectsDetail'), icon: <Folder size={14} />, run: () => onNavigate('projects') },
     { id: 'activity', label: t('palette.openActivity'), detail: t('palette.openActivityDetail'), icon: <Bell size={14} />, run: () => onNavigate('activity') },
     { id: 'scheduled', label: t('palette.openScheduled'), detail: t('palette.openScheduledDetail'), icon: <CalendarClock size={14} />, run: () => onNavigate('scheduled') },

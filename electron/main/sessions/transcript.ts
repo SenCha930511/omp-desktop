@@ -299,8 +299,16 @@ async function resolveImageBlobReferences(transcript: TranscriptMessage[], blobs
   }
 }
 
+const MAX_CACHED_TRANSCRIPTS = 3
+type TranscriptCache = Map<string, { stamp: string; messages: TranscriptMessage[] }>
+
+function transcriptFileStamp(info: { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number }): string {
+  return `${info.dev}\0${info.ino}\0${info.size}\0${info.mtimeMs}\0${info.ctimeMs}`
+}
+
 export function createTranscriptReader(dialect: TranscriptDialect = primeTranscriptDialect, blobsRoot: string = defaultOmpBlobsRoot()): TranscriptFileReader {
-  return (filePath, isStreaming) => readTranscriptWithDialect(dialect, filePath, isStreaming, blobsRoot)
+  const transcriptCache: TranscriptCache = new Map()
+  return (filePath, isStreaming) => readTranscriptWithDialect(dialect, filePath, isStreaming, blobsRoot, transcriptCache)
 }
 
 /** Yields complete LF-delimited lines from the end of the file toward the
@@ -387,8 +395,20 @@ async function recoverTranscriptEdges(filePath: string): Promise<Map<string, str
   return edges
 }
 
-async function readTranscriptWithDialect(dialect: TranscriptDialect, filePath: string, isStreaming: boolean, blobsRoot: string): Promise<TranscriptMessage[]> {
-  if ((await stat(filePath)).size > 256 * 1024 * 1024) throw new Error('Session transcript is too large to display')
+async function readTranscriptWithDialect(dialect: TranscriptDialect, filePath: string, isStreaming: boolean, blobsRoot: string, cache: TranscriptCache): Promise<TranscriptMessage[]> {
+  const initialStat = await stat(filePath)
+  if (initialStat.size > 256 * 1024 * 1024) throw new Error('Session transcript is too large to display')
+  const initialStamp = !isStreaming && initialStat.size > 0
+    ? transcriptFileStamp(initialStat)
+    : null
+  if (initialStamp !== null) {
+    const cached = cache.get(filePath)
+    if (cached && cached.stamp === initialStamp) {
+      cache.delete(filePath)
+      cache.set(filePath, cached)
+      return structuredClone(cached.messages)
+    }
+  }
   const entries = new Map<string, { id: string; parentId: string | null; entry: JsonRecord; bytes: number }>()
   // A light id→parentId edge map covers every record, so the parent-chain walk
   // still traverses nodes that never render (and never charge the budgets).
@@ -674,7 +694,22 @@ async function readTranscriptWithDialect(dialect: TranscriptDialect, filePath: s
     activeAssistant = undefined
   }
   await resolveImageBlobReferences(transcript, blobsRoot)
-  return boundedTranscript(transcript)
+  const result = boundedTranscript(transcript)
+  if (initialStamp !== null && !result.some((message) => message.parts.some((part) => part.type === 'image'))) {
+    try {
+      const finalStat = await stat(filePath)
+      if (transcriptFileStamp(finalStat) === initialStamp) {
+        cache.delete(filePath)
+        cache.set(filePath, { stamp: initialStamp, messages: structuredClone(result) })
+        while (cache.size > MAX_CACHED_TRANSCRIPTS) {
+          const oldest = cache.keys().next().value
+          if (oldest === undefined) break
+          cache.delete(oldest)
+        }
+      }
+    } catch { /* Ignore post-read stat failures; return the parsed result uncached. */ }
+  }
+  return result
 }
 
 export const readTranscript: TranscriptFileReader = createTranscriptReader()

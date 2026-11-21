@@ -84,6 +84,7 @@ const hasBridge = () => typeof window !== 'undefined' && typeof window.desktop !
 // Stable fallback identities keep memoized children from re-rendering while the catalog loads.
 const EMPTY_MODELS: PrimeModelDescriptor[] = []
 const EMPTY_PROVIDERS: PrimeProviderDescriptor[] = []
+const EMPTY_GIT_FILES: GitFileChange[] = []
 const HARNESS_PROVIDER_DOCS: Record<HarnessId, string> = {
   omp: 'https://github.com/can1357/oh-my-pi/blob/main/docs/providers.md',
 }
@@ -1172,7 +1173,7 @@ export default function App() {
         turnInFlightRef.current = true
         turnBaselineRef.current = git.files
       }
-      setTurnChanges(null)
+      setTurnChanges((current) => (current === null ? current : null))
       return
     }
     if (turnInFlightRef.current) {
@@ -1184,7 +1185,7 @@ export default function App() {
     setTurnChanges(turnFileDeltas(git.files, turnBaselineRef.current))
   }, [busy, git.files, refreshGit, activeCwd, workspace.activeSessionId, workspace.workspaceGeneration])
 
-  const turnGit = useMemo(() => ({ ...git, files: turnChanges ?? [] }), [git, turnChanges])
+  const turnGit = useMemo(() => ({ ...git, files: turnChanges ?? EMPTY_GIT_FILES }), [git, turnChanges])
   const externalSessionRunning = Boolean(activeSession?.status === 'running' && workspace.runtime?.sessionFile !== activeSession.filePath)
   const queuedMessages = useMemo<QueuedPrompt[]>(() => workspace.pendingQueuedPrompts.filter((pending) => pending.intent === 'queue'), [workspace.pendingQueuedPrompts])
   useEffect(() => {
@@ -1686,6 +1687,7 @@ export default function App() {
               onAttach={agentBrowser.attach}
               activeSessionFiles={activeAgentSessionFiles}
               activityByTab={agentBrowser.activityByTab}
+              idleUnloadMs={settingsState.settings.idleSessionMinutes * 60_000}
             />
           ) : null}
         </div>

@@ -48,6 +48,7 @@ interface RenderOptions {
   activeSessionFiles?: string[]
   visibleTabId?: string | null
   activityByTab?: ReadonlyMap<string, number>
+  idleUnloadMs?: number
 }
 
 async function renderLayer(options: RenderOptions = {}) {
@@ -61,7 +62,7 @@ async function renderLayer(options: RenderOptions = {}) {
         onAttach={onAttach}
         activeSessionFiles={options.activeSessionFiles ?? ['/sessions/active.jsonl']}
         activityByTab={options.activityByTab}
-        idleUnloadMs={IDLE_MS}
+        idleUnloadMs={options.idleUnloadMs ?? IDLE_MS}
       />,
     )
   })
@@ -166,5 +167,38 @@ describe('AgentBrowserLayer idle guest release', () => {
 
     await advance(IDLE_MS)
     expect(mountedTabIds()).toEqual(['bt-active'])
+  })
+
+  it('wakes every unloaded tab that receives activity in the same batch', async () => {
+    const secondBackground: AgentBrowserTabRecord = {
+      ...backgroundTab,
+      tabId: 'bt-background-2',
+      sessionFile: '/sessions/background-2.jsonl',
+    }
+    const tabs = [activeTab, backgroundTab, secondBackground]
+    await renderLayer({ tabs })
+    await advance(IDLE_MS + 1)
+    expect(mountedTabIds()).toEqual(['bt-active'])
+
+    await renderLayer({
+      tabs,
+      activityByTab: new Map([
+        ['bt-background', 1],
+        ['bt-background-2', 1],
+      ]),
+    })
+    expect(mountedTabIds()).toEqual(['bt-active', 'bt-background', 'bt-background-2'])
+  })
+
+  it('keeps background tabs mounted and reattaches unloaded ones when idleUnloadMs is 0', async () => {
+    await renderLayer()
+    await advance(IDLE_MS + 1)
+    expect(mountedTabIds()).toEqual(['bt-active'])
+
+    await renderLayer({ idleUnloadMs: 0 })
+    expect(mountedTabIds()).toEqual(['bt-active', 'bt-background'])
+
+    await advance(IDLE_MS + 1)
+    expect(mountedTabIds()).toEqual(['bt-active', 'bt-background'])
   })
 })
