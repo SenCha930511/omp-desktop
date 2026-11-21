@@ -116,7 +116,6 @@ export function GeneralSettings({ settings, onUpdate, platform }: SettingsSectio
               void onUpdate({ defaultInspectorTab: event.target.value as AppSettings['defaultInspectorTab'] })
             }}
           >
-            <option value="summary">{t('general.inspectorTab.summary')}</option>
             <option value="changes">{t('general.inspectorTab.changes')}</option>
             <option value="browser">{t('general.inspectorTab.browser')}</option>
             <option value="files">{t('general.inspectorTab.files')}</option>

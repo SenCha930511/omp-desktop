@@ -152,11 +152,6 @@ function TitleToolbarView({
         ) : null}
       </div>
       <div className="title-toolbar__actions no-drag">
-        {view === 'session' && onNewSession ? (
-          <IconButton label={t('toolbar.newSession')} onClick={onNewSession}>
-            <SquarePen size={17} />
-          </IconButton>
-        ) : null}
         {view === 'session' ? (
           <div ref={overviewRef} className="title-toolbar__overview">
             <IconButton

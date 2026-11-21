@@ -23,7 +23,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   checkoutStrategy: 'worktree',
   keepRunningInBackground: false,
   launchAtLogin: false,
-  defaultInspectorTab: 'summary',
+  defaultInspectorTab: 'changes',
   browserHome: 'http://localhost:3000',
   browserAskForDownloads: true,
   reduceMotion: false,

@@ -8,12 +8,11 @@ import App from '../../src/App'
 import { WorkspaceInspector } from '../../src/components/WorkspaceInspector'
 import { useBrowserAnnotations, type BrowserAnnotationsApi } from '../../src/hooks/useBrowserAnnotations'
 import type { InspectorProps } from '../../src/components/Inspector'
-import type { TranscriptStore } from '../../src/app/transcript-store'
-import type { TranscriptMessage } from '../../src/types/api'
+import type { InspectorTab } from '../../src/types/api'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
-const observed = vi.hoisted(() => ({ inspectorProps: [] as unknown[], changesPanelRenders: 0, summaryPanelRenders: 0 }))
+const observed = vi.hoisted(() => ({ inspectorProps: [] as unknown[], changesPanelRenders: 0 }))
 
 // Wraps the memoized Inspector, so every App render is observed even when the
 // memo (correctly) skips the inspector subtree.
@@ -41,26 +40,12 @@ vi.mock('../../src/components/inspector/ChangesPanel', async (importOriginal) =>
   }
 })
 
-// Rendered inside the memo, so its render count is exactly the number of summary
-// snapshots the Summary tab let through.
-vi.mock('../../src/components/inspector/SummaryPanel', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../src/components/inspector/SummaryPanel')>()
-  return {
-    ...actual,
-    SummaryPanel(props: Parameters<typeof actual.SummaryPanel>[0]) {
-      observed.summaryPanelRenders += 1
-      return <actual.SummaryPanel {...props} />
-    },
-  }
-})
-
 let container: HTMLDivElement
 let root: Root
 
 beforeEach(() => {
   observed.inspectorProps = []
   observed.changesPanelRenders = 0
-  observed.summaryPanelRenders = 0
   Object.defineProperty(window, 'matchMedia', {
     configurable: true,
     value: () => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() }),
@@ -113,20 +98,16 @@ describe('inspector re-render containment', () => {
     expect(observed.changesPanelRenders).toBe(rendersAfterTabChange)
   })
 
-  it('hands the inspector the store summary and stable git and annotation identities while the changes tab is active', async () => {
+  it('keeps the inspector git and annotation identities stable across App renders', async () => {
     await renderApp()
     const props = observed.inspectorProps as InspectorProps[]
-    // The summary tab is the default and does consume the transcript summary.
-    expect(props[props.length - 1]!.summary.count).toBeGreaterThan(0)
+    const first = props[props.length - 1]!
 
     await openChangesTab()
-    const first = props[props.length - 1]!
     await toggleSidebar()
     const last = props[props.length - 1]!
+
     expect(last).not.toBe(first)
-    // Off the summary tab nothing reads the transcript, so only the empty summary reaches the memo boundary.
-    expect(last.summary.count).toBe(0)
-    expect(last.summary).toBe(first.summary)
     expect(last.git).toBe(first.git)
     expect(last.browserAnnotations).toBe(first.browserAnnotations)
     expect(last.automations).toBe(first.automations)
@@ -145,25 +126,23 @@ describe('inspector re-render containment', () => {
 
   it('lists the full sample automation set on the Background Tasks tab', async () => {
     await renderApp()
-    const tasksTab = [...container.querySelectorAll<HTMLButtonElement>('.inspector__tabs button')].find((button) => button.textContent === 'Background Tasks')
+    const newTab = container.querySelector<HTMLButtonElement>('.inspector__tab-actions button[aria-label="New tab"]')
+    expect(newTab).not.toBeNull()
+    await act(async () => { newTab?.click() })
+    const tasksTab = [...container.querySelectorAll<HTMLButtonElement>('.inspector-new-tab__item')].find((button) => button.textContent?.includes('Background Tasks'))
     expect(tasksTab).toBeDefined()
     await act(async () => { tasksTab?.click() })
     expect(container.querySelector('#inspector-panel-tasks .background-tasks__list')?.textContent).toContain('Morning issue triage')
   })
 })
 
-describe('summary tab data flow', () => {
-  const liveMessages = (text: string): TranscriptMessage[] => [
-    { id: 'user', role: 'user', timestamp: 1, parts: [{ type: 'text', text: 'ask' }] },
-    { id: 'live', role: 'assistant', timestamp: 2, streaming: true, parts: [{ type: 'toolCall', id: 'tool', name: 'Read' }, { type: 'text', text }] },
-  ]
-
-  function Harness({ transcript, activeTab = 'summary', subagents }: { transcript: TranscriptStore; activeTab?: InspectorProps['activeTab']; subagents?: InspectorProps['subagents'] }) {
+describe('inspector tabs', () => {
+  function Harness({ initialTab = 'changes', subagents }: { initialTab?: InspectorTab; subagents?: InspectorProps['subagents'] }) {
+    const [activeTab, setActiveTab] = useState<InspectorTab>(initialTab)
     return (
       <WorkspaceInspector
-        transcript={transcript}
         activeTab={activeTab}
-        onTabChange={() => undefined}
+        onTabChange={setActiveTab}
         onClose={() => undefined}
         git={{ isRepo: false, files: [] }}
         automations={[]}
@@ -190,40 +169,30 @@ describe('summary tab data flow', () => {
     )
   }
 
-  it('renders the summary snapshot and never subscribes to or rescans the message list', async () => {
-    const { createTranscriptStore } = await import('../../src/app/transcript-store')
-    const store = createTranscriptStore(liveMessages('Answer:'))
-    const subscribe = vi.spyOn(store, 'subscribe')
-    const getSnapshot = vi.spyOn(store, 'getSnapshot')
-    await act(async () => { root.render(<Harness transcript={store} />) })
+  it('opens and closes tabs from the new-tab page', async () => {
+    await act(async () => { root.render(<Harness />) })
+    expect(container.querySelector('#inspector-panel-changes')).not.toBeNull()
 
-    expect(observed.inspectorProps.length).toBeGreaterThan(0)
-    expect(observed.inspectorProps.at(-1)).not.toHaveProperty('messages')
-    expect((observed.inspectorProps.at(-1) as InspectorProps).summary).toMatchObject({ count: 2, toolCount: 1, lastText: 'Answer:', streaming: true })
+    const newTab = container.querySelector<HTMLButtonElement>('.inspector__tab-actions button[aria-label="New tab"]')
+    expect(newTab).not.toBeNull()
+    await act(async () => { newTab?.click() })
+    expect(container.querySelector('.inspector-new-tab')).not.toBeNull()
 
-    // A streamed token republishes the summary snapshot; the tab re-renders from it, never from messages.
-    const rendersBeforeToken = observed.summaryPanelRenders
-    await act(async () => { store.update(liveMessages('Answer: streaming')) })
-    expect(observed.summaryPanelRenders).toBeGreaterThan(rendersBeforeToken)
-    expect((observed.inspectorProps.at(-1) as InspectorProps).summary.lastText).toBe('Answer: streaming')
+    const files = [...container.querySelectorAll<HTMLButtonElement>('.inspector-new-tab__item')].find((button) => button.textContent?.includes('Files'))
+    expect(files).toBeDefined()
+    await act(async () => { files?.click() })
+    expect(container.querySelector('#inspector-panel-files')).not.toBeNull()
 
-    // A frame the summary ignores keeps its identity, so the memoized panel does no work at all.
-    const summary = store.getSummary()
-    const rendersAfterToken = observed.summaryPanelRenders
-    await act(async () => { store.update((current) => [{ ...current[0]!, parts: [{ type: 'text', text: 'ask again' }] }, current[1]!]) })
-    expect(store.getSummary()).toBe(summary)
-    expect(observed.summaryPanelRenders).toBe(rendersAfterToken)
-
-    expect(subscribe).not.toHaveBeenCalled()
-    expect(getSnapshot).not.toHaveBeenCalled()
+    const close = container.querySelector<HTMLButtonElement>('.inspector-tab__close[aria-label="Close Files"]')
+    expect(close).not.toBeNull()
+    await act(async () => { close?.click() })
+    expect(container.querySelector('#inspector-panel-files')).toBeNull()
   })
 
   it('renders the Agents tab roster and selected transcript inside the inspector body', async () => {
-    const { createTranscriptStore } = await import('../../src/app/transcript-store')
-    const store = createTranscriptStore([])
     const state = { agents: [{ id: 'a', agent: 'Explore', status: 'running', messages: [] }], selectedId: 'a', select: () => undefined }
-    await act(async () => root.render(<Harness transcript={store} activeTab="agents" subagents={{ state, connected: true }} />))
-    expect([...container.querySelectorAll('.inspector__tabs button')].map((button) => button.textContent)).toContain('Agents')
+    await act(async () => { root.render(<Harness initialTab="agents" subagents={{ state, connected: true }} />) })
+    expect([...container.querySelectorAll('.inspector__tabs button')].some((button) => button.textContent?.includes('Agents'))).toBe(true)
     expect(container.querySelector('#inspector-panel-agents .subagents__roster')).not.toBeNull()
     expect(container.querySelector('#inspector-panel-agents .subagents__transcript h2')?.textContent).toBe('Explore')
   })

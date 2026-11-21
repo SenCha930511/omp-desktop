@@ -40,6 +40,7 @@ export function usePanelLayout({
   const [inspectorMax, setInspectorMax] = useState(660)
   const workspaceRowRef = useRef<HTMLDivElement>(null)
   const compactRestoreRef = useRef<'inspector' | null>(null)
+  const widthRef = useRef(window.innerWidth)
   const sidebarSuppressed = smallestLayout && sidebarOpen && !smallestSidebarAllowed
   const inspectorSuppressed = smallestLayout && inspectorOpen && !smallestInspectorAllowed
   const visibleSidebarOpen = sidebarOpen && !sidebarSuppressed
@@ -47,13 +48,14 @@ export function usePanelLayout({
 
   useEffect(() => {
     const sync = () => {
-      const smallestLayout = window.innerWidth <= SMALLEST_LAYOUT_BREAKPOINT
+      const nextSmallest = window.innerWidth <= SMALLEST_LAYOUT_BREAKPOINT
       setCompactLayout(window.innerWidth <= 980)
-      setSmallestLayout(smallestLayout)
-      if (smallestLayout) {
+      if (nextSmallest && window.innerWidth !== widthRef.current) {
         setSmallestSidebarAllowed(false)
         setSmallestInspectorAllowed(false)
       }
+      widthRef.current = window.innerWidth
+      setSmallestLayout(nextSmallest)
     }
     sync()
     window.addEventListener('resize', sync)

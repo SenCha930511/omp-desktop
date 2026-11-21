@@ -6,5 +6,3 @@
 .execution-status.is-failed { color: var(--danger); }
 .execution-status.is-completed { color: var(--success); }
 .execution-status.is-starting, .execution-status.is-thinking, .execution-status.is-running, .execution-status.is-compacting { color: var(--text-secondary); }
-.conversation-toolbar > .execution-status { flex: 0 1 330px; margin-left: 10px; }
-@container (max-width: 620px) { .conversation-toolbar > .execution-status { flex-basis: auto; } .conversation-toolbar > .execution-status .execution-status__detail, .conversation-toolbar > .execution-status .live-elapsed { display: none; } }

@@ -83,15 +83,11 @@ const renderToolbar = async (props: Partial<ComponentProps<typeof TitleToolbar>>
 }
 
 describe('title toolbar session actions', () => {
-  it('keeps three direct actions and folds the session tree, browser, and inspector into More', async () => {
+  it('keeps the overview and More actions and folds the session tree, browser, and inspector into More', async () => {
     const onNewSession = vi.fn()
     await renderToolbar({ onNewSession, onOpenSessionTree: noop })
 
-    expect([...container.querySelectorAll('.title-toolbar__actions button')].map((button) => button.getAttribute('aria-label'))).toEqual([
-      'New session',
-      'Overview',
-      'More',
-    ])
+    expect([...container.querySelectorAll('.title-toolbar__actions button')].map((button) => button.getAttribute('aria-label'))).toEqual(['Overview', 'More'])
     expect(container.querySelector('button[aria-label="Session tree"]')).toBeNull()
 
     await click(container.querySelector('button[aria-label="More"]'))
@@ -101,8 +97,6 @@ describe('title toolbar session actions', () => {
     expect(menu?.querySelector('button[aria-label^="Open browser"]')).not.toBeNull()
     expect(menu?.querySelector('button[aria-label="Toggle inspector"]')).not.toBeNull()
 
-    await click(container.querySelector('.title-toolbar__actions button[aria-label="New session"]'))
-    expect(onNewSession).toHaveBeenCalledTimes(1)
   })
 
   it('runs each More action and closes the menu', async () => {

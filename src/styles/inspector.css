@@ -1,14 +1,42 @@
 /* Inspector */
 .inspector { position: relative; z-index: 10; width: var(--inspector-width, clamp(420px, 46vw, 660px)); min-width: 340px; flex: 0 0 var(--inspector-width, clamp(420px, 46vw, 660px)); display: flex; flex-direction: column; background: var(--canvas); animation: panel-in 150ms ease-out; }
-.inspector__tabs { height: 42px; flex: 0 0 42px; display: flex; align-items: stretch; gap: 2px; padding: 0 8px 0 12px; border-bottom: var(--border-hairline, 1px) solid var(--border); background: var(--canvas); }
-.inspector__tabs > button:not(.icon-button) { position: relative; min-width: 58px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; padding: 0 8px; color: var(--text-secondary); background: transparent; font-size: 11.5px; }
-.inspector__tabs > button:not(.icon-button):hover { color: var(--text); }
-.inspector__tabs > button.is-active { color: var(--text); font-weight: 550; }
-.inspector__tabs > button.is-active::after { position: absolute; left: 8px; right: 8px; bottom: -1px; height: 1.5px; content: ""; background: var(--text); }
-.inspector__tabs > button span { min-width: 16px; height: 16px; display: grid; place-items: center; padding: 0 4px; border-radius: 8px; color: var(--text-secondary); background: var(--surface-hover); font-size: 9.5px; font-variant-numeric: tabular-nums; }
-.inspector__tab-spacer { flex: 1; }
-.inspector__tabs > .icon-button { align-self: center; }
-.inspector__body { flex: 1; min-height: 0; overflow: hidden; }
+.inspector__tabs { height: 42px; flex: 0 0 42px; display: flex; align-items: stretch; gap: 4px; padding: 0 6px 0 8px; border-bottom: var(--border-hairline, 1px) solid var(--border); background: var(--canvas); }
+.inspector__tab-list { min-width: 0; flex: 1; display: flex; align-items: stretch; gap: 3px; overflow-x: auto; scrollbar-width: none; }
+.inspector__tab-list::-webkit-scrollbar { display: none; }
+.inspector-tab { position: relative; min-width: 0; display: flex; align-items: stretch; border-radius: 7px 7px 0 0; color: var(--text-secondary); }
+.inspector-tab:hover { color: var(--text); background: var(--surface-hover); }
+.inspector-tab.is-active { color: var(--text); background: var(--surface-subtle); }
+.inspector-tab.is-active::after { position: absolute; left: 8px; right: 8px; bottom: -1px; height: 1.5px; content: ""; background: var(--text); }
+.inspector-tab__button { min-width: 0; display: inline-flex; align-items: center; gap: 5px; padding: 0 4px 0 8px; border: 0; background: transparent; color: inherit; font: inherit; font-size: 11.5px; white-space: nowrap; }
+.inspector-tab__button > span:first-of-type { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.inspector-tab__count { min-width: 16px; height: 16px; display: grid; place-items: center; padding: 0 4px; border-radius: 8px; color: var(--text-secondary); background: var(--surface-hover); font-size: 9.5px; font-variant-numeric: tabular-nums; }
+.inspector-tab__close { width: 20px; align-self: center; display: grid; place-items: center; border: 0; border-radius: 4px; color: var(--text-tertiary); background: transparent; opacity: 0; transition: opacity 120ms var(--ease-out), color 120ms var(--ease-out), background 120ms var(--ease-out); }
+.inspector-tab:hover .inspector-tab__close, .inspector-tab.is-active .inspector-tab__close, .inspector-tab__close:focus-visible { opacity: 1; }
+.inspector-tab__close:hover { color: var(--text); background: var(--surface-hover); }
+.inspector__tab-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 1px; }
+.inspector__body { position: relative; flex: 1; min-height: 0; overflow: hidden; }
+.inspector__panel { height: 100%; min-height: 0; }
+.inspector__panel[hidden] { display: none; }
+.inspector-new-tab { height: 100%; display: flex; flex-direction: column; align-items: center; padding: 28px 22px; overflow: auto; }
+.inspector-new-tab__search { width: min(100%, 520px); height: 38px; display: flex; align-items: center; gap: 8px; padding: 0 12px; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--canvas); color: var(--text-tertiary); transition: border-color 140ms var(--ease-out), box-shadow 140ms var(--ease-out); }
+.inspector-new-tab__search:focus-within { border-color: color-mix(in srgb, var(--prime) 55%, var(--border-strong)); box-shadow: 0 0 0 2px color-mix(in srgb, var(--prime) 16%, transparent); }
+.inspector-new-tab__search input { min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; color: var(--text); font-size: 12.5px; }
+.inspector-new-tab__list { width: min(100%, 520px); display: flex; flex-direction: column; gap: 2px; margin-top: 18px; }
+.inspector-new-tab__item { width: 100%; min-height: 38px; display: flex; align-items: center; gap: 10px; padding: 0 10px; border: 0; border-radius: 8px; color: var(--text-secondary); background: transparent; text-align: left; font-size: 12.5px; }
+.inspector-new-tab__item:hover { color: var(--text); background: var(--surface-hover); }
+.inspector-new-tab__detail { margin-left: auto; color: var(--text-tertiary); font-size: 11px; font-variant-numeric: tabular-nums; }
+.inspector-new-tab__chevron { margin-left: auto; color: var(--text-tertiary); }
+.inspector-new-tab__empty { margin: 16px 0; color: var(--text-tertiary); font-size: 12px; }
+.inspector-tab-menu, .inspector-tab-context { position: fixed; z-index: 140; width: 240px; padding: 5px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-raised); box-shadow: var(--shadow-popover); }
+.inspector-tab-menu__header { min-height: 28px; display: flex; align-items: center; justify-content: space-between; padding: 0 4px 2px 8px; color: var(--text-tertiary); font-size: 10.5px; }
+.inspector-tab-menu > button, .inspector-tab-context > button { width: 100%; min-height: 31px; display: flex; align-items: center; gap: 8px; padding: 0 8px; border: 0; border-radius: 6px; color: var(--text-secondary); background: transparent; text-align: left; font-size: 12px; }
+.inspector-tab-menu > button:hover, .inspector-tab-context > button:hover { color: var(--text); background: var(--surface-hover); }
+.inspector-tab-menu > button.is-active { color: var(--text); background: var(--surface-selected); }
+.inspector-tab-menu > button > span:nth-child(2) { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inspector-tab-menu__detail { color: var(--text-tertiary); font-size: 10.5px; font-variant-numeric: tabular-nums; }
+.inspector-tab-menu__separator { height: 1px; margin: 4px 6px; background: var(--border); }
+.inspector-tab-context { width: 210px; }
+.inspector-tab-context > button > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .inspector-scroll { height: 100%; overflow: auto; }
 .summary-panel { padding: 22px; }
 .summary-hero { padding-bottom: 22px; border-bottom: 1px solid var(--border); }

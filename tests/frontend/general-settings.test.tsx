@@ -73,7 +73,7 @@ describe('GeneralSettings macOS background controls', () => {
     const update = vi.fn()
     act(() => root.render(<GeneralSettings settings={DEFAULT_SETTINGS} onUpdate={update} platform="darwin" />))
     const select = [...container.querySelectorAll<HTMLSelectElement>('select')].find((candidate) => [...candidate.options].some((option) => option.value === 'agents'))!
-    expect([...select.options].map((option) => option.value)).toEqual(['summary', 'changes', 'browser', 'files', 'agents', 'tasks'])
+    expect([...select.options].map((option) => option.value)).toEqual(['changes', 'browser', 'files', 'agents', 'tasks'])
     expect([...select.options].at(-1)?.textContent).toBe('Background Tasks')
     act(() => {
       select.value = 'agents'
