@@ -26,8 +26,10 @@
 .inspector-new-tab__list { width: min(100%, 520px); display: flex; flex-direction: column; gap: 2px; margin-top: 18px; }
 .inspector-new-tab__item { width: 100%; min-height: 38px; display: flex; align-items: center; gap: 10px; padding: 0 10px; border: 0; border-radius: 8px; color: var(--text-secondary); background: transparent; text-align: left; font-size: 12.5px; }
 .inspector-new-tab__item:hover { color: var(--text); background: var(--surface-hover); }
-.inspector-new-tab__detail { margin-left: auto; color: var(--text-tertiary); font-size: 11px; font-variant-numeric: tabular-nums; }
-.inspector-new-tab__diff { display: inline-flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
+.inspector-new-tab__item > svg { flex: 0 0 auto; }
+.inspector-new-tab__item > span:first-of-type { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inspector-new-tab__detail { flex: 0 0 auto; margin-left: auto; color: var(--text-tertiary); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.inspector-new-tab__diff { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .inspector-new-tab__diff .is-add { color: var(--success); }
 .inspector-new-tab__diff .is-del { color: var(--danger); }
 .inspector-new-tab__chevron { margin-left: auto; color: var(--text-tertiary); }

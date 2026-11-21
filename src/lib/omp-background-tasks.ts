@@ -29,7 +29,7 @@ export interface DeriveOmpBackgroundTasksInput {
 
 const BACKGROUNDED_JOB_RE = /^Backgrounded as job ([A-Za-z0-9._:-]+)/m
 const CANCELLED_JOB_RE = /\bCancelled background job ([A-Za-z0-9._:-]+)/g
-const ALREADY_JOB_RE = /\bBackground job ([A-Za-z0-9._:-]+) is already (completed|failed|cancelled)\b/g
+const ALREADY_JOB_RE = /\bBackground job ([A-Za-z0-9._:-]+)(?:[^\r\n]*?)\s+(?:is already|has|was)\s+(completed|failed|cancelled)\b/gi
 const JOBS_LINE_RE = /^\[([A-Za-z0-9._:-]+)\]\s+([^\s(]+)\s+\((running|completed|failed|cancelled)\)(?:\s+[—-]\s+([^\n]+))?/gm
 const ASYNC_SECTION_RE = /^##\s+(Completed|Failed|Cancelled)\b(?:\s*\(([^)]+)\))?/gim
 const ASYNC_JOB_ID_RE = /\bjob(?:\s+id)?[:=\s`]+([A-Za-z0-9._:-]+)/gi

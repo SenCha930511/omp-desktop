@@ -28,6 +28,7 @@ const MIN_VISIBLE_OVERLAP_HEIGHT = 80
 export const DEFAULT_WINDOW_GEOMETRY: WindowGeometry = {
   width: 1440,
   height: 920,
+  maximized: true,
 }
 
 export type GeometryTargetWindow = Pick<

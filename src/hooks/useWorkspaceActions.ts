@@ -70,8 +70,8 @@ export interface WorkspaceActionsDeps {
   refreshSchedules(): Promise<void>
   resetBrowserView(): void
   clearSessionAttention(session: SessionRecord): void
-  /** 記錄「剛開啟」的 session,側欄把它排到所屬群組最上面。 */
-  bumpRecentSessionOpen(sessionId: string): void
+  /** @deprecated No longer called on click; retained optional for test mocks. */
+  bumpRecentSessionOpen?(sessionId: string): void
   reportError(error: unknown): void
   /** `onAbort` 只在可中止的指令(使用者 `!` bash)提供,面板據此顯示停止鈕。 */
   onCommandStart?(command: string, onAbort?: () => void): void
@@ -242,7 +242,7 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     persistPanel({ inspectorOpen: next })
   }
   const selectProject = async (project: ProjectRecord) => {
-    const { bridge, layout, settingsState, sessions, workspace, setSessions, setView, clearSessionAttention, bumpRecentSessionOpen, reportError } = getDeps()
+    const { bridge, layout, settingsState, sessions, workspace, setSessions, setView, clearSessionAttention, reportError } = getDeps()
     if (layout.compactLayout) {
       layout.setSmallestSidebarAllowed(false)
       settingsState.setSidebarOpen(false)
@@ -254,7 +254,6 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     const session = sessions.find((candidate) => !candidate.archived && projectContainsPath(project, candidate.projectPath))
     if (session) {
       clearSessionAttention(session)
-      bumpRecentSessionOpen(session.id)
       setSessions((items) => items.map((item) => (item.id === session.id ? { ...item, unread: false } : item)))
     }
     const generation = workspace.activateWorkspace(project, session)
@@ -270,13 +269,12 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     }
   }
   const selectSession = async (session: SessionRecord) => {
-    const { bridge, layout, settingsState, projects, workspace, setSessions, setView, clearSessionAttention, bumpRecentSessionOpen, reportError } = getDeps()
+    const { bridge, layout, settingsState, projects, workspace, setSessions, setView, clearSessionAttention, reportError } = getDeps()
     if (layout.compactLayout) {
       layout.setSmallestSidebarAllowed(false)
       settingsState.setSidebarOpen(false)
     }
     clearSessionAttention(session)
-    bumpRecentSessionOpen(session.id)
     setSessions((items) => items.map((item) => (item.id === session.id ? { ...item, unread: false } : item)))
     const project = findProjectForSession(projects, session)
     if (!project) {
@@ -810,8 +808,9 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
         // semantic — both ride the follow_up command instead of a second
         // renderer-side queue that could drift from the engine's own.
         const sentAt = Date.now()
+        const sentAtIso = new Date(sentAt).toISOString()
         if (currentWorkspace.sessionFile) {
-          setSessions((items) => items.map((session) => (session.filePath === currentWorkspace.sessionFile ? { ...session, lastUserMessageAt: new Date(sentAt).toISOString() } : session)))
+          setSessions((items) => items.map((session) => (session.filePath === currentWorkspace.sessionFile ? { ...session, lastUserMessageAt: sentAtIso, updatedAt: sentAtIso } : session)))
         }
         try {
           const response = await bridge.agent.command(currentRuntime.runtimeId, { type: 'follow_up', message: prompt, ...(images.length ? { images } : {}) })
@@ -851,7 +850,7 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
         const pendingSteerId = queuedFlushPromptId ?? workspace.queuePrompt(prompt, intent, [{ type: 'text', text: prompt }, ...images], sentAt)
         if (currentWorkspace.sessionFile) {
           const sentAtIso = new Date(sentAt).toISOString()
-          setSessions((items) => items.map((session) => (session.filePath === currentWorkspace.sessionFile ? { ...session, lastUserMessageAt: sentAtIso } : session)))
+          setSessions((items) => items.map((session) => (session.filePath === currentWorkspace.sessionFile ? { ...session, lastUserMessageAt: sentAtIso, updatedAt: sentAtIso } : session)))
         }
         try {
           const response = await bridge.agent.command(currentRuntime.runtimeId, { type: 'steer', message: prompt, ...(images.length ? { images } : {}) })
@@ -917,7 +916,7 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
           if (workspace.workspaceRef.current.generation !== generation) return
           userMessageAppended = true
           workspace.setMessages((items) => [...items, userMessage])
-          if (admitted.sessionFile) setSessions((items) => items.map((session) => (session.filePath === admitted.sessionFile ? { ...session, lastUserMessageAt: sentAtIso } : session)))
+          if (admitted.sessionFile) setSessions((items) => items.map((session) => (session.filePath === admitted.sessionFile ? { ...session, lastUserMessageAt: sentAtIso, updatedAt: sentAtIso } : session)))
         }
         const appendPendingAssistant = () => {
           if (pendingAssistantAppended || workspace.workspaceRef.current.generation !== generation) return
@@ -1028,7 +1027,7 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
           // keeps the narrowing inside the setRuntime closure below.
           retractPendingTurn()
           workspace.attachRuntime(streamingRuntime, generation)
-          if (admitted.sessionFile) setSessions((items) => items.map((session) => (session.filePath === admitted.sessionFile ? { ...session, lastUserMessageAt: sentAtIso } : session)))
+          if (admitted.sessionFile) setSessions((items) => items.map((session) => (session.filePath === admitted.sessionFile ? { ...session, lastUserMessageAt: sentAtIso, updatedAt: sentAtIso } : session)))
           const response = await bridge.agent.command(streamingRuntime.runtimeId, { type: 'follow_up', message: prompt, ...(images.length ? { images } : {}) })
           const actions = parseSessionActionSnapshot(response.sessionActions)
           if (actions) {

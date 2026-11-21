@@ -65,8 +65,6 @@ export interface SidebarProps {
   onBranchSession?(session: SessionRecord): void
   /** Pins or unpins the session in the persisted sidebar order. */
   onTogglePinSession?(session: SessionRecord): void
-  /** sessionId → when it was last opened; opened rows float to the top. */
-  recentSessionOpens?: ReadonlyMap<string, number>
   overlay?: boolean
   platform?: NodeJS.Platform
 }
@@ -101,7 +99,6 @@ export function indexSidebarSessions(
   projects: ProjectRecord[],
   sessions: SessionRecord[],
   stats?: SidebarIndexStats,
-  recentOpens?: ReadonlyMap<string, number>,
 ): { activeSessions: SessionRecord[]; sessionsByProject: Map<string, SessionRecord[]> } {
   const activeSessions: SessionRecord[] = []
   const ownersByFolder = new Map<string, string[]>()
@@ -140,11 +137,8 @@ export function indexSidebarSessions(
   }
   const compareByRecentUse = (left: SessionRecord, right: SessionRecord) => {
     if (Boolean(left.pinned) !== Boolean(right.pinned)) return left.pinned ? -1 : 1
-    // Opening a session is use: the most recently opened row floats to the
-    // top of its group so the session in play is always the easiest to find.
-    const leftOpen = recentOpens?.get(left.id) ?? 0
-    const rightOpen = recentOpens?.get(right.id) ?? 0
-    if (leftOpen !== rightOpen) return rightOpen - leftOpen
+    // Clicking a session or receiving background assistant updates keeps order
+    // stable; only new user turns (lastUserMessageAt) float a thread to the top.
     const difference = Date.parse(right.lastUserMessageAt ?? right.createdAt) - Date.parse(left.lastUserMessageAt ?? left.createdAt)
     return difference || right.createdAt.localeCompare(left.createdAt) || left.filePath.localeCompare(right.filePath)
   }
@@ -288,8 +282,7 @@ function SidebarView({
   onArchiveSession,
   onPopupMenu,
   onBranchSession = () => undefined,
-   onTogglePinSession = () => undefined,
-  recentSessionOpens,
+  onTogglePinSession = () => undefined,
   overlay = false,
   platform = 'darwin',
 }: SidebarProps) {
@@ -312,13 +305,9 @@ function SidebarView({
   // reachable.
   const [expandedProjects, setExpandedProjects] = useState<ReadonlySet<string>>(() => new Set(expandedProjectChoices))
   const [updateErrorOpen, setUpdateErrorOpen] = useState(false)
-  // activeSessionId is deliberately absent from the memo inputs: selection
-  // re-sorts through recentSessionOpens (which changes exactly when a
-  // session is opened), never through a full re-index per render.
-  const { activeSessions, sessionsByProject } = useMemo(
-    () => indexSidebarSessions(projects, sessions, undefined, recentSessionOpens),
-    [projects, sessions, recentSessionOpens],
-  )
+  // activeSessionId is deliberately absent from the memo inputs: clicking a
+  // session leaves list order unchanged until sessions itself is updated.
+  const { activeSessions, sessionsByProject } = useMemo(() => indexSidebarSessions(projects, sessions), [projects, sessions])
   const needsAttention = (session: SessionRecord) => {
     const signature = sessionAttentionSignature(session)
     return Boolean(signature && !signatureCleared(signature, clearedAttention[session.id], session.unread))

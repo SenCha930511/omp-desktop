@@ -643,16 +643,6 @@ export default function App() {
     })
   }, [bridge, finishProjectScriptRun])
 
-  // 使用即最近:開啟 session 的時間戳(僅記憶體),側欄據此把剛使用的
-  // session 排到所屬群組最上面,所屬專案也會跳到「最近活動」排序頂端。
-  const [recentSessionOpens, setRecentSessionOpens] = useState<ReadonlyMap<string, number>>(() => new Map())
-  const bumpRecentSessionOpen = useCallback((sessionId: string) => {
-    setRecentSessionOpens((current) => {
-      const next = new Map(current)
-      next.set(sessionId, Date.now())
-      return next
-    })
-  }, [])
   const {
     toggleSidebar,
     toggleInspector,
@@ -717,7 +707,6 @@ export default function App() {
     refreshSchedules,
     resetBrowserView: () => setBrowserGeneration((value) => value + 1),
     clearSessionAttention,
-    bumpRecentSessionOpen,
     reportError,
   })
   // Side chats are transient: closing the panel (its × button or a session
@@ -1396,7 +1385,6 @@ export default function App() {
               projects={projects}
               sessions={sessions}
               clearedAttention={clearedAttention}
-              recentSessionOpens={recentSessionOpens}
               activeProjectId={activeProject?.id}
               activeSessionId={workspace.activeSessionId}
               activeView={view}

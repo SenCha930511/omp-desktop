@@ -30,9 +30,9 @@
 .toolbar-overview__action:hover { color: var(--text); background: var(--surface-hover); }
 .toolbar-overview__action:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
 .toolbar-overview__action svg { flex: 0 0 auto; }
-.toolbar-overview__status { margin-left: auto; color: var(--text-tertiary); font-size: 11px; }
-.toolbar-overview__subitem > span:first-of-type { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.toolbar-overview__see-all { margin-left: auto; padding: 2px 6px; border: 0; border-radius: 5px; color: var(--text-tertiary); background: transparent; font: inherit; font-size: 11px; cursor: pointer; }
+.toolbar-overview__status { flex: 0 0 auto; margin-left: auto; color: var(--text-tertiary); font-size: 11px; white-space: nowrap; }
+.toolbar-overview__subitem > span:first-of-type { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.toolbar-overview__see-all { flex: 0 0 auto; margin-left: auto; padding: 2px 6px; border: 0; border-radius: 5px; color: var(--text-tertiary); background: transparent; font: inherit; font-size: 11px; white-space: nowrap; cursor: pointer; }
 .toolbar-overview__see-all:hover { color: var(--text); background: var(--surface-hover); }
 .toolbar-divider { width: var(--border-hairline, 1px); height: 16px; background: var(--border); margin: 0 5px; }
 .project-run-control { position: relative; margin-right: 3px; }

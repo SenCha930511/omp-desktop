@@ -227,11 +227,12 @@ export const Inspector = memo(function Inspector({
     { additions: 0, deletions: 0 },
   )
   const agentItems = subagents?.state.agents ?? []
+  const runningTaskItems = useMemo(() => taskItems.filter((task) => task.status === 'running'), [taskItems])
   const tabCount = (tab: InspectorTab): number | undefined => {
     if (tab === 'changes' || tab === 'files') return git.files.length || undefined
     if (tab === 'sidechat') return sideChat?.state.topics.length || undefined
     if (tab === 'agents') return agentItems.length || undefined
-    if (tab === 'tasks') return taskItems.filter((task) => task.status === 'running').length || undefined
+    if (tab === 'tasks') return runningTaskItems.length || undefined
     return undefined
   }
   const tabDetail = (tab: InspectorTab): string | undefined => {
@@ -449,23 +450,8 @@ export const Inspector = memo(function Inspector({
           <IconButton size="small" label={t('inspector.tabs.new')} onClick={openNewTab}>
             <Plus size={15} />
           </IconButton>
-          <IconButton
-            size="small"
-            label={t('inspector.tabs.actions')}
-            disabled={showNewTab || !openTabs.includes(resolvedActiveTab)}
-            onClick={(event) => {
-              if (tabMenu) {
-                setTabMenu(null)
-                return
-              }
-              const rect = event.currentTarget.getBoundingClientRect()
-              showTabMenu(resolvedActiveTab, rect.right - 190, rect.bottom + 4)
-            }}
-          >
-            <MoreVertical size={15} />
-          </IconButton>
           <IconButton size="small" label={t('inspector.tabs.menu')} aria-haspopup="menu" aria-expanded={Boolean(panelMenu)} onClick={(event) => showPanelMenu(event.currentTarget)}>
-            <FileText size={15} />
+            <MoreVertical size={15} />
           </IconButton>
         </div>
       </div>
@@ -540,9 +526,9 @@ export const Inspector = memo(function Inspector({
               {!filteredTabs.length ? <p className="inspector-new-tab__empty">{t('inspector.newTab.empty')}</p> : null}
             </div>
 
-            {!normalizedQuery ? (
+            {!normalizedQuery && ((subagents && agentItems.length > 0) || runningTaskItems.length > 0) ? (
               <div className="inspector-new-tab__sections">
-                {subagents ? (
+                {subagents && agentItems.length > 0 ? (
                   <section className="inspector-new-tab__section">
                     <div className="inspector-new-tab__section-header">
                       <span>{label('agents')}</span>
@@ -568,27 +554,29 @@ export const Inspector = memo(function Inspector({
                     </button>
                   </section>
                 ) : null}
-                <section className="inspector-new-tab__section">
-                  <div className="inspector-new-tab__section-header">
-                    <span>{label('tasks')}</span>
-                    <span className="inspector-new-tab__badge">{taskItems.length}</span>
-                  </div>
-                  {taskItems.slice(0, 3).map((task) => (
-                    <button
-                      type="button"
-                      key={task.id}
-                      className="inspector-new-tab__item inspector-new-tab__subitem"
-                      onClick={() => activate('tasks')}
-                    >
-                      <TaskStatusIcon task={task} />
-                      <span>{task.title}</span>
-                      <span className="inspector-new-tab__detail">{t(`inspector.tasks.status.${task.status}`)}</span>
+                {runningTaskItems.length > 0 ? (
+                  <section className="inspector-new-tab__section">
+                    <div className="inspector-new-tab__section-header">
+                      <span>{label('tasks')}</span>
+                      <span className="inspector-new-tab__badge">{runningTaskItems.length}</span>
+                    </div>
+                    {runningTaskItems.slice(0, 3).map((task) => (
+                      <button
+                        type="button"
+                        key={task.id}
+                        className="inspector-new-tab__item inspector-new-tab__subitem"
+                        onClick={() => activate('tasks')}
+                      >
+                        <TaskStatusIcon task={task} />
+                        <span>{task.title}</span>
+                        <span className="inspector-new-tab__detail">{t(`inspector.tasks.status.${task.status}`)}</span>
+                      </button>
+                    ))}
+                    <button type="button" className="inspector-new-tab__see-all" onClick={() => activate('tasks')}>
+                      {t('inspector.newTab.seeAll')}
                     </button>
-                  ))}
-                  <button type="button" className="inspector-new-tab__see-all" onClick={() => activate('tasks')}>
-                    {t('inspector.newTab.seeAll')}
-                  </button>
-                </section>
+                  </section>
+                ) : null}
               </div>
             ) : null}
           </div>

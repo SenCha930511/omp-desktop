@@ -149,4 +149,27 @@ describe('deriveOmpBackgroundTasks', () => {
     expect(tasks).toHaveLength(1)
     expect(tasks[0]).toMatchObject({ id: 'job-9', status: 'cancelled', cancellable: false, title: 'npm test' })
   })
+
+  it('marks background jobs completed when OMP delivers an inline async-result system notice', () => {
+    const messages: TranscriptMessage[] = [
+      {
+        id: 'm-1',
+        role: 'assistant',
+        timestamp: '2026-01-01T00:00:00.000Z',
+        parts: [
+          { type: 'toolCall', id: 'tc-1', name: 'bash', args: { command: 'npx playwright test', async: true } },
+          { type: 'toolResult', name: 'bash', text: 'Backgrounded as job bg_273; its output is injected into the conversation.' },
+          {
+            type: 'toolResult',
+            name: 'Async Result',
+            text: '<system-notice>\nBackground job bg_273 (npx playwright test) has completed.\nResume your work using the result below.\n</system-notice>',
+          },
+        ],
+      },
+    ]
+
+    const tasks = deriveOmpBackgroundTasks({ messages })
+    expect(tasks).toHaveLength(1)
+    expect(tasks[0]).toMatchObject({ id: 'bg_273', status: 'completed', cancellable: false, title: 'npx playwright test' })
+  })
 })

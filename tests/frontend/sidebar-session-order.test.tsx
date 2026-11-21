@@ -43,25 +43,26 @@ describe('sidebar session ordering', () => {
     expect(sessionsByProject.get('project')?.map((item) => item.id)).toEqual(['newer', 'older'])
   })
 
-  it('keeps message order for sessions with no recorded open', () => {
-    const sessions = [session('older', '2026-01-02T00:00:00.000Z'), session('newer', '2026-01-03T00:00:00.000Z'), session('unopened', '2026-01-01T00:00:00.000Z')]
+  it('keeps order stable when a session is clicked or only updatedAt changes from background writes', () => {
+    const backgroundUpdated = { ...session('in-use', '2026-01-01T00:00:00.000Z'), updatedAt: '2026-01-05T00:00:00.000Z' }
+    const sessions = [session('older', '2026-01-02T00:00:00.000Z'), session('newer', '2026-01-03T00:00:00.000Z'), backgroundUpdated]
     const { sessionsByProject } = indexSidebarSessions([project], sessions)
-    expect(sessionsByProject.get('project')?.map((item) => item.id)).toEqual(['newer', 'older', 'unopened'])
+    expect(sessionsByProject.get('project')?.map((item) => item.id)).toEqual(['newer', 'older', 'in-use'])
   })
 
-  it('floats the most recently opened session above message order', () => {
-    const sessions = [session('older', '2026-01-02T00:00:00.000Z'), session('newer', '2026-01-03T00:00:00.000Z'), session('in-use', '2026-01-01T00:00:00.000Z')]
-    const { sessionsByProject } = indexSidebarSessions([project], sessions, undefined, new Map([['in-use', Date.now()]]))
+  it('floats a session to the top only when its lastUserMessageAt advances', () => {
+    const updatedUserTurn = { ...session('in-use', '2026-01-05T00:00:00.000Z'), updatedAt: '2026-01-05T00:00:00.000Z' }
+    const sessions = [session('older', '2026-01-02T00:00:00.000Z'), session('newer', '2026-01-03T00:00:00.000Z'), updatedUserTurn]
+    const { sessionsByProject } = indexSidebarSessions([project], sessions)
     expect(sessionsByProject.get('project')?.map((item) => item.id)).toEqual(['in-use', 'newer', 'older'])
   })
 
-  it('re-sorts rows through the recent-open map when a session is opened', async () => {
-    const sessions = [session('older', '2026-01-02T00:00:00.000Z'), session('newer', '2026-01-03T00:00:00.000Z'), session('in-use', '2026-01-01T00:00:00.000Z')]
-    const renderSidebar = (recentSessionOpens?: ReadonlyMap<string, number>) => act(async () => {
+  it('does not re-sort rows on selection click or background write, and floats a row when user-updated', async () => {
+    const initial = [session('older', '2026-01-02T00:00:00.000Z'), session('newer', '2026-01-03T00:00:00.000Z'), session('in-use', '2026-01-01T00:00:00.000Z')]
+    const renderSidebar = (items: SessionRecord[], activeSessionId?: string) => act(async () => {
       root.render(
         <Sidebar
-          projects={[project]} sessions={sessions} activeView="session" activeSessionId="in-use" projectSortMode="recent"
-          recentSessionOpens={recentSessionOpens}
+          projects={[project]} sessions={items} activeView="session" activeSessionId={activeSessionId} projectSortMode="recent"
           onSelectSession={noop} onNavigate={noop} onNewSession={noop} onAddProject={noop} onRemoveProject={noop}
           onClose={noop} onOpenPalette={noop} onRenameSession={async () => undefined} onArchiveSession={async () => undefined}
         />,
@@ -69,12 +70,21 @@ describe('sidebar session ordering', () => {
     })
     const rowTitles = () => [...container.querySelectorAll<HTMLElement>('.project-group .session-row-wrap .session-row__title')].map((row) => row.textContent)
 
-    await renderSidebar()
+    await renderSidebar(initial, 'newer')
     expect(rowTitles()).toEqual(['newer', 'older', 'in-use'])
 
-    // Opening a session records the use: the row jumps to the top of its
-    // group so the session in play is always the easiest to reach.
-    await renderSidebar(new Map([['in-use', Date.now()]]))
+    // Clicking/selecting a lower session keeps its position in the group.
+    await renderSidebar(initial, 'in-use')
+    expect(rowTitles()).toEqual(['newer', 'older', 'in-use'])
+
+    // Background assistant update (updatedAt only) also keeps thread order stable.
+    const backgroundWrite = initial.map((item) => (item.id === 'in-use' ? { ...item, updatedAt: '2026-01-04T00:00:00.000Z' } : item))
+    await renderSidebar(backgroundWrite, 'in-use')
+    expect(rowTitles()).toEqual(['newer', 'older', 'in-use'])
+
+    // Updating the session with a new user message promotes it.
+    const updated = initial.map((item) => (item.id === 'in-use' ? { ...item, lastUserMessageAt: '2026-01-05T00:00:00.000Z', updatedAt: '2026-01-05T00:00:00.000Z' } : item))
+    await renderSidebar(updated, 'in-use')
     expect(rowTitles()).toEqual(['in-use', 'newer', 'older'])
   })
 

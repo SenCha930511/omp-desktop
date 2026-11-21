@@ -1,5 +1,5 @@
 import { ChevronDown, LoaderCircle } from 'lucide-react'
-import { memo, useEffect, useMemo, useRef } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef } from 'react'
 import { createAssistantTurnCoalescer } from '@/lib/assistant-turns'
 import { HARNESS_SHORT_NAMES } from '@/lib/harness'
 import { useI18n } from '@/lib/i18n'
@@ -10,6 +10,7 @@ import { MarkdownText } from './MarkdownText'
 import { ActivityMessage, AgentMessage, AssistantMessage, GoalMessage, isAgentNoticeKind, NoticeMessage, SteerReadMarker, UserMessage } from './transcript/messages'
 import { useTranscriptScroll } from './transcript/scroll'
 import { TranscriptHud } from './TranscriptHud'
+import { TranscriptTrajectory } from './TranscriptTrajectory'
 import { OmpMark } from './ui'
 import { LiveElapsed, ThinkingDots, WorkDisclosure } from './transcript/timeline'
 import { SearchMessage, TranscriptSearchBar, useTranscriptSearch } from './TranscriptSearch'
@@ -95,6 +96,31 @@ function TranscriptView({
   const groupedMessages = useMemo(() => coalesce(messages), [coalesce, messages])
   const { announcement, awayFromBottom, hiddenCount, hiddenAfter, scrollRef, scrollToBottom, scrolled, showEarlier, showNewer, revealIndex, updatePinnedState, visibleMessages } = useTranscriptScroll(groupedMessages, visible, followKey)
   const search = useTranscriptSearch(groupedMessages, scrollRef, revealIndex, visible)
+  const revealIndexRef = useRef(revealIndex)
+  revealIndexRef.current = revealIndex
+  const jumpFrameRef = useRef<number | undefined>(undefined)
+  useEffect(
+    () => () => {
+      if (jumpFrameRef.current !== undefined) cancelAnimationFrame(jumpFrameRef.current)
+    },
+    [],
+  )
+  const jumpToTrajectoryTurn = useCallback(
+    (messageIndex: number, messageId: string) => {
+      revealIndexRef.current(messageIndex)
+      if (jumpFrameRef.current !== undefined) cancelAnimationFrame(jumpFrameRef.current)
+      const scrollIntoTarget = (attemptsLeft: number) => {
+        jumpFrameRef.current = requestAnimationFrame(() => {
+          jumpFrameRef.current = undefined
+          const element = scrollRef.current?.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(messageId)}"]`)
+          if (element) element.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
+          else if (attemptsLeft > 0) scrollIntoTarget(attemptsLeft - 1)
+        })
+      }
+      scrollIntoTarget(1)
+    },
+    [scrollRef],
+  )
   const recovery = useMemo(() => failedTurn(messages), [messages])
   // One-shot entrance tracking: messages present when the transcript settles
   // (history load, session switch) render without animation; only messages
@@ -227,6 +253,7 @@ function TranscriptView({
         </div>
       </div>
       <TranscriptHud messages={messages} />
+      <TranscriptTrajectory messages={groupedMessages} scrollRef={scrollRef} onJumpToIndex={jumpToTrajectoryTurn} active={visible} />
       {awayFromBottom ? (
         <button type="button" className="transcript__jump-to-bottom" onClick={scrollToBottom} aria-label={t('transcript.jumpToBottom')} title={t('transcript.jumpToBottom')}>
           <ChevronDown size={17} />
