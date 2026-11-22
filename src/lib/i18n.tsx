@@ -14,7 +14,8 @@ import { sidechatFragment } from '@/i18n/keys/sidechat'
 import { sessionTreeFragment } from '@/i18n/keys/sessiontree'
 import { sessionSettingsFragment } from '@/i18n/keys/session-settings'
 
-type MessageValues = Record<string, string | number>
+export type MessageValues = Record<string, string | number>
+export type Translate = (key: MessageKey, values?: MessageValues) => string
 
 const englishCatalog = {
   ...coreFragment.en,
@@ -92,7 +93,7 @@ export function translate(locale: ResolvedLocale, key: MessageKey, values: Messa
 
 interface I18nContextValue {
   locale: ResolvedLocale
-  t(key: MessageKey, values?: MessageValues): string
+  t: Translate
 }
 
 const I18nContext = createContext<I18nContextValue>({ locale: 'en', t: (key, values) => translate('en', key, values) })
