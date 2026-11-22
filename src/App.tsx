@@ -1677,11 +1677,14 @@ export default function App() {
               />
             </Suspense>
           ) : null}
-          {extension.extensionUi ? (
-            <Suspense fallback={<LoadingPanel label={t('app.panel.request')} />}>
-              <ExtensionUiModal request={extension.extensionUi.request} onRespond={(response) => void extension.respondToExtensionUi(response)} platform={platform} />
-            </Suspense>
-          ) : null}
+          {extension.extensionUi ? (() => {
+            const pending = extension.extensionUi
+            return (
+              <Suspense fallback={<LoadingPanel label={t('app.panel.request')} />}>
+                <ExtensionUiModal request={pending.request} onRespond={(response) => void extension.respondToExtensionUi(response, pending)} platform={platform} />
+              </Suspense>
+            )
+          })() : null}
           {sessionTreeOpen ? (
             <SessionTreeDialog
               runtimeId={workspace.runtime?.runtimeId}

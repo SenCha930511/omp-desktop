@@ -277,9 +277,34 @@ function chunkFrame(chunkId: string, index: number, count: number, data: Buffer)
 describe('OMP RPC adapter argv', () => {
   const baseInput = { cwd: '/work/project', environment: {} as NodeJS.ProcessEnv }
 
+  it('defaults and explicitly routes interactive starts to rpc-ui, but preserves plain rpc plus --no-ui when unattended', () => {
+    expect(OMP_RPC_ADAPTER.buildStartArgs(baseInput)).toEqual(['--mode', 'rpc-ui', '--cwd', '/work/project'])
+    const input = {
+      ...baseInput,
+      interactive: true,
+      sessionPath: '/work/session.jsonl',
+      providerId: 'openai-codex',
+      modelId: 'gpt-5.6-luna',
+      thinking: 'high',
+      approvalMode: 'write',
+      environment: { GOOEYPI_COLLABORATION_EXTENSION_PATH: '/extensions/collaboration.ts' },
+    }
+    const existingFlags = [
+      '--cwd', '/work/project',
+      '--resume', '/work/session.jsonl',
+      '--model', 'openai-codex/gpt-5.6-luna',
+      '--thinking', 'high',
+      '--approval-mode', 'write',
+      '--extension', '/extensions/collaboration.ts',
+    ]
+    expect(OMP_RPC_ADAPTER.buildStartArgs(input)).toEqual(['--mode', 'rpc-ui', ...existingFlags])
+    expect(OMP_RPC_ADAPTER.buildStartArgs({ ...input, interactive: false }))
+      .toEqual(['--mode', 'rpc', ...existingFlags, '--no-ui'])
+  })
+
   it('passes the model as a single provider/id selector without --provider', () => {
     const args = OMP_RPC_ADAPTER.buildStartArgs({ ...baseInput, providerId: 'openai-codex', modelId: 'gpt-5.6-luna' })
-    expect(args).toEqual(['--mode', 'rpc', '--cwd', '/work/project', '--model', 'openai-codex/gpt-5.6-luna'])
+    expect(args).toEqual(['--mode', 'rpc-ui', '--cwd', '/work/project', '--model', 'openai-codex/gpt-5.6-luna'])
   })
 
   it('passes an unresolved model string as-is and rejects unsafe values', () => {

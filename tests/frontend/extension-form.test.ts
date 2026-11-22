@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { MAX_EXTENSION_FORM_CHOICE_CHARS, MAX_EXTENSION_FORM_TEXT_CHARS } from '../../src/types/api'
 import {
   createExtensionFormDraft,
   submitExtensionForm,
@@ -214,6 +215,24 @@ describe('constraints, hostile data and special keys', () => {
     expect(validateExtensionFormData(form(optional), { optional: '   ' })).toMatchObject({ ok: true, data: { optional: '   ' } })
     const invalidPattern = text('invalidPattern', { pattern: '[' })
     expect(validateExtensionFormData(form(invalidPattern), { invalidPattern: 'anything' })).toMatchObject({ ok: true, data: { invalidPattern: 'anything' } })
+  })
+
+  it('enforces array-entry limits after Other normalization while retaining scalar bounds', () => {
+    const exactChoiceLength = 'x'.repeat(MAX_EXTENSION_FORM_CHOICE_CHARS)
+    const oversizedChoice = `${exactChoiceLength}x`
+    const multi = choice('checkbox', 'features', [exactChoiceLength, oversizedChoice])
+    expect(validateExtensionFormData(form(multi), { features: [exactChoiceLength] })).toMatchObject({ ok: true, data: { features: [exactChoiceLength] } })
+    expect(validateExtensionFormData(form(multi), { features: [oversizedChoice] })).toMatchObject({ ok: false, issues: [{ code: 'malformedForm', controlId: multi.id }] })
+
+    const otherMulti = choice('checkbox', 'features', ['a', 'b'], { other: true })
+    expect(validateExtensionFormData(form(otherMulti), { features: [oversizedChoice] })).toMatchObject({ ok: false, issues: [{ code: 'malformedForm', controlId: otherMulti.id }] })
+    expect(validateExtensionFormData(form(otherMulti), { features: [`${' '.repeat(MAX_EXTENSION_FORM_CHOICE_CHARS + 1)}custom`] })).toMatchObject({ ok: true, data: { features: ['custom'] } })
+
+    const scalar = 'x'.repeat(MAX_EXTENSION_FORM_TEXT_CHARS)
+    const radio = choice('radio', 'mode', ['fast', 'slow'], { other: true })
+    expect(validateExtensionFormData(form(radio), { mode: scalar }).ok).toBe(true)
+    const singleton = choice('checkbox', 'feature', [scalar])
+    expect(validateExtensionFormData(form(singleton), { feature: scalar }).ok).toBe(true)
   })
 
   it('rejects unknown names, wrong container shapes, sparse arrays, non-string array entries and non-finite values without echoing secrets', () => {

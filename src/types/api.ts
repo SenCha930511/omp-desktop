@@ -10,6 +10,10 @@ export type WorkspaceView = 'session' | 'projects' | 'activity' | 'scheduled' | 
 export type InspectorTab = 'changes' | 'browser' | 'files' | 'sidechat' | 'agents' | 'tasks'
 export type SessionStatus = 'idle' | 'running' | 'waiting' | 'complete' | 'failed' | 'unknown'
 
+// Shared renderer/main wire limits; transport frame-size checks remain separate.
+export const MAX_EXTENSION_FORM_TEXT_CHARS = 1_048_576
+export const MAX_EXTENSION_FORM_CHOICE_CHARS = 65_536
+
 export const HARNESS_IDS = ['omp'] as const
 export type HarnessId = (typeof HARNESS_IDS)[number]
 

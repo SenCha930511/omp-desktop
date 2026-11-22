@@ -16,6 +16,8 @@ export interface HarnessStartArgsInput {
   thinking?: string
   /** OMP-only approval override; ignored by harnesses without the flag. */
   approvalMode?: string
+  /** Desktop runtimes answer extension/tool UI; unattended children set false to run plain RPC with --no-ui. */
+  interactive?: boolean
   environment: NodeJS.ProcessEnv
 }
 
@@ -140,7 +142,10 @@ export const OMP_RPC_ADAPTER: HarnessRpcAdapter = {
   negotiateProtocolVersion: 2,
   chunkedFrames: true,
   buildStartArgs: (input) => {
-    const args = ['--mode', 'rpc', '--cwd', input.cwd]
+    // Manager.start is the established interactive Desktop path; omission keeps
+    // direct adapter callers on that default. startUnattended explicitly opts
+    // out so ordinary RPC cannot leave a scheduled child awaiting host UI.
+    const args = ['--mode', input.interactive === false ? 'rpc' : 'rpc-ui', '--cwd', input.cwd]
     if (input.sessionPath) args.push('--resume', input.sessionPath)
     if (input.modelId !== undefined) {
       // OMP takes a single provider/id selector; a raw model string with no
@@ -163,6 +168,7 @@ export const OMP_RPC_ADAPTER: HarnessRpcAdapter = {
       const extensionPath = input.environment[injection.environmentVariable]
       if (extensionPath && !unsafeArgValue(extensionPath)) args.push('--extension', extensionPath)
     }
+    if (input.interactive === false) args.push('--no-ui')
     return args
   },
   translateCommand: (command) => {

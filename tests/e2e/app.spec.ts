@@ -258,7 +258,7 @@ if (args[0] === 'models' && args.includes('--json')) {
   ] }) + '\\n')
   process.exit(0)
 }
-if (!args.includes('--mode') || args[args.indexOf('--mode') + 1] !== 'rpc') process.exit(2)
+if (!args.includes('--mode') || args[args.indexOf('--mode') + 1] !== 'rpc-ui') process.exit(2)
 fs.writeFileSync(marker('omp-runtime.pid'), String(process.pid))
 fs.writeFileSync(marker('omp-runtime-args.json'), JSON.stringify(args))
 const resumeIndex = args.indexOf('--resume')

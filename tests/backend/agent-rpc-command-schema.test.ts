@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { MAX_EXTENSION_FORM_CHOICE_CHARS, MAX_EXTENSION_FORM_TEXT_CHARS } from '../../src/types/api'
 import { isThinkingLevel, validateRpcCommand } from '../../electron/main/agent-rpc/command-schema'
 
 const passthrough = async (path: string) => path
@@ -349,9 +350,14 @@ describe('validateRpcCommand extension UI responses', () => {
     await expect(validate({ type: 'extension_ui_response', id: 'ui-form', data: fields })).rejects.toThrow('data has too many fields')
     await expect(validate({ type: 'extension_ui_response', id: 'ui-form', data: { '': 'empty name' } })).rejects.toThrow('data[0].name is too short')
     await expect(validate({ type: 'extension_ui_response', id: 'ui-form', data: { ['x'.repeat(1025)]: 'value' } })).rejects.toThrow('data[0].name is too long')
-    await expect(validate({ type: 'extension_ui_response', id: 'ui-form', data: { field: 'x'.repeat(1024 * 1024 + 1) } })).rejects.toThrow('data[0].value is too long')
+    await expect(validate({ type: 'extension_ui_response', id: 'ui-form', data: { field: 'x'.repeat(MAX_EXTENSION_FORM_TEXT_CHARS + 1) } })).rejects.toThrow('data[0].value is too long')
     await expect(validate({ type: 'extension_ui_response', id: 'ui-form', data: { field: Array.from({ length: 1025 }, () => 'choice') } })).rejects.toThrow('data[0].value has too many choices')
-    await expect(validate({ type: 'extension_ui_response', id: 'ui-form', data: { field: ['x'.repeat(64 * 1024 + 1)] } })).rejects.toThrow('data[0].value[0] is too long')
+    await expect(validate({ type: 'extension_ui_response', id: 'ui-form', data: { field: ['x'.repeat(MAX_EXTENSION_FORM_CHOICE_CHARS + 1)] } })).rejects.toThrow('data[0].value[0] is too long')
+    const exactChoices = 'x'.repeat(MAX_EXTENSION_FORM_CHOICE_CHARS)
+    const exactScalar = 'x'.repeat(MAX_EXTENSION_FORM_TEXT_CHARS)
+    await expect(validate({ type: 'extension_ui_response', id: 'ui-form', data: { field: [exactChoices], scalar: exactScalar } })).resolves.toEqual({
+      type: 'extension_ui_response', id: 'ui-form', data: { field: [exactChoices], scalar: exactScalar },
+    })
   })
 
   it('does not include form answer values in validation errors', async () => {

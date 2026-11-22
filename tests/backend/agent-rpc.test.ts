@@ -1212,9 +1212,18 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     expect(manager.list()[0].runtimeId).toBe(second.runtimeId)
   })
 
-  it('distinguishes interactive and unattended runtime environments', async () => {
+  it('maps interactive Desktop and explicit unattended scheduler starts to matching environments and argv', async () => {
     const fake = fakeAgent("{ id: command.id, type: 'response', command: 'prompt', success: true }")
-    const manager = managerFor(fake.executable)
+    const spawnedArgv: string[][] = []
+    const manager = new AgentRpcManager(fake.executable, async (cwd) => cwd, async (path) => path, undefined, {
+      ...OMP_RPC_ADAPTER,
+      buildStartArgs(input) {
+        const argv = OMP_RPC_ADAPTER.buildStartArgs(input)
+        spawnedArgv.push(argv)
+        return argv
+      },
+    })
+    managers.push(manager)
     const modes: boolean[] = []
     manager.setRuntimeEnvironmentProvider((scope) => { modes.push(scope.interactive); return {} })
 
@@ -1222,6 +1231,10 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     await manager.startUnattended({ cwd: fake.cwd })
 
     expect(modes).toEqual([true, false])
+    expect(spawnedArgv).toEqual([
+      ['--mode', 'rpc-ui', '--cwd', fake.cwd],
+      ['--mode', 'rpc', '--cwd', fake.cwd, '--no-ui'],
+    ])
   })
 
   it('retires idle runtimes after a capability environment change', async () => {

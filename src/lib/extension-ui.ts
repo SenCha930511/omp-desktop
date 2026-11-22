@@ -1,3 +1,6 @@
+import type { ExtensionFormDefinition } from './extension-form'
+import { parseFormHtml } from './extension-form-html'
+
 export interface ExtensionUiQuestionnaireMeta {
   groupId: string
   index: number
@@ -48,13 +51,23 @@ export interface ExtensionUiQuestionnaireRequest {
   timeout?: number
 }
 
+export interface ExtensionUiFormRequest {
+  method: 'form'
+  id: string
+  /** Empty on the wire; the modal supplies localized app chrome instead. */
+  title: ''
+  definition: ExtensionFormDefinition
+  timeout?: number
+}
+
 export type ExtensionUiRequest =
   | { method: 'select'; id: string; title: string; options: string[]; optionDetails?: ExtensionUiOptionDetail[]; timeout?: number; questionnaire?: ExtensionUiQuestionnaireMeta }
   | { method: 'confirm'; id: string; title: string; message: string; timeout?: number }
-  | { method: 'input'; id: string; title: string; placeholder?: string; timeout?: number }
+  | { method: 'input'; id: string; title: string; placeholder?: string; timeout?: number; secret?: boolean }
   | { method: 'editor'; id: string; title: string; prefill?: string }
   | ExtensionUiQuestionnaireRequest
   | { method: 'ask'; id: string; title: string; questions: ExtensionUiAskQuestion[]; timeout?: number }
+  | ExtensionUiFormRequest
 
 /** OMP settles a dialog itself (abort or timeout) and tells the host to close it: `{ method: 'cancel', targetId }`. */
 export interface ExtensionUiCancel {
@@ -107,7 +120,7 @@ export const ASK_USER_TIMEOUT_MS = 120_000
 // Methods whose requests wait for an `extension_ui_response`. Presentation
 // methods (notify, setStatus, setWidget, setTitle, set_editor_text, open_url)
 // are fire-and-forget and must never be answered or reported as rejected.
-const DIALOG_METHODS: ReadonlySet<string> = new Set(['select', 'confirm', 'input', 'editor', 'ask'])
+const DIALOG_METHODS: ReadonlySet<string> = new Set(['select', 'confirm', 'input', 'editor', 'ask', 'form'])
 
 function stringValue(value: unknown, max: number): string | undefined {
   return typeof value === 'string' && value.trim().length > 0 && value.length <= max ? value : undefined
@@ -201,6 +214,16 @@ function askQuestionsValue(value: unknown): ExtensionUiAskQuestion[] | string {
 
 
 function dialogRequest(raw: Record<string, unknown>, method: string, id: string): ExtensionUiRequest | string {
+  if (method === 'form') {
+    const html = requiredString(raw.html, 1_048_576, 'html')
+    if ('reason' in html) return html.reason
+    // Parse the untrusted source once, in the renderer's inert DOMParser. Only
+    // the bounded typed definition crosses into component and lifecycle state.
+    const parsed = parseFormHtml(html.value, new DOMParser())
+    return parsed.ok
+      ? { method: 'form', id, title: '', definition: parsed.definition, timeout: timeoutValue(raw.timeout) }
+      : `invalid form html: ${parsed.reason}`
+  }
   if (method === 'ask') {
     const questions = askQuestionsValue(raw.questions)
     if (typeof questions === 'string') return questions
@@ -241,9 +264,9 @@ function dialogRequest(raw: Record<string, unknown>, method: string, id: string)
     if (raw.placeholder !== undefined) {
       const placeholder = requiredString(raw.placeholder, MAX_TITLE_LENGTH, 'placeholder')
       if ('reason' in placeholder) return placeholder.reason
-      return { method: 'input', id, title: title.value, placeholder: placeholder.value, timeout: timeoutValue(raw.timeout) }
+      return { method: 'input', id, title: title.value, placeholder: placeholder.value, timeout: timeoutValue(raw.timeout), ...(raw.secret === true ? { secret: true } : {}) }
     }
-    return { method: 'input', id, title: title.value, placeholder: undefined, timeout: timeoutValue(raw.timeout) }
+    return { method: 'input', id, title: title.value, placeholder: undefined, timeout: timeoutValue(raw.timeout), ...(raw.secret === true ? { secret: true } : {}) }
   }
   if (method === 'editor') {
     if (raw.prefill === undefined) return { method: 'editor', id, title: title.value, prefill: undefined }

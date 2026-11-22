@@ -1,3 +1,5 @@
+import { MAX_EXTENSION_FORM_CHOICE_CHARS, MAX_EXTENSION_FORM_TEXT_CHARS } from '../types/api'
+
 export type ExtensionFormValue = string | number | string[]
 export type ExtensionFormData = Record<string, ExtensionFormValue>
 export type FormControlId = string
@@ -104,7 +106,7 @@ export type ExtensionFormDataResult =
 
 const MAX_NAMES = 512
 const MAX_ARRAY_ENTRIES = 513
-const MAX_SCALAR = 1_048_576
+const MAX_SCALAR = MAX_EXTENSION_FORM_TEXT_CHARS
 
 function emptyData(): ExtensionFormData {
   return Object.create(null) as ExtensionFormData
@@ -211,7 +213,9 @@ function parseChoice(control: ExtensionFormChoiceControl, value: unknown): Carri
     else if (index < 0 && control.kind !== 'select' && control.other && other === undefined) other = entry
     else return { ok: false, code: index >= 0 ? 'duplicateChoice' : 'unexpectedChoice' }
   }
-  return { ok: true, value: choiceValue(control, checked, other) }
+  const normalized = choiceValue(control, checked, other)
+  if (array && Array.isArray(normalized) && normalized.some(entry => entry.length > MAX_EXTENSION_FORM_CHOICE_CHARS)) return { ok: false, code: 'malformedForm' }
+  return { ok: true, value: normalized }
 }
 
 function parseChoiceOrHidden(control: ExtensionFormChoiceControl, value: unknown, hidden: string | undefined): Carrier {

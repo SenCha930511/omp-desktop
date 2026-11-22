@@ -1,4 +1,4 @@
-import { PRIME_THINKING_LEVELS, type PrimeEffortSelector } from '../../../src/types/api'
+import { MAX_EXTENSION_FORM_CHOICE_CHARS, MAX_EXTENSION_FORM_TEXT_CHARS, PRIME_THINKING_LEVELS, type PrimeEffortSelector } from '../../../src/types/api'
 import { rejectUnknownKeys, requireBoolean, requireId, requireRecord, requireString } from '../validation'
 import { MAX_RPC_WRITE_FRAME_BYTES, rpcRequestFrameBytes } from './limits'
 import type { RpcObject } from './types'
@@ -20,9 +20,7 @@ const SIMPLE_COMMANDS = new Set([
 const MAX_BASH_COMMAND_CHARS = 64 * 1024
 const MAX_EXTENSION_FORM_FIELDS = 512
 const MAX_EXTENSION_FORM_FIELD_NAME_CHARS = 1024
-const MAX_EXTENSION_FORM_TEXT_CHARS = 1024 * 1024
 const MAX_EXTENSION_FORM_CHOICES = 1024
-const MAX_EXTENSION_FORM_CHOICE_CHARS = 64 * 1024
 const THINKING_LEVELS: ReadonlySet<string> = new Set(['auto', ...PRIME_THINKING_LEVELS])
 // 上游 live voice 名冊(v18.12.6 packages/coding-agent/src/live/voices.ts
 

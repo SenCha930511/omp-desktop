@@ -15,6 +15,8 @@ import {
   type ExtensionUiCapabilityNotice,
 } from '@/lib/extension-capabilities'
 import type { DesktopApi, RuntimeInfo, SessionRecord } from '@/types/api'
+import { validateExtensionFormData, type ExtensionFormData } from '@/lib/extension-form'
+import { translate, type ResolvedLocale } from '@/lib/i18n'
 
 interface UseExtensionUiOptions {
   bridge: DesktopApi | null
@@ -31,6 +33,12 @@ export interface PendingExtensionUi {
   runtimeId: string
   request: ExtensionUiRequest
   requests?: QuestionnaireSelectRequest[]
+}
+
+interface ExtensionUiTimeout {
+  timer: number
+  deadline: number
+  pending: PendingExtensionUi
 }
 
 export function pendingExtensionUiForRuntime(
@@ -117,7 +125,7 @@ export function useExtensionUi({
   const pendingByRuntimeRef = useRef<Map<string, PendingExtensionUi>>(new Map())
   // Dialog requests waiting behind the one currently shown for their runtime.
   const queuedByRuntimeRef = useRef<Map<string, ExtensionUiRequest[]>>(new Map())
-  const timerByRuntimeRef = useRef<Map<string, number>>(new Map())
+  const timerByRuntimeRef = useRef<Map<string, ExtensionUiTimeout>>(new Map())
   // Questionnaire groups this app has already answered cancelled (user dismiss
   // or timeout); late group members are answered cancelled without a dialog.
   const settledQuestionnaireGroupsRef = useRef<Set<string>>(new Set())
@@ -140,7 +148,7 @@ export function useExtensionUi({
     const targetRuntimeId = runtimeId ?? extensionUiRef.current?.runtimeId
     if (!targetRuntimeId) return
     const timer = timerByRuntimeRef.current.get(targetRuntimeId)
-    if (timer !== undefined) window.clearTimeout(timer)
+    if (timer !== undefined) window.clearTimeout(timer.timer)
     timerByRuntimeRef.current.delete(targetRuntimeId)
     pendingByRuntimeRef.current.delete(targetRuntimeId)
     queuedByRuntimeRef.current.delete(targetRuntimeId)
@@ -252,18 +260,31 @@ export function useExtensionUi({
   }, [])
 
   const scheduleTimeout = useCallback((pending: PendingExtensionUi) => {
-    const timeout = 'timeout' in pending.request ? pending.request.timeout : undefined
-    if (timeout === undefined || timerByRuntimeRef.current.has(pending.runtimeId)) return
-    timerByRuntimeRef.current.set(pending.runtimeId, window.setTimeout(() => {
+    const declaredTimeout = 'timeout' in pending.request ? pending.request.timeout : undefined
+    if (declaredTimeout === undefined) return
+    const existing = timerByRuntimeRef.current.get(pending.runtimeId)
+    if (existing?.pending === pending) return
+    let remaining = declaredTimeout
+    if (existing) {
+      // Rebuilding a questionnaire pending object must not restart or disable
+      // its deadline. Any other stale attempt to schedule cannot replace a
+      // newer dialog's timer, even when it copied the same request id.
+      if (pendingByRuntimeRef.current.get(pending.runtimeId) !== pending || pending.request.method !== 'questionnaire') return
+      window.clearTimeout(existing.timer)
+      remaining = Math.max(0, existing.deadline - Date.now())
+    }
+    const deadline = existing?.deadline ?? Date.now() + declaredTimeout
+    const timer = window.setTimeout(() => {
       const current = pendingByRuntimeRef.current.get(pending.runtimeId)
-      if (!current || current.request.id !== pending.request.id) return
+      if (current !== pending || timerByRuntimeRef.current.get(pending.runtimeId)?.pending !== pending) return
       if (current.request.method === 'questionnaire') settledQuestionnaireGroupsRef.current.add(`${pending.runtimeId}:${pending.request.id}`)
-      // Only native ask uses the timedOut flag: OMP then answers each question
-      // with its recommended (else first) option. Manual cancels, aborts, and
-      // every other dialog method stay plain cancelled.
-      cancelPending(current, current.request.method === 'ask' ? { timedOut: true } : undefined)
+      // Native ask and form interpret timedOut cancellation as "apply defaults".
+      // Every other dialog retains its legacy plain-cancel timeout semantics.
+      const hostTimeout = current.request.method === 'ask' || current.request.method === 'form'
+      cancelPending(current, hostTimeout ? { timedOut: true } : undefined)
       advanceRuntimeRef.current(pending.runtimeId)
-    }, timeout))
+    }, remaining)
+    timerByRuntimeRef.current.set(pending.runtimeId, { timer, deadline, pending })
   }, [cancelPending])
 
   const presentRequest = useCallback((runtimeId: string, request: ExtensionUiRequest) => {
@@ -290,7 +311,7 @@ export function useExtensionUi({
 
   const advanceRuntime = useCallback((runtimeId: string) => {
     const timer = timerByRuntimeRef.current.get(runtimeId)
-    if (timer !== undefined) window.clearTimeout(timer)
+    if (timer !== undefined) window.clearTimeout(timer.timer)
     timerByRuntimeRef.current.delete(runtimeId)
     for (;;) {
       const queued = queuedByRuntimeRef.current.get(runtimeId)
@@ -320,11 +341,26 @@ export function useExtensionUi({
     queuedByRuntimeRef.current.set(runtimeId, [...queued, request])
   }, [])
 
-  const respondToExtensionUi = useCallback(async (response: ExtensionUiResponse) => {
+  const respondToExtensionUi = useCallback(async (response: ExtensionUiResponse, expectedPending?: PendingExtensionUi) => {
     const pending = extensionUiRef.current
-    if (!pending) return
+    if (!pending || expectedPending !== undefined && pending !== expectedPending) return
     const runtimeId = pending.runtimeId
     const cancelled = 'cancelled' in response && response.cancelled
+    let formData: ExtensionFormData | undefined
+    if (pending.request.method === 'form' && !cancelled) {
+      const reason = 'data' in response
+        ? validateExtensionFormData(pending.request.definition, response.data)
+        : { ok: false as const, issues: [{ code: 'malformedForm' as const }] }
+      if (!reason.ok) {
+        // Reject forged or malformed form replies before advancing, answering,
+        // or cancelling anything. Codes are bounded and never contain values.
+        const language = document.documentElement.lang
+        const locale: ResolvedLocale = language === 'zh-CN' || language === 'zh-TW' ? language : 'en'
+        reportError(new Error(translate(locale, 'extensionForm.invalidResponse', { reason: reason.issues[0]?.code ?? 'malformedForm' })))
+        return
+      }
+      formData = reason.data
+    }
     const liveIds = requestIds(pending).filter((id) => !staleRequestIdsRef.current.has(staleKey(runtimeId, id)))
     if (cancelled && pending.request.method === 'questionnaire') {
       // The whole group is dismissed: late members are answered cancelled.
@@ -356,6 +392,14 @@ export function useExtensionUi({
             })
           }
         }
+        return
+      }
+      if (pending.request.method === 'form' && formData !== undefined) {
+        await bridge.agent.command(runtimeId, {
+          type: 'extension_ui_response',
+          id: pending.request.id,
+          data: formData,
+        })
         return
       }
       if (pending.request.method === 'ask' && 'answers' in response) {
@@ -399,6 +443,7 @@ export function useExtensionUi({
         }
         const updated = buildQuestionnairePending(runtimeId, remainingRequests, pending.request.timeout)
         setDisplayedPending(runtimeId, updated)
+        scheduleTimeout(updated)
         return
       }
       advanceRuntime(runtimeId)
@@ -409,7 +454,7 @@ export function useExtensionUi({
     const remaining = queued.filter((request) => request.id !== targetId)
     if (remaining.length === 0) queuedByRuntimeRef.current.delete(runtimeId)
     else queuedByRuntimeRef.current.set(runtimeId, remaining)
-  }, [advanceRuntime, setDisplayedPending])
+  }, [advanceRuntime, scheduleTimeout, setDisplayedPending])
 
   const showExtensionUi = useCallback((runtimeId: string, rawEvent: Record<string, unknown>) => {
     const presentation = parseExtensionUiPresentation(rawEvent)
@@ -551,7 +596,7 @@ export function useExtensionUi({
   useEffect(() => { showPendingForActiveRuntime() }, [activeRuntimeId, showPendingForActiveRuntime])
 
   useEffect(() => () => {
-    for (const timer of timerByRuntimeRef.current.values()) window.clearTimeout(timer)
+    for (const registration of timerByRuntimeRef.current.values()) window.clearTimeout(registration.timer)
     for (const pending of pendingByRuntimeRef.current.values()) cancelPending(pending)
     for (const [runtimeId, requests] of queuedByRuntimeRef.current.entries()) {
       for (const request of requests) sendCancelledResponse(runtimeId, request.id)

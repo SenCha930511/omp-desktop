@@ -184,6 +184,7 @@ export class AgentRpcManager {
         modelId,
         thinking,
         approvalMode: this.approvalMode(),
+        interactive,
         environment: runtimeEnvironment,
       })
       runtime = await this.admitRuntime(() => {
