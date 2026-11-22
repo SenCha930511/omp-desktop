@@ -961,40 +961,74 @@ export class ProjectService {
       refreshedAuthorization = true
     }
     const authorizationRevision = this.authorizationRevision
-    const dismissed = await this.resolveDismissedProjectPaths(this.store.dismissedProjectPathsReadonly())
-    const ownPersistedFolders = new Set(this.ownProjects(this.store.projectsReadonly()).flatMap((p) => p.folders.map((f) => resolve(f))))
+    let dismissedPromise: Promise<Set<string>> | undefined
+    let ownPersistedFolders: Set<string> | undefined
+    const getDismissed = () => {
+      dismissedPromise ??= this.resolveDismissedProjectPaths(this.store.dismissedProjectPathsReadonly())
+      return dismissedPromise
+    }
+    const getOwnPersistedFolders = () => {
+      ownPersistedFolders ??= new Set(this.ownProjects(this.store.projectsReadonly()).flatMap((p) => p.folders.map((f) => resolve(f))))
+      return ownPersistedFolders
+    }
+
+    const verifyEntry = async (
+      map: Map<string, FolderIdentity>,
+      isReadOnlyMap: boolean,
+      configured: string,
+      expected: FolderIdentity,
+    ): Promise<string | undefined> => {
+      if (this.removalRoots.has(configured) || this.pendingRemovalIds.has(inferredId(configured))) return undefined
+      if (isReadOnlyMap && (await getDismissed()).has(configured) && !getOwnPersistedFolders().has(configured)) {
+        map.delete(configured)
+        return undefined
+      }
+      const verified = await this.verifyFolderIdentity(configured, expected)
+      if (!verified) { map.delete(configured); return undefined }
+      if (isReadOnlyMap && (await getDismissed()).has(verified.path) && !getOwnPersistedFolders().has(configured)) {
+        map.delete(configured)
+        return undefined
+      }
+      if (!folderIdentitiesEqual(expected, verified.identity)) {
+        if (!isReadOnlyMap) {
+          const refreshed = await this.persistFolderIdentityRefreshes([{
+            configured,
+            canonical: verified.path,
+            expected,
+            current: verified.identity,
+          }], authorizationRevision)
+          if (!refreshed.has(configured)) { map.delete(configured); return undefined }
+        }
+        // Read-only roots are re-captured by the next discovery pass; refreshing in place would only hide drift.
+        if (!isReadOnlyMap) map.set(configured, verified.identity)
+      }
+      if (this.removalRoots.has(verified.path) || this.pendingRemovalIds.has(inferredId(verified.path))) return undefined
+      return isPathWithin(verified.path, path) ? verified.path : undefined
+    }
 
     const checkRoots = async (map: Map<string, FolderIdentity>, isReadOnlyMap: boolean): Promise<string | undefined> => {
-      const roots: string[] = []
-      for (const [configured, expected] of map) {
-        if (this.removalRoots.has(configured) || this.pendingRemovalIds.has(inferredId(configured))) continue
-        if (isReadOnlyMap && dismissed.has(configured) && !ownPersistedFolders.has(configured)) {
-          map.delete(configured)
-          continue
-        }
-        const verified = await this.verifyFolderIdentity(configured, expected)
-        if (!verified) { map.delete(configured); continue }
-        if (isReadOnlyMap && dismissed.has(verified.path) && !ownPersistedFolders.has(configured)) {
-          map.delete(configured)
-          continue
-        }
-        if (!folderIdentitiesEqual(expected, verified.identity)) {
-          if (!isReadOnlyMap) {
-            const refreshed = await this.persistFolderIdentityRefreshes([{
-              configured,
-              canonical: verified.path,
-              expected,
-              current: verified.identity,
-            }], authorizationRevision)
-            if (!refreshed.has(configured)) { map.delete(configured); continue }
-          }
-          // Read-only roots are re-captured by the next discovery pass; refreshing in place would only hide drift.
-          if (!isReadOnlyMap) map.set(configured, verified.identity)
-        }
-        if (this.removalRoots.has(verified.path) || this.pendingRemovalIds.has(inferredId(verified.path))) continue
-        roots.push(verified.path)
+      const lexicalMatches: Array<[string, FolderIdentity]> = []
+      const otherEntries: Array<[string, FolderIdentity]> = []
+      for (const entry of map) {
+        if (isPathWithin(entry[0], path)) lexicalMatches.push(entry)
+        else otherEntries.push(entry)
       }
-      return roots.filter((root) => isPathWithin(root, path)).sort((a, b) => b.length - a.length)[0]
+      lexicalMatches.sort(([left], [right]) => right.length - left.length)
+
+      const roots: string[] = []
+      for (const [configured, expected] of lexicalMatches) {
+        const verifiedPath = await verifyEntry(map, isReadOnlyMap, configured, expected)
+        if (!verifiedPath) continue
+        if (verifiedPath === configured) return verifiedPath
+        roots.push(verifiedPath)
+      }
+      if (roots.length === 0) {
+        for (const [configured, expected] of otherEntries) {
+          const verifiedPath = await verifyEntry(map, isReadOnlyMap, configured, expected)
+          if (verifiedPath) roots.push(verifiedPath)
+        }
+      }
+      return roots.sort((a, b) => b.length - a.length)[0]
     }
 
     let authorizedRoot = await checkRoots(this.authorizedRoots, false)

@@ -28,7 +28,6 @@ describe('i18n', () => {
     expect(translate('en', 'appearance.language.available', { count: 2 })).toBe('2 languages available')
     expect(translate('zh-CN', 'appearance.language.available', { count: 2 })).toBe('支持 2 种语言')
     expect(translate('zh-TW', 'appearance.language.available', { count: 2 })).toBe('支援 2 種語言')
-    expect(translate('zh-TW', 'settings.terminal')).toBe('終端機')
     expect(translate('zh-TW', 'common.reload')).toBe('Reload OMP Desktop')
   })
 })

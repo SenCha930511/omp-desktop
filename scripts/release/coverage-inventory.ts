@@ -84,7 +84,9 @@ export const COVERAGE_FAMILIES: readonly CoverageFamily[] = Object.freeze([
     root: 'assets/extensions',
     runtimeExtensions: COVERAGE_RUNTIME_EXTENSIONS,
     responsibility: 'Every first-party extension shipped as an Electron extra resource.',
-    thresholds: { statements: 59, branches: 45, functions: 54, lines: 63 },
+    // The terminal_read tool and its helper were removed with the PTY terminal;
+    // the remaining functions measure 53.53%.
+    thresholds: { statements: 59, branches: 45, functions: 53, lines: 63 },
   },
 ])
 

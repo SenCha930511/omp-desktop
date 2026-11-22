@@ -1,0 +1,211 @@
+.transcript-trajectory {
+  position: absolute;
+  left: 8px;
+  top: calc(50% - 34px);
+  transform: translateY(-50%);
+  z-index: 11;
+  display: flex;
+  align-items: center;
+  pointer-events: none;
+}
+
+.trajectory-rail {
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  max-height: min(360px, 44vh);
+  overflow-y: auto;
+  scrollbar-width: none;
+  padding: 6px 4px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: transparent;
+  transition: background 150ms ease, border-color 150ms ease, box-shadow 150ms ease;
+}
+
+.trajectory-rail::-webkit-scrollbar {
+  display: none;
+}
+
+.transcript-trajectory:hover .trajectory-rail,
+.transcript-trajectory:focus-within .trajectory-rail {
+  border-color: var(--border);
+  background: color-mix(in srgb, var(--surface-raised) 88%, transparent);
+  box-shadow: 0 4px 16px color-mix(in srgb, #000 10%, transparent);
+  backdrop-filter: blur(8px);
+}
+
+.trajectory-dot {
+  position: relative;
+  width: 14px;
+  height: 11px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.trajectory-rail.is-dense .trajectory-dot {
+  height: 8px;
+}
+
+.trajectory-dot:focus-visible {
+  outline: 1.5px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.trajectory-dot__pip {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-tertiary) 42%, transparent);
+  transition: width 140ms ease, height 140ms ease, background 140ms ease, box-shadow 140ms ease, transform 140ms ease;
+}
+
+.trajectory-dot:hover .trajectory-dot__pip,
+.trajectory-dot.is-previewed .trajectory-dot__pip,
+.trajectory-dot:focus-visible .trajectory-dot__pip {
+  width: 7px;
+  height: 7px;
+  background: var(--text);
+}
+
+.trajectory-dot.is-active .trajectory-dot__pip {
+  width: 6px;
+  height: 13px;
+  background: var(--prime);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--prime-soft) 72%, transparent);
+}
+
+.trajectory-rail.is-dense .trajectory-dot.is-active .trajectory-dot__pip {
+  height: 10px;
+}
+
+.trajectory-dot.is-streaming .trajectory-dot__pip {
+  background: var(--prime);
+  animation: trajectory-pulse 1.5s ease-in-out infinite;
+}
+
+.trajectory-card {
+  pointer-events: auto;
+  position: absolute;
+  left: calc(100% + 8px);
+  top: var(--trajectory-card-top, 50%);
+  transform: translateY(-50%);
+  width: 288px;
+  max-width: min(288px, calc(100cqi - 56px));
+  display: grid;
+  gap: 6px;
+  padding: 11px 13px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--text);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-popover);
+  cursor: pointer;
+  animation: trajectory-card-in 120ms ease-out;
+}
+
+.trajectory-card::before {
+  content: '';
+  position: absolute;
+  left: -12px;
+  top: 0;
+  bottom: 0;
+  width: 12px;
+}
+
+.trajectory-card__prompt {
+  margin: 0;
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.38;
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  word-break: break-word;
+}
+
+.trajectory-card__reply {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  line-height: 1.44;
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  word-break: break-word;
+}
+
+.trajectory-card__reply.is-muted {
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+
+.trajectory-card__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 2px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.trajectory-card__counter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.trajectory-card__live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--prime);
+  animation: trajectory-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes trajectory-pulse {
+  0%, 100% {
+    opacity: 0.55;
+    transform: scale(0.92);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.16);
+  }
+}
+
+@keyframes trajectory-card-in {
+  from {
+    opacity: 0;
+    transform: translate(-4px, -50%);
+  }
+  to {
+    opacity: 1;
+    transform: translate(0, -50%);
+  }
+}
+
+@container (max-width: 560px) {
+  .transcript-trajectory {
+    display: none;
+  }
+}
+
+@media (max-width: 720px) {
+  .transcript-trajectory {
+    display: none;
+  }
+}

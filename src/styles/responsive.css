@@ -30,7 +30,6 @@
   .panel-scrim { position: fixed; z-index: 20; inset: 52px 0 0; display: block; padding: 0; background: rgba(10,10,9,.18); }
   .panel-scrim--sidebar { inset: 0; z-index: 19; }
   .inspector { position: fixed; z-index: 80; top: 52px; right: 0; bottom: 0; width: min(620px, 88vw); min-width: 0; flex-basis: auto; box-shadow: -12px 0 30px rgba(0,0,0,.14); }
-  .side-chat { position: fixed; z-index: 80; top: 52px; right: 0; bottom: 0; width: min(620px, 88vw); min-width: 0; flex-basis: auto; box-shadow: -12px 0 30px rgba(0,0,0,.14); }
   .panel-scrim--inspector { z-index: 70; }
   .session-workspace > .resize-handle--vertical { display: none; }
   .conversation-pane { min-width: 0; }
@@ -53,9 +52,8 @@
   .icon-button { width: 36px; height: 36px; }
   .sidebar .icon-button { width: 32px; height: 32px; }
   .inspector { top: 52px; left: 0; width: 100vw; max-width: none; }
-  .side-chat { top: 52px; left: 0; width: 100vw; max-width: none; }
-  .inspector__tabs { height: 45px; padding-left: 6px; overflow-x: auto; }
-  .inspector__tabs > button:not(.icon-button) { min-width: 60px; min-height: 44px; padding-inline: 5px; }
+  .inspector__tabs { height: 45px; padding-left: 6px; }
+  .inspector-tab__button { min-height: 44px; padding-inline: 5px; }
   .transcript { padding-top: 20px; padding-bottom: 184px; }
   .transcript__inner { padding-inline: 15px; }
   .message--assistant { grid-template-columns: minmax(0, 1fr); }
@@ -74,9 +72,6 @@
   .composer__actions .icon-button { display: none; }
   .worktree-picker__menu, .model-picker__popover { position: fixed; right: 9px; bottom: 58px; left: 9px; width: auto; }
   .composer-note { display: none; }
-  .terminal-drawer { height: var(--terminal-height, 46vh); flex-basis: var(--terminal-height, 46vh); }
-  .terminal-toolbar .icon-button { width: 32px; height: 32px; }
-  .terminal-actions .icon-button:nth-of-type(-n+2), .terminal-cwd { display: none; }
   .page-container, .settings-content__inner { padding: 25px 18px 55px; }
   .page-header { align-items: stretch; flex-direction: column; margin-bottom: 18px; }
   .page-header .button { align-self: flex-start; min-height: 38px; }

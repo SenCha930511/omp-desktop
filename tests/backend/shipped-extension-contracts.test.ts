@@ -44,7 +44,7 @@ function ompHost(withTypebox = true): Fixture {
 
 const expectedRegistrations: Record<string, Registration[]> = {
   'omp-work-browser.ts': [
-    ...['terminal_read', 'browser_tabs', 'browser_navigate', 'browser_screenshot', 'browser_read_page', 'browser_click', 'browser_type', 'browser_press_key', 'browser_scroll', 'browser_evaluate'].map((name) => ({ kind: 'tool' as const, name })),
+    ...['browser_tabs', 'browser_navigate', 'browser_screenshot', 'browser_read_page', 'browser_click', 'browser_type', 'browser_press_key', 'browser_scroll', 'browser_evaluate'].map((name) => ({ kind: 'tool' as const, name })),
   ],
   'omp-work-ask-user.ts': [{ kind: 'tool', name: 'ask_user' }],
   'omp-work-collaboration.ts': [
@@ -62,7 +62,7 @@ const brokerVariables: Partial<Record<ExtensionInjection['capability'], readonly
 }
 
 const LEGACY_UNPREFIXED_TOOLS = [
-  'ask_user', 'terminal_read', 'browser_tabs', 'browser_navigate', 'browser_screenshot', 'browser_read_page',
+  'ask_user', 'browser_tabs', 'browser_navigate', 'browser_screenshot', 'browser_read_page',
   'browser_click', 'browser_type', 'browser_press_key', 'browser_scroll', 'browser_evaluate',
   'scheduled_tasks_list', 'scheduled_task_create_once', 'scheduled_task_create_recurring',
   'scheduled_task_update', 'scheduled_task_manage',

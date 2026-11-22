@@ -1,6 +1,6 @@
 import type { AppMeta, AppSettings } from '@/types/api'
 
-export type SettingsSection = 'general' | 'appearance' | 'agent' | 'session' | 'providers' | 'voice' | 'browser' | 'terminal' | 'privacy' | 'about'
+export type SettingsSection = 'general' | 'appearance' | 'agent' | 'session' | 'providers' | 'voice' | 'browser' | 'privacy' | 'about'
 
 export type SettingsUpdate = (patch: Partial<AppSettings>) => Promise<void> | void
 
@@ -27,17 +27,13 @@ export const SETTINGS_FIELD_SECTIONS = {
   idleSessionMinutes: 'general',
   keepRunningInBackground: 'general',
   launchAtLogin: 'general',
-  terminalOpen: 'terminal',
-  defaultInspectorTab: 'general',
   browserHome: 'browser',
   browserAskForDownloads: 'browser',
-  terminalShell: 'terminal',
   reduceMotion: 'appearance',
   showReasoningSummaries: 'agent',
   reasoningExpandedByDefault: 'agent',
   defaultEffort: 'agent',
   conversationDensity: 'general',
-  subagentsPanelPinned: 'agent',
   showToolCalls: 'agent',
   messageEnterAction: 'agent',
   inputShortcutsVersion: 'general',

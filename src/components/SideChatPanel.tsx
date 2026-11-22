@@ -1,4 +1,4 @@
-import { ArrowUp, ChevronDown, CirclePlus, Plus, Square, X } from 'lucide-react'
+import { ArrowUp, Brain, ChevronDown, CirclePlus, Gauge, Plus, Square, X, Zap } from 'lucide-react'
 import { memo, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { isTopicRunning, type SideQuestionSessionState } from '@/hooks/useSideQuestions'
 import { useI18n } from '@/lib/i18n'
@@ -10,9 +10,14 @@ import './side-chat.css'
 
 const SCROLL_PIN_THRESHOLD = 120
 
-interface SideChatPanelProps {
+export interface SideChatPanelProps {
   state: SideQuestionSessionState
   hasSession: boolean
+  modelLabel?: string
+  effortLabel?: string
+  fast?: boolean
+  fastSupported?: boolean
+  agentName?: string
   onAsk(question: string, topicId?: string): void
   onCancel(topicId?: string): void
   onSelectTopic(topicId: string | null): void
@@ -58,7 +63,19 @@ function SideChatTopicView({ topic, live }: { topic: SideQuestionTopic; live: st
   )
 }
 
-export const SideChatPanel = memo(function SideChatPanel({ state, hasSession, onAsk, onCancel, onSelectTopic, onClose }: SideChatPanelProps) {
+export const SideChatPanel = memo(function SideChatPanel({
+  state,
+  hasSession,
+  modelLabel,
+  effortLabel,
+  fast = false,
+  fastSupported = false,
+  agentName = 'OMP',
+  onAsk,
+  onCancel,
+  onSelectTopic,
+  onClose,
+}: SideChatPanelProps) {
   const { t } = useI18n()
   const [draft, setDraft] = useState('')
   const threadRef = useRef<HTMLDivElement | null>(null)
@@ -106,7 +123,7 @@ export const SideChatPanel = memo(function SideChatPanel({ state, hasSession, on
   }
 
   return (
-    <aside className="side-chat" aria-label={t('sidechat.aria')}>
+    <div className="side-chat" role="region" aria-label={t('sidechat.aria')}>
       <header className="side-chat__header">
         <div className="side-chat__topic-picker">
           {state.topics.length > 0 ? (
@@ -162,48 +179,80 @@ export const SideChatPanel = memo(function SideChatPanel({ state, hasSession, on
       </div>
 
       <form
-        className="side-chat__composer"
+        className="composer side-chat__composer"
         onSubmit={(event) => {
           event.preventDefault()
           submit()
         }}
       >
-        <textarea
-          ref={textareaRef}
-          rows={1}
-          value={draft}
-          className="side-chat__input"
-          placeholder={activeTopic ? t('sidechat.input.followUp') : t('sidechat.input.placeholder')}
-          aria-label={activeTopic ? t('sidechat.input.followUp') : t('sidechat.input.placeholder')}
-          disabled={!hasSession}
-          onChange={(event) => {
-            setDraft(event.target.value)
-            fitTextarea()
-          }}
-          onCompositionStart={() => {
-            composingRef.current = true
-          }}
-          onCompositionEnd={(event) => {
-            composingRef.current = false
-            lastCompositionEndAtRef.current = event.nativeEvent.timeStamp
-          }}
-          onKeyDown={onComposerKey}
-        />
-        {running ? (
-          <button
-            type="button"
-            className="send-button send-button--stop"
-            aria-label={t('sidechat.cancel')}
-            onClick={() => onCancel(activeTopic?.id)}
-          >
-            <Square size={10} fill="currentColor" stroke="none" />
-          </button>
-        ) : (
-          <button type="submit" className="send-button" aria-label={t('sidechat.send')} disabled={!draft.trim() || !hasSession}>
-            <ArrowUp size={15} />
-          </button>
-        )}
+        <div className="composer-input">
+          <textarea
+            ref={textareaRef}
+            rows={1}
+            value={draft}
+            className="side-chat__input"
+            placeholder={activeTopic ? t('sidechat.input.followUp') : t('sidechat.input.placeholder')}
+            aria-label={activeTopic ? t('sidechat.input.followUp') : t('sidechat.input.placeholder')}
+            disabled={!hasSession}
+            onChange={(event) => {
+              setDraft(event.target.value)
+              fitTextarea()
+            }}
+            onCompositionStart={() => {
+              composingRef.current = true
+            }}
+            onCompositionEnd={(event) => {
+              composingRef.current = false
+              lastCompositionEndAtRef.current = event.nativeEvent.timeStamp
+            }}
+            onKeyDown={onComposerKey}
+          />
+        </div>
+        <div className="composer__footer">
+          <div className="composer__controls">
+            {modelLabel ? (
+              <button type="button" className="permissions-chip model-picker__trigger" disabled title={modelLabel}>
+                <Brain size={14} />
+                <span>{modelLabel}</span>
+              </button>
+            ) : null}
+            {effortLabel ? (
+              <button type="button" className="permissions-chip effort-picker__trigger" disabled title={t('composer.effort.title', { level: effortLabel })}>
+                <Gauge size={14} />
+                <span>{effortLabel}</span>
+              </button>
+            ) : null}
+            {fastSupported ? (
+              <button
+                type="button"
+                className={`fast-mode-toggle ${fast ? 'is-active' : ''}`}
+                disabled
+                aria-pressed={fast}
+                title={t('composer.fastTitle', { name: agentName })}
+              >
+                <Zap size={12} fill={fast ? 'currentColor' : 'none'} />
+                <span className="fast-mode-toggle__label">{t('composer.fast')}</span>
+              </button>
+            ) : null}
+          </div>
+          <div className="composer__actions">
+            {running ? (
+              <button
+                type="button"
+                className="send-button send-button--stop"
+                aria-label={t('sidechat.cancel')}
+                onClick={() => onCancel(activeTopic?.id)}
+              >
+                <Square size={10} fill="currentColor" stroke="none" />
+              </button>
+            ) : (
+              <button type="submit" className="send-button" aria-label={t('sidechat.send')} disabled={!draft.trim() || !hasSession}>
+                <ArrowUp size={15} />
+              </button>
+            )}
+          </div>
+        </div>
       </form>
-    </aside>
+    </div>
   )
 })

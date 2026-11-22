@@ -26,6 +26,7 @@ import { type createSingleFlightAdmission, findProjectForSession, findRuntimeFor
 import type {
   CapabilityMutationInput,
   ExtensionInstallInput,
+  InspectorTab,
   McpConnectionInput,
   McpStateInput,
   DesktopApi,
@@ -68,10 +69,9 @@ export interface WorkspaceActionsDeps {
   setSubmitting: (value: boolean, kind?: 'prompt' | 'compact') => void
   refreshSchedules(): Promise<void>
   resetBrowserView(): void
-  closeTerminalForSession(sessionPath: string): void
   clearSessionAttention(session: SessionRecord): void
-  /** 記錄「剛開啟」的 session,側欄把它排到所屬群組最上面。 */
-  bumpRecentSessionOpen(sessionId: string): void
+  /** @deprecated No longer called on click; retained optional for test mocks. */
+  bumpRecentSessionOpen?(sessionId: string): void
   reportError(error: unknown): void
   /** `onAbort` 只在可中止的指令(使用者 `!` bash)提供,面板據此顯示停止鈕。 */
   onCommandStart?(command: string, onAbort?: () => void): void
@@ -241,20 +241,8 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     }
     persistPanel({ inspectorOpen: next })
   }
-  const toggleTerminal = async () => {
-    const { settingsState, activeProject, reportError } = getDeps()
-    if (!settingsState.terminalOpen && activeProject?.inferred) {
-      try {
-        await grantProject(activeProject)
-      } catch (error) {
-        reportError(error)
-        return
-      }
-    }
-    persistPanel({ terminalOpen: !settingsState.terminalOpen })
-  }
   const selectProject = async (project: ProjectRecord) => {
-    const { bridge, layout, settingsState, sessions, workspace, setSessions, setView, clearSessionAttention, bumpRecentSessionOpen, reportError } = getDeps()
+    const { bridge, layout, settingsState, sessions, workspace, setSessions, setView, clearSessionAttention, reportError } = getDeps()
     if (layout.compactLayout) {
       layout.setSmallestSidebarAllowed(false)
       settingsState.setSidebarOpen(false)
@@ -266,7 +254,6 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     const session = sessions.find((candidate) => !candidate.archived && projectContainsPath(project, candidate.projectPath))
     if (session) {
       clearSessionAttention(session)
-      bumpRecentSessionOpen(session.id)
       setSessions((items) => items.map((item) => (item.id === session.id ? { ...item, unread: false } : item)))
     }
     const generation = workspace.activateWorkspace(project, session)
@@ -274,7 +261,7 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     try {
       // Inferred projects come from the harness's global session history and
       // remain display-only until the user performs an action that needs a
-      // filesystem grant (starting work or opening a terminal).
+      // filesystem grant (starting work or running a project script).
       if (bridge && !project.inferred) await bridge.projects.touch(project.id, project.harness)
       await workspace.reconcileRuntime(generation)
     } catch (error) {
@@ -282,13 +269,12 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     }
   }
   const selectSession = async (session: SessionRecord) => {
-    const { bridge, layout, settingsState, projects, workspace, setSessions, setView, clearSessionAttention, bumpRecentSessionOpen, reportError } = getDeps()
+    const { bridge, layout, settingsState, projects, workspace, setSessions, setView, clearSessionAttention, reportError } = getDeps()
     if (layout.compactLayout) {
       layout.setSmallestSidebarAllowed(false)
       settingsState.setSidebarOpen(false)
     }
     clearSessionAttention(session)
-    bumpRecentSessionOpen(session.id)
     setSessions((items) => items.map((item) => (item.id === session.id ? { ...item, unread: false } : item)))
     const project = findProjectForSession(projects, session)
     if (!project) {
@@ -354,14 +340,11 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     }
   }
   const setSessionArchived = async (session: SessionRecord, archived: boolean) => {
-    const { bridge, workspace, setSessions, setToast, resetBrowserView, closeTerminalForSession, clearSessionAttention, reportError } = getDeps()
+    const { bridge, workspace, setSessions, setToast, resetBrowserView, clearSessionAttention, reportError } = getDeps()
     if (!bridge) return
     try {
       await bridge.sessions.archive(session.filePath, archived)
-      if (archived) {
-        clearSessionAttention(session)
-        closeTerminalForSession(session.filePath)
-      }
+      if (archived) clearSessionAttention(session)
       setSessions((items) => items.map((item) => (item.id === session.id ? { ...item, archived, unread: archived ? false : item.unread } : item)))
       if (archived && workspace.workspaceRef.current.session?.id === session.id) {
         resetBrowserView()
@@ -373,13 +356,12 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     }
   }
   const deleteSession = async (session: SessionRecord) => {
-    const { bridge, workspace, settingsState, setSessions, setToast, resetBrowserView, closeTerminalForSession, clearSessionAttention, reportError } = getDeps()
+    const { bridge, workspace, settingsState, setSessions, setToast, resetBrowserView, clearSessionAttention, reportError } = getDeps()
     if (!bridge) return
     const locale = resolveLocale(settingsState.settings.locale ?? 'system')
     try {
       if (!(await bridge.sessions.delete(session.filePath))) throw new Error(translate(locale, 'sessions.deleteFailed'))
       clearSessionAttention(session)
-      closeTerminalForSession(session.filePath)
       clearComposerDraft(`${workspace.workspaceRef.current.project?.id ?? 'no-project'}:${session.id}`)
       setSessions((items) => items.filter((item) => item.filePath !== session.filePath))
       if (workspace.workspaceRef.current.session?.filePath === session.filePath) {
@@ -452,7 +434,7 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     }
   }
   const removeProject = async (project: ProjectRecord) => {
-    const { bridge, projects, sessions, workspace, setProjects, setSessions, setToast, closeTerminalForSession, clearSessionAttention, reportError } = getDeps()
+    const { bridge, projects, sessions, workspace, setProjects, setSessions, setToast, clearSessionAttention, reportError } = getDeps()
     try {
       if (bridge && !(await bridge.projects.remove(project.id, project.harness))) throw new Error('This project could not be removed.')
       // The main process deleted the project's saved sessions with it; mirror
@@ -460,7 +442,6 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
       const doomed = sessions.filter((item) => projectContainsPath(project, item.projectPath))
       for (const item of doomed) {
         clearSessionAttention(item)
-        closeTerminalForSession(item.filePath)
         clearComposerDraft(`${project.id}:${item.id}`)
       }
       setProjects((items) => items.filter((item) => item.id !== project.id))
@@ -827,8 +808,9 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
         // semantic — both ride the follow_up command instead of a second
         // renderer-side queue that could drift from the engine's own.
         const sentAt = Date.now()
+        const sentAtIso = new Date(sentAt).toISOString()
         if (currentWorkspace.sessionFile) {
-          setSessions((items) => items.map((session) => (session.filePath === currentWorkspace.sessionFile ? { ...session, lastUserMessageAt: new Date(sentAt).toISOString() } : session)))
+          setSessions((items) => items.map((session) => (session.filePath === currentWorkspace.sessionFile ? { ...session, lastUserMessageAt: sentAtIso, updatedAt: sentAtIso } : session)))
         }
         try {
           const response = await bridge.agent.command(currentRuntime.runtimeId, { type: 'follow_up', message: prompt, ...(images.length ? { images } : {}) })
@@ -868,7 +850,7 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
         const pendingSteerId = queuedFlushPromptId ?? workspace.queuePrompt(prompt, intent, [{ type: 'text', text: prompt }, ...images], sentAt)
         if (currentWorkspace.sessionFile) {
           const sentAtIso = new Date(sentAt).toISOString()
-          setSessions((items) => items.map((session) => (session.filePath === currentWorkspace.sessionFile ? { ...session, lastUserMessageAt: sentAtIso } : session)))
+          setSessions((items) => items.map((session) => (session.filePath === currentWorkspace.sessionFile ? { ...session, lastUserMessageAt: sentAtIso, updatedAt: sentAtIso } : session)))
         }
         try {
           const response = await bridge.agent.command(currentRuntime.runtimeId, { type: 'steer', message: prompt, ...(images.length ? { images } : {}) })
@@ -934,7 +916,7 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
           if (workspace.workspaceRef.current.generation !== generation) return
           userMessageAppended = true
           workspace.setMessages((items) => [...items, userMessage])
-          if (admitted.sessionFile) setSessions((items) => items.map((session) => (session.filePath === admitted.sessionFile ? { ...session, lastUserMessageAt: sentAtIso } : session)))
+          if (admitted.sessionFile) setSessions((items) => items.map((session) => (session.filePath === admitted.sessionFile ? { ...session, lastUserMessageAt: sentAtIso, updatedAt: sentAtIso } : session)))
         }
         const appendPendingAssistant = () => {
           if (pendingAssistantAppended || workspace.workspaceRef.current.generation !== generation) return
@@ -1045,7 +1027,7 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
           // keeps the narrowing inside the setRuntime closure below.
           retractPendingTurn()
           workspace.attachRuntime(streamingRuntime, generation)
-          if (admitted.sessionFile) setSessions((items) => items.map((session) => (session.filePath === admitted.sessionFile ? { ...session, lastUserMessageAt: sentAtIso } : session)))
+          if (admitted.sessionFile) setSessions((items) => items.map((session) => (session.filePath === admitted.sessionFile ? { ...session, lastUserMessageAt: sentAtIso, updatedAt: sentAtIso } : session)))
           const response = await bridge.agent.command(streamingRuntime.runtimeId, { type: 'follow_up', message: prompt, ...(images.length ? { images } : {}) })
           const actions = parseSessionActionSnapshot(response.sessionActions)
           if (actions) {
@@ -1531,25 +1513,21 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
       })
       .catch(reportError)
   }
-  const openBrowser = () => {
+  const openInspectorTab = (tab: InspectorTab) => {
     const { layout, settingsState, setView } = getDeps()
     if (layout.compactLayout && settingsState.sidebarOpen) {
       layout.setSmallestSidebarAllowed(false)
       settingsState.setSidebarOpen(false)
     }
     setView('session')
-    settingsState.selectInspectorTab('browser')
-    if (!settingsState.inspectorOpen) persistPanel({ inspectorOpen: true })
-  }
-  const openChanges = () => {
-    const { layout, settingsState } = getDeps()
-    if (layout.compactLayout && settingsState.sidebarOpen) {
-      layout.setSmallestSidebarAllowed(false)
-      settingsState.setSidebarOpen(false)
+    settingsState.selectInspectorTab(tab)
+    if (!settingsState.inspectorOpen || layout.inspectorSuppressed) {
+      layout.setSmallestInspectorAllowed(true)
+      persistPanel({ inspectorOpen: true })
     }
-    settingsState.selectInspectorTab('changes')
-    if (!settingsState.inspectorOpen) persistPanel({ inspectorOpen: true })
   }
+  const openBrowser = () => openInspectorTab('browser')
+  const openChanges = () => openInspectorTab('changes')
 
   // /mcp reload、/reload-plugins 上游無專用 RPC:以文字 prompt 轉送上游
   // dispatcher。既有 sendPrompt 管線處理 idle admission(/mcp reload 歸類
@@ -1564,7 +1542,6 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     persistPanel,
     toggleSidebar,
     toggleInspector,
-    toggleTerminal,
     selectProject,
     selectSession,
     newSession,
@@ -1590,6 +1567,7 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     updateSchedule,
     mutateSchedule,
     openScheduledSession,
+    openInspectorTab,
     openBrowser,
     openChanges,
     reloadCapabilities,

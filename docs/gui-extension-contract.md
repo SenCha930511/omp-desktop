@@ -43,12 +43,10 @@
 | 能力 | GUI 狀態 | 說明 | 上游證據 |
 |---|---|---|---|
 | `ui.setWorkingMessage` | unsupported | RPC host 忽略；工作訊息為 GUI 本機渲染 | modes/rpc/rpc-mode.ts:1509 |
-| `ui.onTerminalInput` | unsupported | RPC mode 無終端輸入通道（no-op） | modes/rpc/rpc-mode.ts:1482 |
 | `ui.custom`（自訂疊層元件） | unsupported | 上游直接回傳 `undefined`；元件樹不可序列化 | modes/rpc/rpc-mode.ts:1547 |
 | `ui.setHeader` / `ui.setFooter` | unsupported | RPC mode 忽略；GUI 版面固定，替代方案：status/widget 字行 | modes/rpc/rpc-mode.ts:1528 |
 | `ui.setEditorComponent` | unsupported | RPC mode 忽略；GUI composer 是 Web 元件、無 CustomEditor 對應 | modes/rpc/rpc-mode.ts:1612 |
 | `ui.addAutocompleteProvider` | unsupported | 文件明定 headless/RPC 模式接受並忽略；無補全請求 wire 通道 | extensibility/extensions/types.ts:399 |
-| `ui.openTerminal`（選用） | unsupported | RPC host 未實作（選用方法缺省），extension 須自行降級 | extensibility/extensions/types.ts:317 |
 | theme API（`ui.theme`/`getAllThemes`/`getTheme`/`setTheme`） | unsupported | 上游回傳固定 theme 或 `not supported` 錯誤；GUI 主題本機管理 | modes/rpc/rpc-mode.ts:1586 |
 | `ui.getToolsExpanded` / `setToolsExpanded` | unsupported | 上游回傳固定值並忽略寫入 | modes/rpc/rpc-mode.ts:1603 |
 
@@ -76,7 +74,7 @@ extension 要讓互動在 GUI（以及任何 RPC 主機）可用，請遵下列�
 3. **自訂元件需提供降級**：`ui.custom()` 在 RPC 主機回傳 `undefined`（上游行為），extension 必須容忍並以對話 API 或 `notify` 達成同一流程。
 4. **狀態與 widget 用字行內容**：`setStatus`、`setWidget(key, string[])` 皆跨主機安全；component factory 一律不會出現在 RPC 主機。想要 footer/header 功能→改用 `setStatus`。
 5. **寫入 composer 前先檢查 `supportsEditor`**，且接受套用失敗；`pasteToEditor` 可能被降級為整段 `set_editor_text`，使用者仍可拒絕套用。
-6. **不仰賴終端裝置語意**：`onTerminalInput`、keybinding、外部 editor 快捷鍵、composer shape、自訂補全在 RPC 主機一律無效。
+6. **不仰賴終端互動語意**：keybinding、外部 editor 快捷鍵、composer shape、自訂補全在 RPC 主機一律無效。
 7. **不仰賴主題 API** 交換 UI 狀態；需要可見性就改用 `notify`/`setStatus`。
 8. **工具渲染**：`renderCall`/`renderResult` 只在 TUI 生效；RPC 主機以 args/result 資料檢視呈現，故工具的 `output`/`details` 應可獨立讀懂（有訊息價值的文字或結構）。
 

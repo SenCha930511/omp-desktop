@@ -167,6 +167,13 @@ describe('persisted settings parsing', () => {
     expect(loadState('not a state').settings).toEqual(defaultSettings())
   })
 
+  it('ignores legacy terminal settings instead of rejecting the state file', () => {
+    const { settings } = loadState({ version: 4, settings: { theme: 'dark', terminalOpen: true, terminalShell: '/bin/bash' } })
+    expect(settings.theme).toBe('dark')
+    expect(settings).not.toHaveProperty('terminalOpen')
+    expect(settings).not.toHaveProperty('terminalShell')
+  })
+
   it('keeps only absolute, bounded omp runtime paths and forces the omp harness', () => {
     const { settings } = loadState({
       version: 3,

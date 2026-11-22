@@ -12,6 +12,28 @@
 .title-toolbar__identity { min-width: 0; flex: 1; display: flex; align-items: center; justify-content: flex-start; gap: 8px; }
 .title-toolbar__identity strong { max-width: 28vw; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 12.5px; font-weight: 540; }
 .title-toolbar__actions { justify-content: flex-end; }
+.title-toolbar__overview { position: relative; }
+.toolbar-overview { position: absolute; z-index: 90; top: calc(100% + 8px); right: 0; width: min(350px, calc(100vw - 24px)); max-height: min(640px, calc(100vh - 76px)); overflow-y: auto; display: grid; gap: 0; padding: 14px; border: 1px solid var(--border-strong); border-radius: 12px; color: var(--text); background: var(--surface-raised); box-shadow: var(--shadow-popover); cursor: default; }
+/* A toolbar popover hangs below the 52px header, where the compact inspector
+   (z-index 80) would cover it; lift the header only while one is open. */
+.title-toolbar:has(.toolbar-overview) { z-index: 95; }
+.toolbar-overview__hero { padding-bottom: 14px; }
+.toolbar-overview__hero h2 { margin: 10px 0 6px; font-size: 16px; }
+.toolbar-overview__hero h3 { margin: 10px 0 4px; color: var(--text-secondary); font-size: 11px; font-weight: 550; }
+.toolbar-overview__empty { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
+.toolbar-overview__summary-section { padding: 14px 0; }
+.toolbar-overview__summary-section:last-child { padding-bottom: 2px; border-bottom: 0; }
+.toolbar-overview__section { display: grid; gap: 2px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.toolbar-overview__section-header { display: flex; align-items: center; gap: 7px; padding: 0 0 6px; color: var(--text-secondary); font-size: 11px; font-weight: 550; }
+.toolbar-overview__badge { min-width: 18px; height: 18px; display: inline-grid; place-items: center; padding: 0 5px; border-radius: 999px; background: var(--surface-hover); color: var(--text-secondary); font-size: 10.5px; font-variant-numeric: tabular-nums; }
+.toolbar-overview__action { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 8px; border: 0; border-radius: 6px; color: var(--text-secondary); background: transparent; font: inherit; font-size: 12px; text-align: left; cursor: default; }
+.toolbar-overview__action:hover { color: var(--text); background: var(--surface-hover); }
+.toolbar-overview__action:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.toolbar-overview__action svg { flex: 0 0 auto; }
+.toolbar-overview__status { flex: 0 0 auto; margin-left: auto; color: var(--text-tertiary); font-size: 11px; white-space: nowrap; }
+.toolbar-overview__subitem > span:first-of-type { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.toolbar-overview__see-all { flex: 0 0 auto; margin-left: auto; padding: 2px 6px; border: 0; border-radius: 5px; color: var(--text-tertiary); background: transparent; font: inherit; font-size: 11px; white-space: nowrap; cursor: pointer; }
+.toolbar-overview__see-all:hover { color: var(--text); background: var(--surface-hover); }
 .toolbar-divider { width: var(--border-hairline, 1px); height: 16px; background: var(--border); margin: 0 5px; }
 .project-run-control { position: relative; margin-right: 3px; }
 .project-run-split { height: 28px; display: inline-flex; align-items: stretch; overflow: hidden; border: 1px solid transparent; border-radius: 7px; background: transparent; transition: border-color 130ms ease-out, background 130ms ease-out; }
@@ -65,8 +87,6 @@
 .resize-handle:hover > span, .resize-handle:focus-visible > span, .resize-handle[data-resizing="true"] > span { background: var(--prime); box-shadow: 0 0 0 1px color-mix(in srgb, var(--prime) 18%, transparent); }
 .resize-handle:hover > span::after, .resize-handle:focus-visible > span::after, .resize-handle[data-resizing="true"] > span::after { opacity: 1; transform: translate(-50%, -50%) scale(1); }
 .resize-handle:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
-.terminal-drawer > .resize-handle > span { background: var(--terminal-resize); }
-.terminal-drawer > .resize-handle:hover > span, .terminal-drawer > .resize-handle:focus-visible > span, .terminal-drawer > .resize-handle[data-resizing="true"] > span { background: var(--prime); }
 body.is-resizing-vertical, body.is-resizing-vertical * { cursor: col-resize !important; user-select: none !important; }
 body.is-resizing-horizontal, body.is-resizing-horizontal * { cursor: row-resize !important; user-select: none !important; }
 body.is-resizing-vertical .browser-viewport, body.is-resizing-vertical .browser-webview, body.is-resizing-vertical .agent-browser-layer, body.is-resizing-horizontal .browser-viewport, body.is-resizing-horizontal .browser-webview, body.is-resizing-horizontal .agent-browser-layer { pointer-events: none !important; }

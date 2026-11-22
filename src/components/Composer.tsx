@@ -1,4 +1,4 @@
-import { ArrowUp, AtSign, Check, ChevronDown, Clock3, Command, Edit3, Hourglass, ImageIcon, LoaderCircle, MessageCirclePlus, Mic, Paperclip, Plus, RotateCcw, Shield, ShieldAlert, ShieldCheck, ShieldQuestionMark, Square, SquareTerminal, Trash2, WandSparkles, X, Zap } from 'lucide-react'
+import { ArrowUp, AtSign, Check, ChevronDown, Clock3, Command, Edit3, Hourglass, ImageIcon, LoaderCircle, MessageCirclePlus, Mic, Paperclip, Plus, RotateCcw, Shield, ShieldAlert, ShieldCheck, ShieldQuestionMark, Square, Trash2, WandSparkles, X, Zap } from 'lucide-react'
 import type { CSSProperties } from 'react'
 import { Fragment, memo, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useComposerImages } from '@/hooks/useComposerImages'
@@ -12,7 +12,6 @@ import { type MessageKey, useI18n } from '@/lib/i18n'
 import { formatQueuedItemsForRestore, isContinueShorthand, MANUAL_CONTINUE_PROMPT, parseQueueShorthandInput } from '@/lib/input-shorthands'
 import { isImeComposing, isImeComposingOrGuarded, messageActionForKey, splitAttachmentFileName } from '@/lib/message-shortcuts'
 import { appendSessionRouting, findSessionMentions } from '@/lib/session-mentions'
-import { appendTerminalContextToPrompt } from '@/lib/terminal-context'
 import { INITIAL_SLASH_COMMANDS, slashCommandAcceptsImages, slashSuggestions, type SlashCommand } from '@/lib/slash-commands'
 import { desktopSlashCommands } from '@/lib/slash-command-ui'
 import type {
@@ -35,8 +34,6 @@ import type {
   SessionRecord,
   SessionUsage,
   SkillRecord,
-  TerminalPromptContext,
-  TerminalSelectionContext,
   ProjectRecord,
   VoiceTranscriptionProvider,
 } from '@/types/api'
@@ -110,10 +107,6 @@ interface ComposerProps {
   sessions?: SessionRecord[]
   /** Browser annotations auto-attach as a composer attachment while any exist. */
   annotations?: BrowserAnnotation[]
-  /** The active terminal is visible as context; selected text expands this attachment. */
-  terminalSelection?: TerminalSelectionContext
-  /** Reads the active xterm buffer only at submit time, avoiding output-driven renderer updates. */
-  getTerminalContext?(): TerminalPromptContext | undefined
   /** Messages accepted by OMP but waiting for a turn boundary. */
   queuedMessages?: QueuedPrompt[]
   /** Messages held inside the harness when it exposes only a count, not previews. */
@@ -156,7 +149,6 @@ interface ComposerProps {
   onRemoveAnnotation?(id: string): void
   /** Called after a send that included the annotations, and by the attachment's remove control. */
   onClearAnnotations?(): void
-  onClearTerminalSelection?(): void
   /** Stable per-workspace key; without it the composer keeps no draft of its own. */
   draftKey?: string
   /**
@@ -225,8 +217,6 @@ export const Composer = memo(function Composer({
   skills,
   sessions = [],
   annotations = EMPTY_ANNOTATIONS,
-  terminalSelection,
-  getTerminalContext,
   queuedMessages = [],
   harnessQueuedMessageCount = 0,
   harnessQueuedPreviews = [],
@@ -257,7 +247,6 @@ export const Composer = memo(function Composer({
   onRetryStoppedTurn,
   onRemoveAnnotation = noop,
   onClearAnnotations = noop,
-  onClearTerminalSelection = noop,
   draftKey,
 }: ComposerProps) {
   const { t } = useI18n()
@@ -316,7 +305,6 @@ export const Composer = memo(function Composer({
   const [sessionReferenceIds, setSessionReferenceIds] = useState<ReadonlyMap<string, string>>(() => new Map())
   const [activeSuggestion, setActiveSuggestion] = useState(0)
   const [annotationsOpen, setAnnotationsOpen] = useState(false)
-  const [terminalSelectionOpen, setTerminalSelectionOpen] = useState(false)
   const imageAttachments = useComposerImages({ shortName, draftKey })
   const { images, imagesRef, unsupportedFiles, unsupportedFilesRef, error: attachmentError, setError: setAttachmentError, processing: processingImages, persistDropped } = imageAttachments
   const dictation = useDictation(voice, transcriptionProvider, setAttachmentError)
@@ -376,9 +364,6 @@ export const Composer = memo(function Composer({
   useEffect(() => {
     if (annotations.length === 0) setAnnotationsOpen(false)
   }, [annotations.length])
-  useEffect(() => {
-    if (!terminalSelection?.text) setTerminalSelectionOpen(false)
-  }, [terminalSelection?.text])
 
   useEffect(() => {
     if (!menu) return
@@ -432,8 +417,6 @@ export const Composer = memo(function Composer({
     const currentImages = imagesRef.current
     const currentUnsupportedFiles = unsupportedFilesRef.current
     const currentAnnotations = annotationsRef.current
-    const currentTerminalContext = terminalSelection?.text ? getTerminalContext?.() : undefined
-    const hasTerminalSelection = Boolean(currentTerminalContext?.text)
     const draftValue = valueOverride ?? value
     const trimmedDraft = draftValue.trim()
 
@@ -533,11 +516,9 @@ export const Composer = memo(function Composer({
           ? currentUnsupportedFiles.length === 1
             ? '[Attached file]'
             : '[Attached files]'
-          : currentAnnotations.length > 0
-            ? '[Page annotations]'
-            : '[Terminal selection]')
+          : '[Page annotations]')
     if (
-      (!draftValue.trim() && currentImages.length === 0 && currentUnsupportedFiles.length === 0 && currentAnnotations.length === 0 && !hasTerminalSelection) ||
+      (!draftValue.trim() && currentImages.length === 0 && currentUnsupportedFiles.length === 0 && currentAnnotations.length === 0) ||
       loading ||
       disabled ||
       (intent !== 'steer' && !busy && (submitting || submittingRef.current))
@@ -577,7 +558,6 @@ export const Composer = memo(function Composer({
       enabledSkills.filter((skill) => !sessionTitles.has(skill.name.trim().toLocaleLowerCase())),
     )
     const promptWithAnnotations = appendAnnotationsToPrompt(promptWithCapabilities, currentAnnotations)
-    const promptWithContext = isSlashCommand ? prompt : appendTerminalContextToPrompt(promptWithAnnotations, currentTerminalContext)
     submittingRef.current = true
     const submittedValue = draftValue
     const submittedComposerImages = currentImages
@@ -587,7 +567,7 @@ export const Composer = memo(function Composer({
     setAttachmentError('')
     setMenu(null)
     try {
-      await onSend(promptWithContext, submittedImages, intent)
+      await onSend(promptWithAnnotations, submittedImages, intent)
       // The annotations were delivered: clear the attachment and page markers.
       if (currentAnnotations.length > 0 && !isSlashCommand) onClearAnnotations()
     } catch {
@@ -664,11 +644,24 @@ export const Composer = memo(function Composer({
   const mentionQuery = /(?:^|\s)@([^@\n]*)$/.exec(value)?.[1]?.toLocaleLowerCase().trim() ?? ''
 
   // 上游 live catalog 是權威來源;無 bridge / 離線 / catalog 為空時降級為
-  // 寫死的啟始命令清單,兩者經過同一個 desktopSlashCommands 過濾器。
-  const commandCatalog = useMemo(
-    () => desktopSlashCommands(availableCommands.length > 0 ? availableCommands : INITIAL_SLASH_COMMANDS, t),
-    [availableCommands, t],
-  )
+  // 寫死的啟始命令清單,兩者經過同一個 desktopSlashCommands 過濾器,
+  // 並補入已啟用的專案/使用者 skills 作為 `/skill:<name>` 斜線指令。
+  const commandCatalog = useMemo(() => {
+    const base = desktopSlashCommands(availableCommands.length > 0 ? availableCommands : INITIAL_SLASH_COMMANDS, t)
+    const present = new Set(base.map((command) => command.name.toLowerCase()))
+    const extraSkills: SlashCommand[] = []
+    for (const skill of enabledSkills) {
+      if (skill.kind !== 'skill' || skill.location === 'bundled' || skill.location === 'system') continue
+      const token = skill.name.trim().replace(/\s+/g, '-')
+      if (!token) continue
+      const commandName = `skill:${token}`
+      const lowerKey = commandName.toLowerCase()
+      if (present.has(lowerKey) || present.has(token.toLowerCase())) continue
+      present.add(lowerKey)
+      extraSkills.push({ name: commandName, description: skill.description, source: 'skill' })
+    }
+    return extraSkills.length ? [...base, ...extraSkills] : base
+  }, [availableCommands, enabledSkills, t])
   const catalogByName = useMemo(() => {
     const map = new Map<string, SlashCommand>()
     for (const command of commandCatalog) {
@@ -680,20 +673,23 @@ export const Composer = memo(function Composer({
   const suggestions =
     menu === 'command'
       ? slashSuggestions(commandCatalog, value.startsWith('/') ? value : '/')
-          .map((item) => ({
-            key: item.command,
-            label: item.command,
-            detail: item.detail,
-            // get_available_commands 的 source 欄位(builtin/skill/extension/custom/
-            // mcp_prompt/file);subcommand 建議沿用主命令的 source。
-            source: catalogByName.get(item.command.replace(/^\//, '').split(/\s+/)[0])?.source,
-            icon: <Command size={14} />,
-            choose: () => {
-              setValue(`${item.command} ${value.startsWith('/') ? '' : value}`)
-              setMenu(null)
-              textareaRef.current?.focus()
-            },
-          }))
+          .map((item) => {
+            const source = catalogByName.get(item.command.replace(/^\//, '').split(/\s+/)[0])?.source
+            return {
+              key: item.command,
+              label: item.command,
+              detail: item.detail,
+              // get_available_commands 的 source 欄位(builtin/skill/extension/custom/
+              // mcp_prompt/file);subcommand 建議沿用主命令的 source。
+              source,
+              icon: source === 'skill' ? <WandSparkles size={14} /> : <Command size={14} />,
+              choose: () => {
+                setValue(`${item.command} ${value.startsWith('/') ? '' : value}`)
+                setMenu(null)
+                textareaRef.current?.focus()
+              },
+            }
+          })
           // 依來源分組排序,讓視覺分組與鍵盤導覽順序一致(stable sort 保留
           // 同組內既有順序)。
           .sort((left, right) => slashSourceOrder(left.source) - slashSourceOrder(right.source))
@@ -1150,7 +1146,7 @@ export const Composer = memo(function Composer({
                 // 空白 Enter(2.7):TUI 在執行中以「使用者中斷」abort 並排空待處理輸入;
                 // GUI 由 onStop 承接 abort_and_restore_queue。閒置時不送出,preventDefault
                 // 也避免 textarea 插入空白換行,看起來像「按 Enter 沒反應」。
-                const hasDraftContent = Boolean(value.trim()) || images.length > 0 || unsupportedFiles.length > 0 || annotations.length > 0 || Boolean(terminalSelection?.text)
+                const hasDraftContent = Boolean(value.trim()) || images.length > 0 || unsupportedFiles.length > 0 || annotations.length > 0
                 if (!hasDraftContent) {
                   if (busy && !loading && !disabled) void onStop()
                   return
@@ -1260,17 +1256,7 @@ export const Composer = memo(function Composer({
             })}
           </div>
         ) : null}
-        {terminalSelectionOpen && terminalSelection?.text ? (
-          <div className="composer-terminal-selection" role="region" aria-label={t('composer.terminalSelection.aria')}>
-            <div>
-              <SquareTerminal size={14} aria-hidden="true" />
-              <strong>{terminalSelection.label}</strong>
-              {terminalSelection.truncated ? <small>{t('composer.terminalTruncated')}</small> : null}
-            </div>
-            <pre>{terminalSelection.text}</pre>
-          </div>
-        ) : null}
-        {images.length || unsupportedFiles.length || annotations.length || terminalSelection?.text ? (
+        {images.length || unsupportedFiles.length || annotations.length ? (
           <div className="composer-attachments" aria-label={t('composer.attachments.aria')}>
             {annotations.length ? (
               <div className="composer-attachment composer-attachment--annotations" title={t('composer.annotationCount', { count: annotations.length })}>
@@ -1294,25 +1280,6 @@ export const Composer = memo(function Composer({
                     onClearAnnotations()
                   }}
                 >
-                  <X size={12} />
-                </button>
-              </div>
-            ) : null}
-            {terminalSelection?.text ? (
-              <div className="composer-attachment composer-attachment--terminal has-selection" title={t('composer.terminalTitle', { label: terminalSelection.label })}>
-                <button
-                  type="button"
-                  className="composer-attachment__expand"
-                  aria-expanded={terminalSelectionOpen}
-                  aria-label={t('composer.inspectTerminal', { label: terminalSelection.label })}
-                  onClick={() => setTerminalSelectionOpen((open) => !open)}
-                >
-                  <SquareTerminal size={13} />
-                  <span>{terminalSelection.label}</span>
-                  <small>{t('composer.terminalSelected')}</small>
-                  <ChevronDown size={11} className={terminalSelectionOpen ? 'is-open' : ''} />
-                </button>
-                <button type="button" className="composer-attachment__clear" aria-label={t('composer.clearTerminalSelection')} onClick={onClearTerminalSelection}>
                   <X size={12} />
                 </button>
               </div>
@@ -1570,7 +1537,7 @@ export const Composer = memo(function Composer({
                 <ArrowUp size={17} />
               </button>
             ) : busy ? (
-              value.trim() || images.length > 0 || unsupportedFiles.length > 0 || annotations.length > 0 || terminalSelection?.text ? (
+              value.trim() || images.length > 0 || unsupportedFiles.length > 0 || annotations.length > 0 ? (
                 // Typing while the model works flips the action surface to a
                 // queue-send in the same style as the idle send button; it
                 // stands in for the stop control until the draft empties.
@@ -1589,7 +1556,7 @@ export const Composer = memo(function Composer({
                   <Square size={10} fill="currentColor" aria-hidden="true" />
                 </button>
               )
-            ) : retryStoppedTurn && !value.trim() && images.length === 0 && unsupportedFiles.length === 0 && annotations.length === 0 && !terminalSelection?.text ? (
+            ) : retryStoppedTurn && !value.trim() && images.length === 0 && unsupportedFiles.length === 0 && annotations.length === 0 ? (
               // A user stop leaves the turn recoverable: the empty composer
               // shows a retry affordance in the send slot — the same
               // always-available shape the stop button uses while streaming.
@@ -1602,7 +1569,7 @@ export const Composer = memo(function Composer({
                 className="send-button"
                 aria-label={t('composer.send')}
                 disabled={
-                  (!value.trim() && images.length === 0 && unsupportedFiles.length === 0 && annotations.length === 0 && !terminalSelection?.text) ||
+                  (!value.trim() && images.length === 0 && unsupportedFiles.length === 0 && annotations.length === 0) ||
                   processingImages ||
                   submitting ||
                   loading ||

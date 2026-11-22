@@ -75,8 +75,7 @@ afterEach(async () => {
 
 async function fixture() {
   const { calls, service } = fakeService()
-  const terminals = { readActive: vi.fn(() => ({ label: 'zsh 1', cwd: '/project', content: '$ npm test\npassed', truncated: false })) }
-  const bridge = new AgentBrowserBridge({ service, terminals, extensionPath: '/app/extensions/omp-work-browser.ts', skillPath: '/app/skills/omp-desktop-browser' })
+  const bridge = new AgentBrowserBridge({ service, extensionPath: '/app/extensions/omp-work-browser.ts', skillPath: '/app/skills/omp-desktop-browser' })
   await bridge.start()
   bridges.push(bridge)
   const environment = bridge.environmentFor({ cwd: '/project', sessionPath: '/sessions/one.jsonl' })
@@ -88,7 +87,7 @@ async function fixture() {
     if (!found) throw new Error(`Tool ${name} was not registered`)
     return found
   }
-  return { bridge, calls, terminals, environment, tools, tool }
+  return { bridge, calls, environment, tools, tool }
 }
 
 describe('omp-work-browser extension', () => {
@@ -102,7 +101,6 @@ describe('omp-work-browser extension', () => {
   it('registers the same tool surface as the Prime Agent extension', async () => {
     const { tools } = await fixture()
     expect(tools.map((candidate) => candidate.name)).toEqual([
-      'terminal_read',
       'browser_tabs',
       'browser_navigate',
       'browser_screenshot',
@@ -134,14 +132,6 @@ describe('omp-work-browser extension', () => {
     const { calls, tool } = await fixture()
     await expect(tool('browser_navigate').execute('call-1', {})).rejects.toThrow('Provide url or action')
     expect(calls).toHaveLength(0)
-  })
-
-  it('reads the terminal through the broker and fences it as untrusted', async () => {
-    const { terminals, tool } = await fixture()
-    const result = await tool('terminal_read').execute('call-1', {})
-    expect(terminals.readActive).toHaveBeenCalledOnce()
-    expect(result.content[0].text).toContain('<untrusted-terminal-content>')
-    expect(result.content[0].text).toContain('npm test')
   })
 
   it('returns screenshots as image content with fenced page metadata', async () => {

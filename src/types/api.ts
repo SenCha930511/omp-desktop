@@ -7,7 +7,7 @@ export const BROWSER_PARTITION = 'persist:omp-desktop-browser'
 
 export type ThemeMode = 'system' | 'light' | 'dark'
 export type WorkspaceView = 'session' | 'projects' | 'activity' | 'scheduled' | 'plugins' | 'settings'
-export type InspectorTab = 'summary' | 'changes' | 'browser' | 'files'
+export type InspectorTab = 'changes' | 'browser' | 'files' | 'sidechat' | 'agents' | 'tasks'
 export type SessionStatus = 'idle' | 'running' | 'waiting' | 'complete' | 'failed' | 'unknown'
 
 export const HARNESS_IDS = ['omp'] as const
@@ -103,6 +103,20 @@ export interface ProjectRecord {
   readOnly?: boolean
   scripts?: ProjectScripts
 }
+
+export type ProjectScriptKind = 'setup' | 'run'
+/** One headless setup/run script, identified by the renderer so exit events match before start resolves. */
+export interface ProjectScriptStartOptions {
+  runId: string
+  projectId: string
+  kind: ProjectScriptKind
+  cwd: string
+  command: string
+  /** Thread whose deletion stops the run; omitted when no thread is open. */
+  sessionPath?: string
+}
+export interface ProjectScriptOutputEvent { runId: string; data: string }
+export interface ProjectScriptExitEvent { runId: string; exitCode: number; cancelled: boolean }
 
 export interface SessionRecord {
   id: string
@@ -573,13 +587,6 @@ export interface GitDiff { path?: string; staged: boolean; text: string; truncat
 export type ProcessFailureReason = 'timeout' | 'overflow' | 'exit' | 'blocked'
 export interface ProcessOutcome { ok: boolean; output: string; reason?: ProcessFailureReason }
 
-export interface TerminalSpawnOptions { cwd: string; sessionPath?: string; clientId?: string; shell?: string; command?: string; cols?: number; rows?: number }
-export interface TerminalDataEvent { terminalId: string; clientId?: string; data: string }
-export interface TerminalExitEvent { terminalId: string; exitCode: number; signal?: number }
-export interface TerminalSelectionContext { tabId: string; label: string; text: string; truncated: boolean }
-export interface TerminalPromptContext extends TerminalSelectionContext { cwd?: string }
-export interface TerminalActiveContext { label: string; content: string; truncated: boolean }
-
 export type MessageEnterAction = 'queue' | 'steer'
 export type PromptDeliveryIntent = 'queue' | 'steer'
 export interface QueuedPrompt {
@@ -620,7 +627,6 @@ export type IdleSessionMinutes = typeof IDLE_SESSION_MINUTES[number]
 
 export interface AppSettings {
   conversationDensity: 'compact' | 'comfortable'
-  subagentsPanelPinned: boolean
   theme: ThemeMode
   locale: LocalePreference
   /** Workspace accent hue; 'prime' keeps the stock purple. */
@@ -639,11 +645,8 @@ export interface AppSettings {
   keepRunningInBackground: boolean
   /** Ask the operating system to launch OMP Desktop when the user signs in. */
   launchAtLogin: boolean
-  terminalOpen: boolean
-  defaultInspectorTab: InspectorTab
   browserHome: string
   browserAskForDownloads: boolean
-  terminalShell: string
   reduceMotion: boolean
   showReasoningSummaries: boolean
   reasoningExpandedByDefault: boolean
@@ -923,17 +926,11 @@ export interface DesktopApi {
     transcribe(request: VoiceTranscriptionRequest): Promise<string>
     testSelfHosted(request: VoiceSelfHostedTestRequest): Promise<boolean>
   }
-  terminal: {
-    create(options: TerminalSpawnOptions): Promise<{ terminalId: string; shell: string }>
-    bindSession(terminalId: string, sessionPath: string): Promise<boolean>
-    input(terminalId: string, data: string): void
-    acknowledge(terminalId: string, consumedChars: number): void
-    resize(terminalId: string, cols: number, rows: number): void
-    setActiveContext(terminalId: string, context: TerminalActiveContext): void
-    clearActiveContext(terminalId: string): void
-    kill(terminalId: string): Promise<boolean>
-    onData(callback: (event: TerminalDataEvent) => void): () => void
-    onExit(callback: (event: TerminalExitEvent) => void): () => void
+  projectScripts: {
+    start(options: ProjectScriptStartOptions): Promise<{ runId: string }>
+    stop(runId: string): Promise<boolean>
+    onOutput(callback: (event: ProjectScriptOutputEvent) => void): () => void
+    onExit(callback: (event: ProjectScriptExitEvent) => void): () => void
   }
   git: { status(cwd: string): Promise<GitStatus>; diff(cwd: string, path?: string, staged?: boolean): Promise<GitDiff>; stage(cwd: string, paths: string[]): Promise<boolean>; unstage(cwd: string, paths: string[]): Promise<boolean>; restore(cwd: string, paths: string[]): Promise<boolean>; commit(cwd: string, message: string): Promise<ProcessOutcome> }
   plugins: {

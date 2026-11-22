@@ -34,11 +34,10 @@
 .project-row__pin { flex: 0 0 auto; color: var(--prime); }
 .row-action { opacity: 0; transition: opacity 130ms ease-out; }
 .project-row:hover .row-action, .project-row:focus-within .row-action { opacity: 1; }
-.project-row__new-session { flex: 0 0 auto; color: var(--text-tertiary); }
 /* Context menus are native OS menus now; the row keeps only its inline affordances. */
 .session-list { padding-left: 20px; margin-top: 1px; }
 .session-row-wrap { position: relative; border-radius: 7px; }
-.session-row-wrap:hover:not(.is-selected)::before, .session-row-wrap:focus-within:not(.is-selected)::before { content: ''; position: absolute; inset: 0 0 0 -20px; z-index: -1; border-radius: 7px; background: var(--surface-hover); }
+.session-row-wrap:hover:not(.is-selected)::before, .session-row-wrap:has(.session-row__archive:focus-visible, .session-row__more:focus-visible, .session-row__archive.is-confirming, .session-row__more[aria-expanded="true"]):not(.is-selected)::before { content: ''; position: absolute; inset: 0 0 0 -20px; z-index: -1; border-radius: 7px; background: var(--surface-hover); }
 /* Attention (completed/updated work in an inactive row) used to paint a
    filled prime background across the whole row. Removed per request: the row
    looks like any other; the attention state survives only in the session
@@ -58,31 +57,30 @@
    button:focus-visible ring would read as a smaller box than the highlight.
    Suppress it and ring the wrap at the fill's exact inset instead. */
 .session-row:focus-visible { outline: none; }
-.session-row-wrap:has(.session-row:focus-visible)::after { content: ''; position: absolute; inset: 0 0 0 -20px; z-index: -1; border-radius: 7px; box-shadow: 0 0 0 2px var(--focus); }
+.session-row-wrap:not(.is-selected):has(.session-row:focus-visible)::after { content: ''; position: absolute; inset: 0 0 0 -20px; z-index: -1; border-radius: 7px; box-shadow: inset 0 0 0 1.5px var(--focus); }
 /* Project rows have the same mismatch: the focusable .project-row__main
    button excludes the collapse chevron and row padding. */
 .project-row__main:focus-visible { outline: none; }
-.project-row:has(.project-row__main:focus-visible)::after { content: ''; position: absolute; inset: 0; z-index: -1; border-radius: 7px; box-shadow: 0 0 0 2px var(--focus); }
+.project-row:not(.is-selected):has(.project-row__main:focus-visible)::after { content: ''; position: absolute; inset: 0; z-index: -1; border-radius: 7px; box-shadow: inset 0 0 0 1.5px var(--focus); }
 
-/* Every row reserves the hover-action zone at rest so the timestamp and
-   spinner never sit under the invisible buttons; hovering does not shift
-   the row content sideways. */
-.session-row-wrap > .session-row { padding-right: 61px; }
+.session-row-wrap > .session-row { padding-right: 8px; transition: padding-right 140ms var(--ease-out); }
+.session-row-wrap:hover > .session-row,
+.session-row-wrap:has(.session-row__archive:focus-visible, .session-row__more:focus-visible, .session-row__archive.is-confirming, .session-row__more[aria-expanded="true"]) > .session-row { padding-right: 61px; }
+.session-row-wrap--running > .session-row { padding-right: 61px; }
+.session-row-wrap:hover .session-row__time,
+.session-row-wrap:has(.session-row__archive:focus-visible, .session-row__more:focus-visible, .session-row__archive.is-confirming, .session-row__more[aria-expanded="true"]) .session-row__time { max-width: 0; opacity: 0; pointer-events: none; }
 .session-row__archive, .session-row__more { position: absolute; top: 6px; opacity: 0; transition: opacity 130ms var(--ease-out), color 130ms var(--ease-out), background 130ms var(--ease-out); }
-.session-row-wrap:hover .session-row__archive, .session-row-wrap:focus-within .session-row__archive, .session-row__archive.is-confirming, .session-row-wrap:hover .session-row__more, .session-row-wrap:focus-within .session-row__more, .session-row__more[aria-expanded="true"] { opacity: 1; }
+.session-row-wrap:hover .session-row__archive, .session-row-wrap:has(.session-row__archive:focus-visible, .session-row__more:focus-visible) .session-row__archive, .session-row__archive.is-confirming, .session-row-wrap:hover .session-row__more, .session-row-wrap:has(.session-row__archive:focus-visible, .session-row__more:focus-visible) .session-row__more, .session-row__more[aria-expanded="true"] { opacity: 1; }
 .session-row__archive { right: 32px; color: var(--text-tertiary); }
 .session-row__archive.is-confirming { color: var(--success); background: color-mix(in srgb, var(--success) 12%, transparent); }
 .session-row__more { right: 3px; }
 .session-row__pin { flex: 0 0 auto; display: inline-flex; color: var(--prime); }
 
 .session-row { width: 100%; min-height: 37px; display: flex; align-items: center; gap: 7px; padding: 5px 6px; border-radius: 7px; color: var(--text-secondary); background: transparent; text-align: left; }
-/* Hover paints only unselected rows: the selected fill lives on the wrap's
-   full-width ::before, and an inner hover repaint would cut it 20px short. */
-.session-row-wrap:not(.is-selected) > .session-row:hover { background: var(--surface-hover); }
 .session-row__text { min-width: 0; flex: 1; display: flex; flex-direction: column; }
 .session-row__title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); font-size: 13px; }
 .session-row__meta { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; }
-.session-row__time { color: var(--text-tertiary); font-size: 11px; font-variant-numeric: tabular-nums; }
+.session-row__time { max-width: 56px; overflow: hidden; font-size: 11px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; white-space: nowrap; transition: opacity 130ms var(--ease-out), max-width 140ms var(--ease-out); }
 .session-row__spinner { display: inline-flex; align-items: center; align-self: center; flex: 0 0 auto; color: var(--text-tertiary); }
 .session-row--empty { min-height: 30px; align-items: center; color: var(--text-tertiary); font-size: 11.5px; }
 /* Show-all toggle: a quiet affordance that stays out of the row hover pad. */
@@ -90,16 +88,10 @@
 .session-row--expand:hover { color: var(--text-secondary); }
 .session-row--expand svg { flex: 0 0 auto; transition: transform 140ms var(--ease-out); }
 .session-row--expand svg.is-expanded { transform: rotate(180deg); }
-/* Working halo: a scaled pseudo ring instead of an animated box-shadow.
-   Shadow animation repaints the badge every frame; transform + opacity stay
-   on the compositor. The ring sits behind the spinner (negative z-index in
-   the badge's own stacking context) and peaks at ~3px past the 16px badge,
-   matching the old 0 → 3px spread. */
-.project-working { position: relative; isolation: isolate; width: 16px; height: 16px; display: inline-grid; place-items: center; flex: 0 0 auto; border-radius: 50%; color: var(--prime); background: color-mix(in srgb, var(--prime) 13%, transparent); }
-.project-working::before { position: absolute; z-index: -1; inset: 0; border-radius: 50%; background: color-mix(in srgb, var(--prime) 24%, transparent); content: ''; animation: status-halo-breathe 2.4s ease-in-out infinite; }
+.project-working { width: 16px; height: 16px; display: inline-grid; place-items: center; flex: 0 0 auto; border-radius: 50%; color: var(--prime); background: color-mix(in srgb, var(--prime) 13%, transparent); animation: status-halo-breathe 2.4s ease-in-out infinite; }
 @keyframes status-halo-breathe {
-  0%, 100% { transform: scale(1); opacity: 0; }
-  50% { transform: scale(1.375); opacity: .58; }
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--prime) 24%, transparent); }
+  50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--prime) 14%, transparent); }
 }
 .sidebar__footer { flex: 0 0 auto; padding: 7px 8px 9px; border-top: var(--border-hairline, 1px) solid var(--border); }
 .sidebar__footer > .sidebar-update { opacity: 1; }

@@ -273,4 +273,27 @@ describe('side chat panel', () => {
     expect(container.textContent).toContain('Open a work session to ask side questions.')
     expect((container.querySelector('.side-chat__input') as HTMLTextAreaElement).disabled).toBe(true)
   })
+
+  it('renders read-only disabled model, effort, and fast chips matching the main composer without folder or permission controls', () => {
+    renderPanel({}, { modelLabel: 'Claude Sonnet', effortLabel: 'High', fast: true, fastSupported: true, agentName: 'OMP' })
+    const footer = container.querySelector('.composer.side-chat__composer .composer__footer')
+    expect(footer).not.toBeNull()
+
+    const modelChip = footer?.querySelector<HTMLButtonElement>('button.model-picker__trigger')
+    expect(modelChip?.disabled).toBe(true)
+    expect(modelChip?.textContent).toContain('Claude Sonnet')
+
+    const effortChip = footer?.querySelector<HTMLButtonElement>('button.effort-picker__trigger')
+    expect(effortChip?.disabled).toBe(true)
+    expect(effortChip?.textContent).toContain('High')
+
+    const fastChip = footer?.querySelector<HTMLButtonElement>('button.fast-mode-toggle')
+    expect(fastChip?.disabled).toBe(true)
+    expect(fastChip?.getAttribute('aria-pressed')).toBe('true')
+    expect(fastChip?.className).toContain('is-active')
+
+    expect(footer?.querySelector('button[aria-label*="permission" i]')).toBeNull()
+    expect(footer?.querySelector('button[aria-label*="project" i]')).toBeNull()
+    expect(footer?.querySelector('button[aria-label*="folder" i]')).toBeNull()
+  })
 })

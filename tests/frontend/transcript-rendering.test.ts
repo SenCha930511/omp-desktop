@@ -62,23 +62,6 @@ describe('transcript rendering', () => {
     expect(done).not.toContain('work-disclosure__ticker')
   })
 
-  it('opts settled history rows into content-visibility but never the live tail', () => {
-    const history: TranscriptMessage[] = [
-      { id: 'u1', role: 'user', timestamp: 1, parts: [{ type: 'text', text: 'Hi' }] },
-      { id: 'a1', role: 'assistant', timestamp: 2, completedAt: 3, parts: [{ type: 'text', text: 'Done.' }] },
-    ]
-    const settled = render(history)
-    expect(settled.match(/is-settled/g) ?? []).toHaveLength(2)
-
-    // The streaming tail and the tiny divider/notice rows stay fully rendered.
-    const live = render([
-      ...history,
-      { id: 'marker', role: 'system', timestamp: 4, kind: 'steer-read-marker', parts: [{ type: 'text', text: 'read' }] },
-      { id: 'live', role: 'assistant', timestamp: 5, streaming: true, parts: [{ type: 'text', text: 'Typing' }] },
-    ], true)
-    expect(live.match(/is-settled/g) ?? []).toHaveLength(2)
-  })
-
   it('shows a dsh-style preview line on collapsed reasoning rows', () => {
     const html = renderToStaticMarkup(createElement(WorkTimeline, {
       parts: [{ type: 'thinking', text: '**Bold** plan with links and more.' }],

@@ -76,13 +76,14 @@ export function AgentBrowserLayer({
     const timers = unloadTimersRef.current
     const activity = lastActivityRef.current
     const now = Date.now()
-    let wake: string | null = null
+    const unloadDisabled = idleUnloadMs <= 0 || !Number.isFinite(idleUnloadMs)
+    const woken = new Set<string>()
     if (activityByTab) {
       for (const [tabId, seq] of activityByTab) {
         if (lastActivitySeqRef.current.get(tabId) === seq) continue
         lastActivitySeqRef.current.set(tabId, seq)
         activity.set(tabId, now)
-        wake = tabId
+        woken.add(tabId)
       }
     }
     const live = new Set(tabs.map((tab) => tab.tabId))
@@ -94,7 +95,7 @@ export function AgentBrowserLayer({
     for (const tabId of [...activity.keys()]) if (!live.has(tabId)) activity.delete(tabId)
     const reattach: string[] = []
     for (const tab of tabs) {
-      const keepLoaded = tab.tabId === visibleTabId || activeSessions.has(tab.sessionFile)
+      const keepLoaded = unloadDisabled || tab.tabId === visibleTabId || activeSessions.has(tab.sessionFile)
       if (keepLoaded) {
         // The clock only matters once the session stops being the active one.
         activity.set(tab.tabId, now)
@@ -107,7 +108,7 @@ export function AgentBrowserLayer({
         continue
       }
       if (unloaded.has(tab.tabId)) {
-        if (tab.tabId === wake) reattach.push(tab.tabId)
+        if (woken.has(tab.tabId)) reattach.push(tab.tabId)
         continue
       }
       if (!activity.has(tab.tabId)) activity.set(tab.tabId, now)

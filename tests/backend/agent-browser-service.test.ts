@@ -728,4 +728,24 @@ describe('AgentBrowserService', () => {
 
     await expect(running).resolves.toEqual({ completed: true })
   })
+
+  it('emits activity and completes an action after an idle guest was torn down', async () => {
+    const { service, activityEvents, newGuest, openAttached } = fixture({ actionTimeoutMs: 500 })
+    const { guest, tabId } = await openAttached('/sessions/a.jsonl', 'https://example.com/')
+    const countBeforeDetach = activityEvents.length
+    // Simulate AgentBrowserLayer unmounting an idle background guest.
+    guest.destroy()
+    expect(service.state().tabs.find((tab) => tab.tabId === tabId)?.attached).toBe(false)
+
+    const reading = service.readPage('/sessions/a.jsonl', { tabId })
+    await vi.waitFor(() => {
+      expect(activityEvents.length).toBeGreaterThan(countBeforeDetach)
+    })
+    expect(activityEvents.at(-1)).toEqual({ sessionFile: '/sessions/a.jsonl', tabId })
+
+    const replacement = newGuest()
+    service.attachTab(tabId, replacement.id)
+    await expect(reading).resolves.toEqual({})
+    expect(replacement.loadedUrls).toEqual(['https://example.com/'])
+  })
 })

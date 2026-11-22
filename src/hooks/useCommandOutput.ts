@@ -5,6 +5,7 @@ const MAX_OUTPUT_CHARS = 128 * 1024
 
 const MAX_RESULTS = 5
 export interface CommandResult { id: number; text: string; command?: string; status?: 'running' | 'completed' | 'failed'; /** 進行中可中止(使用者 `!` bash 的 abort_bash 入口)。 */ onAbort?: () => void }
+const EMPTY_HISTORY: CommandResult[] = []
 interface OutputState { owner: number; entries: CommandResult[]; activeId?: number; selectedId?: number; visible: boolean }
 
 /** Late frames update the active command, never a selected older result. */
@@ -41,7 +42,7 @@ export function useCommandOutput(owner: number) {
   const dismiss = useCallback(() => setState((current) => current.owner === owner ? { ...current, visible: false } : current), [owner])
   const clear = useCallback(() => setState((current) => current.owner === owner ? { owner, entries: [], visible: false } : current), [owner])
   const select = useCallback((id: number) => setState((current) => current.owner === owner && current.entries.some((entry) => entry.id === id) ? { ...current, selectedId: id, visible: true } : current), [owner])
-  const history = state.owner === owner ? state.entries : []
+  const history = state.owner === owner ? state.entries : EMPTY_HISTORY
   const selected = history.find((entry) => entry.id === state.selectedId) ?? history[0]
   const visible = state.owner === owner && state.visible
   return { text: visible ? selected?.text ?? '' : '', command: visible ? selected?.command : undefined, status: visible ? selected?.status : undefined,

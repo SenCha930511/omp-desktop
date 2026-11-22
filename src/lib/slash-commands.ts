@@ -207,10 +207,22 @@ export function slashSuggestions(commands: SlashCommand[], value: string) {
       command: `/${name} ${item.name}`, detail: [item.description, item.usage].filter(Boolean).join(' · '),
     }))
   }
-  return commands.filter((item) => item.name.startsWith(query) || item.aliases?.some((alias) => alias.startsWith(query))).map((item) => ({
-    command: `/${item.aliases?.find((alias) => alias.startsWith(query)) && !item.name.startsWith(query) ? item.aliases.find((alias) => alias.startsWith(query)) : item.name}`,
-    detail: [item.description, item.input?.hint].filter(Boolean).join(' · '),
-  }))
+  return commands
+    .filter((item) => {
+      const lower = item.name.toLowerCase()
+      const bareSkill = (item.source === 'skill' || lower.startsWith('skill:')) && lower.startsWith('skill:') ? lower.slice(6) : null
+      return lower.startsWith(query) || Boolean(bareSkill?.startsWith(query)) || item.aliases?.some((alias) => alias.toLowerCase().startsWith(query))
+    })
+    .map((item) => {
+      const lower = item.name.toLowerCase()
+      const bareSkill = (item.source === 'skill' || lower.startsWith('skill:')) && lower.startsWith('skill:') ? lower.slice(6) : null
+      const matchesPrimary = lower.startsWith(query) || Boolean(bareSkill?.startsWith(query))
+      const matchedAlias = item.aliases?.find((alias) => alias.toLowerCase().startsWith(query))
+      return {
+        command: `/${matchedAlias && !matchesPrimary ? matchedAlias : item.name}`,
+        detail: [item.description, item.input?.hint].filter(Boolean).join(' · '),
+      }
+    })
 }
 
 // --- 忙碌時的 slash 分派 ---

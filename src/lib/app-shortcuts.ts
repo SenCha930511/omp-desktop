@@ -5,7 +5,7 @@ export interface AppShortcutEvent {
   shiftKey: boolean
 }
 
-export type AppShortcutAction = 'open-palette' | 'new-session' | 'open-browser' | 'toggle-sidebar' | 'toggle-terminal' | 'open-settings' | 'close-palette' | 'close-settings'
+export type AppShortcutAction = 'open-palette' | 'new-session' | 'open-browser' | 'toggle-sidebar' | 'open-settings' | 'close-palette' | 'close-settings'
 
 const OVERLAY_SELECTOR = '.modal[role="dialog"][aria-modal="true"], .command-palette[role="dialog"]'
 
@@ -29,7 +29,6 @@ export function appShortcutForKey(event: AppShortcutEvent, overlayOpen: boolean,
   if (command && key === 'n') return 'new-session'
   if (command && key === 'b' && event.shiftKey) return 'open-browser'
   if (command && key === 'b') return 'toggle-sidebar'
-  if (command && key === 'j') return 'toggle-terminal'
   if (command && event.key === ',') return 'open-settings'
   if (event.key === 'Escape') return 'close-palette'
   return null

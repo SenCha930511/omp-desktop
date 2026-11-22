@@ -1,4 +1,4 @@
-import { ArrowLeft, AudioLines, Bot, Boxes, ChevronRight, Info, LockKeyhole, MessagesSquare, Settings2, Sun, Terminal } from 'lucide-react'
+import { ArrowLeft, AudioLines, Bot, Boxes, ChevronRight, Info, LockKeyhole, MessagesSquare, Settings2, Sun } from 'lucide-react'
 import { type ComponentType, useEffect, useState } from 'react'
 import { BrowserGlobe, Modal } from '@/components/ui'
 import { errorMessage } from '@/lib/errors'
@@ -15,7 +15,6 @@ import type { SettingsSection, SettingsUpdate } from './settings/contracts'
 import { GeneralSettings } from './settings/GeneralSettings'
 import { PrivacySettings } from './settings/PrivacySettings'
 import { ProvidersSettings } from './settings/ProviderSettings'
-import { TerminalSettings } from './settings/TerminalSettings'
 import { VoiceSettings } from './settings/VoiceSettings'
 
 const sections: Array<{ id: SettingsSection; label: MessageKey; icon: ComponentType<{ size?: number }> }> = [
@@ -26,7 +25,6 @@ const sections: Array<{ id: SettingsSection; label: MessageKey; icon: ComponentT
   { id: 'providers', label: 'settings.providers', icon: Boxes },
   { id: 'voice', label: 'settings.voice', icon: AudioLines },
   { id: 'browser', label: 'settings.browser', icon: BrowserGlobe },
-  { id: 'terminal', label: 'settings.terminal', icon: Terminal },
   { id: 'privacy', label: 'settings.privacy', icon: LockKeyhole },
   { id: 'about', label: 'settings.about', icon: Info },
 ]
@@ -124,8 +122,6 @@ export function SettingsPage({
             }}
           />
         )
-      case 'terminal':
-        return <TerminalSettings settings={settings} onUpdate={onUpdate} platform={platform} />
       case 'privacy':
         return <PrivacySettings settings={settings} onUpdate={onUpdate} />
       case 'about':

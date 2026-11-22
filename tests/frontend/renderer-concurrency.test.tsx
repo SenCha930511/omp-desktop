@@ -80,7 +80,7 @@ describe('settings queue reconciliation', () => {
     const bridge = {
       settings: { get: async () => DEFAULT_SETTINGS, update },
     } as unknown as DesktopApi
-    const external = vi.fn(async () => ({ settings: { ...DEFAULT_SETTINGS, sidebarOpen: false, terminalOpen: true, activeHarness: 'omp' as const } }))
+    const external = vi.fn(async () => ({ settings: { ...DEFAULT_SETTINGS, sidebarOpen: false, inspectorOpen: false, activeHarness: 'omp' as const } }))
     const reportError = vi.fn()
     let state!: ReturnType<typeof useAppSettings>
     function SettingsProbe() {
@@ -94,7 +94,7 @@ describe('settings queue reconciliation', () => {
     let reconciliation!: ReturnType<typeof state.reconcileExternalSettings>
     await act(async () => {
       firstMutation = state.updateSettings({ sidebarOpen: false })
-      secondMutation = state.updateSettings({ terminalOpen: true })
+      secondMutation = state.updateSettings({ inspectorOpen: false })
       reconciliation = state.reconcileExternalSettings(external)
       await Promise.resolve()
     })
@@ -103,10 +103,10 @@ describe('settings queue reconciliation', () => {
     const afterFirst = { ...DEFAULT_SETTINGS, sidebarOpen: false }
     await act(async () => { first.resolve(afterFirst); await firstMutation; await Promise.resolve() })
     expect(external).not.toHaveBeenCalled()
-    const afterSecond = { ...afterFirst, terminalOpen: true }
+    const afterSecond = { ...afterFirst, inspectorOpen: false }
     await act(async () => { second.resolve(afterSecond); await secondMutation; await reconciliation })
     expect(external).toHaveBeenCalledTimes(1)
-    expect(state.settings).toMatchObject({ sidebarOpen: false, terminalOpen: true, activeHarness: 'omp' })
+    expect(state.settings).toMatchObject({ sidebarOpen: false, inspectorOpen: false, activeHarness: 'omp' })
   })
 
   it('does not initialize until persisted settings finish loading', async () => {
@@ -150,15 +150,15 @@ describe('settings queue reconciliation', () => {
     let secondMutation!: Promise<void>
     await act(async () => {
       firstMutation = state.updateSettings({ sidebarOpen: false })
-      secondMutation = state.updateSettings({ terminalOpen: true })
+      secondMutation = state.updateSettings({ inspectorOpen: false })
     })
-    expect([state.sidebarOpen, state.inspectorOpen, state.terminalOpen]).toEqual([false, true, true])
+    expect([state.sidebarOpen, state.inspectorOpen]).toEqual([false, false])
 
-    const saved = { ...DEFAULT_SETTINGS, sidebarOpen: false, inspectorOpen: false, terminalOpen: false }
+    const saved = { ...DEFAULT_SETTINGS, sidebarOpen: false }
     await act(async () => { first.resolve(saved); await firstMutation })
     await act(async () => { second.reject(new Error('save failed')); await secondMutation })
 
-    expect([state.sidebarOpen, state.inspectorOpen, state.terminalOpen]).toEqual([false, false, false])
+    expect([state.sidebarOpen, state.inspectorOpen]).toEqual([false, true])
     expect(state.settings).toEqual(saved)
     expect(errors).toHaveLength(1)
   })
