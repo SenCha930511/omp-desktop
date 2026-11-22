@@ -25,7 +25,12 @@ const MAX_CONCURRENT_PLUGIN_DISCOVERIES = 2
 const MAX_QUEUED_PLUGIN_DISCOVERIES = 32
 const MAX_KNOWN_PATH_OWNERS = 64
 const MAX_KNOWN_PATHS_PER_OWNER = 4_096
-
+// Discovery walks the user and project capability trees; the panels and the
+// IPC surface ask for the same catalog repeatedly, so a very short TTL keeps
+// those reads off the filesystem while a settings mutation or refresh clears it
+// immediately.
+const PLUGIN_CATALOG_TTL_MS = 2_000
+const MAX_CACHED_PLUGIN_CATALOGS = 16
 
 function normalizedCapabilityIdentity(value: string): string {
   return value.toLowerCase().replace(/^@[^/]+\//, '').replace(/[^a-z0-9]+/g, '')
@@ -75,6 +80,7 @@ export class PluginService {
   private readonly knownPathsByOwner = new Map<string, Set<string>>()
   private settingsMutation = Promise.resolve()
   private readonly discoveryInFlight = createSingleFlight<string, PluginCatalog>()
+  private readonly catalogCache = new Map<string, { catalog: PluginCatalog; expiresAt: number }>()
   private readonly agentDir: string
   private readonly discoverCatalog: PluginDiscovery
   private readonly builtInSkills: () => SkillRecord[] | Promise<SkillRecord[]>
@@ -108,7 +114,34 @@ export class PluginService {
 
   private listCanonical(safeProjectPath?: string): Promise<PluginCatalog> {
     const key = safeProjectPath ? `project:${safeProjectPath}` : 'user'
+    const cached = this.cachedCatalog(key)
+    // Every caller owns its rows: a panel that edits a record must never
+    // rewrite the entry the next list call serves.
+    if (cached) return Promise.resolve(structuredClone(cached))
     return this.discoveryInFlight.run(key, () => discoveryQueue.run(() => this.discover(safeProjectPath, key)))
+  }
+
+  private cachedCatalog(key: string): PluginCatalog | undefined {
+    const entry = this.catalogCache.get(key)
+    if (!entry) return undefined
+    if (entry.expiresAt <= Date.now()) {
+      this.catalogCache.delete(key)
+      return undefined
+    }
+    // Delete-then-set keeps insertion order as LRU order for bounded eviction.
+    this.catalogCache.delete(key)
+    this.catalogCache.set(key, entry)
+    return entry.catalog
+  }
+
+  private rememberCatalog(key: string, catalog: PluginCatalog): void {
+    this.catalogCache.delete(key)
+    this.catalogCache.set(key, { catalog, expiresAt: Date.now() + PLUGIN_CATALOG_TTL_MS })
+    while (this.catalogCache.size > MAX_CACHED_PLUGIN_CATALOGS) {
+      const oldest = this.catalogCache.keys().next().value
+      if (oldest === undefined) break
+      this.catalogCache.delete(oldest)
+    }
   }
 
   private async discover(safeProjectPath: string | undefined, ownerKey: string): Promise<PluginCatalog> {
@@ -126,7 +159,9 @@ export class PluginService {
       if (oldest === undefined) break
       this.knownPathsByOwner.delete(oldest)
     }
-    return { skills: combined, warnings: result.warnings }
+    const catalog: PluginCatalog = { skills: combined, warnings: result.warnings }
+    this.rememberCatalog(ownerKey, catalog)
+    return structuredClone(catalog)
   }
 
   authorizeReveal(pathValue: unknown): string {
@@ -145,7 +180,7 @@ export class PluginService {
     const source = validatePackageSource(sourceValue, { allowOmpMarketplaceTarget: true })
     // OMP tracks installs through its plugin lock file.
     const lockPath = join(this.agentDir, '..', 'plugins', 'omp-plugins.lock.json')
-    return await this.queueSettingsMutation(async (): Promise<ProcessOutcome> => {
+    const outcome = await this.queueSettingsMutation(async (): Promise<ProcessOutcome> => {
       const release = await acquireSettingsLock(lockPath)
       try {
         return await executeOmpPluginInstall(agentPath, source)
@@ -153,6 +188,8 @@ export class PluginService {
         await release()
       }
     })
+    this.catalogCache.clear()
+    return outcome
   }
 
   async installExtension(inputValue: unknown): Promise<ProcessOutcome> {
@@ -161,7 +198,9 @@ export class PluginService {
       ? await this.authorizeProject(input.projectPath!)
       : undefined
     if (safeProjectPath) this.lastProjectPath = safeProjectPath
-    return await installOmpExtension(input, this.agentDir, safeProjectPath)
+    const outcome = await installOmpExtension(input, this.agentDir, safeProjectPath)
+    this.catalogCache.clear()
+    return outcome
   }
 
   async connectMcp(inputValue: unknown): Promise<ProcessOutcome> {
@@ -179,7 +218,7 @@ export class PluginService {
 
     const settingsPath = typeof settingsTarget === 'string' ? settingsTarget : settingsTarget.path
     const verify = typeof settingsTarget === 'string' ? undefined : settingsTarget.verify
-    return await this.queueSettingsMutation(async () => {
+    const outcome = await this.queueSettingsMutation(async () => {
       const releaseSettings = await acquireSettingsLock(`${settingsPath}.gooeypi`, verify)
       try {
         return await updateMcpSettings(
@@ -196,6 +235,8 @@ export class PluginService {
         await releaseSettings()
       }
     })
+    this.catalogCache.clear()
+    return outcome
   }
 
   async setMcpEnabled(inputValue: unknown): Promise<ProcessOutcome> {
@@ -213,7 +254,7 @@ export class PluginService {
     const agentName = HARNESSES[this.harness].agentName
     const settingsPath = typeof settingsTarget === 'string' ? settingsTarget : settingsTarget.path
     const verify = typeof settingsTarget === 'string' ? undefined : settingsTarget.verify
-    return await this.queueSettingsMutation(async () => {
+    const outcome = await this.queueSettingsMutation(async () => {
       const releaseSettings = await acquireSettingsLock(`${settingsPath}.gooeypi`, verify)
       try {
         return await updateMcpState(
@@ -226,6 +267,8 @@ export class PluginService {
         await releaseSettings()
       }
     })
+    this.catalogCache.clear()
+    return outcome
   }
 
   async mutateCapability(inputValue: unknown): Promise<ProcessOutcome> {
@@ -241,7 +284,7 @@ export class PluginService {
       : undefined
     const settingsPath = projectSettings?.path ?? join(this.agentDir, input.kind === 'mcp' ? 'mcp.json' : 'settings.json')
     const agentName = HARNESSES[this.harness].agentName
-    return await this.queueSettingsMutation(async (): Promise<ProcessOutcome> => {
+    const outcome = await this.queueSettingsMutation(async (): Promise<ProcessOutcome> => {
       const releaseSettings = await acquireSettingsLock(`${settingsPath}.gooeypi`, projectSettings?.verify)
       try {
         if (input.kind === 'mcp') {
@@ -258,10 +301,13 @@ export class PluginService {
         await releaseSettings()
       }
     })
+    // A partially applied mutation still invalidates: the next list rescans.
+    this.catalogCache.clear()
+    return outcome
   }
 
-
   refresh(): Promise<PluginCatalog> {
+    this.catalogCache.clear()
     const projectPath = this.lastProjectPath
     if (!projectPath) return this.listCanonical()
     // Re-authorize on every refresh: the remembered project may have been
@@ -278,9 +324,12 @@ export class PluginService {
     )
   }
 
-  /** Revokes a removed project's revealable paths. */
+  /** Revokes a removed project's revealable paths and cached catalog. */
   evictProjects(roots: readonly string[]): void {
-    for (const root of roots) this.knownPathsByOwner.delete(`project:${root}`)
+    for (const root of roots) {
+      this.knownPathsByOwner.delete(`project:${root}`)
+      this.catalogCache.delete(`project:${root}`)
+    }
   }
 
   private settingsFingerprint(path: string): Promise<string> {

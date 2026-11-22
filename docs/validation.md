@@ -8,17 +8,17 @@ The repository's `main` branch protection must require pull requests and require
 
 The required checks are exactly the seven normal pull-request gates:
 
-- `production-audit`
+- `Production dependency audit`
 - `quality`
 - `hermetic-e2e`
 - `windows-state-migration`
-- `packaging-smoke (macos-14, mac, arm64, --config.mac.identity=null)`
+- `packaging-smoke (macos-15, mac, arm64, --config.mac.identity=null)`
 - `packaging-smoke (ubuntu-22.04, linux, x64)`
 - `packaging-smoke (windows-2022, win, x64)`
 
 Do not require `local-qa-package`: it is manual local QA, runs only through `workflow_dispatch`, and is intentionally excluded from pull-request validation.
 
-`Production dependency audit` is a seventh pull-request gate: it runs the exception-aware `npm run audit:production` evaluator against the exact PR head, and the release workflow runs the same evaluator against its validated immutable SHA before any package or publication job. After the check context first appears on a pull request, a repository administrator must add `Production dependency audit` to the required status checks on `main`. The scheduled [dependency-audit workflow](../.github/workflows/audit.yml) remains for advisories disclosed after merge.
+`Production dependency audit` runs the exception-aware `npm run audit:production` evaluator against the exact PR head, and the release workflow runs the same evaluator against its validated immutable SHA before any package or publication job. The scheduled [dependency-audit workflow](../.github/workflows/audit.yml) remains for advisories disclosed after merge.
 
 GitHub merge queues are not available to this public repository while it is owned by a personal account. Consequently, `merge_group` or a required merge queue cannot enforce this policy here; strict up-to-date branch protection is the supported latest-main control. If the repository moves to an organization, merge-queue support should be designed and tested separately before enabling it.
 

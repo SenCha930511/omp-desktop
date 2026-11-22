@@ -15,6 +15,7 @@ const session: SessionRecord = {
   id: 'session', harness: 'omp', filePath: '/sessions/session.jsonl', projectPath: '/project', title: 'Session',
   createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z', status: 'idle', depth: 0,
 }
+const lateSession: SessionRecord = { ...session, id: 'late', filePath: '/sessions/late.jsonl', title: 'Late session' }
 
 type Workspace = ReturnType<typeof useWorkspaceRuntime>
 let latest: Workspace
@@ -29,18 +30,20 @@ function Probe({
   initialProject = project,
   initialSession = session,
   sessions = [session],
+  noInitialSession = false,
 }: {
   bridge: DesktopApi | null
   harness?: HarnessId
   initialProject?: ProjectRecord
   initialSession?: SessionRecord
   sessions?: SessionRecord[]
+  noInitialSession?: boolean
 }) {
   latest = useWorkspaceRuntime({
     bridge,
     harness,
     initialProject,
-    initialSession,
+    initialSession: noInitialSession ? undefined : initialSession,
     sessions,
     initialMessages: [],
     reportError: stableReportError,
@@ -71,6 +74,16 @@ afterEach(() => {
 const flush = async () => { await act(async () => { await Promise.resolve() }) }
 
 describe('prompt admission versus background transcript reads', () => {
+
+  it('adopts a catalog row that appears after the runtime reports its session file', () => {
+    act(() => root.render(createElement(Probe, { bridge: null, noInitialSession: true, sessions: [] })))
+    act(() => latest.attachRuntime({ runtimeId: 'late-runtime', harness: 'omp', cwd: project.primaryFolder, sessionFile: lateSession.filePath, isStreaming: false }, 0))
+    expect(latest.activeSessionId).toBeUndefined()
+
+    act(() => root.render(createElement(Probe, { bridge: null, noInitialSession: true, sessions: [lateSession] })))
+
+    expect(latest.activeSessionId).toBe('late')
+  })
   it('restores queued work after remount without automatically redelivering it', () => {
     act(() => root.render(createElement(Probe, { bridge: null })))
     act(() => latest.queuePrompt('saved request', 'queue'))

@@ -10,7 +10,6 @@ function recordingDeps(sessions: readonly ProjectSessionCandidate[]) {
     listSessions: async () => sessions,
     deleteSession: async (filePath) => { calls.push({ kind: 'delete', filePath }) },
     closeBrowserView: (filePath) => { calls.push({ kind: 'closeBrowserView', filePath }) },
-    killTerminal: async (filePath) => { calls.push({ kind: 'killTerminal', filePath }) },
   }
   return { deps, calls }
 }
@@ -28,14 +27,12 @@ describe('deleteProjectSessions', () => {
 
     expect(deleted).toEqual(['/sessions/a.jsonl', '/sessions/b.jsonl'])
     // Per-session cleanup mirrors the single-session delete handler: the file
-    // deletion runs first, then the browser view closes, then the terminal.
+    // deletion runs first, then the browser view closes.
     expect(calls).toEqual([
       { kind: 'delete', filePath: '/sessions/a.jsonl' },
       { kind: 'closeBrowserView', filePath: '/sessions/a.jsonl' },
-      { kind: 'killTerminal', filePath: '/sessions/a.jsonl' },
       { kind: 'delete', filePath: '/sessions/b.jsonl' },
       { kind: 'closeBrowserView', filePath: '/sessions/b.jsonl' },
-      { kind: 'killTerminal', filePath: '/sessions/b.jsonl' },
     ])
   })
 
@@ -49,7 +46,7 @@ describe('deleteProjectSessions', () => {
     const deleted = await deleteProjectSessions(deps, ['/work/one', '/work/./two'])
 
     expect(deleted).toEqual(['/sessions/a.jsonl', '/sessions/b.jsonl'])
-    expect(calls).toHaveLength(6)
+    expect(calls).toHaveLength(4)
   })
 
   it('touches nothing without roots or matches', async () => {

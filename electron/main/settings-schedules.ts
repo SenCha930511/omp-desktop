@@ -7,7 +7,6 @@ import { isRecord, rejectUnknownKeys, requireBoolean, requireSelfHostedVoiceUrl,
 export class SettingsService {
   constructor(
     private readonly store: JsonStateStore,
-    private readonly validateShell: (shell: unknown) => string,
     private readonly cancelBrowserDownloads: () => void = () => undefined,
     private readonly onDidUpdate: (previous: AppSettings, next: AppSettings) => void | Promise<void> = () => undefined,
   ) {}
@@ -57,7 +56,6 @@ export class SettingsService {
       },
       keepRunningInBackground: (value) => requireBoolean(value, 'keepRunningInBackground'),
       launchAtLogin: (value) => requireBoolean(value, 'launchAtLogin'),
-      terminalOpen: (value) => requireBoolean(value, 'terminalOpen'),
       browserAskForDownloads: (value) => requireBoolean(value, 'browserAskForDownloads'),
       reduceMotion: (value) => requireBoolean(value, 'reduceMotion'),
       showReasoningSummaries: (value) => requireBoolean(value, 'showReasoningSummaries'),
@@ -66,16 +64,11 @@ export class SettingsService {
         if (!(PRIME_EFFORT_SELECTORS as readonly string[]).includes(value as string)) throw new TypeError('Invalid default reasoning effort')
         return value as AppSettings['defaultEffort']
       },
-      subagentsPanelPinned: (value) => requireBoolean(value, 'subagentsPanelPinned'),
       showToolCalls: (value) => requireBoolean(value, 'showToolCalls'),
       telemetry: (value) => requireBoolean(value, 'telemetry'),
       askUserEnabled: (value) => requireBoolean(value, 'askUserEnabled'),
       browserEnabled: (value) => requireBoolean(value, 'browserEnabled'),
       computerUseEnabled: (value) => requireBoolean(value, 'computerUseEnabled'),
-      defaultInspectorTab: (value) => {
-        if (value !== 'summary' && value !== 'changes' && value !== 'browser' && value !== 'files') throw new TypeError('Invalid inspector tab')
-        return value
-      },
       messageEnterAction: (value) => {
         if (value !== 'queue' && value !== 'steer') throw new TypeError('Invalid message Enter action')
         return value
@@ -92,7 +85,6 @@ export class SettingsService {
         return paths
       },
       browserHome: (value) => requireWebUrl(value),
-      terminalShell: (value) => this.validateShell(value),
       activeHarness: (value) => {
         if (value !== 'omp') throw new TypeError('Invalid harness')
         return value

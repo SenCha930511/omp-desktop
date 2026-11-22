@@ -1,12 +1,13 @@
 import { open, stat } from 'node:fs/promises'
 
 /**
- * The harness `compact` RPC command compacts the session and writes the
- * compaction record to the session file, but emits no lifecycle events over
- * RPC — the desktop learns about the compaction only after a session
- * re-entry reads the file. After a successful compact command the manager
- * reads the newest compaction record back and synthesizes the
- * `compaction_end` event the renderer already knows how to fold.
+ * The harness `compact` RPC command writes the compaction record to the session
+ * file. OMP 19 also streams the manual lifecycle events, but its
+ * `CompactionResult` carries no tokensAfter, so the post-compaction token delta
+ * only exists in that record. After a successful compact command the manager
+ * reads the newest record back and emits the `compaction_end` the renderer
+ * already knows how to fold; the renderer merges it into the divider the
+ * native end opened.
  */
 
 export interface ManualCompactionRecord {

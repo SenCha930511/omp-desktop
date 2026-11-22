@@ -148,13 +148,6 @@ export const EXTENSION_CAPABILITIES: readonly ExtensionCapability[] = [
     upstream: 'src/modes/rpc/rpc-mode.ts:1509',
   },
   {
-    id: 'terminal-input',
-    surface: 'ui.onTerminalInput',
-    status: 'unsupported',
-    presentation: '上游 RPC mode 無終端輸入通道（no-op），無法由 GUI 補足',
-    upstream: 'src/modes/rpc/rpc-mode.ts:1482',
-  },
-  {
     id: 'custom-component',
     surface: 'ui.custom',
     status: 'unsupported',
@@ -181,13 +174,6 @@ export const EXTENSION_CAPABILITIES: readonly ExtensionCapability[] = [
     status: 'unsupported',
     presentation: '文件明定 headless/RPC 模式接受並忽略；無 wire 補全請求通道',
     upstream: 'src/extensibility/extensions/types.ts:399',
-  },
-  {
-    id: 'open-terminal',
-    surface: 'ui.openTerminal',
-    status: 'unsupported',
-    presentation: 'RPC host 未實作此可選方法（缺省即不支援），extension 須自備降級',
-    upstream: 'src/extensibility/extensions/types.ts:317',
   },
   {
     id: 'theme-api',

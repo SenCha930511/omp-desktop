@@ -2,8 +2,9 @@ import { spawn } from 'node:child_process'
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PluginService, beginPluginDiscoveryShutdown } from '../../electron/main/plugins'
+import type { SkillRecord } from '../../src/types/api'
 import { removeMcpDefinition, updateMcpSettings, updateMcpState } from '../../electron/main/plugins/mcp'
 import { ProjectService } from '../../electron/main/projects'
 import { JsonStateStore } from '../../electron/main/store'
@@ -1311,5 +1312,142 @@ describe('PluginService OMP parity', () => {
     expect(readFileSync(join(project, '.omp', 'extensions', 'clock.ts'), 'utf8')).toContain('export default')
     expect(duplicate).toMatchObject({ ok: false, reason: 'blocked' })
     await expect(service.installExtension({ source: join(root, 'missing.ts'), scope: 'user' })).rejects.toThrow(/does not exist/)
+  })
+})
+
+describe('PluginService catalog cache', () => {
+  const skill = (name: string, location: SkillRecord['location'] = 'user'): SkillRecord =>
+    ({ id: name, name, description: '', kind: 'skill', location, enabled: true })
+
+  it('serves a repeated list from the cache until the TTL expires', async () => {
+    const root = temp()
+    const agentDir = join(root, 'agent')
+    mkdirSync(agentDir)
+    let discoveries = 0
+    const service = new PluginService(null, async (path) => resolve(path), {
+      agentDir,
+      discover: async () => { discoveries += 1; return { skills: [skill(`round-${discoveries}`)], warnings: [] } },
+    })
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+    try {
+      expect((await service.list()).skills.map((item) => item.name)).toEqual(['round-1'])
+      expect((await service.list()).skills.map((item) => item.name)).toEqual(['round-1'])
+      expect(discoveries).toBe(1)
+      vi.setSystemTime(new Date('2026-01-01T00:00:02.001Z'))
+      expect((await service.list()).skills.map((item) => item.name)).toEqual(['round-2'])
+      expect(discoveries).toBe(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('hands every caller its own copy of the cached catalog', async () => {
+    const root = temp()
+    const agentDir = join(root, 'agent')
+    mkdirSync(agentDir)
+    const service = new PluginService(null, async (path) => resolve(path), {
+      agentDir,
+      discover: async () => ({
+        skills: [skill('shared')],
+        warnings: [{ scope: 'user', path: '/tmp/settings.json', message: 'warned' }],
+      }),
+    })
+
+    const first = await service.list()
+    const second = await service.list()
+    expect(second).not.toBe(first)
+    first.skills[0].name = 'mutated'
+    first.warnings.push({ scope: 'project', path: '/tmp/other.json', message: 'injected' })
+
+    const third = await service.list()
+    expect(third.skills.map((item) => item.name)).toEqual(['shared'])
+    expect(third.warnings).toEqual([{ scope: 'user', path: '/tmp/settings.json', message: 'warned' }])
+  })
+
+  it('clears the cache on refresh', async () => {
+    const root = temp()
+    const agentDir = join(root, 'agent')
+    mkdirSync(agentDir)
+    let discoveries = 0
+    const service = new PluginService(null, async (path) => resolve(path), {
+      agentDir,
+      discover: async () => { discoveries += 1; return { skills: [], warnings: [] } },
+    })
+
+    await service.list()
+    await service.list()
+    expect(discoveries).toBe(1)
+    await service.refresh()
+    expect(discoveries).toBe(2)
+    await service.list()
+    expect(discoveries).toBe(2)
+  })
+
+  it('drops the cached user catalog after an MCP removal', async () => {
+    const root = temp()
+    const agentDir = join(root, 'agent')
+    mkdirSync(agentDir)
+    writeFileSync(join(agentDir, 'mcp.json'), JSON.stringify({ mcpServers: {
+      'http-server': { type: 'http', url: 'https://mcp.example/server' },
+    } }))
+    const service = new PluginService(null, async (path) => resolve(path), { agentDir })
+    const hasServer = async (): Promise<boolean> => (await service.list()).skills.some((item) => item.name === 'http-server')
+
+    expect(await hasServer()).toBe(true)
+    expect(await hasServer()).toBe(true)
+    await expect(service.mutateCapability({ kind: 'mcp', action: 'remove', name: 'http-server', scope: 'user' }))
+      .resolves.toMatchObject({ ok: true })
+    expect(await hasServer()).toBe(false)
+  })
+
+  it('clears the cache after an extension install', async () => {
+    const root = temp()
+    const agentDir = join(root, '.omp', 'agent')
+    const source = join(root, 'clock.ts')
+    mkdirSync(agentDir, { recursive: true })
+    writeFileSync(source, 'export default () => undefined\n')
+    let discoveries = 0
+    const service = new PluginService(null, async (path) => realpathSync(path), {
+      agentDir,
+      discover: async () => { discoveries += 1; return { skills: [], warnings: [] } },
+    })
+
+    await service.list()
+    await service.list()
+    expect(discoveries).toBe(1)
+    await expect(service.installExtension({ source, scope: 'user' })).resolves.toMatchObject({ ok: true })
+    await service.list()
+    expect(discoveries).toBe(2)
+  })
+
+  it('keeps project catalogs separate and evicts only the removed project', async () => {
+    const root = temp()
+    const agentDir = join(root, 'agent')
+    const firstProject = join(root, 'first-project')
+    const secondProject = join(root, 'second-project')
+    mkdirSync(agentDir); mkdirSync(firstProject); mkdirSync(secondProject)
+    let discoveries = 0
+    const service = new PluginService(null, async (path) => realpathSync(path), {
+      agentDir,
+      discover: async (_agentDirectory, projectPath) => {
+        discoveries += 1
+        return { skills: projectPath ? [skill(`project:${projectPath}`, 'project')] : [], warnings: [] }
+      },
+    })
+    const names = async (project: string): Promise<string[]> =>
+      (await service.list(project)).skills.map((item) => item.name)
+
+    expect(await names(firstProject)).toEqual([`project:${realpathSync(firstProject)}`])
+    expect(await names(secondProject)).toEqual([`project:${realpathSync(secondProject)}`])
+    expect(discoveries).toBe(2)
+    expect(await names(firstProject)).toEqual([`project:${realpathSync(firstProject)}`])
+    expect(discoveries).toBe(2)
+
+    service.evictProjects([realpathSync(firstProject)])
+    expect(await names(firstProject)).toEqual([`project:${realpathSync(firstProject)}`])
+    expect(discoveries).toBe(3)
+    expect(await names(secondProject)).toEqual([`project:${realpathSync(secondProject)}`])
+    expect(discoveries).toBe(3)
   })
 })

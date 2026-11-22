@@ -28,10 +28,11 @@ class FakeGuest extends EventEmitter {
   readonly insertedText: string[] = []
   readonly executedScripts: string[] = []
   debuggerAttached = false
+  debuggerDetaches = 0
   readonly debugger = {
     isAttached: () => this.debuggerAttached,
     attach: () => { this.debuggerAttached = true },
-    detach: () => { this.debuggerAttached = false },
+    detach: () => { this.debuggerDetaches += 1; this.debuggerAttached = false },
     sendCommand: async (method: string, params: Record<string, unknown>) => {
       if (!this.debuggerAttached) throw new Error('Debugger is not attached')
       if (method === 'Input.insertText') { this.insertedText.push(String(params.text)); return }
@@ -100,7 +101,7 @@ class FakeGuest extends EventEmitter {
   }
 }
 
-function fixture(options?: { actionTimeoutMs?: number; backgroundGraceMs?: number }) {
+function fixture(options?: { actionTimeoutMs?: number; backgroundGraceMs?: number; debuggerIdleMs?: number }) {
   const guests = new Map<number, FakeGuest>()
   const service = new AgentBrowserService({
     getGuest: (id) => guests.get(id) as unknown as WebContents,
@@ -108,6 +109,7 @@ function fixture(options?: { actionTimeoutMs?: number; backgroundGraceMs?: numbe
     loadTimeoutMs: 1_500,
     actionTimeoutMs: options?.actionTimeoutMs,
     backgroundGraceMs: options?.backgroundGraceMs,
+    debuggerIdleMs: options?.debuggerIdleMs,
   })
   const states: AgentBrowserState[] = []
   service.onDidChange((state) => states.push(state))
@@ -160,21 +162,36 @@ describe('AgentBrowserService', () => {
       expect(guest.throttling).toBe(true)
     } finally { service.beginShutdown(); vi.useRealTimers(); vi.restoreAllMocks() }
   })
-  it('restores background throttling after automation settles and releases all guest leases on shutdown', async () => {
+  it('exempts only the guest receiving automation input from background throttling', async () => {
     const { service, openAttached } = fixture({ backgroundGraceMs: 20 })
     try {
       const first = await openAttached('/sessions/a.jsonl', 'https://example.com/')
       const second = await openAttached('/sessions/b.jsonl', 'https://example.org/')
-      expect(first.guest.throttling).toBe(false)
+      // Opening the second tab moves the exemption; the first tab is a
+      // background guest again and stays throttled.
       expect(second.guest.throttling).toBe(false)
+      expect(first.guest.throttling).toBe(true)
       await new Promise((resolve) => setTimeout(resolve, 40))
       expect(first.guest.throttling).toBe(true)
       expect(second.guest.throttling).toBe(true)
+      // A user action on the first tab exempts it alone.
       service.navigateTab(first.tabId, 'reload')
       expect(first.guest.throttling).toBe(false)
-      expect(second.guest.throttling).toBe(false)
+      expect(second.guest.throttling).toBe(true)
       service.beginShutdown()
       expect(first.guest.throttling).toBe(true)
+      expect(second.guest.throttling).toBe(true)
+    } finally { service.beginShutdown() }
+  })
+  it('exempts only the acting tab when one agent drives two sessions', async () => {
+    const { service, openAttached } = fixture({ backgroundGraceMs: 60_000 })
+    try {
+      const first = await openAttached('/sessions/a.jsonl', 'https://example.com/')
+      const second = await openAttached('/sessions/b.jsonl', 'https://example.org/')
+      expect(second.guest.throttling).toBe(false)
+      expect(first.guest.throttling).toBe(true)
+      await service.readPage('/sessions/a.jsonl', { tabId: first.tabId })
+      expect(first.guest.throttling).toBe(false)
       expect(second.guest.throttling).toBe(true)
     } finally { service.beginShutdown() }
   })
@@ -362,6 +379,65 @@ describe('AgentBrowserService', () => {
     expect(service.state().tabs.find((tab) => tab.tabId === second.tabId)).toMatchObject({ attached: false })
     service.closeTab(second.tabId)
     expect(service.state().tabs.find((tab) => tab.tabId === first.tabId)?.active).toBe(true)
+  })
+
+  it('keeps the tab record and reloads its saved url when an idle guest is released', async () => {
+    const { service, newGuest, openAttached } = fixture()
+    const { guest, tabId } = await openAttached('/sessions/a.jsonl', 'https://example.com/')
+    guest.title = 'Example'
+    guest.emit('page-title-updated')
+
+    // The renderer releases an idle background session's webview, which
+    // destroys its guest. The registry keeps the tab and its last location.
+    guest.destroy()
+    expect(service.state().tabs.find((tab) => tab.tabId === tabId)).toMatchObject({
+      tabId,
+      sessionFile: '/sessions/a.jsonl',
+      url: 'https://example.com/',
+      title: 'Example',
+      attached: false,
+    })
+
+    // Returning to the session (or the next agent action) remounts the guest;
+    // the ordinary attach path reloads the saved url.
+    const remounted = newGuest()
+    service.attachTab(tabId, remounted.id)
+    expect(remounted.loadedUrls).toEqual(['https://example.com/'])
+    expect(service.state().tabs.find((tab) => tab.tabId === tabId)).toMatchObject({
+      url: 'https://example.com/',
+      title: 'Example',
+      attached: true,
+    })
+  })
+
+  it('detaches the debugger after input silence and reattaches on the next input', async () => {
+    const { service, openAttached } = fixture({ debuggerIdleMs: 5_000 })
+    try {
+      const { guest, tabId } = await openAttached('/sessions/a.jsonl', 'https://example.com/')
+      vi.useFakeTimers()
+      const first = service.click('/sessions/a.jsonl', { tabId, x: 10, y: 20 })
+      await vi.advanceTimersByTimeAsync(1_000)
+      await first
+      expect(guest.debuggerAttached).toBe(true)
+      expect(guest.debuggerDetaches).toBe(0)
+
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(guest.debuggerDetaches).toBe(1)
+      expect(guest.debuggerAttached).toBe(false)
+
+      const second = service.click('/sessions/a.jsonl', { tabId, x: 30, y: 40 })
+      await vi.advanceTimersByTimeAsync(1_000)
+      await second
+      expect(guest.debuggerAttached).toBe(true)
+
+      // Closing the guest clears the pending detach instead of calling into it.
+      guest.destroy()
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(guest.debuggerDetaches).toBe(1)
+    } finally {
+      vi.useRealTimers()
+      service.beginShutdown()
+    }
   })
 
   it('rejects work queued for a destroyed guest while fresh work follows reattachment', async () => {
@@ -651,5 +727,25 @@ describe('AgentBrowserService', () => {
     release.resolve(JSON.stringify({ completed: true }))
 
     await expect(running).resolves.toEqual({ completed: true })
+  })
+
+  it('emits activity and completes an action after an idle guest was torn down', async () => {
+    const { service, activityEvents, newGuest, openAttached } = fixture({ actionTimeoutMs: 500 })
+    const { guest, tabId } = await openAttached('/sessions/a.jsonl', 'https://example.com/')
+    const countBeforeDetach = activityEvents.length
+    // Simulate AgentBrowserLayer unmounting an idle background guest.
+    guest.destroy()
+    expect(service.state().tabs.find((tab) => tab.tabId === tabId)?.attached).toBe(false)
+
+    const reading = service.readPage('/sessions/a.jsonl', { tabId })
+    await vi.waitFor(() => {
+      expect(activityEvents.length).toBeGreaterThan(countBeforeDetach)
+    })
+    expect(activityEvents.at(-1)).toEqual({ sessionFile: '/sessions/a.jsonl', tabId })
+
+    const replacement = newGuest()
+    service.attachTab(tabId, replacement.id)
+    await expect(reading).resolves.toEqual({})
+    expect(replacement.loadedUrls).toEqual(['https://example.com/'])
   })
 })

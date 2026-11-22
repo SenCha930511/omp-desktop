@@ -9,10 +9,10 @@ import { SettingsService } from '../../electron/main/settings-schedules'
 import { JsonStateStore } from '../../electron/main/store'
 
 const dirs: string[] = []
-function makeService(validateShell: (shell: unknown) => string = () => '/bin/zsh', onDidUpdate?: ConstructorParameters<typeof SettingsService>[3]) {
+function makeService(onDidUpdate?: ConstructorParameters<typeof SettingsService>[2]) {
   const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-settings-'))
   dirs.push(dir)
-  return new SettingsService(new JsonStateStore(join(dir, 'state.json')), validateShell, undefined, onDidUpdate)
+  return new SettingsService(new JsonStateStore(join(dir, 'state.json')), undefined, onDidUpdate)
 }
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }) })
 
@@ -21,10 +21,6 @@ describe('SettingsService.update', () => {
     const service = makeService()
     expect(service.get().reasoningExpandedByDefault).toBe(false)
     expect(service.get().conversationDensity).toBe('comfortable')
-    expect(service.get().subagentsPanelPinned).toBe(false)
-    await service.update({ subagentsPanelPinned: true })
-    expect(service.get().subagentsPanelPinned).toBe(true)
-    await expect(service.update({ subagentsPanelPinned: 'yes' } as never)).rejects.toThrow('subagentsPanelPinned')
     await service.update({ conversationDensity: 'compact' })
     expect(service.get().conversationDensity).toBe('compact')
     await expect(service.update({ conversationDensity: 'dense' } as never)).rejects.toThrow('density')
@@ -45,11 +41,8 @@ describe('SettingsService.update', () => {
       checkoutStrategy: 'branch',
       keepRunningInBackground: true,
       launchAtLogin: true,
-      terminalOpen: true,
-      defaultInspectorTab: 'changes',
       browserHome: 'https://example.test/',
       browserAskForDownloads: false,
-      terminalShell: '/bin/zsh',
       reduceMotion: true,
       showReasoningSummaries: false,
       showToolCalls: false,
@@ -71,9 +64,9 @@ describe('SettingsService.update', () => {
       voiceLocalWhisperModel: '/opt/ggml-model.bin',
     })
     expect(next).toMatchObject({
-      theme: 'dark', locale: 'zh-CN', interfaceFontScale: 105, projectSortMode: 'alphabetical', sidebarOpen: false, inspectorOpen: true, showFileChangesPopup: false, checkoutStrategy: 'branch', keepRunningInBackground: true, launchAtLogin: true, terminalOpen: true,
-      defaultInspectorTab: 'changes', browserHome: 'https://example.test/',
-      browserAskForDownloads: false, terminalShell: '/bin/zsh', reduceMotion: true,
+      theme: 'dark', locale: 'zh-CN', interfaceFontScale: 105, projectSortMode: 'alphabetical', sidebarOpen: false, inspectorOpen: true, showFileChangesPopup: false, checkoutStrategy: 'branch', keepRunningInBackground: true, launchAtLogin: true,
+      browserHome: 'https://example.test/',
+      browserAskForDownloads: false, reduceMotion: true,
       showReasoningSummaries: false, showToolCalls: false, messageEnterAction: 'steer',
       runtimePaths: { omp: '/opt/omp' },
       telemetry: false, askUserEnabled: false,
@@ -90,7 +83,7 @@ describe('SettingsService.update', () => {
     const next = await service.update({ theme: 'light' })
     expect(next.theme).toBe('light')
     expect(next.sidebarOpen).toBe(before.sidebarOpen)
-    expect(next.terminalShell).toBe(before.terminalShell)
+    expect(next.browserHome).toBe(before.browserHome)
   })
 
   it('accepts every supported locale preference', async () => {
@@ -108,7 +101,6 @@ describe('SettingsService.update', () => {
     await expect(service.update({ locale: 'fr' })).rejects.toThrow(/Invalid locale/)
     await expect(service.update({ interfaceFontScale: 111 })).rejects.toThrow(/Invalid interface font scale/)
     await expect(service.update({ projectSortMode: 'invalid' })).rejects.toThrow(/Invalid project sort mode/)
-    await expect(service.update({ defaultInspectorTab: 'tools' })).rejects.toThrow(/Invalid inspector tab/)
     await expect(service.update({ checkoutStrategy: 'folders' })).rejects.toThrow(/Invalid checkout strategy/)
     await expect(service.update({ messageEnterAction: 'send' })).rejects.toThrow(/Invalid message Enter action/)
     await expect(service.update({ runtimePaths: { prime: 'relative/prime-agent', omp: '' } })).rejects.toThrow(/not supported/)
@@ -161,19 +153,9 @@ describe('SettingsService.update', () => {
     expect(service.get().activeHarness).toBe('omp')
   })
 
-  it('routes terminalShell through the injected shell validator', async () => {
-    const validateShell = vi.fn(() => '/bin/bash')
-    const service = makeService(validateShell)
-    const next = await service.update({ terminalShell: '/bin/bash' })
-    expect(validateShell).toHaveBeenCalledWith('/bin/bash')
-    expect(next.terminalShell).toBe('/bin/bash')
-    validateShell.mockImplementation(() => { throw new TypeError('shell is not allowed') })
-    await expect(service.update({ terminalShell: '/tmp/evil' })).rejects.toThrow(/not allowed/)
-  })
-
   it('reports the persisted previous and next settings to lifecycle integrations', async () => {
     const onDidUpdate = vi.fn()
-    const service = makeService(undefined, onDidUpdate)
+    const service = makeService(onDidUpdate)
     const before = service.get()
     const next = await service.update({ keepRunningInBackground: true })
     expect(onDidUpdate).toHaveBeenCalledWith(before, next)

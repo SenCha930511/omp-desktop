@@ -28,10 +28,10 @@ const session = (): SessionRecord => ({
   depth: 0,
 })
 
-const ownedRuntime = (): RuntimeInfo => ({ runtimeId: 'bash-runtime', harness: 'omp', cwd: project.primaryFolder, sessionFile: session().filePath, isStreaming: false })
+const ownedRuntime = (bashExcludeFromContext = false): RuntimeInfo => ({ runtimeId: 'bash-runtime', harness: 'omp', cwd: project.primaryFolder, sessionFile: session().filePath, isStreaming: false, ...(bashExcludeFromContext ? { bashExcludeFromContext: true } : {}) })
 
-function fixture({ attached = true, bashResult, commandError }: { attached?: boolean; bashResult?: unknown; commandError?: Error } = {}) {
-  let currentRuntime = attached ? ownedRuntime() : null
+function fixture({ attached = true, bashResult, commandError, bashExcludeFromContext = false }: { attached?: boolean; bashResult?: unknown; commandError?: Error; bashExcludeFromContext?: boolean } = {}) {
+  let currentRuntime = attached ? ownedRuntime(bashExcludeFromContext) : null
   let messages: TranscriptMessage[] = []
   const submissionAdmission = createSingleFlightAdmission()
   const currentSession = session()
@@ -77,7 +77,6 @@ function fixture({ attached = true, bashResult, commandError }: { attached?: boo
     setSubmitting: vi.fn(),
     refreshSchedules: vi.fn(),
     resetBrowserView: vi.fn(),
-    closeTerminalForSession: vi.fn(),
     clearSessionAttention: vi.fn(),
     bumpRecentSessionOpen: vi.fn(),
     reportError,
@@ -103,6 +102,23 @@ describe('`!` shell shorthand routing', () => {
     expect(rows[0]?.role).toBe('tool')
     expect(rows[0]?.parts[0]).toMatchObject({ type: 'toolCall', name: 'bash', args: { command: 'ls -la' } })
     expect(rows[0]?.parts[1]).toMatchObject({ type: 'toolResult', name: 'bash', text: 'file.txt', isError: false })
+  })
+  it('sends `!!cmd` with excludeFromContext when the runtime advertises it', async () => {
+    const state = fixture({ bashExcludeFromContext: true, bashResult: { output: 'secret', cancelled: false, truncated: false, exitCode: 0 } })
+
+    await state.actions.sendPrompt('!!secret-scan')
+
+    expect(state.command).toHaveBeenCalledWith('bash-runtime', { type: 'bash', command: 'secret-scan', excludeFromContext: true })
+    expect(state.onCommandStart).toHaveBeenCalledWith('!!secret-scan', expect.any(Function))
+  })
+
+  it('rejects `!!cmd` without downgrading when the runtime does not advertise exclusion', async () => {
+    const state = fixture()
+
+    await expect(state.actions.sendPrompt('!!secret-scan')).rejects.toThrow('`!!` needs an OMP version')
+
+    expect(state.command).not.toHaveBeenCalled()
+    expect(state.onCommandFinish).toHaveBeenCalledWith('`!!` needs an OMP version that advertises shell-output exclusion. Update OMP, then try again.')
   })
 
   it('marks a non-zero exit as failed with the status line', async () => {
@@ -147,13 +163,6 @@ describe('`!` shell shorthand routing', () => {
     expect(state.messages()[0]?.parts[1]).toMatchObject({ text: '[cancelled]', isError: true })
   })
 
-  it('refuses `!!` because RPC cannot express exclude-from-context', async () => {
-    const state = fixture({})
-
-    await expect(state.actions.sendPrompt('!!secret-scan')).rejects.toThrow('not available over RPC')
-    expect(state.command).not.toHaveBeenCalled()
-    expect(state.messages()).toEqual([])
-  })
 
   it('refuses the `$` Python shortcut as a documented RPC gap', async () => {
     const state = fixture({})

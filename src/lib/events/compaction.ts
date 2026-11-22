@@ -94,6 +94,22 @@ function compactionIndex(messages: TranscriptMessage[], status?: CompactionPart[
   return -1
 }
 
+/**
+ * The native manual end reports tokensBefore but never tokensAfter; the session
+ * record emitted once the command settles supplies it. Fill only the fields the
+ * recorded divider is missing, so a later authoritative event enriches the row
+ * instead of opening a second one.
+ */
+function withMissingResult(part: CompactionPart, incoming: CompactionPart): CompactionPart {
+  const summary = part.summary ?? incoming.summary
+  const tokensBefore = part.tokensBefore ?? incoming.tokensBefore
+  const tokensAfter = part.tokensAfter ?? incoming.tokensAfter
+  const firstKeptEntryId = part.firstKeptEntryId ?? incoming.firstKeptEntryId
+  if (summary === part.summary && tokensBefore === part.tokensBefore
+    && tokensAfter === part.tokensAfter && firstKeptEntryId === part.firstKeptEntryId) return part
+  return { ...part, summary, tokensBefore, tokensAfter, firstKeptEntryId }
+}
+
 function appendCompaction(messages: TranscriptMessage[], part: CompactionPart, now: number): TranscriptMessage[] {
   return [...messages, {
     id: nextTranscriptId('compaction'),
@@ -146,8 +162,16 @@ export function applyCompactionEvent(messages: TranscriptMessage[], raw: Record<
       : message)
   }
   if (part.status !== 'running') {
-    const duplicate = messages.some((message) => message.parts.some((candidate) => candidate.type === 'compaction' && candidate.status !== 'running' && candidate.status !== 'sync_pending' && sameCompactionResult(candidate, part!)))
-    if (duplicate) return messages
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const existing = messages[index].parts.find((candidate): candidate is CompactionPart =>
+        candidate.type === 'compaction' && candidate.status !== 'running' && candidate.status !== 'sync_pending' && sameCompactionResult(candidate, part))
+      if (!existing) continue
+      const enriched = withMissingResult(existing, part)
+      if (enriched === existing) return messages
+      return messages.map((message, position) => position === index
+        ? { ...message, parts: message.parts.map((candidate) => candidate === existing ? enriched : candidate) }
+        : message)
+    }
   }
   return appendCompaction(messages, part, Date.now())
 }

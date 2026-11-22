@@ -61,7 +61,8 @@ describe('isThinkingLevel', () => {
 describe('validateRpcCommand simple commands', () => {
   it('passes through argument-free commands and rejects extra keys', async () => {
     await expect(validate({ type: 'abort' })).resolves.toEqual({ type: 'abort' })
-    await expect(validate({ type: 'get_commands' })).resolves.toEqual({ type: 'get_commands' })
+    await expect(validate({ type: 'get_available_commands' })).resolves.toEqual({ type: 'get_available_commands' })
+    await expect(validate({ type: 'get_commands' })).rejects.toThrow('not exposed to the renderer')
     await expect(validate({ type: 'abort', force: true })).rejects.toThrow('command.force is not supported')
   })
 
@@ -188,9 +189,11 @@ describe('validateRpcCommand settings commands', () => {
     await expect(validate({ type: 'bash', command: hostile })).resolves.toEqual({ type: 'bash', command: hostile })
     await expect(validate({ type: 'bash', command: 'a\0b' })).rejects.toThrow('contains a NUL byte')
 
-    // 未知欄位拒絕:wire 沒有 excludeFromContext(cwd/images 同理),
-    // 語意不符的欄位不得靜默放行。
-    for (const extra of [{ excludeFromContext: true }, { cwd: '/tmp' }, { images: [] }]) {
+    // OMP 19 carries excludeFromContext; cwd/images remain off the wire.
+    await expect(validate({ type: 'bash', command: 'ls', excludeFromContext: true })).resolves.toEqual({ type: 'bash', command: 'ls', excludeFromContext: true })
+    await expect(validate({ type: 'bash', command: 'ls', excludeFromContext: false })).resolves.toEqual({ type: 'bash', command: 'ls' })
+    await expect(validate({ type: 'bash', command: 'ls', excludeFromContext: 'yes' })).rejects.toThrow('excludeFromContext must be a boolean')
+    for (const extra of [{ cwd: '/tmp' }, { images: [] }]) {
       await expect(validate({ type: 'bash', command: 'ls', ...extra })).rejects.toThrow('is not supported')
     }
     // abort_bash 無參數;任何欄位拒絕。

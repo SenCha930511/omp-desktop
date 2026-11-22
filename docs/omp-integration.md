@@ -5,24 +5,24 @@ This document is OMP Desktop's integration spec for its single agent harness: OM
 ## Product behavior
 
 - The product is **OMP Desktop** and the agent is **OMP**. Granted projects, the session catalog, the model catalog, and runtimes all belong to the single harness.
-- Streaming transcripts, steering/follow-ups, abort, model + thinking selection, compaction, session resume/switch/rename/fork(branch), and extension-UI dialogs (which is also how OMP surfaces **tool approval prompts**) run over the OMP RPC transport. The browser, git, and terminal capabilities are harness-agnostic surfaces around it.
+- Streaming transcripts, steering/follow-ups, abort, model + thinking selection, compaction, session resume/switch/rename/fork(branch), and extension-UI dialogs (which is also how OMP surfaces **tool approval prompts**) run over the OMP RPC transport. The browser, git, and project-script capabilities are harness-agnostic surfaces around it.
 - Scheduled tasks run through OMP Desktop's local schedule service and executor. OMP scheduled tasks do not use heartbeat RPC commands: the injected extension calls a harness-scoped loopback broker, and due work is executed through OMP's normal prompt lifecycle.
 - OMP credentials remain CLI-owned. The desktop keeps only provider/model visibility toggles in its own state; they control which providers appear in the model picker and never change OMP's own configuration or authentication.
 - Capabilities use OMP's native plugin manager (`omp plugin install`), user/project plugin roots, `.omp/skills` plus shared `.agents/skills`, and OMP-native `mcp.json`.
 
-## OMP facts (verified on this machine, omp 17.2.11)
+## OMP facts (verified on this machine, omp 19.0.1)
 
 - Binary: `omp` (searched: `$OMP_BINARY`, PATH, `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, plus shared package-manager locations — see `docs/harness-discovery.md`).
 - Spawn for embedding: `omp --mode rpc --cwd <dir>` plus:
   - resume: `--resume <sessionPath>` (also accepts id prefixes; we always pass validated absolute paths)
   - model: `--model <provider>/<modelId>` (single flag)
   - thinking: `--thinking <off|minimal|low|medium|high|xhigh|max>`
-  - approvals: `--approval-mode <always-ask|write|yolo>` — only passed when the user overrides the default in settings; otherwise OMP's own `~/.omp/agent/config.yml` governs.
-  - extensions: `-e <path>` for each injected capability extension. OMP Desktop injects scheduled-task, browser, and session-collaboration extensions, plus the ask-user extension when the universal **Ask user** capability is enabled. No `--skill <path>` flag exists; skills are discovery-based, so the browser *skill* is not injected — the OMP browser *extension* carries the tool surface. The bundled computer-use skill is delivered through the computer-use capability's own env contract (`GOOEYPI_CUA_DRIVER_PATH`, `GOOEYPI_COMPUTER_USE_SKILL_PATH`) instead.
+  - approvals: `--approval-mode <always-ask|always-ask-cached|write|yolo>` — only passed when the user overrides the default in settings; the desktop UI exposes Inherit, Always ask, Write, and YOLO. OMP's own `~/.omp/agent/config.yml` governs otherwise.
+  - extensions: `-e <path>` for each injected capability extension. OMP Desktop injects scheduled-task, browser, and session-collaboration extensions, plus the ask-user extension when the universal **Ask user** capability is enabled. OMP has no per-skill `--skill <path>` flag; `--skills <globs>` filters discovered skills and `--no-skills` disables discovery. The browser *skill* is not injected because the OMP browser *extension* carries the tool surface. The bundled computer-use skill is delivered through the computer-use capability's own env contract (`GOOEYPI_CUA_DRIVER_PATH`, `GOOEYPI_COMPUTER_USE_SKILL_PATH`).
 - Paths: agent dir `~/.omp/agent/`; sessions `~/.omp/agent/sessions/<bucket>/<ISO-timestamp>_<uuid>.jsonl` (bucket = scope-basename-hash of cwd); settings `~/.omp/agent/config.yml`; extensions `~/.omp/agent/extensions/`; auth in `~/.omp/agent/agent.db` (SQLite — never read by OMP Desktop).
-- Plugins: `omp plugin install <target> --json` installs user-scoped packages under `~/.omp/plugins` by default; project packages live under `<project>/.omp/plugins`. Native skills are discovered from `~/.omp/skills`, project `.omp/skills`, and shared `.agents/skills`. Native MCP files are `~/.omp/agent/mcp.json` and project `.omp/mcp.json`.
+- Plugins: `omp plugin install <target> --json` installs user-scoped packages under `~/.omp/plugins` by default; project packages live under `<project>/.omp/plugins`. Native skills are discovered from `~/.omp/skills`, `~/.agents/skills`, project `.omp/skills`, project `.agents/skills`, and plugin package `skills/` trees. Native MCP files are `~/.omp/agent/mcp.json` and project `.omp/mcp.json`.
 - Model catalog: `omp models --json` → `{ models: [{ provider, id, selector, name, contextWindow, maxTokens, reasoning, thinking: string[]|null, input: string[], cost }] }`. The CLI carries no per-model fast-mode metadata, so fast-mode support is derived from the model identity itself: OMP's `set_fast_mode` maps to OpenAI Codex service tiers, which exist for the `openai-codex` GPT-5.4/5.5/5.6 families.
-- The argv contract (`--mode rpc`, `--cwd`, `--resume`, `--model`, `--thinking`, `--approval-mode`, `--extension`) was verified live against omp 17.2.11: `omp --help` lists every long form, and the in-app validation run spawned a runtime with all of them accepted.
+- The argv contract (`--mode rpc`, `--cwd`, `--resume`, `--model`, `--thinking`, `--approval-mode`, `--extension`) was verified live against omp 19.0.1: `omp --help` lists every long form, and the in-app validation run spawned a runtime with all of them accepted.
 
 ## Protocol: JSONL framing
 
@@ -31,11 +31,11 @@ OMP RPC is newline-delimited JSON over stdio with a request/response envelope: r
 An OMP adapter inside `electron/main/agent-rpc/` owns everything harness-specific:
 
 ### Handshake
-1. On start OMP pushes `{"type":"ready","protocolVersion":1,"supportedProtocolVersions":[1,2],...}`.
-2. We send `negotiate_protocol { protocolVersion: 2 }`.
+1. On start OMP pushes `{"type":"ready","protocolVersion":1,"supportedProtocolVersions":[1,2],"maxFrameBytes":1048576,"maxReassembledFrameBytes":67108864,"supportsBashExcludeFromContext":true}`.
+2. We send `negotiate_protocol { protocolVersion: 2 }`; OMP 19 accepts only v2.
 3. In v2, oversized frames arrive as base64 `rpc_chunk` sequences (`chunkId`, `index`, `count`, `data`); the OMP runtime reassembles them (bounded by the existing 16 MiB read limit) before normal dispatch.
-4. Then the shared handshake continues: `get_state` → `updateFromState` → `get_session_stats`.
-5. OMP also pushes `available_commands_update` (slash commands with metadata); forwarded to the renderer for future palette use, ignored by the reducer.
+4. Then the shared handshake continues: `get_state` → `updateFromState` → `get_session_stats`, plus best-effort `set_subagent_subscription {level:'events'}` and `set_ask_dialog {enabled:true}`.
+5. OMP also pushes `available_commands_update` (slash commands with metadata, including discovered skills as `skill:<name>` with `source: 'skill'`); forwarded to the renderer and used by the composer catalog.
 
 ### Command mapping (renderer keeps speaking the existing vocabulary)
 
@@ -46,9 +46,13 @@ The renderer sends command objects validated against the fixed allowlist; the ad
 | `fork {entryId}` | `branch {entryId}` |
 | `get_fork_messages` | `get_branch_messages` |
 | `set_service_tier {serviceTier}` | `set_fast_mode {enabled: serviceTier === 'priority'}` |
-| everything else | unchanged (`prompt`, `steer`, `follow_up`, `abort`, `new_session`, `get_state`, `set_model`, `set_thinking_level`, `switch_session`, `compact`, `set_auto_compaction`, `set_auto_retry`, `set_session_name`, `set_steering_mode`, `set_follow_up_mode`, `get_*`, `extension_ui_response`) |
+| everything else | unchanged (`prompt`, `steer`, `follow_up`, `abort`, `new_session`, `get_state`, `set_model`, `set_thinking_level`, `switch_session`, `compact`, `set_auto_compaction`, `set_auto_retry`, `set_session_name`, `set_steering_mode`, `set_follow_up_mode`, `get_*`, `bash`, `abort_bash`, `extension_ui_response`) |
 
-Commands inherited from the removed Prime harness (`send_message`, the heartbeat family, `clone`) are rejected by the command schema with a clear error. User-driven shell execution rides `bash {command}` (non-empty string ≤ 64 KiB) and its cancel counterpart `abort_bash {}` — both pass through unchanged; the composer `!` shorthand routes here (TUI parity). The response for `bash` is OMP's `BashResult` (`output`, `cancelled`, `truncated`, `exitCode?`, `timedOut?`, `artifactId?`/`artifactElidedBytes?`, `images?`) and renders as a transcript tool row; `bash` RPC runs on the upstream side channel, so it also works mid-turn, and its client timeout is 10 minutes because the response lands only when the command finishes. The wire has no `excludeFromContext`, so the TUI's `!!` variant is refused at the renderer; the `$`/`$$` Python shortcut has no RPC counterpart at all (documented gap, also refused rather than faked). `prompt` responses may carry `data.agentInvoked === false` (local slash command, no agent turn) and OMP may later push a standalone `prompt_result` frame. No dedicated renderer handling exists or is needed: interactive prompts never block on per-prompt turn completion, so a local-only prompt simply completes its request/response cycle, and `prompt_result` frames are forwarded as unknown events the reducer ignores.
+Commands inherited from the removed Prime harness (`send_message`, the heartbeat family, `clone`) are rejected by the command schema with a clear error. The phantom `get_commands` allowlist entry was removed in the 19.0.1 pass; the catalog command is `get_available_commands`. User-driven shell execution rides `bash {command, excludeFromContext?}` (non-empty command ≤ 64 KiB) and its cancel counterpart `abort_bash {}`; the composer `!` shorthand routes here (TUI parity). `!!` is sent only when the ready frame advertised `supportsBashExcludeFromContext: true`; otherwise it is refused at the renderer and manager instead of being silently downgraded to `!`. The response for `bash` is OMP's `BashResult` (`output`, `cancelled`, `truncated`, `exitCode?`, `timedOut?`, `artifactId?`/`artifactElidedBytes?`, `images?`) and renders as a transcript tool row; `bash` RPC runs on the upstream side channel, so it also works mid-turn, and its client timeout is 10 minutes because the response lands only when the command finishes. The `$`/`$$` Python shortcut has no RPC counterpart (documented gap, refused rather than faked). `prompt` responses may carry `data.agentInvoked === false` (local slash command, no agent turn) and OMP may later push a standalone `prompt_result` frame; `prompt_result` frames are forwarded and the reducer ignores unknown events.
+
+### Skills
+
+OMP discovers skills from `~/.omp/skills`, `~/.agents/skills`, project `.omp/skills`, project `.agents/skills`, and plugin package `skills/` trees, then exposes each as a `skill:<name>` slash command in `available_commands_update` with `source: 'skill'`. The desktop's composer `+` menu opens `/skill:` suggestions; selecting one sends the native prompt command, which loads the skill body in OMP. `@name` mentions remain routing prose for desktop capabilities and do not replace the native command. The desktop never passes `--skills` or `--no-skills`; OMP's own discovery settings remain authoritative.
 
 ### Event normalization (main process, before forwarding)
 

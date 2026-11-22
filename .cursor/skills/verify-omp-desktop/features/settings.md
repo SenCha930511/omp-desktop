@@ -1,7 +1,7 @@
 # Settings
 
 Settings opens over the workspace as a sectioned page (General, Appearance,
-Harness, Providers, Voice, Browser, Terminal, Privacy, About). A user
+Harness, Session, Providers, Voice, Browser, Privacy, About). A user
 opens it, switches sections, and closes it back to the workspace.
 
 ## Sub-features
@@ -23,20 +23,20 @@ Preconditions:
 
 - Doctor is green.
 
-- **Open and tour sections.** Open Settings, then visit Appearance and Terminal. Run
+- **Open and tour sections.** Open Settings, then visit Appearance and Privacy. Run
   `xvfb-run -a node .cursor/skills/verify-gooeypi/control.mjs drive settings --out /tmp/gooeypi-verify/settings`.
   Expected `PROVEN:` lines: `Settings opened -> "General" heading visible`,
   `Settings section "Appearance" -> heading visible`,
-  `Settings section "Terminal" -> heading visible`,
+  `Settings section "Privacy" -> heading visible`,
   `Escape closed Settings -> returned to app shell`.
 - **Proof.** The run writes `settings-general.png`, `settings-appearance.png`,
-  and `settings-terminal.png` (plus `.aria.txt`) to the `--out` dir. Appearance shows
-  the System/Light/Dark theme control; Terminal shows the shell picker.
+  and `settings-privacy.png` (plus `.aria.txt`) to the `--out` dir. Appearance shows
+  the System/Light/Dark theme control; Privacy shows the privacy toggles.
 
 ## Gotchas
 
 - The Settings section headings collide with other page text; assert the heading
-  role (e.g. `heading` name `Terminal` exact) rather than any occurrence of the word.
+  role (e.g. `heading` name `Privacy` exact) rather than any occurrence of the word.
 - `Escape` closes Settings via its focus trap. If a section has focus inside a
   text field, `Escape` still closes the page here, but verify the app shell is
   visible again (`.app-shell[data-ready="true"]`) rather than assuming.

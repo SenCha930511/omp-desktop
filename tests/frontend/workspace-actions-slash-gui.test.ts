@@ -130,7 +130,6 @@ function fixture({ runtime: configuredRuntime = null, ownsStreaming = false, wit
     setSubmitting: vi.fn(),
     refreshSchedules: vi.fn(),
     resetBrowserView: vi.fn(),
-    closeTerminalForSession: vi.fn(),
     clearSessionAttention: vi.fn(),
     bumpRecentSessionOpen: vi.fn(),
     reportError,
@@ -178,20 +177,24 @@ describe('GUI-entry slash dispatch', () => {
     expect(state.queuePrompt).not.toHaveBeenCalled()
   })
 
-  it('dispatches /new to the durable new-session boundary instead of a prompt', async () => {
+  it('dispatches /new as an empty draft instead of a prompt or engine boundary', async () => {
     const state = fixture({ runtime: runtime() })
     await state.actions.sendPrompt('/new')
+
     expect(state.command).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ type: 'prompt' }))
-    await vi.waitFor(() => expect(state.command).toHaveBeenCalledWith('started-runtime', { type: 'new_session' }))
-    expect(state.start).toHaveBeenCalled()
+    expect(state.command).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ type: 'new_session' }))
+    expect(state.start).not.toHaveBeenCalled()
+    expect(state.setView).toHaveBeenCalledWith('session')
     expect(state.openSessionTree).not.toHaveBeenCalled()
   })
 
   it('does not interrupt the running turn for /new', async () => {
     const state = fixture({ runtime: runtime('busy-runtime', true), ownsStreaming: true })
     await state.actions.sendPrompt('/new')
+
     expect(state.queuePrompt).not.toHaveBeenCalled()
-    await vi.waitFor(() => expect(state.command).toHaveBeenCalledWith('started-runtime', { type: 'new_session' }))
+    expect(state.command).not.toHaveBeenCalledWith('busy-runtime', expect.objectContaining({ type: 'abort' }))
+    expect(state.start).not.toHaveBeenCalled()
   })
 
   it('branches the current session for an idle /fork via the existing sidebar fork path', async () => {

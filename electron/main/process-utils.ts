@@ -1,11 +1,14 @@
-import { constants as fsConstants, readdirSync } from 'node:fs'
+import { constants as fsConstants, readdirSync, statSync } from 'node:fs'
 import { access, readdir } from 'node:fs/promises'
 import { delimiter, posix, win32 } from 'node:path'
-import { spawn, type ChildProcess } from 'node:child_process'
+import { execFile, spawn, type ChildProcess } from 'node:child_process'
 import { homedir } from 'node:os'
+import { promisify } from 'node:util'
 import { createAdmissionQueue } from './lib/async'
 import type { HarnessDescriptor } from './harness'
 import type { ProcessFailureReason, ProcessOutcome } from '../../src/types/api'
+
+const execFileAsync = promisify(execFile)
 
 export interface ProcessResult {
   code: number
@@ -106,6 +109,30 @@ function runWindowsTaskkill(pid: number): Promise<void> {
     child.once('error', finish)
     child.once('close', finish)
   })
+}
+
+/**
+ * Snapshot of every live descendant of `rootPid`. Shell children can detach
+ * from the process group, so callers signal this list alongside the group.
+ * Windows has no portable `ps`, so it resolves empty there.
+ */
+export async function processTree(rootPid: number): Promise<number[]> {
+  if (process.platform === 'win32') return []
+  let output = ''
+  try {
+    const result = await execFileAsync('/bin/ps', ['-axo', 'pid=,ppid='], { encoding: 'utf8', timeout: 2_000, maxBuffer: 4 * 1024 * 1024 })
+    output = result.stdout
+  } catch { return [] }
+  const children = new Map<number, number[]>()
+  for (const line of output.split('\n')) {
+    const [pidValue, parentValue] = line.trim().split(/\s+/).map(Number)
+    if (!Number.isSafeInteger(pidValue) || !Number.isSafeInteger(parentValue)) continue
+    const entries = children.get(parentValue) ?? []; entries.push(pidValue); children.set(parentValue, entries)
+  }
+  const descendants: number[] = []
+  const visit = (pid: number) => { for (const child of children.get(pid) ?? []) { visit(child); descendants.push(child) } }
+  visit(rootPid)
+  return descendants
 }
 
 /**
@@ -334,10 +361,18 @@ export function prepareExecutableSpawn(
   return { file, args: [...args], env: executableChildEnvironment(file, env, process.platform) }
 }
 
+const MAX_RUNTIME_DIR_CACHE_ENTRIES = 4
+const runtimeDirCache = new Map<string, { mtimeMs: number; directories: string[] }>()
+
 /**
  * Returns bounded Node-version-manager runtime directories for env shebangs.
  * A package-manager shim can live outside the Node installation that owns its
  * interpreter (for example pnpm under ~/Library/pnpm with Node under nvm).
+ *
+ * Every spawn asks for these, so the sorted scan is cached against the
+ * directory's mtime: installing or removing a Node version touches that mtime
+ * and the next spawn rescans. A missing or unreadable directory is never
+ * cached, so the first spawn after an nvm install still sees it.
  */
 function versionManagerRuntimeDirs(
   env: NodeJS.ProcessEnv,
@@ -350,14 +385,32 @@ function versionManagerRuntimeDirs(
   }
   const root = env.NVM_DIR && posix.isAbsolute(env.NVM_DIR) ? env.NVM_DIR : posix.join(home, '.nvm')
   const versionsRoot = posix.join(root, 'versions', 'node')
+  let mtimeMs: number
   try {
-    return readdirSync(versionsRoot, { withFileTypes: true })
+    mtimeMs = statSync(versionsRoot).mtimeMs
+  } catch {
+    runtimeDirCache.delete(versionsRoot)
+    return []
+  }
+  const cached = runtimeDirCache.get(versionsRoot)
+  if (cached && cached.mtimeMs === mtimeMs) return [...cached.directories]
+  let directories: string[]
+  try {
+    directories = readdirSync(versionsRoot, { withFileTypes: true })
       .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
       .map((entry) => entry.name)
       .sort((left, right) => right.localeCompare(left, 'en', { numeric: true }))
       .slice(0, 64)
       .map((version) => posix.join(versionsRoot, version, 'bin'))
   } catch { return [] }
+  runtimeDirCache.delete(versionsRoot)
+  runtimeDirCache.set(versionsRoot, { mtimeMs, directories })
+  while (runtimeDirCache.size > MAX_RUNTIME_DIR_CACHE_ENTRIES) {
+    const oldest = runtimeDirCache.keys().next().value
+    if (oldest === undefined) break
+    runtimeDirCache.delete(oldest)
+  }
+  return [...directories]
 }
 
 export function restrictedGitEnvironment(): NodeJS.ProcessEnv {

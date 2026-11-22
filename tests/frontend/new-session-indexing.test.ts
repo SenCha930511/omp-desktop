@@ -85,7 +85,7 @@ describe('new session indexing', () => {
       sessionFile: titled.filePath,
       prompt: 'Prompt fallback title',
       setSessions,
-    })).resolves.toBeUndefined()
+    })).resolves.toMatchObject({ id: 'created', title: 'Harness generated title' })
 
     expect(sessions.find((session) => session.id === 'created')?.title).toBe('Harness generated title')
   })

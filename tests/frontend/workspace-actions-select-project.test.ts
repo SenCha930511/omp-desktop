@@ -127,7 +127,7 @@ describe('selectProject workspace resume', () => {
 })
 
 describe('selectSession recent-use tracking', () => {
-  it('records the open and touches the containing project so both jump to the top', async () => {
+  it('touches the containing project without bumping session order on click', async () => {
     const bumpRecentSessionOpen = vi.fn()
     const touch = vi.fn()
     const actions = createWorkspaceActions(
@@ -153,11 +153,11 @@ describe('selectSession recent-use tracking', () => {
 
     await actions.selectSession(session)
 
-    expect(bumpRecentSessionOpen).toHaveBeenCalledWith('session')
+    expect(bumpRecentSessionOpen).not.toHaveBeenCalled()
     expect(touch).toHaveBeenCalledWith('project', 'omp')
   })
 
-  it('still records the open for an inferred project but never touches it', async () => {
+  it('never bumps session order or touches an inferred project on click', async () => {
     const inferred = { ...project, inferred: true }
     const bumpRecentSessionOpen = vi.fn()
     const touch = vi.fn()
@@ -184,7 +184,7 @@ describe('selectSession recent-use tracking', () => {
 
     await actions.selectSession(session)
 
-    expect(bumpRecentSessionOpen).toHaveBeenCalledWith('session')
+    expect(bumpRecentSessionOpen).not.toHaveBeenCalled()
     expect(touch).not.toHaveBeenCalled()
   })
 })

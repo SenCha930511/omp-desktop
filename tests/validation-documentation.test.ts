@@ -51,15 +51,16 @@ function dispatchOnly(job: RecordValue): boolean {
 }
 
 function matrixContexts(jobId: string, job: RecordValue): string[] {
+  const contextName = typeof job.name === 'string' && job.name.trim() ? job.name : jobId
   const matrix = record(record(job.strategy).matrix)
   const include = matrix.include
-  if (!Array.isArray(include)) return [jobId]
+  if (!Array.isArray(include)) return [contextName]
 
   return include.map((entry) => {
     const values = Object.values(record(entry))
       .filter((value) => value !== '' && value !== null && value !== undefined)
       .map(String)
-    return values.length > 0 ? `${jobId} (${values.join(', ')})` : jobId
+    return values.length > 0 ? `${contextName} (${values.join(', ')})` : contextName
   })
 }
 

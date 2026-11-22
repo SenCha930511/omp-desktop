@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { DesktopApi, HarnessUpdateState } from '@/types/api'
 
 const IDLE_STATE: HarnessUpdateState = { phase: 'idle' }
@@ -37,5 +37,7 @@ export function useHarnessUpdates(bridge: DesktopApi | null, reportError: (error
     }
   }, [bridge, reportError])
 
-  return { state, install }
+  // Memoized so consumers can depend on the whole result without a fresh
+  // object per render churning their callback identities.
+  return useMemo(() => ({ state, install }), [state, install])
 }

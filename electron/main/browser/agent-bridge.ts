@@ -1,11 +1,9 @@
 import { CapabilityBridge, type CapabilityClaim } from '../lib/capability-bridge'
 import { canonicalSessionPath } from '../session-paths'
-import type { TerminalService } from '../terminal'
 import type { AgentBrowserService } from './agent-service'
 
 export interface AgentBrowserBridgeOptions {
   service: AgentBrowserService
-  terminals: Pick<TerminalService, 'readActive'>
   extensionPath: string
   skillPath: string
 }
@@ -54,11 +52,6 @@ export class AgentBrowserBridge extends CapabilityBridge {
 
   private call(method: string, params: Record<string, unknown>, sessionKey: string): Promise<unknown> {
     const service = this.options.service
-    if (method === 'terminal.read') {
-      const active = this.options.terminals.readActive(sessionKey)
-      if (!active) throw new Error('No active terminal is open for this task')
-      return Promise.resolve(active)
-    }
     if (method === 'tabs.list') return service.listTabs(sessionKey)
     if (method === 'tabs.open') return service.openTab(sessionKey, params)
     if (method === 'tabs.close') return service.closeTabScoped(sessionKey, params)

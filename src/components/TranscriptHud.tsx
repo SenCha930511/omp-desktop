@@ -38,7 +38,11 @@ function TodoHud({ phases }: { phases: TodoPhase[] }) {
         <ListTodo size={13} aria-hidden="true" />
         <span className="todo-hud__title">{t('transcript.todo.title')}</span>
         <span className="todo-hud__progress">{t('transcript.todo.progress', { done, total: tasks.length })}</span>
-        {current ? <span className="todo-hud__current">{current.content}</span> : null}
+        {current ? (
+          <span className="todo-hud__current-wrap">
+            <span className="todo-hud__current">{current.content}</span>
+          </span>
+        ) : null}
         <ChevronDown size={12} className={open ? 'is-expanded' : undefined} aria-hidden="true" />
       </button>
       {open ? (

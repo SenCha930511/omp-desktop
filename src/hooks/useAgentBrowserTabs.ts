@@ -19,6 +19,8 @@ export interface AgentBrowserApi {
   pointerEvent: StampedPointerEvent | null
   /** Latest agent browser action, for surfacing the Browser panel. */
   activityEvent: StampedActivityEvent | null
+  /** Per-tab activity sequence; the idle layer resets every changed tab's clock. */
+  activityByTab: ReadonlyMap<string, number>
   attach(tabId: string, webContentsId: number): void
   select(tabId: string): void
   close(tabId: string): void
@@ -32,6 +34,7 @@ export function useAgentBrowserTabs({ bridge, reportError }: UseAgentBrowserTabs
   const [tabs, setTabs] = useState<AgentBrowserTabRecord[]>([])
   const [pointerEvent, setPointerEvent] = useState<StampedPointerEvent | null>(null)
   const [activityEvent, setActivityEvent] = useState<StampedActivityEvent | null>(null)
+  const [activityByTab, setActivityByTab] = useState<ReadonlyMap<string, number>>(() => new Map())
   const pointerSeqRef = useRef(0)
 
   useEffect(() => {
@@ -47,7 +50,13 @@ export function useAgentBrowserTabs({ bridge, reportError }: UseAgentBrowserTabs
     })
     const unsubscribeActivity = bridge.browser.onActivity((event) => {
       pointerSeqRef.current += 1
-      setActivityEvent({ ...event, seq: pointerSeqRef.current })
+      const seq = pointerSeqRef.current
+      setActivityEvent({ ...event, seq })
+      setActivityByTab((current) => {
+        const next = new Map(current)
+        next.set(event.tabId, seq)
+        return next
+      })
     })
     return () => { live = false; unsubscribe(); unsubscribePointer(); unsubscribeActivity() }
   }, [bridge, reportError])
@@ -65,5 +74,5 @@ export function useAgentBrowserTabs({ bridge, reportError }: UseAgentBrowserTabs
     if (bridge) void bridge.browser.closeTab(tabId).catch(reportError)
   }, [bridge, reportError])
 
-  return { tabs, pointerEvent, activityEvent, attach, select, close }
+  return { tabs, pointerEvent, activityEvent, activityByTab, attach, select, close }
 }

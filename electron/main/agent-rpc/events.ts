@@ -15,7 +15,11 @@ const DEFAULT_AGENT_EVENT_LIMITS: AgentEventLimits = {
   windowMs: 1_000,
 }
 
-/** Applies the same byte accounting to real and synthetic events before they reach Electron IPC. */
+/**
+ * Applies the same byte accounting to real and synthetic events before they
+ * reach Electron IPC. Real events can pass a hint measured from the raw JSONL
+ * frame, which avoids reserializing the envelope on the hot path.
+ */
 export class AgentEventForwarder {
   private readonly limits: AgentEventLimits
   private windowStarted = Date.now()
@@ -24,6 +28,13 @@ export class AgentEventForwarder {
   private windowBytes = 0
   private runtimeExitDelivered = false
   private readonly reportedLimits = new Set<string>()
+  /**
+   * Bytes of `{"runtimeId":<json>,"event":` plus the closing `}`. The envelope
+   * text is exactly that wrapper around `JSON.stringify(event)`, so a
+   * conservative event-payload hint plus this constant bounds the envelope
+   * without reserializing it.
+   */
+  private readonly envelopeOverheadBytes: number
 
   constructor(
     private readonly runtimeId: string,
@@ -31,9 +42,15 @@ export class AgentEventForwarder {
     limits: Partial<AgentEventLimits> = {},
   ) {
     this.limits = { ...DEFAULT_AGENT_EVENT_LIMITS, ...limits }
+    this.envelopeOverheadBytes = Buffer.byteLength(`{"runtimeId":${JSON.stringify(runtimeId)},"event":`) + 1
   }
 
-  emit(event: RpcObject): void {
+  /**
+   * @param eventBytesHint Upper bound on `JSON.stringify(event)` bytes, measured
+   *   from the raw frame by the runtime. Omitted for synthetic events, which are
+   *   measured exactly.
+   */
+  emit(event: RpcObject, eventBytesHint?: number): void {
     this.resetWindowIfNeeded()
     // runtime_exit is the renderer's only signal that the agent is gone; it is
     // exempt from the rate caps and always delivered exactly once.
@@ -54,7 +71,9 @@ export class AgentEventForwarder {
     }
 
     const envelope: PrimeEventEnvelope = { runtimeId: this.runtimeId, event }
-    const bytes = this.serializedBytes(envelope)
+    const bytes = eventBytesHint === undefined
+      ? this.serializedBytes(envelope)
+      : eventBytesHint + this.envelopeOverheadBytes
     if (bytes === null || bytes > this.limits.maxEnvelopeBytes) {
       this.reportLimit('envelope', 'OMP agent event exceeded the desktop envelope byte limit')
       return

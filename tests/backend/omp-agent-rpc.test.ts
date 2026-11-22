@@ -2,7 +2,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { AgentRpcManager, OMP_RPC_ADAPTER } from '../../electron/main/agent-rpc'
+import { AgentEventForwarder, AgentRpcManager, OMP_RPC_ADAPTER } from '../../electron/main/agent-rpc'
 import type { ProviderCatalog } from '../../electron/main/agent-rpc'
 import {
   RPC_CHUNK_ASSEMBLY_INACTIVITY_MS,
@@ -32,6 +32,10 @@ afterEach(async () => {
 interface FakeOmpOptions {
   /** JavaScript statements the fake runs after acknowledging a prompt. */
   promptScript?: string
+  /** JavaScript statements the fake runs after answering an abort. */
+  abortScript?: string
+  /** JavaScript statements the fake runs instead of answering a compact; it must send the response itself. */
+  compactScript?: string
   /** When false the fake rejects negotiate_protocol like an unsupported version. */
   acceptNegotiate?: boolean
   sessionActions?: Record<string, unknown>
@@ -46,6 +50,8 @@ interface FakeOmpOptions {
   catalogModels?: unknown[]
   /** get_state 回報的 usageLimit 初值;可被 promptScript 改寫。 */
   usageLimit?: 'low_priority' | 'wrap_up'
+  /** When false the ready frame omits supportsBashExcludeFromContext. */
+  bashExcludeFromContext?: boolean
 }
 
 function fakeOmpAgent(options: FakeOmpOptions = {}): { cwd: string; executable: string } {
@@ -68,7 +74,7 @@ let streaming = false
 let askDialogEnabled = false
 let usageLimitVar = ${JSON.stringify(fakeUsageLimit)}
 let sessionFileVar = ${JSON.stringify(options.initialSessionFile ?? null)}
-send({ type: 'ready', protocolVersion: 1, supportedProtocolVersions: [1, 2] })
+send({ type: 'ready', protocolVersion: 1, supportedProtocolVersions: [1, 2]${options.bashExcludeFromContext === false ? '' : ', supportsBashExcludeFromContext: true'} })
 send({ type: 'available_commands_update', commands: [{ name: 'help' }] })
 send({ type: 'fake_argv', argv: process.argv.slice(2) })
 readline.createInterface({ input: process.stdin }).on('line', (line) => {
@@ -102,6 +108,12 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     } })
   } else if (command.type === 'get_session_stats') {
     send({ id: command.id, type: 'response', command: 'get_session_stats', success: true, data: { contextUsage: { tokens: 12000, contextWindow: 200000, percent: 6 }, tokens: { input: 9000, output: 3000, cacheRead: 0, cacheWrite: 0, total: 12000 } } })
+  } else if (command.type === 'get_tree') {
+    // Compaction leaf diagnostics: answer immediately so the compact path does
+    // not wait out the 5s readLeafId deadline.
+    send({ id: command.id, type: 'response', command: 'get_tree', success: true, data: { tree: {}, leafId: 'leaf-1' } })
+  } else if (command.type === 'compact') {
+    ${options.compactScript ?? `send({ id: command.id, type: 'response', command: 'compact', success: true, data: { agentInvoked: false } })`}
   } else if (command.type === 'set_thinking_level') {
     send({ id: command.id, type: 'response', command: command.type, success: true })
   } else if (command.type === 'set_ask_dialog') {
@@ -142,6 +154,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     send({ id: command.id, type: 'response', command: command.type, success: true, data: { accepted: true } })
   } else if (command.type === 'abort') {
     send({ id: command.id, type: 'response', command: 'abort', success: true })
+    ${options.abortScript ?? ''}
   }
 })
 `)
@@ -372,6 +385,7 @@ describe('OMP RPC handshake', () => {
     expect(runtime.slowModeEnabled).toBe(false)
     expect(runtime.fastModeAvailable).toBe(true)
     expect(runtime.fastModeSupported).toBe(true)
+    expect(runtime.bashExcludeFromContext).toBe(true)
     // contextUsage arrives directly in get_state data.
     expect(runtime.contextUsage).toEqual({ tokens: 12_000, contextWindow: 200_000, percent: 6 })
     // Stats without a cost field (older builds) still surface token totals with a null cost.
@@ -379,6 +393,16 @@ describe('OMP RPC handshake', () => {
     // Unsolicited pre-request frames are tolerated and forwarded for the renderer to ignore.
     await waitUntil(() => events.some((event) => event.type === 'ready'))
     expect(events.some((event) => event.type === 'available_commands_update')).toBe(true)
+  })
+
+  it('rejects excluded bash when the ready frame did not advertise it', async () => {
+    const fake = fakeOmpAgent({ bashExcludeFromContext: false })
+    const manager = ompManager(fake.executable)
+
+    const runtime = await manager.start({ cwd: fake.cwd })
+
+    expect(runtime.bashExcludeFromContext).toBe(false)
+    await expect(manager.command(runtime.runtimeId, { type: 'bash', command: 'ls', excludeFromContext: true })).rejects.toThrow('does not support excluding shell output')
   })
 
   it('fails the handshake when protocol negotiation is rejected', async () => {
@@ -969,6 +993,186 @@ describe('OMP RPC event normalization', () => {
     expect(ends).toHaveLength(1)
     expect(ends[0].isTerminal).toBe(true)
   })
+
+  it('renders the native manual compaction lifecycle before the compact command settles', async () => {
+    const fake = fakeOmpAgent({ compactScript: `
+    send({ type: 'manual_compaction_start' })
+    setTimeout(() => {
+      send({ type: 'manual_compaction_end', aborted: false, result: { summary: 'Summarized.', firstKeptEntryId: 'kept-1', tokensBefore: 95000 } })
+      send({ id: command.id, type: 'response', command: 'compact', success: true, data: { agentInvoked: false } })
+    }, 150)` })
+    const manager = ompManager(fake.executable)
+    const events: Array<Record<string, unknown>> = []
+    manager.setEventSink(({ event }) => events.push(event))
+    const runtime = await manager.start({ cwd: fake.cwd })
+
+    const compacting = manager.command(runtime.runtimeId, { type: 'compact' })
+    // The divider must open while the command is still in flight: this is the
+    // buffered-lifecycle case the get_state watchdog used to cover.
+    await waitUntil(() => events.some((event) => event.type === 'compaction_start'))
+    expect(events.filter((event) => event.type === 'compaction_end')).toEqual([])
+    expect(manager.list()[0]).toMatchObject({ isCompacting: true })
+    await compacting
+    await waitUntil(() => events.some((event) => event.type === 'compaction_end'))
+
+    expect(events.filter((event) => event.type === 'compaction_start')).toEqual([{ type: 'compaction_start', reason: 'manual' }])
+    expect(events.find((event) => event.type === 'compaction_end')).toMatchObject({
+      type: 'compaction_end',
+      reason: 'manual',
+      aborted: false,
+      willRetry: false,
+      result: { summary: 'Summarized.', firstKeptEntryId: 'kept-1', tokensBefore: 95_000 },
+    })
+    expect(events.some((event) => String(event.type).startsWith('manual_compaction'))).toBe(false)
+    expect(manager.list()[0]).toMatchObject({ isCompacting: false })
+  })
+
+  it('follows the native manual end and the session record for the token delta', async () => {
+    const scaffold = fakeOmpAgent()
+    const sessionFile = join(scaffold.cwd, 'session-manual.jsonl')
+    writeFileSync(sessionFile, `${JSON.stringify({ type: 'session', id: 'omp-session', cwd: scaffold.cwd, timestamp: '2026-11-20T00:00:00.000Z' })}\n`)
+    const fake = fakeOmpAgent({
+      initialSessionFile: sessionFile,
+      compactScript: `
+    send({ type: 'manual_compaction_start' })
+    require('node:fs').appendFileSync(${JSON.stringify(sessionFile)}, JSON.stringify({ type: 'compaction', id: 'compact-1', parentId: null, timestamp: '2026-11-20T00:01:00.000Z', tokensBefore: 95000, tokensAfter: 21000, summary: 'Summarized.', firstKeptEntryId: 'kept-1' }) + '\\n')
+    send({ type: 'manual_compaction_end', aborted: false, result: { summary: 'Summarized.', firstKeptEntryId: 'kept-1', tokensBefore: 95000 } })
+    send({ id: command.id, type: 'response', command: 'compact', success: true, data: { agentInvoked: false } })`,
+    })
+    const manager = ompManager(fake.executable)
+    const events: Array<Record<string, unknown>> = []
+    manager.setEventSink(({ event }) => events.push(event))
+    const runtime = await manager.start({ cwd: fake.cwd, sessionPath: sessionFile })
+
+    await manager.command(runtime.runtimeId, { type: 'compact' })
+
+    await waitUntil(() => events.filter((event) => event.type === 'compaction_end').length === 2)
+    expect(events.filter((event) => event.type === 'compaction_start')).toHaveLength(1)
+    const [native, recorded] = events.filter((event) => event.type === 'compaction_end')
+    // The harness result has no tokensAfter; the record read after the command
+    // carries it, and the renderer folds it into the same divider.
+    expect(native.result).not.toHaveProperty('tokensAfter')
+    expect(recorded).toMatchObject({
+      reason: 'manual',
+      result: { tokensBefore: 95_000, tokensAfter: 21_000, summary: 'Summarized.', firstKeptEntryId: 'kept-1' },
+    })
+  })
+})
+
+describe('scheduled completion waiters', () => {
+  it('completes on a prompt_result keyed by the prompt request id', async () => {
+    const fake = fakeOmpAgent({ promptScript: `
+    streaming = true
+    send({ type: 'agent_start' })
+    setTimeout(() => send({ type: 'prompt_result', id: command.id, agentInvoked: true, status: 'completed', sessionSettled: true }), 20)` })
+    const manager = ompManager(fake.executable)
+    const runtime = await manager.start({ cwd: fake.cwd })
+
+    const startedAt = Date.now()
+    const completed = await manager.runPromptToCompletion(runtime.runtimeId, 'continue')
+
+    // get_state keeps reporting streaming, so only the prompt_result can have
+    // settled this before the 2s fallback probe.
+    expect(Date.now() - startedAt).toBeLessThan(1_500)
+    expect(completed.sessionId).toBe('omp-session')
+  })
+
+  it('resolves when the prompt_result arrives before the waiter is installed', async () => {
+    const fake = fakeOmpAgent({ promptScript: `
+    streaming = true
+    send({ type: 'agent_start' })
+    send({ type: 'prompt_result', id: command.id, agentInvoked: true, status: 'completed', sessionSettled: true })` })
+    const manager = ompManager(fake.executable)
+    const runtime = await manager.start({ cwd: fake.cwd })
+
+    const startedAt = Date.now()
+    await expect(manager.runPromptToCompletion(runtime.runtimeId, 'continue')).resolves.toMatchObject({ sessionId: 'omp-session' })
+    expect(Date.now() - startedAt).toBeLessThan(1_500)
+  })
+
+  it('accepts an id-less prompt_result from a harness that does not echo request ids', async () => {
+    const fake = fakeOmpAgent({ promptScript: `
+    streaming = true
+    send({ type: 'agent_start' })
+    setTimeout(() => send({ type: 'prompt_result', agentInvoked: true, status: 'completed', sessionSettled: true }), 20)` })
+    const manager = ompManager(fake.executable)
+    const runtime = await manager.start({ cwd: fake.cwd })
+
+    const startedAt = Date.now()
+    await expect(manager.runPromptToCompletion(runtime.runtimeId, 'continue')).resolves.toMatchObject({ sessionId: 'omp-session' })
+    expect(Date.now() - startedAt).toBeLessThan(1_500)
+  })
+
+  it('rejects when the runtime exits before the prompt completes', async () => {
+    const fake = fakeOmpAgent({ promptScript: `
+    streaming = true
+    send({ type: 'agent_start' })
+    setTimeout(() => process.exit(1), 30)` })
+    const manager = ompManager(fake.executable)
+    const runtime = await manager.start({ cwd: fake.cwd })
+
+    await expect(manager.runPromptToCompletion(runtime.runtimeId, 'continue'))
+      .rejects.toThrow('Scheduled runtime exited before the prompt completed')
+  })
+
+  it('aborts and rejects after the timeout without leaving a waiter behind', async () => {
+    const fake = fakeOmpAgent({
+      promptScript: `
+    streaming = true
+    send({ type: 'agent_start' })`,
+      abortScript: `send({ type: 'fake_abort' })`,
+    })
+    const manager = ompManager(fake.executable)
+    const events: Array<Record<string, unknown>> = []
+    manager.setEventSink(({ event }) => events.push(event))
+    const runtime = await manager.start({ cwd: fake.cwd })
+
+    await expect(manager.runPromptToCompletion(runtime.runtimeId, 'continue', 1_000))
+      .rejects.toThrow('Scheduled run timed out')
+    await waitUntil(() => events.some((event) => event.type === 'fake_abort'))
+  })
+
+  it('falls back to a slow get_state probe for harnesses without prompt_result', async () => {
+    const fake = fakeOmpAgent({ promptScript: `
+    streaming = true
+    send({ type: 'agent_start' })
+    setTimeout(() => { streaming = false; send({ type: 'agent_end', isTerminal: true }) }, 30)` })
+    const manager = ompManager(fake.executable)
+    const runtime = await manager.start({ cwd: fake.cwd })
+
+    const startedAt = Date.now()
+    await expect(manager.runPromptToCompletion(runtime.runtimeId, 'continue')).resolves.toMatchObject({ sessionId: 'omp-session' })
+    // The fallback is deliberately slow; a 200ms poll would have returned by now.
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(1_500)
+  })
+
+  it('resolves an idle wait from agent_end while get_state still reports streaming', async () => {
+    const fake = fakeOmpAgent({ promptScript: `
+    streaming = true
+    send({ type: 'agent_start' })
+    setTimeout(() => send({ type: 'agent_end', isTerminal: true }), 300)` })
+    const manager = ompManager(fake.executable)
+    const runtime = await manager.start({ cwd: fake.cwd })
+
+    await manager.command(runtime.runtimeId, { type: 'prompt', message: 'continue' })
+    await waitUntil(() => manager.list()[0]?.isStreaming === true)
+    const startedAt = Date.now()
+    await manager.waitUntilIdle(runtime.runtimeId)
+    expect(Date.now() - startedAt).toBeLessThan(1_500)
+  })
+
+  it('returns from an idle wait when the runtime exits', async () => {
+    const fake = fakeOmpAgent({ promptScript: `
+    streaming = true
+    send({ type: 'agent_start' })
+    setTimeout(() => process.exit(1), 300)` })
+    const manager = ompManager(fake.executable)
+    const runtime = await manager.start({ cwd: fake.cwd })
+
+    await manager.command(runtime.runtimeId, { type: 'prompt', message: 'continue' })
+    await waitUntil(() => manager.list()[0]?.isStreaming === true)
+    await expect(manager.waitUntilIdle(runtime.runtimeId)).resolves.toBeUndefined()
+  })
 })
 
 describe('OMP RPC chunked frames', () => {
@@ -1309,5 +1513,49 @@ describe('OMP RPC chunked frames', () => {
     expect(view.chunkAssemblySweepTimer).toBeNull()
     expect(timing.activeTimers()).toHaveLength(0)
     expect(events.some((event) => event.type === 'transport_limit')).toBe(false)
+  })
+})
+
+describe('RPC frame byte hints', () => {
+  it('hints the forwarder with the raw frame length for identity events', () => {
+    const { view } = directChunkRuntime()
+    const line = JSON.stringify({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'hi' } })
+    const emit = vi.spyOn(AgentEventForwarder.prototype, 'emit')
+
+    view.handleLine(line)
+
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({ type: 'message_update' }), Buffer.byteLength(line, 'utf8'))
+  })
+
+  it('hints the forwarder from a reassembled chunked frame', () => {
+    const { view } = directChunkRuntime()
+    const complete = Buffer.from(JSON.stringify({ type: 'message_update', text: 'chunked' }))
+    const splitAt = Math.floor(complete.length / 2)
+    const emit = vi.spyOn(AgentEventForwarder.prototype, 'emit')
+
+    view.handleFrame(chunkFrame('hinted', 0, 2, complete.subarray(0, splitAt)))
+    view.handleFrame(chunkFrame('hinted', 1, 2, complete.subarray(splitAt)))
+
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({ type: 'message_update' }), complete.length)
+  })
+
+  it('withholds the hint when normalization rewrites the frame', () => {
+    const { view } = directChunkRuntime()
+    const line = JSON.stringify({ type: 'auto_compaction_start', reason: 'auto' })
+    const emit = vi.spyOn(AgentEventForwarder.prototype, 'emit')
+
+    view.handleLine(line)
+
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({ type: 'compaction_start' }), undefined)
+  })
+
+  it('withholds the hint when a number would reserialize larger', () => {
+    const { view } = directChunkRuntime()
+    const line = '{"type":"message_update","n":1e9}'
+    const emit = vi.spyOn(AgentEventForwarder.prototype, 'emit')
+
+    view.handleLine(line)
+
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({ n: 1e9 }), undefined)
   })
 })

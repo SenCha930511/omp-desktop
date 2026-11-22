@@ -172,7 +172,10 @@ describe('SessionService catalog scaling', () => {
     await service.list()
     expect(readMetadata).toHaveBeenCalledTimes(1)
     writeSession(file, project, 'one-expanded', '2025-02-01T00:00:00.000Z')
-    expect((await service.list())[0]?.id).toBe('one-expanded')
+    // An unchanged revision serves the prepared snapshot, so the caller that
+    // rewrote the file refreshes it explicitly; only the changed mtime/size
+    // fingerprint misses the metadata cache.
+    expect((await service.list(project, false, true))[0]?.id).toBe('one-expanded')
     expect(readMetadata).toHaveBeenCalledTimes(2)
   })
 
@@ -297,12 +300,15 @@ describe('SessionService catalog scaling', () => {
     // Root plus one call per newly discovered entry.
     expect(canonicalize).toHaveBeenCalledTimes(3)
 
+    // A watch-driven invalidation is what asks for a rescan.
+    catalog.invalidateLiveCatalog()
     await catalog.all()
     // Unchanged identities reuse the cached canonical paths.
     expect(canonicalize).toHaveBeenCalledTimes(4)
     expect(canonicalize.mock.calls.slice(3).flat()).toEqual([root])
 
     identities.set('b.jsonl', { dev: 1, ino: 12 })
+    catalog.invalidateLiveCatalog()
     await catalog.all()
     expect(canonicalize).toHaveBeenCalledTimes(6)
     expect(canonicalize.mock.calls.slice(4).flat().sort()).toEqual([root, `${root}/b.jsonl`])
@@ -1385,5 +1391,78 @@ describe('SessionService branch delegation', () => {
 
     await expect(service.branch(source)).rejects.toThrow('outside')
     expect(readdirSync(join(root, '-bucket'))).toEqual([basename(source)])
+  })
+})
+
+describe('SessionService project path validation cache', () => {
+  const readProjectPath = async (service: SessionService): Promise<string> => {
+    const reader = service as unknown as { readMetadata(filePath: string): Promise<SessionMetadata> }
+    return (await reader.readMetadata('/sessions/session.jsonl')).projectPath
+  }
+
+  it('reuses a validated project path until the TTL expires', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+    try {
+      const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-project-cache-')); dirs.push(dir)
+      const firstTarget = join(dir, 'first-target'); mkdirSync(firstTarget)
+      const secondTarget = join(dir, 'second-target'); mkdirSync(secondTarget)
+      const link = join(dir, 'project'); symlinkSync(firstTarget, link, 'dir')
+      const { service } = setup(undefined, { metadataReader: async (filePath) => metadata(filePath, link, 'cached') })
+
+      expect(await readProjectPath(service)).toBe(realpathSync(firstTarget))
+      rmSync(link); symlinkSync(secondTarget, link, 'dir')
+      expect(await readProjectPath(service)).toBe(realpathSync(firstTarget))
+      vi.setSystemTime(new Date('2026-01-01T00:00:06Z'))
+      expect(await readProjectPath(service)).toBe(realpathSync(secondTarget))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('revalidates once the project path is evicted', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-project-evict-')); dirs.push(dir)
+    const firstTarget = join(dir, 'first-target'); mkdirSync(firstTarget)
+    const secondTarget = join(dir, 'second-target'); mkdirSync(secondTarget)
+    const link = join(dir, 'project'); symlinkSync(firstTarget, link, 'dir')
+    const { service } = setup(undefined, { metadataReader: async (filePath) => metadata(filePath, link, 'evicted') })
+
+    expect(await readProjectPath(service)).toBe(realpathSync(firstTarget))
+    rmSync(link); symlinkSync(secondTarget, link, 'dir')
+    service.evictProjectPaths([realpathSync(firstTarget)])
+    expect(await readProjectPath(service)).toBe(realpathSync(secondTarget))
+  })
+
+  it('never caches a failed validation', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-project-negative-')); dirs.push(dir)
+    const missing = join(dir, 'created-later')
+    const { service } = setup(undefined, { metadataReader: async (filePath) => metadata(filePath, missing, 'negative') })
+
+    expect(await readProjectPath(service)).toBe(missing)
+    mkdirSync(missing)
+    expect(await readProjectPath(service)).toBe(realpathSync(missing))
+  })
+
+  it('keeps entries scoped to their own project path', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-project-scope-')); dirs.push(dir)
+    const firstTarget = join(dir, 'first-target'); mkdirSync(firstTarget)
+    const firstNext = join(dir, 'first-next'); mkdirSync(firstNext)
+    const secondTarget = join(dir, 'second-target'); mkdirSync(secondTarget)
+    const secondNext = join(dir, 'second-next'); mkdirSync(secondNext)
+    const firstLink = join(dir, 'first-link'); symlinkSync(firstTarget, firstLink, 'dir')
+    const secondLink = join(dir, 'second-link'); symlinkSync(secondTarget, secondLink, 'dir')
+    let current = firstLink
+    const { service } = setup(undefined, { metadataReader: async (filePath) => metadata(filePath, current, 'scoped') })
+
+    expect(await readProjectPath(service)).toBe(realpathSync(firstTarget))
+    current = secondLink
+    expect(await readProjectPath(service)).toBe(realpathSync(secondTarget))
+
+    rmSync(secondLink); symlinkSync(secondNext, secondLink, 'dir')
+    service.evictProjectPaths([realpathSync(firstTarget)])
+    // Evicting the first project must not touch the second project's entry.
+    expect(await readProjectPath(service)).toBe(realpathSync(secondTarget))
+    service.evictProjectPaths([realpathSync(secondTarget)])
+    expect(await readProjectPath(service)).toBe(realpathSync(secondNext))
   })
 })

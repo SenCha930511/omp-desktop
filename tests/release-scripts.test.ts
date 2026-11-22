@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, truncateSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, truncateSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -24,15 +24,13 @@ import { brandDevElectron, DEV_LSREGISTER_PATH } from '../scripts/release/brand-
 import { installAppDependencies } from '../scripts/release/install-app-deps.mjs'
 import {
   artifactArchitectures,
-  assertArchitectureCoverage,
   assertAsarLayout,
   assertExactArchitectures,
+  assertNoUnpackedNativeFiles,
   assertPackagedExtensions,
   assertSupportedNode,
   assertSupportedNpm,
   assertSupportedToolchain,
-  assertUnpackedNativeLayout,
-  expectedUnpackedNativeLayout,
   parseArchitectures,
   parseTeamIdentifier,
   parseToolchainMetadata,
@@ -56,14 +54,7 @@ import {
 import { parseDraftAssetNames, staleDraftReleaseAssets } from '../scripts/release/prune-draft-release-assets.mjs'
 import { assertBundleSizeBudgets, assertPackageSizeBudgets, BUNDLE_SIZE_BUDGETS, collectBundleSizeMetrics, collectPackageSizeMetrics, PACKAGE_SIZE_BUDGETS } from '../scripts/release/size-budgets.mjs'
 import { assertReleaseTag } from '../scripts/release/validate-release-tag.mjs'
-import {
-  assertUnpackedNativeLayout as assertCrossPlatformUnpackedNativeLayout,
-  assertValidAuthenticode,
-  expectedArtifactExtensions,
-  expectedAuthenticodeSigner,
-  expectedNativeFiles,
-  nativeRuntimeDirectory,
-} from '../scripts/release/verify-cross-platform-package.mjs'
+import { assertValidAuthenticode, expectedArtifactExtensions, expectedAuthenticodeSigner } from '../scripts/release/verify-cross-platform-package.mjs'
 
 // js-yaml ships no type declarations, so it is required rather than imported.
 const load = createRequire(import.meta.url)('js-yaml').load as (source: string) => unknown
@@ -75,16 +66,6 @@ const baseEnvironment = {
   APPLE_ID: 'release@example.com',
   APPLE_APP_SPECIFIC_PASSWORD: 'app-password',
   APPLE_TEAM_ID: 'TEAM123',
-}
-
-function createUnpackedFixture() {
-  const directory = mkdtempSync(join(tmpdir(), 'omp-desktop-unpacked-'))
-  for (const relativePath of expectedUnpackedNativeLayout().files) {
-    const path = join(directory, relativePath)
-    mkdirSync(dirname(path), { recursive: true })
-    writeFileSync(path, 'fixture')
-  }
-  return directory
 }
 
 function writeSizedFile(path: string, bytes: number) {
@@ -677,7 +658,7 @@ else if (JSON.stringify(args) === ${JSON.stringify(JSON.stringify(expectedInstal
     const ciWorkflow = readFileSync('.github/workflows/ci.yml', 'utf8')
     expect(ciWorkflow).toMatch(/on:\n {2}push:\n {4}branches:\n {6}- main/)
     expect(ciWorkflow).toMatch(/packaging-smoke:\n {4}if: github\.event_name == 'pull_request'/)
-    for (const runner of ['macos-14', 'ubuntu-22.04', 'windows-2022']) expect(ciWorkflow).toContain(`runner: ${runner}`)
+    for (const runner of ['macos-15', 'ubuntu-22.04', 'windows-2022']) expect(ciWorkflow).toContain(`runner: ${runner}`)
     expect(ciWorkflow).toContain('node node_modules/electron-builder/cli.js --dir')
     expect(ciWorkflow).toContain('--publish=never')
     expect(ciWorkflow).not.toContain('--publish never')
@@ -851,8 +832,8 @@ else if (JSON.stringify(args) === ${JSON.stringify(JSON.stringify(expectedInstal
   test('ships both mac architectures as separate builds from native-arch runners', () => {
     const releaseWorkflow = readFileSync('.github/workflows/release.yml', 'utf8')
     // Two matrix legs, each on a runner whose native architecture matches the
-    // target (arm64 on macos-15, x64 on macos-15-intel) so node-pty never
-    // cross-compiles, and one leg's failure never cancels the other's build.
+    // target (arm64 on macos-15, x64 on macos-15-intel) so nothing native is
+    // cross-compiled, and one leg's failure never cancels the other's build.
     expect(releaseWorkflow).toContain('fail-fast: false')
     expect(releaseWorkflow).toMatch(/- arch: arm64\n {12}runner: macos-15/)
     expect(releaseWorkflow).toMatch(/- arch: x64\n {12}runner: macos-15-intel/)
@@ -1177,20 +1158,15 @@ describe('post-package verification helpers', () => {
     expect(() => assertExactArchitectures(new Set(['x86_64']), artifactArchitectures('OMP-Desktop-0.1.0-arm64.dmg'), 'DMG')).toThrow(/do not match/)
   })
 
-  test('requires native modules to cover every application architecture', () => {
-    expect(() => assertArchitectureCoverage(new Set(['arm64']), new Set(['arm64']), 'pty.node')).not.toThrow()
-    expect(() => assertArchitectureCoverage(new Set(['arm64', 'x86_64']), new Set(['arm64']), 'pty.node')).toThrow(/x86_64/)
-  })
-
   test('requires the ASAR and rejects duplicated renderer dependencies', () => {
-    const entries = ['/out/main/index.js', '/out/preload/index.js', '/out/renderer/index.html', '/node_modules/node-pty/lib/index.js']
+    const entries = ['/out/main/index.js', '/out/preload/index.js', '/out/renderer/index.html']
     expect(() => assertAsarLayout(entries)).not.toThrow()
     expect(() => assertAsarLayout([...entries, '/node_modules/react/index.js'])).toThrow(/duplicated/)
-    expect(() => assertAsarLayout(entries.filter((entry) => !entry.includes('node-pty')))).toThrow(/missing required/)
+    expect(() => assertAsarLayout(entries.filter((entry) => !entry.includes('out/main')))).toThrow(/missing required/)
     expect(() => assertAsarLayout(entries.map((entry) => entry.replaceAll('/', '\\')))).not.toThrow()
   })
 
-  test('keeps every platform native unpack allowlist exact and architecture-specific', () => {
+  test('pins package metadata and ships no unpacked native payload', () => {
     const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
     expect(packageJson.author).toEqual({ name: 'OMP Desktop contributors', email: '69847839+SenCha930511@users.noreply.github.com' })
     expect(packageJson.description).toBe('A desktop workspace for OMP')
@@ -1219,18 +1195,12 @@ describe('post-package verification helpers', () => {
     expect(macIconChunks.get('ic10')).toEqual(readFileSync('assets/icon.png'))
     expect(macIconChunks.has('ic04')).toBe(true)
     expect(macIconChunks.has('ic11')).toBe(true)
+    // Every runtime dependency is pure JavaScript, so no platform unpacks
+    // anything and the verifiers reject any app.asar.unpacked payload.
     expect(packageJson.build.asarUnpack).toBeUndefined()
-    expect(packageJson.build.mac.asarUnpack).toEqual(['**/node_modules/node-pty/build/Release/pty.node', '**/node_modules/node-pty/build/Release/spawn-helper'])
-    expect(packageJson.build.linux.asarUnpack).toEqual(['**/node_modules/node-pty/build/Release/pty.node'])
-    expect(packageJson.build.win.asarUnpack).toEqual([
-      '**/node_modules/node-pty/prebuilds/win32-${arch}/pty.node',
-      '**/node_modules/node-pty/prebuilds/win32-${arch}/conpty.node',
-      '**/node_modules/node-pty/prebuilds/win32-${arch}/conpty_console_list.node',
-      '**/node_modules/node-pty/prebuilds/win32-${arch}/winpty-agent.exe',
-      '**/node_modules/node-pty/prebuilds/win32-${arch}/winpty.dll',
-      '**/node_modules/node-pty/prebuilds/win32-${arch}/conpty/OpenConsole.exe',
-      '**/node_modules/node-pty/prebuilds/win32-${arch}/conpty/conpty.dll',
-    ])
+    expect(packageJson.build.mac.asarUnpack).toBeUndefined()
+    expect(packageJson.build.linux.asarUnpack).toBeUndefined()
+    expect(packageJson.build.win.asarUnpack).toBeUndefined()
     expect(packageJson.build.linux.target).toEqual(['AppImage', 'deb', 'rpm', 'pacman'])
     expect(packageJson.build.win.target).toEqual(['nsis', 'zip', 'appx'])
     expect(packageJson.build.directories.output).toBe('release')
@@ -1309,58 +1279,26 @@ describe('post-package verification helpers', () => {
     expect(packageJson.build.win.files).toEqual(['out/**/*', 'package.json', '!**/node_modules/extract-zip/index.darwin-*.node', '!**/node_modules/extract-zip/index.linux-*.node'])
     // The slimmed runtime dependency tree: the packaged application carries
     // only what the OMP harness shell itself needs, no agent runtimes.
-    expect(Object.keys(packageJson.dependencies).sort()).toEqual(['electron-updater', 'js-yaml', 'node-pty', 'rrule'])
+    expect(Object.keys(packageJson.dependencies).sort()).toEqual(['electron-updater', 'js-yaml', 'rrule'])
     expect(packageJson.overrides).toEqual({ 'extract-zip': 'npm:@electron-internal/extract-zip@1.0.5' })
   })
 
-  test('accepts the exact unpacked native fixture with complete architecture coverage', () => {
-    const architectures = new Set(['arm64'])
-    const directory = createUnpackedFixture()
+  test('accepts a packaged application that unpacks nothing and rejects any unpacked payload', () => {
+    const root = mkdtempSync(join(tmpdir(), 'omp-desktop-unpacked-'))
     try {
-      expect(() => assertUnpackedNativeLayout(directory, architectures, () => new Set(['arm64']))).not.toThrow()
+      expect(() => assertNoUnpackedNativeFiles(join(root, 'absent'))).not.toThrow()
+      const empty = join(root, 'empty')
+      mkdirSync(empty)
+      expect(() => assertNoUnpackedNativeFiles(empty)).not.toThrow()
+      const strayFile = join(root, 'stray-file')
+      mkdirSync(join(strayFile, 'node_modules/native'), { recursive: true })
+      writeFileSync(join(strayFile, 'node_modules/native/binding.node'), 'fixture')
+      expect(() => assertNoUnpackedNativeFiles(strayFile)).toThrow(/unexpected unpacked.*binding\.node/)
+      const strayDirectory = join(root, 'stray-directory')
+      mkdirSync(join(strayDirectory, 'node_modules'), { recursive: true })
+      expect(() => assertNoUnpackedNativeFiles(strayDirectory)).toThrow(/unexpected unpacked.*node_modules/)
     } finally {
-      rmSync(directory, { recursive: true, force: true })
-    }
-  })
-
-  test('rejects missing and extra unpacked fixture files', () => {
-    const architectures = new Set(['arm64'])
-    const missingDirectory = createUnpackedFixture()
-    rmSync(join(missingDirectory, expectedUnpackedNativeLayout().files.at(-1)!))
-    try {
-      expect(() => assertUnpackedNativeLayout(missingDirectory, architectures, () => architectures)).toThrow(/Missing unpacked/)
-    } finally {
-      rmSync(missingDirectory, { recursive: true, force: true })
-    }
-
-    const extraDirectory = createUnpackedFixture()
-    const extraPath = join(extraDirectory, 'node_modules/extra/native.node')
-    mkdirSync(dirname(extraPath), { recursive: true })
-    writeFileSync(extraPath, 'fixture')
-    try {
-      expect(() => assertUnpackedNativeLayout(extraDirectory, architectures, () => architectures)).toThrow(/Unexpected unpacked.*extra/)
-    } finally {
-      rmSync(extraDirectory, { recursive: true, force: true })
-    }
-
-    const extraPrefixDirectory = createUnpackedFixture()
-    mkdirSync(join(extraPrefixDirectory, 'empty-prefix'))
-    try {
-      expect(() => assertUnpackedNativeLayout(extraPrefixDirectory, architectures, () => architectures)).toThrow(/Unexpected unpacked.*empty-prefix/)
-    } finally {
-      rmSync(extraPrefixDirectory, { recursive: true, force: true })
-    }
-  })
-
-  test('checks every allowed native fixture file against the application architecture', () => {
-    const architectures = new Set(['arm64'])
-    const directory = createUnpackedFixture()
-    try {
-      expect(() => assertUnpackedNativeLayout(directory, architectures, (path: string) => (path.endsWith('pty.node') ? new Set(['x86_64']) : new Set(['arm64'])))).toThrow(
-        /pty\.node is missing app architecture.*arm64/,
-      )
-    } finally {
-      rmSync(directory, { recursive: true, force: true })
+      rmSync(root, { recursive: true, force: true })
     }
   })
 })
@@ -1375,86 +1313,6 @@ describe('cross-platform packaging repair', () => {
     expect(executablePath(fixtureContext, 'darwin')).toBe(join('/tmp', 'app-out', 'OMP Desktop.app', 'Contents', 'MacOS', 'OMP Desktop'))
     expect(executablePath(fixtureContext, 'win32')).toBe(join('/tmp', 'app-out', 'OMP Desktop.exe'))
     expect(executablePath(fixtureContext, 'linux')).toBe(join('/tmp', 'app-out', 'omp-desktop'))
-  })
-
-  function globMatchExists(directory: string, segments: string[]): boolean {
-    if (!existsSync(directory) || !statSync(directory).isDirectory()) return false
-    const [head, ...rest] = segments
-    if (head === undefined) return false
-    if (head === '**') {
-      if (globMatchExists(directory, rest)) return true
-      return readdirSync(directory, { withFileTypes: true })
-        .filter((entry) => entry.isDirectory())
-        .some((entry) => globMatchExists(join(directory, entry.name), segments))
-    }
-    if (head.includes('*')) {
-      const pattern = new RegExp(
-        `^${head
-          .split('*')
-          .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-          .join('[^/]*')}$`,
-      )
-      const entries = readdirSync(directory, { withFileTypes: true })
-      if (rest.length === 0) return entries.some((entry) => entry.isFile() && pattern.test(entry.name))
-      return entries.filter((entry) => entry.isDirectory() && pattern.test(entry.name)).some((entry) => globMatchExists(join(directory, entry.name), rest))
-    }
-    const next = join(directory, head)
-    if (rest.length === 0) return existsSync(next) && statSync(next).isFile()
-    return globMatchExists(next, rest)
-  }
-
-  test('every asarUnpack glob matches at least one real file for platforms present in node_modules', () => {
-    const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
-    const root = new URL('..', import.meta.url).pathname
-    const localArchitecture = process.arch === 'arm64' ? 'arm64' : 'x64'
-    const localTarget = process.platform === 'darwin' ? 'mac' : process.platform
-    const architecturesFor = (glob: string) => (glob.includes('node-pty/build/Release') ? [localArchitecture] : ['arm64', 'x64'])
-    for (const target of ['mac', 'linux', 'win']) {
-      for (const glob of packageJson.build[target].asarUnpack as string[]) {
-        if (glob.includes('node-pty/build/Release') && target !== localTarget) continue
-        const covered = architecturesFor(glob).some((architecture) => {
-          const relativeGlob = glob.replace(/^\*\*\//, '').replaceAll('${arch}', architecture)
-          const platformRoot = relativeGlob.split('/').slice(0, 4).join('/')
-          if (!existsSync(join(root, platformRoot))) return false
-          return globMatchExists(root, relativeGlob.split('/'))
-        })
-        expect(covered, `asarUnpack glob matches no file in node_modules: ${glob}`).toBe(true)
-      }
-    }
-  })
-
-  test('the verifier and package.json agree on the native unpack allowlist', () => {
-    const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
-    for (const [target, architecture] of [
-      ['win', 'x64'],
-      ['win', 'arm64'],
-      ['linux', 'x64'],
-      ['linux', 'arm64'],
-    ] as const) {
-      const globs = (packageJson.build[target].asarUnpack as string[]).map((glob) => glob.replace(/^\*\*\//, '').replaceAll('${arch}', architecture))
-      for (const file of expectedNativeFiles(target, architecture)) {
-        expect(globs, `verifier requires ${file} but no ${target} asarUnpack glob produces it`).toContain(file)
-      }
-    }
-    expect(nativeRuntimeDirectory('win')).toBe('win32')
-    expect(nativeRuntimeDirectory('linux')).toBe('linux')
-  })
-
-  test('rejects any unpacked native file outside the expected allowlist', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'omp-desktop-cross-platform-unpacked-'))
-    for (const relativePath of expectedNativeFiles('linux', 'x64')) {
-      const path = join(directory, relativePath)
-      mkdirSync(dirname(path), { recursive: true })
-      writeFileSync(path, 'fixture')
-    }
-    try {
-      expect(() => assertCrossPlatformUnpackedNativeLayout(directory, 'linux', 'x64')).not.toThrow()
-      const stray = join(directory, 'node_modules/node-pty/build/Release/stray.node')
-      writeFileSync(stray, 'fixture')
-      expect(() => assertCrossPlatformUnpackedNativeLayout(directory, 'linux', 'x64')).toThrow(/extra: .*stray\.node/)
-    } finally {
-      rmSync(directory, { recursive: true, force: true })
-    }
   })
 
   test('resolves release-script commands to Windows-safe spawns', () => {

@@ -87,9 +87,12 @@ function firstLine(text: string): string {
 /** Tail of the live stream — the collapsed row acts like a ticker. It
  * re-anchors at every sentence boundary (CJK or ASCII terminal marks), so
  * each finished sentence swaps the preview to the sentence just starting,
- * and long sentences keep scrolling from their tail. */
+ * and long sentences keep scrolling from their tail. Only the last 2 KiB is
+ * scanned so a long thinking blob never re-runs the regexes over the whole
+ * text on every streamed frame. */
 function tailLine(text: string): string {
-  const trimmed = text.replace(/\s+$/, '')
+  const window = text.length > 2048 ? text.slice(-2048) : text
+  const trimmed = window.replace(/\s+$/, '')
   const newline = trimmed.lastIndexOf('\n')
   const line = newline === -1 ? trimmed : trimmed.slice(newline + 1)
   let cut = -1

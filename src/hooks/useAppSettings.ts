@@ -12,20 +12,57 @@ interface UseAppSettingsOptions {
   reportError(error: unknown): void
 }
 
+export const INSPECTOR_OPEN_TABS_KEY = 'omp-desktop.inspector-open-tabs'
+export const INSPECTOR_ACTIVE_TAB_KEY = 'omp-desktop.inspector-active-tab'
+
+const PERSISTENT_INSPECTOR_TABS: readonly InspectorTab[] = ['changes', 'browser', 'files', 'agents', 'tasks']
+
+const isPersistentInspectorTab = (value: unknown): value is InspectorTab =>
+  typeof value === 'string' && PERSISTENT_INSPECTOR_TABS.includes(value as InspectorTab)
+
+export function readInitialInspectorTabs(): InspectorTab[] {
+  if (typeof window === 'undefined') return ['changes']
+  try {
+    const raw = window.localStorage.getItem(INSPECTOR_OPEN_TABS_KEY)
+    if (raw === null) return ['changes']
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return ['changes']
+    const valid: InspectorTab[] = []
+    for (const item of parsed) {
+      if (isPersistentInspectorTab(item) && !valid.includes(item)) valid.push(item)
+    }
+    return valid
+  } catch {
+    return ['changes']
+  }
+}
+
+export function readInitialActiveTab(openTabs: InspectorTab[]): InspectorTab {
+  if (typeof window === 'undefined') return openTabs[0] ?? 'changes'
+  const stored = window.localStorage.getItem(INSPECTOR_ACTIVE_TAB_KEY)
+  if (isPersistentInspectorTab(stored) && openTabs.includes(stored)) return stored
+  return openTabs[0] ?? 'changes'
+}
+
 export function useAppSettings({ bridge, reportError }: UseAppSettingsOptions) {
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS)
   const [initialized, setInitialized] = useState(!bridge)
   const [sidebarOpen, setSidebarOpenState] = useState(true)
   const [inspectorOpen, setInspectorOpenState] = useState(true)
-  const [terminalOpen, setTerminalOpenState] = useState(false)
-  const [inspectorTab, setInspectorTab] = useState<InspectorTab>('summary')
+  const [inspectorOpenTabs, setInspectorOpenTabs] = useState<InspectorTab[]>(readInitialInspectorTabs)
+  const [inspectorTab, setInspectorTab] = useState<InspectorTab>(() => readInitialActiveTab(inspectorOpenTabs))
+  const [inspectorTabRevision, setInspectorTabRevision] = useState(0)
   const settingsRef = useRef(settings)
   settingsRef.current = settings
   const confirmedSettingsRef = useRef(settings)
   const settingsMutationRef = useRef(0)
   const settingsQueueRef = useRef<Promise<void>>(Promise.resolve())
   const transientPanelKeysRef = useRef<Set<PanelSettingKey>>(new Set())
-  const inspectorTabTouchedRef = useRef(false)
+  // The checkout catalog is served by the main process, which reads the
+  // confirmed settings. The optimistic renderer value can refresh before that
+  // write lands, so a confirmed strategy change bumps this revision and the
+  // catalog effect runs again.
+  const [checkoutStrategyRevision, setCheckoutStrategyRevision] = useState(0)
 
   const setSidebarOpen = useCallback((value: boolean) => {
     transientPanelKeysRef.current.add('sidebarOpen')
@@ -35,17 +72,12 @@ export function useAppSettings({ bridge, reportError }: UseAppSettingsOptions) {
     transientPanelKeysRef.current.add('inspectorOpen')
     setInspectorOpenState(value)
   }, [])
-  const setTerminalOpen = useCallback((value: boolean) => {
-    transientPanelKeysRef.current.add('terminalOpen')
-    setTerminalOpenState(value)
-  }, [])
 
   const applySettings = useCallback((next: AppSettings, panelPatch: Partial<AppSettings>) => {
     settingsRef.current = next
     setSettings(next)
     if ('sidebarOpen' in panelPatch) setSidebarOpenState(next.sidebarOpen)
     if ('inspectorOpen' in panelPatch) setInspectorOpenState(next.inspectorOpen)
-    if ('terminalOpen' in panelPatch) setTerminalOpenState(next.terminalOpen)
   }, [])
 
   const takeConfirmedPanelPatch = useCallback((next: AppSettings) => {
@@ -66,8 +98,10 @@ export function useAppSettings({ bridge, reportError }: UseAppSettingsOptions) {
     }
     const operation = settingsQueueRef.current.catch(() => undefined).then(async () => {
       const saved = await bridge.settings.update(patch)
+      const previousStrategy = confirmedSettingsRef.current.checkoutStrategy
       confirmedSettingsRef.current = saved
       if (settingsMutationRef.current === mutation) applySettings(saved, takeConfirmedPanelPatch(saved))
+      if (saved.checkoutStrategy !== previousStrategy) setCheckoutStrategyRevision((revision) => revision + 1)
     })
     settingsQueueRef.current = operation.catch(() => undefined)
     try {
@@ -87,7 +121,9 @@ export function useAppSettings({ bridge, reportError }: UseAppSettingsOptions) {
     const revision = settingsMutationRef.current
     const result = await operation()
     if (!result) return null
+    const previousStrategy = confirmedSettingsRef.current.checkoutStrategy
     confirmedSettingsRef.current = result.settings
+    if (result.settings.checkoutStrategy !== previousStrategy) setCheckoutStrategyRevision((revision) => revision + 1)
     // A new optimistic mutation started while the external operation ran.
     // Keep it visible; its queued result will become the next authority.
     if (settingsMutationRef.current === revision) {
@@ -109,7 +145,6 @@ export function useAppSettings({ bridge, reportError }: UseAppSettingsOptions) {
       if (cancelled || settingsMutationRef.current !== startupRevision) return
       confirmedSettingsRef.current = value
       applySettings(value, value)
-      if (!inspectorTabTouchedRef.current) setInspectorTab(value.defaultInspectorTab)
     }).catch((error) => { if (!cancelled) reportError(error) }).finally(() => {
       if (!cancelled) setInitialized(true)
     })
@@ -132,22 +167,73 @@ export function useAppSettings({ bridge, reportError }: UseAppSettingsOptions) {
     return () => media.removeEventListener('change', sync)
   }, [bridge, settings.accentColor, settings.reduceMotion, settings.theme])
 
-  const selectInspectorTab = useCallback((tab: InspectorTab) => {
-    inspectorTabTouchedRef.current = true
+  useEffect(() => {
+    const persistedTabs = inspectorOpenTabs.filter((tab) => tab !== 'sidechat')
+    window.localStorage.setItem(INSPECTOR_OPEN_TABS_KEY, JSON.stringify(persistedTabs))
+    if (inspectorTab !== 'sidechat' && persistedTabs.includes(inspectorTab)) {
+      window.localStorage.setItem(INSPECTOR_ACTIVE_TAB_KEY, inspectorTab)
+    } else if (persistedTabs.length === 0) {
+      window.localStorage.removeItem(INSPECTOR_ACTIVE_TAB_KEY)
+    }
+  }, [inspectorOpenTabs, inspectorTab])
+
+  const ensureInspectorTabOpen = useCallback((tab: InspectorTab) => {
+    setInspectorOpenTabs((current) => (current.includes(tab) ? current : [...current, tab]))
     setInspectorTab(tab)
+    setInspectorTabRevision((value) => value + 1)
+  }, [])
+
+  const selectInspectorTab = useCallback((tab: InspectorTab) => {
+    ensureInspectorTabOpen(tab)
+  }, [ensureInspectorTabOpen])
+
+  const closeInspectorTab = useCallback((tab: InspectorTab) => {
+    setInspectorOpenTabs((current) => {
+      const index = current.indexOf(tab)
+      if (index === -1) return current
+      const next = current.filter((item) => item !== tab)
+      setInspectorTab((active) => {
+        if (active !== tab) return active
+        return next[Math.min(index, next.length - 1)] ?? 'changes'
+      })
+      return next
+    })
+  }, [])
+
+  const closeOtherInspectorTabs = useCallback((tab: InspectorTab) => {
+    setInspectorOpenTabs((current) => (current.includes(tab) ? [tab] : current))
+    setInspectorTab(tab)
+  }, [])
+
+  const reorderInspectorTabs = useCallback((sourceTab: InspectorTab, targetTab: InspectorTab) => {
+    if (sourceTab === targetTab) return
+    setInspectorOpenTabs((current) => {
+      const sourceIndex = current.indexOf(sourceTab)
+      const targetIndex = current.indexOf(targetTab)
+      if (sourceIndex === -1 || targetIndex === -1) return current
+      const next = [...current]
+      const [moved] = next.splice(sourceIndex, 1)
+      next.splice(targetIndex, 0, moved)
+      return next
+    })
   }, [])
 
   return {
     settings,
     initialized,
+    checkoutStrategyRevision,
     sidebarOpen,
     setSidebarOpen,
     inspectorOpen,
     setInspectorOpen,
-    terminalOpen,
-    setTerminalOpen,
+    inspectorOpenTabs,
     inspectorTab,
+    inspectorTabRevision,
     selectInspectorTab,
+    ensureInspectorTabOpen,
+    closeInspectorTab,
+    closeOtherInspectorTabs,
+    reorderInspectorTabs,
     updateSettings,
     reconcileExternalSettings,
   }

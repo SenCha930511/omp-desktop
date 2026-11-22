@@ -1,3 +1,4 @@
+import { lstat, readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, isAbsolute, join, resolve } from 'node:path'
 import type { GitDiff, GitFileChange, GitStatus, GitWorktree, LocalGitBranch, ProcessOutcome } from '../../src/types/api'
@@ -167,13 +168,149 @@ function filterDriverFromKey(key: string): string | undefined {
   return match?.[1]
 }
 
+// Repository metadata caches. A status poll otherwise respawns
+// `git config --list` and `git rev-parse --show-toplevel` on every refresh.
+// Values are keyed by the repository's `.git/config` and `.git/HEAD` identity
+// plus a short TTL, so an edit or checkout is visible within one poll and
+// anything the stamps cannot observe (an included config file, a global-scope
+// setting) is bounded by the TTL. Errors are never cached.
+const REPOSITORY_CACHE_TTL_MS = 5_000
+const REPOSITORY_CACHE_LIMIT = 256
+const GITDIR_POINTER_LIMIT = 4_096
+
+interface StampedCacheEntry<T> {
+  stamp: string
+  value: T
+  expiresAt: number
+}
+
+const repositoryConfigCache = new Map<string, StampedCacheEntry<ReadonlyMap<string, string>>>()
+const repositoryBranchCache = new Map<string, StampedCacheEntry<string | undefined>>()
+const repositoryRootCache = new Map<string, { value: string; expiresAt: number }>()
+
+async function fileStamp(path: string): Promise<string> {
+  try {
+    const entry = await lstat(path)
+    return `${entry.mtimeMs}:${entry.size}`
+  } catch {
+    return 'missing'
+  }
+}
+
+/** The git directory of a worktree, following a linked worktree's `gitdir:` pointer. */
+async function gitDirectoryOf(repositoryRoot: string): Promise<string | undefined> {
+  const dotGit = join(repositoryRoot, '.git')
+  const entry = await lstat(dotGit).catch(() => undefined)
+  if (!entry) return undefined
+  if (entry.isDirectory()) return dotGit
+  if (!entry.isFile()) return undefined
+  const pointer = await readFile(dotGit, 'utf8').catch(() => undefined)
+  const match = pointer ? /^gitdir:[ \t]*(.+)$/m.exec(pointer.slice(0, GITDIR_POINTER_LIMIT)) : null
+  if (!match) return undefined
+  return resolve(repositoryRoot, match[1].trim())
+}
+
+/** Linked worktrees keep shared configuration in the common git directory. */
+async function commonGitDirectoryOf(gitDirectory: string): Promise<string> {
+  const pointer = await readFile(join(gitDirectory, 'commondir'), 'utf8').catch(() => undefined)
+  const target = pointer?.trim().slice(0, GITDIR_POINTER_LIMIT)
+  return target ? resolve(gitDirectory, target) : gitDirectory
+}
+
+/**
+ * Identity of the files that decide configuration and branch: `.git/config`,
+ * `.git/HEAD`, and a linked worktree's `config.worktree`. An unreadable git
+ * directory reports `unknown`, which disables caching instead of guessing.
+ */
+async function repositoryFileStamp(repositoryRoot: string): Promise<string> {
+  const gitDirectory = await gitDirectoryOf(repositoryRoot)
+  if (!gitDirectory) return 'unknown'
+  const commonDirectory = await commonGitDirectoryOf(gitDirectory)
+  const [head, config, worktreeConfig] = await Promise.all([
+    fileStamp(join(gitDirectory, 'HEAD')),
+    fileStamp(join(commonDirectory, 'config')),
+    commonDirectory === gitDirectory ? Promise.resolve('none') : fileStamp(join(gitDirectory, 'config.worktree')),
+  ])
+  return `${head}|${config}|${worktreeConfig}`
+}
+
+function pruneStampedCache<T>(cache: Map<string, StampedCacheEntry<T>>, now: number): void {
+  for (const [key, entry] of cache) if (entry.expiresAt <= now) cache.delete(key)
+  while (cache.size > REPOSITORY_CACHE_LIMIT) {
+    const oldest = cache.keys().next()
+    if (oldest.done) return
+    cache.delete(oldest.value)
+  }
+}
+
+/**
+ * Drops cached repository metadata. Mutations call this so the next read
+ * observes the new index or HEAD instead of waiting out the TTL; a branch
+ * switch outside the service is caught by the HEAD stamp. Calling it without
+ * a root clears every repository.
+ */
+export function invalidateGitRepositoryCaches(repositoryRoot?: string): void {
+  if (repositoryRoot === undefined) {
+    repositoryConfigCache.clear()
+    repositoryBranchCache.clear()
+    repositoryRootCache.clear()
+    return
+  }
+  repositoryConfigCache.delete(repositoryRoot)
+  repositoryBranchCache.delete(repositoryRoot)
+  for (const [key, entry] of repositoryRootCache) {
+    if (key === repositoryRoot || entry.value === repositoryRoot) repositoryRootCache.delete(key)
+  }
+}
+
+/** `rev-parse --show-toplevel` for an already-authorized directory. */
+async function resolveRepositoryRoot(cwd: string): Promise<string> {
+  const result = await runGit(cwd, ['rev-parse', '--show-toplevel'], { timeoutMs: 5_000, maxBytes: 64 * 1024 })
+  requireProcessSuccess('Git repository root inspection', result)
+  const repositoryRoot = result.stdout.trim()
+  if (!repositoryRoot) throw new Error('Git repository root inspection returned no path')
+  return repositoryRoot
+}
+
+/** The toplevel of a directory does not move while its repository does, so a short TTL is enough. */
+async function cachedRepositoryRoot(cwd: string): Promise<string> {
+  const now = Date.now()
+  const cached = repositoryRootCache.get(cwd)
+  if (cached && cached.expiresAt > now) return cached.value
+  const value = await resolveRepositoryRoot(cwd)
+  repositoryRootCache.set(cwd, { value, expiresAt: now + REPOSITORY_CACHE_TTL_MS })
+  while (repositoryRootCache.size > REPOSITORY_CACHE_LIMIT) {
+    const oldest = repositoryRootCache.keys().next()
+    if (oldest.done) break
+    repositoryRootCache.delete(oldest.value)
+  }
+  return value
+}
+
+/** Current branch label; a detached HEAD reports its short commit instead. */
+async function readBranch(cwd: string): Promise<string | undefined> {
+  const result = await runGit(cwd, ['symbolic-ref', '--quiet', '--short', 'HEAD'], { timeoutMs: 5_000, maxBytes: 64 * 1024 })
+  if (result.code === 0 && !result.timedOut && !result.outputExceeded) return result.stdout.trim() || undefined
+  const detached = await runGit(cwd, ['rev-parse', '--verify', '--short', 'HEAD'], { timeoutMs: 5_000, maxBytes: 64 * 1024 })
+  return detached.code === 0 && !detached.timedOut && !detached.outputExceeded ? `HEAD (${detached.stdout.trim()})` : undefined
+}
+
 /**
  * Reads the repository's effective configuration in one spawn. With
  * `restrictedGitEnvironment` the system and global scopes are disabled, so
  * this reflects the repository scope (plus its includes and the hardened
  * command-line overrides). Later values win, matching Git precedence.
+ * Polls reuse the parsed map until `.git/config` or `.git/HEAD` changes or
+ * the TTL expires. Operations that can run clean/smudge filters pass
+ * `fresh`, so the filter guard never decides from a cached configuration.
  */
-async function repositoryConfig(cwd: string): Promise<Map<string, string>> {
+async function repositoryConfig(cwd: string, options?: { fresh?: boolean }): Promise<ReadonlyMap<string, string>> {
+  const stamp = await repositoryFileStamp(cwd)
+  const now = Date.now()
+  if (!options?.fresh && stamp !== 'unknown') {
+    const cached = repositoryConfigCache.get(cwd)
+    if (cached && cached.stamp === stamp && cached.expiresAt > now) return cached.value
+  }
   const result = await runGit(cwd, ['config', '--includes', '--null', '--list'], {
     timeoutMs: 5_000,
     maxBytes: GIT_CONFIG_OUTPUT_LIMIT,
@@ -189,6 +326,10 @@ async function repositoryConfig(cwd: string): Promise<Map<string, string>> {
     const key = separator < 0 ? field.value : field.value.slice(0, separator)
     const value = separator < 0 ? '' : field.value.slice(separator + 1)
     config.set(key, value)
+  }
+  if (stamp !== 'unknown') {
+    repositoryConfigCache.set(cwd, { stamp, value: config, expiresAt: now + REPOSITORY_CACHE_TTL_MS })
+    pruneStampedCache(repositoryConfigCache, now)
   }
   return config
 }
@@ -368,8 +509,8 @@ interface RepositoryContext {
   cwd: string
   /** Filter-neutralizing config overrides derived from the repository configuration. */
   overrides: string[]
-  /** Effective repository configuration from the single per-operation config spawn. */
-  config: Map<string, string>
+  /** Effective repository configuration, read once per operation and reused across polls. */
+  config: ReadonlyMap<string, string>
 }
 
 function parseWorktreeList(output: string, repositoryRoot: string): GitWorktree[] {
@@ -502,7 +643,7 @@ async function changeGitBranch(cwd: string, branchValue: unknown, create: boolea
   const existing = branches.find((candidate) => candidate.name === branch)
   if (!create && !existing) return { kind: 'not-found' }
   if (create && existing) return { kind: 'already-exists' }
-  const overrides = filterOverridesFromConfig(await repositoryConfig(repositoryRoot))
+  const overrides = filterOverridesFromConfig(await repositoryConfig(repositoryRoot, { fresh: true }))
   const cleanliness = await inspectGitWorktreeCleanAtRoot(repositoryRoot, overrides)
   if (cleanliness.kind === 'dirty') return cleanliness
   if (existing?.current) return { kind: 'unchanged' }
@@ -544,7 +685,9 @@ export class GitService {
   ): Promise<RepositoryContext> {
     const authorizer = options?.readOnly ? this.authorizeReadOnlyCwd : this.authorizeCwd
     const cwd = await this.repositoryCwd(requireString(cwdValue, 'cwd', { min: 1, max: 4096 }), authorizer)
-    const config = await repositoryConfig(cwd)
+    // Mutations read the configuration fresh: the filter guard must never
+    // decide from a value cached before the repository changed.
+    const config = await repositoryConfig(cwd, { fresh: !options?.readOnly })
     const overrides = filterOverridesFromConfig(config)
     overrides.push(...await globalExcludesOverride(cwd, config))
     if (paths?.length) await rejectFilteredPaths(cwd, paths, overrides)
@@ -554,10 +697,18 @@ export class GitService {
   async branch(cwd: string): Promise<string | undefined> {
     try {
       const safeCwd = await this.repositoryCwd(cwd, this.authorizeReadOnlyCwd)
-      const result = await runGit(safeCwd, ['symbolic-ref', '--quiet', '--short', 'HEAD'], { timeoutMs: 5_000, maxBytes: 64 * 1024 })
-      if (result.code === 0 && !result.timedOut && !result.outputExceeded) return result.stdout.trim() || undefined
-      const detached = await runGit(safeCwd, ['rev-parse', '--verify', '--short', 'HEAD'], { timeoutMs: 5_000, maxBytes: 64 * 1024 })
-      return detached.code === 0 && !detached.timedOut && !detached.outputExceeded ? `HEAD (${detached.stdout.trim()})` : undefined
+      const stamp = await repositoryFileStamp(safeCwd)
+      const now = Date.now()
+      if (stamp !== 'unknown') {
+        const cached = repositoryBranchCache.get(safeCwd)
+        if (cached && cached.stamp === stamp && cached.expiresAt > now) return cached.value
+      }
+      const branch = await readBranch(safeCwd)
+      if (stamp !== 'unknown') {
+        repositoryBranchCache.set(safeCwd, { stamp, value: branch, expiresAt: now + REPOSITORY_CACHE_TTL_MS })
+        pruneStampedCache(repositoryBranchCache, now)
+      }
+      return branch
     } catch { return undefined }
   }
 
@@ -637,6 +788,7 @@ export class GitService {
       : ['rm', '--cached', '--ignore-unmatch', '-r', '-f', '--', ...paths]
     const result = await runGit(cwd, args, { timeoutMs: 30_000, maxBytes: 1024 * 1024 }, overrides)
     requireProcessSuccess('Git unstage', result)
+    invalidateGitRepositoryCaches(cwd)
     return true
   }
 
@@ -668,6 +820,7 @@ export class GitService {
       const result = await runGit(cwd, ['clean', '-f', '--', ...pathsToClean], { timeoutMs: 30_000, maxBytes: 1024 * 1024 }, overrides)
       requireProcessSuccess('Git clean', result)
     }
+    invalidateGitRepositoryCaches(cwd)
     return true
   }
 
@@ -683,6 +836,7 @@ export class GitService {
     if (result.timedOut) return { ok: false, reason: 'timeout', output: 'Git commit timed out; the commit result is unknown. Refresh status before retrying.' }
     const output = stripAnsi(`${result.stdout}${result.stderr}`).trim()
     if (result.code !== 0) return { ok: false, reason: 'exit', output: output || processError('Git commit', result).message }
+    invalidateGitRepositoryCaches(context.cwd)
     return { ok: true, output: output || 'Commit created.' }
   }
 
@@ -690,12 +844,10 @@ export class GitService {
     value: string,
     authorizer: (cwd: string) => Promise<string> = this.authorizeCwd,
   ): Promise<string> {
+    // Authorization runs on every call; only the `rev-parse` spawn is cached,
+    // so a revoked project cannot ride a cached canonical path.
     const cwd = await authorizer(value)
-    const result = await runGit(cwd, ['rev-parse', '--show-toplevel'], { timeoutMs: 5_000, maxBytes: 64 * 1024 })
-    requireProcessSuccess('Git repository root inspection', result)
-    const repositoryRoot = result.stdout.trim()
-    if (!repositoryRoot) throw new Error('Git repository root inspection returned no path')
-    return authorizer(repositoryRoot)
+    return authorizer(await cachedRepositoryRoot(cwd))
   }
 
   private validPaths(value: unknown): string[] {
@@ -708,6 +860,7 @@ export class GitService {
     const { cwd, overrides } = await this.withRepositoryGuards(cwdValue, paths)
     const result = await runGit(cwd, [...command, '--', ...paths], { timeoutMs: 30_000, maxBytes: 1024 * 1024 }, overrides)
     requireProcessSuccess(`Git ${command[0]}`, result)
+    invalidateGitRepositoryCaches(cwd)
     return true
   }
 }

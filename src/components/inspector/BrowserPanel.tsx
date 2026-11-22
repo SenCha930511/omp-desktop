@@ -49,8 +49,6 @@ function normalizeUrl(value: string) {
 }
 
 interface BrowserPanelProps {
-  navigationRequest?: { id: number; url: string }
-  onNavigationRequestHandled?(id: number): void
   platform?: NodeJS.Platform
   home: string
   onOpenExternal(url: string): void
@@ -72,6 +70,9 @@ interface BrowserPanelProps {
   previewPointerEvent?: StampedPointerEvent | null
   /** User navigation on an agent tab; routed through the main process to the guest. */
   onNavigateAgentTab?(tabId: string, action: 'back' | 'forward' | 'reload' | 'url', url?: string): void
+  /** External URL navigation request (e.g. submitted from Inspector New Tab search). */
+  navigationRequest?: { id: number; url: string } | null
+  onNavigationRequestHandled?(id: number): void
   /** Test hook: how often to poll the page for a clicked element while picking. */
   pollIntervalMs?: number
 }
@@ -89,8 +90,6 @@ function agentTabLabel(tab: AgentBrowserTabRecord, t: (key: MessageKey) => strin
 
 export function BrowserPanel({
   home,
-  navigationRequest,
-  onNavigationRequestHandled,
   onOpenExternal,
   annotations,
   agentTabs = [],
@@ -104,13 +103,18 @@ export function BrowserPanel({
   onPreviewContext,
   previewPointerEvent = null,
   onNavigateAgentTab,
+  navigationRequest = null,
+  onNavigationRequestHandled,
   pollIntervalMs = 350,
   platform = detectRendererPlatform(),
 }: BrowserPanelProps) {
   const { t } = useI18n()
   const webviewRef = useRef<WebviewElement | null>(null)
-  const [address, setAddress] = useState(home)
-  const [currentUrl, setCurrentUrl] = useState(home)
+  const initialSrcRef = useRef(navigationRequest ? normalizeUrl(navigationRequest.url) : home)
+  const initialNavIdRef = useRef(navigationRequest?.id ?? null)
+  const pendingUrlRef = useRef<string | null>(null)
+  const [address, setAddress] = useState(initialSrcRef.current)
+  const [currentUrl, setCurrentUrl] = useState(initialSrcRef.current)
   const [loading, setLoading] = useState(false)
   const [canBack, setCanBack] = useState(false)
   const [canForward, setCanForward] = useState(false)
@@ -158,8 +162,9 @@ export function BrowserPanel({
 
   // The agent webviews live in the always-mounted AgentBrowserLayer, not in
   // this panel; report where the layer should overlay while an agent tab is
-  // shown. Position can shift without a resize (sidebar toggle), so a slow
-  // poll backs up the observer.
+  // shown. The slot can move without resizing when the sidebar or inspector
+  // changes the workspace geometry, so both the slot and its session
+  // workspace are observed instead of polling.
   useEffect(() => {
     const publish = (next: AgentSlotRect | null) => {
       const previous = lastAgentSlotRectRef.current
@@ -176,6 +181,9 @@ export function BrowserPanel({
       return
     }
     const report = () => {
+      // A hidden document reports zeroed geometry and forces layout for
+      // nothing; the next observer callback or visibilitychange catches up.
+      if (document.hidden) return
       const slot = slotRef.current
       if (!slot) return
       const rect = slot.getBoundingClientRect()
@@ -183,13 +191,20 @@ export function BrowserPanel({
     }
     report()
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(report)
-    if (observer && slotRef.current) observer.observe(slotRef.current)
+    const workspace = slotRef.current?.closest('.session-workspace') ?? null
+    if (observer) {
+      if (slotRef.current) observer.observe(slotRef.current)
+      if (workspace) observer.observe(workspace)
+    }
+    const onVisibilityChange = () => {
+      if (!document.hidden) report()
+    }
     window.addEventListener('resize', report)
-    const interval = window.setInterval(report, 400)
+    document.addEventListener('visibilitychange', onVisibilityChange)
     return () => {
       observer?.disconnect()
       window.removeEventListener('resize', report)
-      window.clearInterval(interval)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
       publish(null)
     }
   }, [showAgentTab])
@@ -320,15 +335,41 @@ export function BrowserPanel({
     const url = normalizeUrl(value)
     setAddress(url)
     setCurrentUrl(url)
-    void webviewRef.current?.loadURL(url).catch((error: unknown) => {
+    const view = webviewRef.current
+    if (!view || typeof view.loadURL !== 'function') return
+    if (!domReady) {
+      pendingUrlRef.current = url
+      view.setAttribute('src', url)
+      return
+    }
+    pendingUrlRef.current = null
+    void view.loadURL(url).catch((error: unknown) => {
       if (!String(error).includes('ERR_ABORTED')) console.error('Browser navigation failed', error)
     })
-  }, [])
+  }, [domReady])
+
   useEffect(() => {
-    if (!navigationRequest || !domReady) return
-    navigate(navigationRequest.url)
+    const pending = pendingUrlRef.current
+    if (!domReady || !pending) return
+    pendingUrlRef.current = null
+    const view = webviewRef.current
+    if (!view || typeof view.loadURL !== 'function') return
+    if (view.getURL() === pending) return
+    void view.loadURL(pending).catch((error: unknown) => {
+      if (!String(error).includes('ERR_ABORTED')) console.error('Browser navigation failed', error)
+    })
+  }, [domReady])
+
+  const handledNavRequestIdRef = useRef<number | null>(null)
+  useEffect(() => {
+    if (!navigationRequest || handledNavRequestIdRef.current === navigationRequest.id) return
+    handledNavRequestIdRef.current = navigationRequest.id
+    if (initialNavIdRef.current !== navigationRequest.id) {
+      navigate(navigationRequest.url)
+    }
+    initialNavIdRef.current = null
     onNavigationRequestHandled?.(navigationRequest.id)
-  }, [domReady, navigate, navigationRequest, onNavigationRequestHandled])
+  }, [navigate, navigationRequest, onNavigationRequestHandled])
 
   const toggleAnnotation = () => {
     if (picking) {
@@ -371,7 +412,7 @@ export function BrowserPanel({
     ref: (node: WebviewElement | null) => {
       webviewRef.current = node
     },
-    src: home,
+    src: initialSrcRef.current,
     className: 'browser-webview',
     partition: BROWSER_PARTITION,
     webpreferences: 'contextIsolation=yes,sandbox=yes,nodeIntegration=no',

@@ -80,7 +80,7 @@ async function renderSidebar(props: Partial<ComponentProps<typeof Sidebar>>) {
   })
 }
 
-const rowTitles = () => [...container.querySelectorAll<HTMLElement>('.session-row-wrap .session-row__title')].map((row) => row.textContent)
+const rowTitles = () => [...container.querySelectorAll<HTMLElement>('.project-group .session-row-wrap .session-row__title')].map((row) => row.textContent)
 
 const toggle = () => container.querySelector<HTMLButtonElement>('.session-row--expand')
 

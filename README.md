@@ -26,7 +26,8 @@ OMP Desktop is a derivative of [GooeyPi](https://github.com/am-will/gooey-pi) by
 - See the active approval mode at a glance next to the composer.
 - Paste or drop PNG, JPEG, GIF, and WebP images into a prompt when the model supports vision.
 - Type in Chinese, Japanese, or Korean without Enter or Escape leaking through mid-composition.
-- Resume, rename, search, archive, or permanently delete persistent sessions. A new session appears as a draft placeholder in the sidebar until its first prompt adopts it.
+- Resume, rename, search, archive, or permanently delete persistent sessions. A new session stays out of the sidebar until its first prompt starts it.
+- Browse a cross-project Conversations list sorted by last file modification, with compact relative timestamps.
 - See running, finished, failed, and waiting-for-input work in one Activity view, then clear items you have handled. Work that finishes in the background can raise a notification.
 
 ### Keep projects organized
@@ -42,7 +43,7 @@ OMP Desktop is a derivative of [GooeyPi](https://github.com/am-will/gooey-pi) by
 
 - Review Git status and split-pane diffs, stage or unstage files, restore changes with confirmation, and commit without leaving the app. After each reply, the changes card lists only the files that turn edited — never older dirty state — with a one-click undo for that batch.
 - Browse project files and reveal them in your system file manager.
-- Open multiple terminal tabs for a session. Highlight terminal output to attach it to the next prompt.
+- Run a project's setup and run commands headlessly from the composer: output streams into the panel, and the script stops when you stop it, leave the view, or quit.
 - Open the right-hand Summary, Changes, Browser, or Files panel whenever you need it.
 
 ### Browse with shared context
@@ -125,12 +126,9 @@ node node_modules/electron/install.js
 npm run dev
 ```
 
-`npm install --ignore-scripts` skips both Electron's platform download and the native dependency rebuild, so it is not enough on its own for running OMP Desktop from source. If you used it, the recovery sequence below runs those two steps explicitly.
-
-`node-pty` is a native dependency. If Electron cannot rebuild it with your default Python environment, point npm at a Python installation with the required build tools:
+`npm install --ignore-scripts` skips both Electron's platform download and the native dependency rebuild, so it is not enough on its own for running OMP Desktop from source. If you used it, run those two steps explicitly:
 
 ```bash
-export npm_config_python=/path/to/python3
 npm install --ignore-scripts
 node node_modules/electron/install.js
 npx electron-builder install-app-deps
@@ -146,7 +144,6 @@ Use `⌘` on macOS and `Ctrl` on Linux or Windows.
 | `⌘/Ctrl+K` | Command palette |
 | `⌘/Ctrl+B` | Toggle the project sidebar |
 | `⌘/Ctrl+Shift+B` | Open the browser |
-| `⌘/Ctrl+J` | Toggle the terminal |
 | `⌘/Ctrl+,` | Open Settings |
 | `Enter` | Queue a message while the agent is working |
 | `⌘/Ctrl+Enter` | Steer the current turn while the agent is working |
@@ -187,7 +184,7 @@ npm run package:linux:local-qa
 npm run package:win:local-qa
 ```
 
-Build packages on their target operating system so native dependencies match the release.
+Build packages on their target operating system and architecture so each artifact matches the release.
 
 ## License
 

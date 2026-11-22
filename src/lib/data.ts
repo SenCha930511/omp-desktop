@@ -10,7 +10,6 @@ import type {
 
 export const DEFAULT_SETTINGS: AppSettings = {
   conversationDensity: 'comfortable',
-  subagentsPanelPinned: false,
   theme: 'system',
   locale: 'system',
   accentColor: 'prime',
@@ -24,11 +23,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   checkoutStrategy: 'worktree',
   keepRunningInBackground: false,
   launchAtLogin: false,
-  terminalOpen: false,
-  defaultInspectorTab: 'summary',
   browserHome: 'http://localhost:3000',
   browserAskForDownloads: true,
-  terminalShell: '/bin/zsh',
   reduceMotion: false,
   showReasoningSummaries: true,
   reasoningExpandedByDefault: false,
@@ -135,7 +131,7 @@ export const SAMPLE_TRANSCRIPT: TranscriptMessage[] = [
     id: 'user-1',
     role: 'user',
     timestamp: Date.now() - 420000,
-    parts: [{ type: 'text', text: 'Build the renderer for OMP Desktop. Keep the interface native, calm, and focused, with a real browser and terminal.' }],
+    parts: [{ type: 'text', text: 'Build the renderer for OMP Desktop. Keep the interface native, calm, and focused, with a real browser and a focused workspace.' }],
   },
   {
     id: 'assistant-1',
@@ -150,7 +146,7 @@ export const SAMPLE_TRANSCRIPT: TranscriptMessage[] = [
       { type: 'toolResult', name: 'Read files', text: 'Read 2 files in 96ms' },
       { type: 'toolCall', id: 'tool-2', name: 'Write renderer', args: { paths: ['src/App.tsx', 'src/styles.css'] } },
       { type: 'toolResult', name: 'Write renderer', text: 'Updated 12 files in 1.4s' },
-      { type: 'text', text: 'The three-pane workspace is in place. Browser, Git review, terminal, and plugin surfaces all use the native bridge and retain useful empty states when a service is unavailable.' },
+      { type: 'text', text: 'The three-pane workspace is in place. Browser, Git review, project scripts, and plugin surfaces all use the native bridge and retain useful empty states when a service is unavailable.' },
     ],
   },
 ]
@@ -165,7 +161,6 @@ export const SAMPLE_GIT: GitStatus = {
     { path: 'src/App.tsx', status: 'M', staged: false, additions: 84, deletions: 14 },
     { path: 'src/components/Inspector.tsx', status: 'M', staged: false, additions: 118, deletions: 9 },
     { path: 'src/styles.css', status: 'M', staged: true, additions: 203, deletions: 31 },
-    { path: 'src/components/TerminalDrawer.tsx', status: 'A', staged: false, additions: 96, deletions: 0 },
   ],
 }
 
@@ -200,6 +195,21 @@ export function formatRelative(value?: string | number): string {
   if (abs < 86400) return formatter.format(Math.round(seconds / 3600), 'hour')
   if (abs < 604800) return formatter.format(Math.round(seconds / 86400), 'day')
   return formatter.format(Math.round(seconds / 604800), 'week')
+}
+
+/** Compact age for dense rows: now, 8m, 20h, 1d, 2w, 1mo, 1y. */
+export function formatCompactRelative(value: string | number | undefined, options: { now?: number; nowLabel?: string } = {}): string {
+  if (!value) return ''
+  const timestamp = typeof value === 'number' ? value : Date.parse(value)
+  if (!Number.isFinite(timestamp)) return ''
+  const seconds = Math.floor(((options.now ?? Date.now()) - timestamp) / 1000)
+  if (seconds < 60) return options.nowLabel ?? 'now'
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`
+  if (seconds < 604800) return `${Math.floor(seconds / 86400)}d`
+  if (seconds < 2592000) return `${Math.floor(seconds / 604800)}w`
+  if (seconds < 31536000) return `${Math.floor(seconds / 2592000)}mo`
+  return `${Math.floor(seconds / 31536000)}y`
 }
 
 export function basename(path: string): string {

@@ -57,7 +57,7 @@ async function renderSidebar(projects: ProjectRecord[], sessions: SessionRecord[
 
 const expandAllButton = () => container.querySelector<HTMLButtonElement>('[aria-label="Expand all projects"]')
 const collapseAllButton = () => container.querySelector<HTMLButtonElement>('[aria-label="Collapse all projects"]')
-const sessionRows = () => [...container.querySelectorAll<HTMLElement>('.session-row')]
+const sessionRows = () => [...container.querySelectorAll<HTMLElement>('.project-group .session-row-wrap > .session-row')]
 
 describe('sidebar expand and collapse all projects', () => {
   it('collapses and expands every project with one click', async () => {
@@ -66,7 +66,7 @@ describe('sidebar expand and collapse all projects', () => {
       { ...project, id: 'second', name: 'Second', path: '/second', folders: ['/second'], primaryFolder: '/second' },
     ]
     const sessions = [
-      session,
+      { ...session, projectPath: '/first' },
       { ...session, id: 'session-two', filePath: '/sessions/two.jsonl', projectPath: '/second', title: 'Second session' },
     ]
     await renderSidebar(projects, sessions)

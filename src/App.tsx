@@ -9,16 +9,14 @@ import { ReasoningExpandedContext } from '@/components/ReasoningDisclosure'
 import { ConversationDock } from '@/components/ConversationDock'
 import { CommandOutputPanel } from '@/components/CommandOutputPanel'
 import { useCommandOutput } from '@/hooks/useCommandOutput'
-import { SubagentsPanel } from '@/components/SubagentsPanel'
-import { conversationExecution } from '@/lib/execution-state'
-import { useSideQuestions } from '@/hooks/useSideQuestions'
-import { useSubagents } from '@/hooks/useSubagents'
+import { useSideQuestions, type SideQuestionSessionState } from '@/hooks/useSideQuestions'
+import type { SideChatPanelProps } from '@/components/SideChatPanel'
+import { useSubagents, type SubagentPanelState } from '@/hooks/useSubagents'
 import { NoHarnessPrompt } from '@/components/NoHarnessPrompt'
 import type { ProjectScriptKind } from '@/components/ProjectRunControl'
 import { ResizeHandle } from '@/components/ResizeHandle'
 import { SessionTreeDialog } from '@/components/SessionTreeDialog'
 import { Sidebar } from '@/components/Sidebar'
-import type { TerminalDrawerHandle } from '@/components/TerminalDrawer'
 import { TitleToolbar } from '@/components/TitleToolbar'
 import { useAgentBrowserTabs } from '@/hooks/useAgentBrowserTabs'
 import { useAgentEvents } from '@/hooks/useAgentEvents'
@@ -30,7 +28,7 @@ import { Modal } from '@/components/ui'
 import { useBootstrap } from '@/hooks/useBootstrap'
 import { useBrowserAnnotations } from '@/hooks/useBrowserAnnotations'
 import { useExtensionUi } from '@/hooks/useExtensionUi'
-import { INSPECTOR_DEFAULT, INSPECTOR_MIN, SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_MIN, TERMINAL_DEFAULT, TERMINAL_MIN, usePanelLayout } from '@/hooks/usePanelLayout'
+import { INSPECTOR_DEFAULT, INSPECTOR_MIN, SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_MIN, usePanelLayout } from '@/hooks/usePanelLayout'
 import { usePluginSkills } from '@/hooks/usePluginSkills'
 import { useProviderAccounts } from '@/hooks/useProviderAccounts'
 import { useProviderCatalog } from '@/hooks/useProviderCatalog'
@@ -44,13 +42,15 @@ import { createAppKeydownHandler } from '@/lib/app-shortcuts'
 import { SAMPLE_GIT, SAMPLE_PROJECTS, SAMPLE_SCHEDULES, SAMPLE_SESSIONS, SAMPLE_SKILLS, SAMPLE_TRANSCRIPT } from '@/lib/data'
 import { openExternalUrl, revealPath } from '@/lib/desktop-actions'
 import { errorMessage } from '@/lib/errors'
+import { formatReasoningEffortLabel } from '@/components/EffortPicker'
 import { HARNESS_AGENT_NAMES, HARNESS_PRODUCT_NAMES, HARNESS_SHORT_NAMES } from '@/lib/harness'
+import type { OmpBackgroundTask } from '@/lib/omp-background-tasks'
 import { continuedSessionKeys } from '@/lib/session-lineage'
 import { isBackgroundedSlashCommand, type SlashCommand } from '@/lib/slash-commands'
 import { I18nProvider, useI18n } from '@/lib/i18n'
 import { detectRendererPlatform } from '@/lib/platform-shortcuts'
 import { activeProjectScriptKind, ProjectScriptBusyError, setupNeedsRun } from '@/lib/project-scripts'
-import { createSingleFlightAdmission, findProjectForSession, shouldRefreshGitOnSessionTransition, turnFileDeltas, workspaceCwd } from '@/lib/workspace'
+import { createSingleFlightAdmission, findProjectForSession, lastAssistantMessage, shouldRefreshGitOnSessionTransition, turnFileDeltas, workspaceCwd } from '@/lib/workspace'
 import {
   type AutomationScheduleRecord,
   type CheckoutAction,
@@ -58,8 +58,11 @@ import {
   type GitFileChange,
   HARNESS_IDS,
   type HarnessId,
+  type InspectorTab,
   type MessagePart,
+  type OmpApprovalMode,
   type PrimeModelDescriptor,
+  type PrimeModelPresetRecord,
   type PrimeProviderDescriptor,
   type ProjectRecord,
   type PromptDeliveryIntent,
@@ -67,14 +70,11 @@ import {
   type QueuedPrompt,
   type ScheduleTiming,
   type SessionRecord,
-  type TerminalSelectionContext,
   type WorkspaceView,
 } from '@/types/api'
 
 const Transcript = lazy(() => import('@/components/ConversationTranscript').then((module) => ({ default: module.ConversationTranscript })))
 const Inspector = lazy(() => import('@/components/WorkspaceInspector').then((module) => ({ default: module.WorkspaceInspector })))
-const SideChatPanel = lazy(() => import('@/components/SideChatPanel').then((module) => ({ default: module.SideChatPanel })))
-const TerminalDrawer = lazy(() => import('@/components/TerminalDrawer').then((module) => ({ default: module.TerminalDrawer })))
 const CommandPalette = lazy(() => import('@/components/CommandPalette').then((module) => ({ default: module.CommandPalette })))
 const ExtensionUiModal = lazy(() => import('@/components/ExtensionUiModal').then((module) => ({ default: module.ExtensionUiModal })))
 const ProjectsPage = lazy(() => import('@/pages/ProjectsPage').then((module) => ({ default: module.ProjectsPage })))
@@ -87,6 +87,14 @@ const hasBridge = () => typeof window !== 'undefined' && typeof window.desktop !
 // Stable fallback identities keep memoized children from re-rendering while the catalog loads.
 const EMPTY_MODELS: PrimeModelDescriptor[] = []
 const EMPTY_PROVIDERS: PrimeProviderDescriptor[] = []
+const EMPTY_GIT_FILES: GitFileChange[] = []
+const EMPTY_SIDE_CHAT_STATE: SideQuestionSessionState = {
+  supported: undefined,
+  topics: [],
+  live: {},
+  activeTopicId: null,
+  sending: false,
+}
 const HARNESS_PROVIDER_DOCS: Record<HarnessId, string> = {
   omp: 'https://github.com/can1357/oh-my-pi/blob/main/docs/providers.md',
 }
@@ -98,31 +106,14 @@ const LoadingPanel = ({ label }: { label: string }) => {
     </div>
   )
 }
-const TerminalLoadingPanel = () => {
-  const { t } = useI18n()
-  return (
-    <div className="terminal-drawer terminal-drawer--loading" role="status">
-      {t('app.loadingTerminal')}
-    </div>
-  )
-}
 
-interface TerminalSessionMount {
-  id: string
-  workspaceKey: string
-  cwd?: string
-  sessionPath?: string
-  initialCommand?: { id: string; command: string; label: string; onExit(exitCode: number): void }
-}
 interface ActiveProjectScriptRun {
-  requestId: string
+  /** Renderer-chosen id, so exit events match even before `start` resolves. */
+  runId: string
   projectId: string
   kind: ProjectScriptKind
   command: string
   harness: HarnessId
-  drawerId?: string
-  tabId?: string
-  ownsDrawer: boolean
 }
 type ProjectScriptRunOutcome = { cancelled: true } | { exitCode: number }
 
@@ -144,11 +135,9 @@ export default function App() {
   const [settingsSectionRequest, setSettingsSectionRequest] = useState<{ section: 'general' | 'agent'; id: number }>({ section: 'general', id: 0 })
   const [noHarnessPromptDismissed, setNoHarnessPromptDismissed] = useState(false)
   const [browserGeneration, setBrowserGeneration] = useState(0)
-  const [browserNavigationRequest, setBrowserNavigationRequest] = useState<{ id: number; url: string }>()
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [submittingKind, setSubmittingKind] = useState<'prompt' | 'compact'>('prompt')
-  const [submittingSince, setSubmittingSince] = useState<number | undefined>(undefined)
   const [restorePrompt, setRestorePrompt] = useState<{ owner: number; id: number; text: string }>()
   const [sessionTreeOpen, setSessionTreeOpen] = useState(false)
   const submissionGenerationRef = useRef<number | undefined>(undefined)
@@ -176,6 +165,7 @@ export default function App() {
   const reportError = useCallback((error: unknown) => {
     setToast(errorMessage(error), 'error')
   }, [])
+  const openSessionTree = useCallback(() => setSessionTreeOpen(true), [])
   // The shell handlers answer with false instead of rejecting, so the refusal
   // reaches the user as a toast rather than disappearing into a dropped result.
   const openExternal = useCallback(
@@ -207,12 +197,14 @@ export default function App() {
       setHarnessUpdatePromptOpen(true)
     }
   }, [harnessUpdates.state.phase])
+  // Depends on `install` alone: the memoized result object changes with every
+  // observed update state, which would rebuild this callback for no reason.
   const runHarnessUpdate = useCallback(() => {
     setHarnessUpdatePromptOpen(false)
     void harnessUpdates.install().then((state) => {
       if (state?.phase === 'installed') setToast(t('sidebar.harnessUpdate.installedToast', { version: state.availableVersion ?? '' }))
     })
-  }, [harnessUpdates, setToast, t])
+  }, [harnessUpdates.install, setToast, t])
   const openHarnessUpdatePrompt = useCallback(() => {
     // The error row retries directly: omp re-checks before installing anyway.
     if (harnessUpdates.state.phase === 'error') runHarnessUpdate()
@@ -288,7 +280,6 @@ export default function App() {
   // ever firing against a live harness.
   const sideChatSessionId = workspace.activeSessionId ?? workspace.runtime?.sessionId ?? null
   const sideQuestions = useSideQuestions(bridge, sideChatSessionId, workspace.runtime?.runtimeId ?? null)
-  const [sideChatOpen, setSideChatOpen] = useState(false)
   const [btwHint, setBtwHint] = useState(false)
   const activeSideChat = sideChatSessionId ? sideQuestions.session(sideChatSessionId) : undefined
   // The /btw-without-runtime hint lives in the conversation; the first real
@@ -356,17 +347,9 @@ export default function App() {
         session.projectPath === activeCwd,
     )
   }, [activeCwd, activeSession?.id, sessions])
-  const terminalSessionKey = workspace.activeSessionId
-    ? `${activeProject?.id ?? 'no-project'}:${workspace.activeSessionId}`
-    : `${activeProject?.id ?? 'no-project'}:new:${workspace.workspaceGeneration}`
-  const activeTerminalSessionPath = workspace.runtime?.sessionFile ?? activeSession?.filePath
-  const [terminalSessions, setTerminalSessions] = useState<TerminalSessionMount[]>([])
-  const [terminalDrawerRevision, setTerminalDrawerRevision] = useState(0)
-  const activeTerminalSession = useMemo(
-    () => terminalSessions.find((terminal) => terminal.workspaceKey === terminalSessionKey || Boolean(activeTerminalSessionPath && terminal.sessionPath === activeTerminalSessionPath)),
-    [activeTerminalSessionPath, terminalSessionKey, terminalSessions],
-  )
-  const terminalOpen = Boolean(activeTerminalSession)
+  // The headless runner binds a run to the session the user is looking at, so
+  // deleting that session stops the script in the main process.
+  const projectScriptSessionPath = workspace.runtime?.sessionFile ?? activeSession?.filePath
   const { git, refreshGit } = useGitStatus({
     bridge,
     cwd: activeCwd,
@@ -392,7 +375,6 @@ export default function App() {
     inspectorOpen: settingsState.inspectorOpen,
     setInspectorOpen: settingsState.setInspectorOpen,
     closeSmallestPanels,
-    terminalOpen,
     view,
   })
   const sidebarVisible = settingsState.sidebarOpen && !layout.sidebarSuppressed
@@ -419,7 +401,6 @@ export default function App() {
     const missing = injected.filter((command) => !present.has(command.name))
     return missing.length ? [...base, ...missing] : base
   }, [workspace.runtime?.availableCommands, sideChatSupported])
-  const sideChatVisible = view === 'session' && sideChatOpen && !layout.inspectorSuppressed
   const extension = useExtensionUi({
     bridge,
     activeRuntimeId: workspace.runtime?.runtimeId,
@@ -540,7 +521,7 @@ export default function App() {
     } finally {
       if (checkoutRequestRef.current === requestId) setCheckoutsLoading(false)
     }
-  }, [activeProject, bridge, reportError, settingsState.settings.checkoutStrategy])
+  }, [activeProject, bridge, reportError, settingsState.checkoutStrategyRevision, settingsState.settings.checkoutStrategy])
   useEffect(() => {
     void refreshCheckouts()
     return () => {
@@ -556,18 +537,23 @@ export default function App() {
     if (shouldRefreshGitOnSessionTransition(previousStatus, activeSessionStatus, locallyOwnedActiveSession)) void refreshGit()
   }, [activeSessionStatus, locallyOwnedActiveSession, refreshGit])
   const agentBrowser = useAgentBrowserTabs({ bridge, reportError })
-  const terminalDrawerRefs = useRef(new Map<string, TerminalDrawerHandle>())
-  const [terminalSelection, setTerminalSelection] = useState<TerminalSelectionContext>()
   const [agentPreviewSelected, setAgentPreviewSelected] = useState(true)
   const [agentSlotRect, setAgentSlotRect] = useState<AgentSlotRect | null>(null)
   const activeRuntimeSessionFile = workspace.runtime?.sessionFile
   const activeSessionFilePath = activeSession?.filePath
+  // Both identities name the session the user is looking at (a path-only move
+  // changes the file before the runtime rebinds). The layer keeps those tabs'
+  // guests loaded and releases only background sessions' idle ones.
+  const activeAgentSessionFiles = useMemo(() => {
+    const keys: string[] = []
+    if (activeRuntimeSessionFile) keys.push(activeRuntimeSessionFile)
+    if (activeSessionFilePath && activeSessionFilePath !== activeRuntimeSessionFile) keys.push(activeSessionFilePath)
+    return keys
+  }, [activeRuntimeSessionFile, activeSessionFilePath])
   const activeAgentTabs = useMemo(() => {
-    const keys = new Set<string>()
-    if (activeRuntimeSessionFile) keys.add(activeRuntimeSessionFile)
-    if (activeSessionFilePath) keys.add(activeSessionFilePath)
+    const keys = new Set(activeAgentSessionFiles)
     return agentBrowser.tabs.filter((tab) => keys.has(tab.sessionFile))
-  }, [agentBrowser.tabs, activeRuntimeSessionFile, activeSessionFilePath])
+  }, [agentBrowser.tabs, activeAgentSessionFiles])
   const activeAgentTabId = activeAgentTabs.find((tab) => tab.active)?.tabId ?? activeAgentTabs[0]?.tabId ?? null
   // Every agent browser action in the active thread surfaces the Browser
   // panel: open the inspector, select the Browser tab, and show the tab being
@@ -619,7 +605,7 @@ export default function App() {
   }, [])
   const finishProjectScriptRun = useCallback(
     (run: ActiveProjectScriptRun, outcome: ProjectScriptRunOutcome) => {
-      if (activeProjectScriptRunRef.current?.requestId !== run.requestId) return
+      if (activeProjectScriptRunRef.current?.runId !== run.runId) return
       activeProjectScriptRunRef.current = undefined
       setActiveProjectScriptRun(undefined)
       if ('cancelled' in outcome) return
@@ -646,17 +632,17 @@ export default function App() {
     },
     [bridge, patchProjectScripts, reportError, t],
   )
-
-  // 使用即最近:開啟 session 的時間戳(僅記憶體),側欄據此把剛使用的
-  // session 排到所屬群組最上面,所屬專案也會跳到「最近活動」排序頂端。
-  const [recentSessionOpens, setRecentSessionOpens] = useState<ReadonlyMap<string, number>>(() => new Map())
-  const bumpRecentSessionOpen = useCallback((sessionId: string) => {
-    setRecentSessionOpens((current) => {
-      const next = new Map(current)
-      next.set(sessionId, Date.now())
-      return next
+  // The headless runner reports one exit per run; a stop already cleared the
+  // run, so a cancelled outcome for a known run only clears it.
+  useEffect(() => {
+    if (!bridge) return
+    return bridge.projectScripts.onExit((event) => {
+      const run = activeProjectScriptRunRef.current
+      if (!run || run.runId !== event.runId) return
+      finishProjectScriptRun(run, event.cancelled ? { cancelled: true } : { exitCode: event.exitCode })
     })
-  }, [])
+  }, [bridge, finishProjectScriptRun])
+
   const {
     toggleSidebar,
     toggleInspector,
@@ -664,8 +650,6 @@ export default function App() {
     selectProject,
     selectSession,
     newSession,
-    openDraftSession,
-    discardDraftSession,
     navigate,
     renameSession,
     deleteSession,
@@ -687,6 +671,7 @@ export default function App() {
     updateSchedule,
     mutateSchedule,
     openScheduledSession,
+    openInspectorTab,
     openBrowser,
     openChanges,
     reloadCapabilities,
@@ -713,39 +698,39 @@ export default function App() {
       if (value === true) {
         submissionGenerationRef.current = workspace.workspaceRef.current.generation
         setSubmittingKind(kind)
-        setSubmittingSince(Date.now())
-      } else {
-        setSubmittingSince(undefined)
       }
       setSubmitting(value)
     },
     onCommandStart: commandOutputBegin,
     onCommandFinish: commandOutputFinish,
-    openSessionTree: () => setSessionTreeOpen(true),
+    openSessionTree,
     refreshSchedules,
     resetBrowserView: () => setBrowserGeneration((value) => value + 1),
-    closeTerminalForSession: (sessionPath) => {
-      const removed = terminalSessions.find((terminal) => terminal.sessionPath === sessionPath)
-      const projectRun = activeProjectScriptRunRef.current
-      if (removed && projectRun?.drawerId === removed.id) finishProjectScriptRun(projectRun, { cancelled: true })
-      setTerminalSessions((current) => current.filter((terminal) => terminal.sessionPath !== sessionPath))
-    },
     clearSessionAttention,
-    bumpRecentSessionOpen,
     reportError,
   })
   // Side chats are transient: closing the panel (its × button or a session
   // switch) drops the visible topics so reopening starts blank, like
   // ChatGPT's temporary side conversation. Harness history is unaffected.
   // The dock has no toolbar toggle — it opens exclusively via /btw.
-  const closeSideChat = useCallback(() => {
-    setSideChatOpen(false)
-    if (workspace.activeSessionId) sideQuestions.clear(workspace.activeSessionId)
-  }, [workspace.activeSessionId, sideQuestions])
+  const closeInspectorTab = useCallback(
+    (tab: InspectorTab) => {
+      settingsState.closeInspectorTab(tab)
+      if (tab === 'sidechat' && workspace.activeSessionId) sideQuestions.clear(workspace.activeSessionId)
+    },
+    [settingsState.closeInspectorTab, sideQuestions, workspace.activeSessionId],
+  )
+  const closeOtherInspectorTabs = useCallback(
+    (tab: InspectorTab) => {
+      settingsState.closeOtherInspectorTabs(tab)
+      if (tab !== 'sidechat' && workspace.activeSessionId) sideQuestions.clear(workspace.activeSessionId)
+    },
+    [settingsState.closeOtherInspectorTabs, sideQuestions, workspace.activeSessionId],
+  )
   const toggleInspectorPanel = useCallback(() => {
-    setSideChatOpen(false)
+    if (!settingsState.inspectorOpen || layout.inspectorSuppressed) layout.setSmallestInspectorAllowed(true)
     toggleInspector()
-  }, [toggleInspector])
+  }, [toggleInspector, settingsState.inspectorOpen, layout.inspectorSuppressed, layout.setSmallestInspectorAllowed])
   const askSideQuestion = useCallback(
     (question: string, topicId?: string) => {
       if (!sideChatSessionId) return
@@ -797,7 +782,7 @@ export default function App() {
           return Promise.resolve()
         }
         const question = trimmed.slice(4).trim()
-        setSideChatOpen(true)
+        openInspectorTab('sidechat')
         if (question) askSideQuestion(question)
         return Promise.resolve()
       }
@@ -805,23 +790,8 @@ export default function App() {
       if (intent !== 'steer') setBtwHint(false)
       return sendPrompt(prompt, images, intent)
     },
-    [sideChatIntercept, sideChatSessionId, askSideQuestion, sendPrompt],
+    [sideChatIntercept, sideChatSessionId, openInspectorTab, askSideQuestion, sendPrompt],
   )
-  const openTerminalLink = useCallback(
-    (url: string, external: boolean) => {
-      if (external) {
-        openExternal(url)
-        return
-      }
-      setAgentPreviewSelected(true)
-      setBrowserNavigationRequest((current) => ({ id: (current?.id ?? 0) + 1, url }))
-      openBrowser()
-    },
-    [openBrowser, openExternal],
-  )
-  const handleBrowserNavigationRequest = useCallback((id: number) => {
-    setBrowserNavigationRequest((current) => (current?.id === id ? undefined : current))
-  }, [])
   useEffect(() => {
     const onOpenSettings = bridge?.app.onOpenSettings
     if (!onOpenSettings) return
@@ -856,65 +826,116 @@ export default function App() {
     [activeProject, addOrReplaceProject, bridge, newSession, reportError],
   )
 
-  const closeTerminal = useCallback(
-    (id: string) => {
-      const projectRun = activeProjectScriptRunRef.current
-      if (projectRun?.drawerId === id) finishProjectScriptRun(projectRun, { cancelled: true })
-      terminalDrawerRefs.current.delete(id)
-      setTerminalSessions((current) => current.filter((terminal) => terminal.id !== id))
-      if (activeTerminalSession?.id === id) setTerminalSelection(undefined)
-    },
-    [activeTerminalSession?.id, finishProjectScriptRun],
-  )
-  const toggleTerminal = useCallback(async () => {
-    if (activeTerminalSession) {
-      closeTerminal(activeTerminalSession.id)
-      return
-    }
-    if (!activeProject || !activeCwd) return
-    if (activeProject.inferred) {
-      try {
-        await grantProject(activeProject)
-      } catch (error) {
-        reportError(error)
-        return
-      }
-    }
-    setTerminalSessions((current) => {
-      const existing = current.find((terminal) => terminal.workspaceKey === terminalSessionKey || Boolean(activeTerminalSessionPath && terminal.sessionPath === activeTerminalSessionPath))
-      if (existing) return current
-      return [...current, { id: crypto.randomUUID(), workspaceKey: terminalSessionKey, cwd: activeCwd, sessionPath: activeTerminalSessionPath }]
-    })
-  }, [activeCwd, activeProject, activeTerminalSession, activeTerminalSessionPath, closeTerminal, grantProject, reportError, terminalSessionKey])
-  useEffect(() => {
-    settingsState.setTerminalOpen(terminalOpen)
-  }, [settingsState.setTerminalOpen, terminalOpen])
-  useEffect(() => {
-    if (!activeTerminalSession) {
-      setTerminalSelection(undefined)
-      return
-    }
-    setTerminalSessions((current) =>
-      current.map((terminal) => {
-        if (terminal.id !== activeTerminalSession.id) return terminal
-        const sessionPath = activeTerminalSessionPath ?? terminal.sessionPath
-        if (terminal.cwd === activeCwd && terminal.sessionPath === sessionPath) return terminal
-        return { ...terminal, cwd: activeCwd, sessionPath }
-      }),
-    )
-    setTerminalSelection(terminalDrawerRefs.current.get(activeTerminalSession.id)?.readSelectionContext())
-  }, [activeCwd, activeTerminalSession?.id, activeTerminalSessionPath])
   // Stable identities keep the memoized Inspector and Composer from
   // re-rendering at streaming-frame rate; useStableCallback always dispatches
   // to the latest render's closures.
-  const inspectorAutomations = useMemo(
-    () => (activeSession ? schedules.filter((task) => task.harness === activeHarness && task.target.kind === 'session' && task.target.sessionId === activeSession.id) : []),
-    [activeHarness, activeSession, schedules],
+  // The Agents tab gets one memoized state bundle: useSubagents returns a fresh
+  // object every render, and the inspector's memo boundary should reopen only
+  // when the roster or its controls actually change.
+  const {
+    agents: subagentAgents,
+    selectedId: subagentSelectedId,
+    error: subagentError,
+    subscriptionLevel: subagentSubscriptionLevel,
+    pendingActions: subagentPendingActions,
+    select: selectSubagent,
+    cancel: cancelSubagent,
+    steer: steerSubagent,
+    loadEarlier: loadEarlierSubagent,
+    setSubscriptionLevel: setSubagentSubscriptionLevel,
+  } = subagents
+  const subagentPanel = useMemo<SubagentPanelState>(
+    () => ({
+      agents: subagentAgents,
+      selectedId: subagentSelectedId,
+      error: subagentError,
+      subscriptionLevel: subagentSubscriptionLevel,
+      pendingActions: subagentPendingActions,
+      select: selectSubagent,
+      cancel: cancelSubagent,
+      steer: steerSubagent,
+      loadEarlier: loadEarlierSubagent,
+      setSubscriptionLevel: setSubagentSubscriptionLevel,
+    }),
+    [subagentAgents, subagentSelectedId, subagentError, subagentSubscriptionLevel, subagentPendingActions, selectSubagent, cancelSubagent, steerSubagent, loadEarlierSubagent, setSubagentSubscriptionLevel],
   )
-  const openAutomation = useCallback((id: string) => {
-    setScheduleFocusId(id)
-    setView('scheduled')
-  }, [])
+  // Depend on the connection flag, not the runtime record: the record changes
+  // with every usage/token frame and would reopen the inspector memo.
+  const subagentsConnected = Boolean(workspace.runtime)
+  const inspectorSubagents = useMemo(
+    () => ({
+      state: subagentPanel,
+      connected: subagentsConnected,
+      showReasoning: settingsState.settings.showReasoningSummaries,
+      showTools: settingsState.settings.showToolCalls,
+    }),
+    [subagentPanel, subagentsConnected, settingsState.settings.showReasoningSummaries, settingsState.settings.showToolCalls],
+  )
+  const previousSideChatSessionRef = useRef<string | null>(sideChatSessionId)
+  useEffect(() => {
+    const previous = previousSideChatSessionRef.current
+    previousSideChatSessionRef.current = sideChatSessionId
+    if (previous && previous !== sideChatSessionId) {
+      settingsState.closeInspectorTab('sidechat')
+    }
+  }, [settingsState.closeInspectorTab, sideChatSessionId])
+  const cancelBackgroundTask = useStableCallback((task: OmpBackgroundTask) => {
+    if (task.kind === 'script') {
+      stopProjectScript()
+      return
+    }
+    if (task.kind === 'bash') {
+      const targetId = Number(task.id.slice('bash:'.length))
+      const entry = commandOutput.history.find((item) => item.id === targetId && item.status === 'running')
+      entry?.onAbort?.()
+      return
+    }
+    if (task.kind === 'tool') {
+      void stopRuntime()
+      return
+    }
+    if (task.kind === 'job') {
+      void sendPrompt(`/jobs kill ${task.id}`).catch(() => undefined)
+    }
+  })
+
+  const refreshBackgroundTasks = useStableCallback(() => {
+    void sendPrompt('/jobs').catch(() => undefined)
+  })
+
+  const closeSideChatTab = useCallback(() => closeInspectorTab('sidechat'), [closeInspectorTab])
+  const sideChatModelLabel = provider.selectedModel?.name ?? (provider.model || undefined)
+  const sideChatEffortLabel = formatReasoningEffortLabel(t, provider.effort, provider.resolvedAutoEffort)
+  const sideChatFastSupported = provider.selectedModel?.fastModeSupported ?? false
+  const sideChatAgentName = HARNESS_AGENT_NAMES[activeHarness]
+  const inspectorSideChat = useMemo<SideChatPanelProps>(
+    () => ({
+      state: activeSideChat ?? EMPTY_SIDE_CHAT_STATE,
+      hasSession: Boolean(workspace.runtime),
+      modelLabel: sideChatModelLabel,
+      effortLabel: sideChatEffortLabel,
+      fast: provider.fast,
+      fastSupported: sideChatFastSupported,
+      agentName: sideChatAgentName,
+      onAsk: askSideQuestion,
+      onCancel: cancelSideQuestion,
+      onSelectTopic: selectSideQuestionTopic,
+      onClose: closeSideChatTab,
+    }),
+    [
+      activeSideChat,
+      workspace.runtime,
+      sideChatModelLabel,
+      sideChatEffortLabel,
+      provider.fast,
+      sideChatFastSupported,
+      sideChatAgentName,
+      askSideQuestion,
+      cancelSideQuestion,
+      selectSideQuestionTopic,
+      closeSideChatTab,
+    ],
+  )
   const selectAgentTab = useStableCallback((tabId: string) => {
     setAgentPreviewSelected(false)
     agentBrowser.select(tabId)
@@ -933,7 +954,6 @@ export default function App() {
           .catch(reportError)
       : undefined,
   )
-  const getTerminalContext = useStableCallback(() => (activeTerminalSession ? terminalDrawerRefs.current.get(activeTerminalSession.id)?.readSelectionContext() : undefined))
   const removeQueuedMessage = useStableCallback((message: QueuedPrompt) => workspace.removeQueuedPrompt(message.id))
   const sendQueuedMessage = useStableCallback(async (message: QueuedPrompt) => {
     workspace.updateQueuedPromptDelivery(message.id, true)
@@ -983,14 +1003,58 @@ export default function App() {
       ])
     }
   })
-  const clearTerminalSelection = useStableCallback(() => {
-    if (activeTerminalSession) terminalDrawerRefs.current.get(activeTerminalSession.id)?.clearSelection()
+  // Prop callbacks for the memoized Composer, Transcript, and toolbar. Each
+  // keeps one identity (useStableCallback reads the latest render's closures)
+  // so an App re-render that changes nothing else never reaches those trees.
+  const retryTurn = useStableCallback(async () => {
+    await sendPrompt('/retry')
   })
+  const restoreTranscriptPrompt = useStableCallback((text: string) => {
+    setRestorePrompt({ owner: workspace.workspaceGeneration, id: Date.now(), text })
+  })
+  const suggestPrompt = useStableCallback((prompt: string) => {
+    void sendPrompt(prompt).catch(() => undefined)
+  })
+  const dismissChangesCard = useCallback(() => setChangesCardDismissed(true), [])
+  const openSessionReference = useStableCallback((sessionId: string, harness: HarnessId) => {
+    const session = sessions.find((candidate) => candidate.id === sessionId && candidate.harness === harness && !candidate.archived && candidate.depth === 0)
+    if (session) void selectSession(session)
+    else setToast('That referenced session is archived or no longer available.')
+  })
+  const switchModelPreset = useStableCallback((preset: PrimeModelPresetRecord) => {
+    void sendPrompt(`/modelpreset switch ${preset.name}`).catch(reportError)
+  })
+  const saveModelPreset = useCallback((name: string) => void sendPrompt(`/modelpreset save ${name}`), [sendPrompt])
+  const changeApprovalMode = useCallback(
+    (mode: OmpApprovalMode) => {
+      void settingsState.updateSettings({ ompApprovalMode: mode })
+    },
+    [settingsState.updateSettings],
+  )
+  const selectComposerProject = useStableCallback((project: ProjectRecord) => {
+    if (project.id === activeProject?.id) return
+    // An empty workspace keeps its fresh-session state in the picked folder;
+    // an active session navigates like the sidebar.
+    if (workspace.activeSessionId) void selectProject(project)
+    else newSession(project)
+  })
+  const addProjectFolder = useCallback(() => {
+    void addProject()
+  }, [addProject])
+  const editQueuedMessage = useStableCallback((message: QueuedPrompt) => workspace.editQueuedPrompt(message.id, message.text))
+  const dismissRestoreRequest = useCallback(() => setRestorePrompt(undefined), [])
   const startProjectScript = useCallback(
     async (kind: ProjectScriptKind) => {
       if (!bridge || !activeProject || !activeCwd) throw new Error('Project scripts are available in the desktop app for an active project.')
       if (activeProjectScriptRunRef.current || projectScriptStartingRef.current) throw new ProjectScriptBusyError()
       projectScriptStartingRef.current = true
+      const run: ActiveProjectScriptRun = {
+        runId: crypto.randomUUID(),
+        projectId: activeProject.id,
+        harness: activeProject.harness,
+        kind,
+        command: '',
+      }
       try {
         const project = activeProject.inferred ? await grantProject(activeProject) : activeProject
         const command = project.scripts?.[kind]?.trim() ?? ''
@@ -999,39 +1063,32 @@ export default function App() {
           const scripts = await bridge.projects.markSetupStarted(project.id, command, project.harness)
           patchProjectScripts(project.id, scripts)
         }
-        const run: ActiveProjectScriptRun = { requestId: crypto.randomUUID(), projectId: project.id, harness: project.harness, kind, command, ownsDrawer: false }
-        const existing = terminalSessions.find((terminal) => terminal.workspaceKey === terminalSessionKey || Boolean(activeTerminalSessionPath && terminal.sessionPath === activeTerminalSessionPath))
-        if (existing) {
-          const pending = { ...run, drawerId: existing.id, ownsDrawer: false }
-          activeProjectScriptRunRef.current = pending
-          setActiveProjectScriptRun(pending)
-        } else {
-          const drawerId = crypto.randomUUID()
-          const tabId = crypto.randomUUID()
-          const started = { ...run, drawerId, tabId, ownsDrawer: true }
-          activeProjectScriptRunRef.current = started
-          setActiveProjectScriptRun(started)
-          setTerminalSessions((current) => [
-            ...current,
-            {
-              id: drawerId,
-              workspaceKey: terminalSessionKey,
-              cwd: activeCwd,
-              sessionPath: activeTerminalSessionPath,
-              initialCommand: {
-                id: tabId,
-                command,
-                label: kind === 'setup' ? 'Setup' : 'Run',
-                onExit: (exitCode) => finishProjectScriptRun(started, exitCode === undefined ? { cancelled: true } : { exitCode }),
-              },
-            },
-          ])
+        const started = { ...run, projectId: project.id, harness: project.harness, command }
+        activeProjectScriptRunRef.current = started
+        setActiveProjectScriptRun(started)
+        await bridge.projectScripts.start({
+          runId: started.runId,
+          projectId: started.projectId,
+          kind,
+          cwd: activeCwd,
+          command,
+          sessionPath: projectScriptSessionPath,
+        })
+        if (activeProjectScriptRunRef.current?.runId !== started.runId) {
+          // Stopped while the main process was authorizing and spawning.
+          await bridge.projectScripts.stop(started.runId).catch(() => undefined)
         }
+      } catch (error) {
+        if (activeProjectScriptRunRef.current?.runId === run.runId) {
+          activeProjectScriptRunRef.current = undefined
+          setActiveProjectScriptRun(undefined)
+        }
+        throw error
       } finally {
         projectScriptStartingRef.current = false
       }
     },
-    [activeCwd, activeProject, activeTerminalSessionPath, bridge, finishProjectScriptRun, grantProject, patchProjectScripts, terminalSessionKey, terminalSessions],
+    [activeCwd, activeProject, bridge, grantProject, patchProjectScripts, projectScriptSessionPath],
   )
   const saveProjectScripts = useCallback(
     async (scripts: { setup: string; run: string }) => {
@@ -1044,38 +1101,18 @@ export default function App() {
   )
   const stopProjectScript = useCallback(() => {
     const run = activeProjectScriptRunRef.current
-    if (!run) return
+    if (!run || !bridge) return
     finishProjectScriptRun(run, { cancelled: true })
-    if (!run.drawerId || !run.tabId) return
-    const drawer = terminalDrawerRefs.current.get(run.drawerId)
-    if (drawer) drawer.stopCommand(run.tabId)
-    else setTerminalSessions((current) => current.filter((terminal) => terminal.id !== run.drawerId))
-  }, [finishProjectScriptRun])
+    void bridge.projectScripts.stop(run.runId).catch(reportError)
+  }, [bridge, finishProjectScriptRun, reportError])
+  // The run is headless, so leaving the thread view must still stop it.
   useEffect(() => {
     if (view === 'session') return
     const run = activeProjectScriptRunRef.current
-    if (!run) return
+    if (!run || !bridge) return
     finishProjectScriptRun(run, { cancelled: true })
-    if (!run.drawerId) return
-    const drawer = terminalDrawerRefs.current.get(run.drawerId)
-    if (!run.ownsDrawer && drawer && run.tabId) drawer.stopCommand(run.tabId)
-    if (run.ownsDrawer) setTerminalSessions((current) => current.filter((terminal) => terminal.id !== run.drawerId))
-  }, [finishProjectScriptRun, view])
-  useEffect(() => {
-    const run = activeProjectScriptRun
-    if (!run || run.tabId || !run.drawerId) return
-    const drawer = terminalDrawerRefs.current.get(run.drawerId)
-    if (!drawer) return
-    try {
-      const tabId = drawer.runCommand(run.command, run.kind === 'setup' ? 'Setup' : 'Run', (exitCode) => finishProjectScriptRun(run, exitCode === undefined ? { cancelled: true } : { exitCode }))
-      const started = { ...run, tabId }
-      activeProjectScriptRunRef.current = started
-      setActiveProjectScriptRun(started)
-    } catch (error) {
-      finishProjectScriptRun(run, { cancelled: true })
-      reportError(error)
-    }
-  }, [activeProjectScriptRun, finishProjectScriptRun, reportError, terminalDrawerRevision])
+    void bridge.projectScripts.stop(run.runId).catch(reportError)
+  }, [bridge, finishProjectScriptRun, reportError, view])
   useEffect(() => {
     const scripts = activeProject?.scripts
     if (!activeProject || !scripts || !setupNeedsRun(scripts) || activeProjectScriptRunRef.current) return
@@ -1117,9 +1154,6 @@ export default function App() {
         'new-session': () => newSession(),
         'open-browser': () => openBrowser(),
         'toggle-sidebar': () => toggleSidebar(),
-        'toggle-terminal': () => {
-          void toggleTerminal()
-        },
         'open-settings': () => navigate('settings'),
         'close-palette': () => setPaletteOpen(false),
         'close-settings': () => navigate('session'),
@@ -1181,21 +1215,7 @@ export default function App() {
   // cancelled assistant row: the composer's send slot becomes a retry button
   // until a new draft arrives (mirroring how the stop button owns the slot
   // while the model streams).
-  const stoppedTurnRetryAvailable =
-    !busy &&
-    (() => {
-      const lastAssistant = [...workspace.messages].reverse().find((message) => message.role === 'assistant')
-      return lastAssistant?.outcome === 'cancelled'
-    })()
-  const execution = conversationExecution({
-    runtime: workspace.runtime,
-    messages: workspace.messages,
-    submitting: submitting && submissionGenerationRef.current === workspace.workspaceGeneration,
-    submittingKind,
-    submittingSince,
-    waiting: Boolean(extension.extensionUi && extension.extensionUi.runtimeId === workspace.runtime?.runtimeId),
-    sessionStatus: activeSession?.status,
-  })
+  const stoppedTurnRetryAvailable = !busy && lastAssistantMessage(workspace.messages)?.outcome === 'cancelled'
   /* Compare owned status snapshots. A turn already running when a workspace
      opens has no trustworthy baseline, so it cannot produce a changes card. */
   useEffect(() => {
@@ -1213,7 +1233,7 @@ export default function App() {
         turnInFlightRef.current = true
         turnBaselineRef.current = git.files
       }
-      setTurnChanges(null)
+      setTurnChanges((current) => (current === null ? current : null))
       return
     }
     if (turnInFlightRef.current) {
@@ -1225,7 +1245,7 @@ export default function App() {
     setTurnChanges(turnFileDeltas(git.files, turnBaselineRef.current))
   }, [busy, git.files, refreshGit, activeCwd, workspace.activeSessionId, workspace.workspaceGeneration])
 
-  const turnGit = useMemo(() => ({ ...git, files: turnChanges ?? [] }), [git, turnChanges])
+  const turnGit = useMemo(() => ({ ...git, files: turnChanges ?? EMPTY_GIT_FILES }), [git, turnChanges])
   const externalSessionRunning = Boolean(activeSession?.status === 'running' && workspace.runtime?.sessionFile !== activeSession.filePath)
   const queuedMessages = useMemo<QueuedPrompt[]>(() => workspace.pendingQueuedPrompts.filter((pending) => pending.intent === 'queue'), [workspace.pendingQueuedPrompts])
   useEffect(() => {
@@ -1355,6 +1375,7 @@ export default function App() {
         <div
           className="app-shell"
           data-density={settingsState.settings.conversationDensity}
+          data-layout={layout.smallestLayout ? 'smallest' : layout.compactLayout ? 'compact' : 'wide'}
           aria-busy={!initialized}
           data-platform={platform}
           data-ready={initialized ? 'true' : 'false'}
@@ -1365,7 +1386,6 @@ export default function App() {
               projects={projects}
               sessions={sessions}
               clearedAttention={clearedAttention}
-              recentSessionOpens={recentSessionOpens}
               activeProjectId={activeProject?.id}
               activeSessionId={workspace.activeSessionId}
               activeView={view}
@@ -1376,8 +1396,6 @@ export default function App() {
               onHarnessUpdateAction={openHarnessUpdatePrompt}
               projectSortMode={settingsState.settings.projectSortMode}
               {...sidebarActions}
-              onSelectDraftSession={openDraftSession}
-              onDiscardDraftSession={discardDraftSession}
               overlay={layout.compactLayout}
               platform={platform}
             />
@@ -1403,18 +1421,22 @@ export default function App() {
               gitBranch={git.branch}
               view={view}
               productName={HARNESS_PRODUCT_NAMES[activeHarness]}
+              shortName={HARNESS_SHORT_NAMES[activeHarness]}
+              agentName={HARNESS_AGENT_NAMES[activeHarness]}
               sidebarOpen={sidebarVisible}
-              terminalOpen={terminalOpen}
               activeProjectScriptKind={activeProjectScriptKind(activeProjectScriptRun, activeProject?.id)}
               onRunProjectScript={startProjectScript}
               onStopProjectScript={stopProjectScript}
               onSaveProjectScripts={saveProjectScripts}
               onToggleSidebar={toggleSidebar}
-              inspectorOpen={inspectorVisible && !sideChatVisible}
+              inspectorOpen={inspectorVisible}
               onToggleInspector={toggleInspectorPanel}
-              onToggleTerminal={toggleTerminal}
-              onOpenBrowser={openBrowser}
-              onOpenSessionTree={view === 'session' ? () => setSessionTreeOpen(true) : undefined}
+              onSelectInspectorTab={openInspectorTab}
+              git={git}
+              transcript={workspace.transcriptStore}
+              runtime={workspace.runtime}
+              subagents={subagentAgents}
+              onSelectSubagent={selectSubagent}
               platform={platform}
             />
             <div className="workbench__content">
@@ -1422,234 +1444,156 @@ export default function App() {
                 <div
                   ref={layout.workspaceRowRef}
                   className="session-workspace"
-                  style={{ '--inspector-width': `${layout.inspectorWidth}px`, '--side-chat-width': `${layout.sideChatWidth}px`, '--terminal-height': `${layout.terminalHeight}px` } as CSSProperties}
+                  style={{ '--inspector-width': `${layout.inspectorWidth}px` } as CSSProperties}
                 >
-                  <div ref={layout.sessionWorkspaceRef} className="conversation-column">
-                    <SubagentsPanel
-                      key={workspace.workspaceGeneration}
-                      state={subagents}
-                      connected={Boolean(workspace.runtime)}
-                      showReasoning={settingsState.settings.showReasoningSummaries}
-                      showTools={settingsState.settings.showToolCalls}
-                      execution={execution}
-                      pinned={settingsState.settings.subagentsPanelPinned}
-                      onPinnedChange={(subagentsPanelPinned) => {
-                        void settingsState.updateSettings({ subagentsPanelPinned })
-                      }}
-                    >
-                      <main className="conversation-pane">
-                        <Suspense fallback={<LoadingPanel label={t('app.panel.conversation')} />}>
-                          <Transcript
-                            key={workspace.activeSessionId ?? 'new-session'}
-                            followKey={workspace.activeSessionId ?? 'new-session'}
-                            transcript={workspace.transcriptStore}
-                            git={turnGit}
-                            harness={activeHarness}
-                            loading={workspace.loadingSession}
-                            active={busy || activeSession?.status === 'running'}
-                            visible={!subagents.selectedId}
-                            onRetry={async () => {
-                              await sendPrompt('/retry')
-                            }}
-                            onRestorePrompt={(text) => setRestorePrompt({ owner: workspace.workspaceGeneration, id: Date.now(), text })}
-                            showReasoning={settingsState.settings.showReasoningSummaries}
-                            showTools={settingsState.settings.showToolCalls}
-                            onOpenChanges={openChanges}
-                            onSuggestion={(prompt) => {
-                              void sendPrompt(prompt).catch(() => undefined)
-                            }}
-                            suggestionsDisabled={!activeProject || workspace.loadingSession || submitting}
-                            showChangesCard={Boolean(turnChanges?.length && settingsState.settings.showFileChangesPopup && !changesCardDismissed)}
-                            onDismissChanges={() => setChangesCardDismissed(true)}
-                            queuedMessageCount={queuedMessages.length + harnessQueuedMessageCount}
-                            onOpenSessionReference={(sessionId, harness) => {
-                              const session = sessions.find((candidate) => candidate.id === sessionId && candidate.harness === harness && !candidate.archived && candidate.depth === 0)
-                              if (session) void selectSession(session)
-                              else setToast('That referenced session is archived or no longer available.')
-                            }}
-                          />
-                        </Suspense>
-                        {btwHint ? (
-                          <div className="conversation-hint" role="status">
-                            {t('sidechat.needsRuntime')}
-                          </div>
-                        ) : null}
-                        <ConversationDock>
-                          <CommandOutputPanel
-                            text={commandOutput.text}
-                            command={commandOutput.command}
-                            status={commandOutput.status}
-                            onAbort={commandOutput.onAbort}
-                            onClose={commandOutput.dismiss}
-                            history={commandOutput.history}
-                            selectedId={commandOutput.selectedId}
-                            onSelect={commandOutput.select}
-                            onClear={commandOutput.clear}
-                          />
-                          <ExtensionUiPresentation
-                            status={extension.extensionStatus}
-                            widgets={extension.extensionWidgets}
-                            editorText={extension.editorTextUpdate}
-                            openUrl={extension.openUrlRequest}
-                            capabilityNotices={extension.extensionCapabilityNotices}
-                            composerDraft={
-                              readComposerDraft(workspace.activeSessionId ? `${activeProject?.id ?? 'no-project'}:${workspace.activeSessionId}` : `${activeProject?.id ?? 'no-project'}:new`)?.text ??
-                              ''
-                            }
-                            activeRuntimeId={workspace.runtime?.runtimeId}
-                            onApplyEditorText={(text) => {
-                              // Stale guard: only the update currently pending for
-                              // the active runtime may reach the composer draft.
-                              const update = extension.editorTextUpdate
-                              if (!update || update.runtimeId !== workspace.runtime?.runtimeId || update.text !== text) return
-                              extension.consumeEditorTextUpdate()
-                              setRestorePrompt({ owner: workspace.workspaceGeneration, id: Date.now(), text })
-                            }}
-                            onDismissEditorText={() => extension.dismissEditorTextUpdate()}
-                            onOpenUrl={(url) => {
-                              if (bridge)
-                                void openExternalUrl(bridge.app, url).then((failure) => {
-                                  if (failure) setToast(failure)
-                                })
-                            }}
-                            onDismissOpenUrl={() => extension.dismissOpenUrlRequest()}
-                            onDismissCapabilityNotice={extension.dismissCapabilityNotice}
-                          >
-                            <Composer
-                              availableCommands={visibleSlashCommands}
-                              key={
-                                workspace.activeSessionId
-                                  ? `${activeProject?.id ?? 'no-project'}:${workspace.activeSessionId}`
-                                  : `${activeProject?.id ?? 'no-project'}:new:${workspace.workspaceGeneration}`
-                              }
-                              draftKey={workspace.activeSessionId ? `${activeProject?.id ?? 'no-project'}:${workspace.activeSessionId}` : `${activeProject?.id ?? 'no-project'}:new`}
-                              busy={busy}
-                              submitting={submitting}
-                              submittingKind={submittingKind}
-                              loading={workspace.loadingSession}
-                              disabled={!activeProject}
-                              messageEnterAction={settingsState.settings.messageEnterAction}
-                              voice={bridge?.voice}
-                              transcriptionProvider={settingsState.settings.voiceTranscriptionProvider}
-                              model={provider.model}
-                              effort={provider.effort}
-                              modelsByProvider={provider.modelsByProvider}
-                              resolvedAutoEffort={provider.resolvedAutoEffort}
-                              providers={provider.catalog?.providers ?? EMPTY_PROVIDERS}
-                              presets={provider.catalog?.presets}
-                              onSwitchPreset={(preset) => {
-                                void sendPrompt(`/modelpreset switch ${preset.name}`).catch(reportError)
-                              }}
-                              onSavePreset={(name) => void sendPrompt(`/modelpreset save ${name}`)}
-                              reasoningLevels={provider.reasoningLevels}
-                              fast={provider.fast}
-                              fastSupported={provider.selectedModel?.fastModeSupported ?? false}
-                              fastAvailable={workspace.runtime?.fastModeAvailable !== false}
-                              usageLimit={provider.usageLimit}
-                              approvalMode={settingsState.settings.ompApprovalMode}
-                              onApprovalModeChange={(mode) => {
-                                void settingsState.updateSettings({ ompApprovalMode: mode })
-                              }}
-                              checkoutCatalog={checkoutCatalog}
-                              checkoutLabel={git.branch ?? activeProject?.gitBranch ?? activeProject?.name}
-                              checkoutsLoading={checkoutsLoading}
-                              onExecuteCheckout={bridge && activeProject && !activeProject.inferred && checkoutCatalog ? executeCheckout : undefined}
-                              projects={projects}
-                              activeProjectId={activeProject?.id}
-                              onSelectProject={(project) => {
-                                if (project.id === activeProject?.id) return
-                                // An empty workspace keeps its fresh-session state in the
-                                // picked folder; an active session navigates like the sidebar.
-                                if (workspace.activeSessionId) void selectProject(project)
-                                else newSession(project)
-                              }}
-                              onAddProjectFolder={() => {
-                                void addProject()
-                              }}
-                              agentName={HARNESS_AGENT_NAMES[activeHarness]}
-                              shortName={HARNESS_SHORT_NAMES[activeHarness]}
-                              imageInputSupported={Boolean(provider.selectedModel?.input.includes('image') || provider.catalog?.visionDelegation)}
-                              contextUsage={workspace.runtime?.contextUsage}
-                              sessionUsage={workspace.runtime?.sessionUsage}
-                              runtimeId={workspace.runtime?.runtimeId}
-                              harnessTokensPerSecond={workspace.runtime?.tokensPerSecond}
-                              executingModel={workspace.runtime?.executingModel}
-                              skills={pluginSkills.skills}
-                              sessions={mentionableSessions}
-                              annotations={browserAnnotations.annotations}
-                              terminalSelection={terminalSelection}
-                              getTerminalContext={getTerminalContext}
-                              queuedMessages={queuedMessages}
-                              harnessQueuedMessageCount={harnessQueuedMessageCount}
-                              harnessQueuedPreviews={harnessQueuedPreviews}
-                              queueRuntimeId={workspace.runtime?.runtimeId}
-                              onRemoveHarnessQueuedMessage={removeHarnessQueuedMessage}
-                              onPromoteHarnessQueuedMessage={promoteHarnessQueuedMessage}
-                              onReclaimHarnessQueuedMessage={reclaimHarnessQueuedMessage}
-                              onDeleteQueuedMessage={removeQueuedMessage}
-                              onSendQueuedMessage={sendQueuedMessage}
-                              onEditQueuedMessage={(message) => workspace.editQueuedPrompt(message.id, message.text)}
-                              sendSignal={browserAnnotations.sendSignal}
-                              restoreRequest={restorePrompt?.owner === workspace.workspaceGeneration ? restorePrompt : undefined}
-                              onRestoreHandled={() => setRestorePrompt(undefined)}
-                              onModelChange={provider.changeModel}
-                              onEffortChange={provider.changeEffort}
-                              onFastChange={provider.changeFast}
-                              onSend={sendVisiblePrompt}
-                              onStop={stopRuntime}
-                              retryStoppedTurn={stoppedTurnRetryAvailable}
-                              onRetryStoppedTurn={() => {
-                                void sendPrompt('/retry')
-                              }}
-                              onRemoveAnnotation={browserAnnotations.remove}
-                              onClearAnnotations={browserAnnotations.clear}
-                              onClearTerminalSelection={clearTerminalSelection}
-                            />
-                          </ExtensionUiPresentation>
-                        </ConversationDock>
-                      </main>
-                    </SubagentsPanel>
-                    {terminalSessions.map((terminal) => (
-                      <Suspense key={terminal.id} fallback={terminal.id === activeTerminalSession?.id ? <TerminalLoadingPanel /> : null}>
-                        <TerminalDrawer
-                          ref={(handle) => {
-                            if (handle) terminalDrawerRefs.current.set(terminal.id, handle)
-                            else terminalDrawerRefs.current.delete(terminal.id)
-                          }}
-                          visible={terminal.id === activeTerminalSession?.id}
-                          cwd={terminal.cwd}
-                          sessionPath={terminal.sessionPath}
-                          shell={settingsState.settings.terminalShell}
-                          initialCommand={terminal.initialCommand}
-                          height={layout.terminalHeight}
-                          minHeight={TERMINAL_MIN}
-                          maxHeight={layout.terminalMax}
-                          defaultHeight={TERMINAL_DEFAULT}
-                          onHeightChange={layout.setTerminalHeight}
-                          onClose={() => closeTerminal(terminal.id)}
-                          onError={reportError}
-                          onInitialCommandConsumed={() => setTerminalSessions((current) => current.map((item) => (item.id === terminal.id ? { ...item, initialCommand: undefined } : item)))}
-                          onOpenLink={openTerminalLink}
-                          onReady={() => setTerminalDrawerRevision((revision) => revision + 1)}
-                          onSelectionChange={(selection) => {
-                            if (terminal.id === activeTerminalSession?.id) setTerminalSelection(selection)
-                          }}
+                  <div className={`conversation-column${subagents.selectedId ? ' has-selection' : ''}`}>
+                    <main className="conversation-pane">
+                      <Suspense fallback={<LoadingPanel label={t('app.panel.conversation')} />}>
+                        <Transcript
+                          key={workspace.activeSessionId ?? 'new-session'}
+                          followKey={workspace.activeSessionId ?? 'new-session'}
+                          transcript={workspace.transcriptStore}
+                          git={turnGit}
+                          harness={activeHarness}
+                          loading={workspace.loadingSession}
+                          active={busy || activeSession?.status === 'running'}
+                          onRetry={retryTurn}
+                          onRestorePrompt={restoreTranscriptPrompt}
+                          showReasoning={settingsState.settings.showReasoningSummaries}
+                          showTools={settingsState.settings.showToolCalls}
+                          onOpenChanges={openChanges}
+                          onSuggestion={suggestPrompt}
+                          suggestionsDisabled={!activeProject || workspace.loadingSession || submitting}
+                          showChangesCard={Boolean(turnChanges?.length && settingsState.settings.showFileChangesPopup && !changesCardDismissed)}
+                          onDismissChanges={dismissChangesCard}
+                          queuedMessageCount={queuedMessages.length + harnessQueuedMessageCount}
+                          onOpenSessionReference={openSessionReference}
                         />
                       </Suspense>
-                    ))}
+                      {btwHint ? (
+                        <div className="conversation-hint" role="status">
+                          {t('sidechat.needsRuntime')}
+                        </div>
+                      ) : null}
+                      <ConversationDock>
+                        <CommandOutputPanel
+                          text={commandOutput.text}
+                          command={commandOutput.command}
+                          status={commandOutput.status}
+                          onAbort={commandOutput.onAbort}
+                          onClose={commandOutput.dismiss}
+                          history={commandOutput.history}
+                          selectedId={commandOutput.selectedId}
+                          onSelect={commandOutput.select}
+                          onClear={commandOutput.clear}
+                        />
+                        <ExtensionUiPresentation
+                          status={extension.extensionStatus}
+                          widgets={extension.extensionWidgets}
+                          editorText={extension.editorTextUpdate}
+                          openUrl={extension.openUrlRequest}
+                          capabilityNotices={extension.extensionCapabilityNotices}
+                          composerDraft={
+                            readComposerDraft(workspace.activeSessionId ? `${activeProject?.id ?? 'no-project'}:${workspace.activeSessionId}` : `${activeProject?.id ?? 'no-project'}:new`)?.text ??
+                            ''
+                          }
+                          activeRuntimeId={workspace.runtime?.runtimeId}
+                          onApplyEditorText={(text) => {
+                            // Stale guard: only the update currently pending for
+                            // the active runtime may reach the composer draft.
+                            const update = extension.editorTextUpdate
+                            if (!update || update.runtimeId !== workspace.runtime?.runtimeId || update.text !== text) return
+                            extension.consumeEditorTextUpdate()
+                            setRestorePrompt({ owner: workspace.workspaceGeneration, id: Date.now(), text })
+                          }}
+                          onDismissEditorText={() => extension.dismissEditorTextUpdate()}
+                          onOpenUrl={(url) => {
+                            if (bridge)
+                              void openExternalUrl(bridge.app, url).then((failure) => {
+                                if (failure) setToast(failure)
+                              })
+                          }}
+                          onDismissOpenUrl={() => extension.dismissOpenUrlRequest()}
+                          onDismissCapabilityNotice={extension.dismissCapabilityNotice}
+                        >
+                          <Composer
+                            availableCommands={visibleSlashCommands}
+                            key={
+                              workspace.activeSessionId
+                                ? `${activeProject?.id ?? 'no-project'}:${workspace.activeSessionId}`
+                                : `${activeProject?.id ?? 'no-project'}:new:${workspace.workspaceGeneration}`
+                            }
+                            draftKey={workspace.activeSessionId ? `${activeProject?.id ?? 'no-project'}:${workspace.activeSessionId}` : `${activeProject?.id ?? 'no-project'}:new`}
+                            busy={busy}
+                            submitting={submitting}
+                            submittingKind={submittingKind}
+                            loading={workspace.loadingSession}
+                            disabled={!activeProject}
+                            messageEnterAction={settingsState.settings.messageEnterAction}
+                            voice={bridge?.voice}
+                            transcriptionProvider={settingsState.settings.voiceTranscriptionProvider}
+                            model={provider.model}
+                            effort={provider.effort}
+                            modelsByProvider={provider.modelsByProvider}
+                            resolvedAutoEffort={provider.resolvedAutoEffort}
+                            providers={provider.catalog?.providers ?? EMPTY_PROVIDERS}
+                            presets={provider.catalog?.presets}
+                            onSwitchPreset={switchModelPreset}
+                            onSavePreset={saveModelPreset}
+                            reasoningLevels={provider.reasoningLevels}
+                            fast={provider.fast}
+                            fastSupported={provider.selectedModel?.fastModeSupported ?? false}
+                            fastAvailable={workspace.runtime?.fastModeAvailable !== false}
+                            usageLimit={provider.usageLimit}
+                            approvalMode={settingsState.settings.ompApprovalMode}
+                            onApprovalModeChange={changeApprovalMode}
+                            checkoutCatalog={checkoutCatalog}
+                            checkoutLabel={git.branch ?? activeProject?.gitBranch ?? activeProject?.name}
+                            checkoutsLoading={checkoutsLoading}
+                            onExecuteCheckout={bridge && activeProject && !activeProject.inferred && checkoutCatalog ? executeCheckout : undefined}
+                            projects={projects}
+                            activeProjectId={activeProject?.id}
+                            onSelectProject={selectComposerProject}
+                            onAddProjectFolder={addProjectFolder}
+                            agentName={HARNESS_AGENT_NAMES[activeHarness]}
+                            shortName={HARNESS_SHORT_NAMES[activeHarness]}
+                            imageInputSupported={Boolean(provider.selectedModel?.input.includes('image') || provider.catalog?.visionDelegation)}
+                            contextUsage={workspace.runtime?.contextUsage}
+                            sessionUsage={workspace.runtime?.sessionUsage}
+                            runtimeId={workspace.runtime?.runtimeId}
+                            harnessTokensPerSecond={workspace.runtime?.tokensPerSecond}
+                            executingModel={workspace.runtime?.executingModel}
+                            skills={pluginSkills.skills}
+                            sessions={mentionableSessions}
+                            annotations={browserAnnotations.annotations}
+                            queuedMessages={queuedMessages}
+                            harnessQueuedMessageCount={harnessQueuedMessageCount}
+                            harnessQueuedPreviews={harnessQueuedPreviews}
+                            queueRuntimeId={workspace.runtime?.runtimeId}
+                            onRemoveHarnessQueuedMessage={removeHarnessQueuedMessage}
+                            onPromoteHarnessQueuedMessage={promoteHarnessQueuedMessage}
+                            onReclaimHarnessQueuedMessage={reclaimHarnessQueuedMessage}
+                            onDeleteQueuedMessage={removeQueuedMessage}
+                            onSendQueuedMessage={sendQueuedMessage}
+                            onEditQueuedMessage={editQueuedMessage}
+                            sendSignal={browserAnnotations.sendSignal}
+                            restoreRequest={restorePrompt?.owner === workspace.workspaceGeneration ? restorePrompt : undefined}
+                            onRestoreHandled={dismissRestoreRequest}
+                            onModelChange={provider.changeModel}
+                            onEffortChange={provider.changeEffort}
+                            onFastChange={provider.changeFast}
+                            onSend={sendVisiblePrompt}
+                            onStop={stopRuntime}
+                            retryStoppedTurn={stoppedTurnRetryAvailable}
+                            onRetryStoppedTurn={retryTurn}
+                            onRemoveAnnotation={browserAnnotations.remove}
+                            onClearAnnotations={browserAnnotations.clear}
+                          />
+                        </ExtensionUiPresentation>
+                      </ConversationDock>
+                    </main>
                   </div>
-                  {sideChatVisible ? (
-                    <ResizeHandle
-                      orientation="vertical"
-                      label={t('sidechat.resize')}
-                      value={layout.sideChatWidth}
-                      min={INSPECTOR_MIN}
-                      max={layout.inspectorMax}
-                      defaultValue={INSPECTOR_DEFAULT}
-                      onChange={layout.setSideChatWidth}
-                      cssVariable="--side-chat-width"
-                    />
-                  ) : inspectorVisible ? (
+                  {inspectorVisible ? (
                     <ResizeHandle
                       orientation="vertical"
                       label={t('app.resizeInspector')}
@@ -1660,37 +1604,29 @@ export default function App() {
                       onChange={layout.setInspectorWidth}
                     />
                   ) : null}
-                  {sideChatVisible && activeSideChat && sideChatSessionId ? (
-                    <Suspense fallback={<LoadingPanel label={t('sidechat.aria')} />}>
-                      <SideChatPanel
-                        key={`side-chat-${sideChatSessionId}`}
-                        state={activeSideChat}
-                        hasSession={Boolean(workspace.runtime)}
-                        onAsk={askSideQuestion}
-                        onCancel={cancelSideQuestion}
-                        onSelectTopic={selectSideQuestionTopic}
-                        onClose={closeSideChat}
-                      />
-                    </Suspense>
-                  ) : inspectorVisible ? (
+                  {inspectorVisible ? (
                     <Suspense fallback={<LoadingPanel label={t('app.panel.inspector')} />}>
                       <Inspector
                         key={`inspector-${browserGeneration}`}
+                        openTabs={settingsState.inspectorOpenTabs}
                         activeTab={settingsState.inspectorTab}
+                        tabActivationRevision={settingsState.inspectorTabRevision}
                         onTabChange={settingsState.selectInspectorTab}
+                        onCloseTab={closeInspectorTab}
+                        onCloseOtherTabs={closeOtherInspectorTabs}
+                        onReorderTabs={settingsState.reorderInspectorTabs}
                         onClose={toggleInspectorPanel}
-                        agentName={HARNESS_AGENT_NAMES[activeHarness]}
-                        shortName={HARNESS_SHORT_NAMES[activeHarness]}
                         project={activeProject}
                         cwd={activeCwd}
-                        runtime={workspace.runtime}
-                        transcript={workspace.transcriptStore}
                         git={git}
-                        automations={inspectorAutomations}
-                        onOpenAutomation={openAutomation}
+                        transcript={workspace.transcriptStore}
+                        isStreaming={busy}
+                        hasRuntime={Boolean(workspace.runtime)}
+                        commandOutputHistory={commandOutput.history}
+                        activeProjectScript={activeProjectScriptRun?.projectId === activeProject?.id ? activeProjectScriptRun : undefined}
+                        onCancelBackgroundTask={cancelBackgroundTask}
+                        onRefreshBackgroundTasks={refreshBackgroundTasks}
                         browserHome={settingsState.settings.browserHome}
-                        browserNavigationRequest={browserNavigationRequest}
-                        onBrowserNavigationRequestHandled={handleBrowserNavigationRequest}
                         browserAnnotations={browserAnnotations}
                         agentBrowserTabs={activeAgentTabs}
                         activeAgentTabId={activeAgentTabId}
@@ -1707,13 +1643,14 @@ export default function App() {
                         onOpenExternal={openExternal}
                         onRevealPath={revealInFileManager}
                         onGrantProject={grantActiveProject}
+                        sideChat={inspectorSideChat}
+                        subagents={inspectorSubagents}
                         overlay={layout.compactLayout}
                         platform={platform}
                       />
                     </Suspense>
                   ) : null}
-                  {sideChatVisible ? <button type="button" className="panel-scrim panel-scrim--inspector" aria-label={t('sidechat.close')} onClick={closeSideChat} /> : null}
-                  {!sideChatVisible && inspectorVisible ? (
+                  {inspectorVisible ? (
                     <button type="button" className="panel-scrim panel-scrim--inspector" aria-label={t('app.closeInspector')} onClick={toggleInspectorPanel} />
                   ) : null}
                 </div>
@@ -1730,7 +1667,6 @@ export default function App() {
                 onNavigate={navigate}
                 onNewSession={newSession}
                 onToggleSidebar={toggleSidebar}
-                onToggleTerminal={toggleTerminal}
                 onOpenBrowser={openBrowser}
                 platform={platform}
               />
@@ -1792,6 +1728,9 @@ export default function App() {
               rect={agentTabVisible ? agentSlotRect : null}
               pointerEvent={agentBrowser.pointerEvent}
               onAttach={agentBrowser.attach}
+              activeSessionFiles={activeAgentSessionFiles}
+              activityByTab={agentBrowser.activityByTab}
+              idleUnloadMs={settingsState.settings.idleSessionMinutes * 60_000}
             />
           ) : null}
         </div>

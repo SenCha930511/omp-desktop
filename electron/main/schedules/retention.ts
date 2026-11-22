@@ -44,16 +44,21 @@ function removeRunIndexes(task: AutomationScheduleRecord, indexes: Set<number>):
  * later status transitions normalize the state again.
  */
 export function normalizeScheduleRunHistory(schedules: AutomationScheduleRecord[]): void {
+  let totalRuns = 0
   for (const [scheduleIndex, task] of schedules.entries()) {
-    const activeCount = task.runs.filter(isActive).length
-    const terminalBudget = Math.max(0, MAX_RUNS_PER_TASK - activeCount)
-    const terminals = task.runs
-      .map((run, runIndex): IndexedRun => ({ scheduleIndex, runIndex, run }))
-      .filter(({ run }) => !isActive(run))
-      .sort(oldestFirst)
-    const evictionCount = Math.max(0, terminals.length - terminalBudget)
-    removeRunIndexes(task, new Set(terminals.slice(0, evictionCount).map(({ runIndex }) => runIndex)))
+    if (task.runs.length > MAX_RUNS_PER_TASK) {
+      const activeCount = task.runs.filter(isActive).length
+      const terminalBudget = Math.max(0, MAX_RUNS_PER_TASK - activeCount)
+      const terminals = task.runs
+        .map((run, runIndex): IndexedRun => ({ scheduleIndex, runIndex, run }))
+        .filter(({ run }) => !isActive(run))
+        .sort(oldestFirst)
+      const evictionCount = Math.max(0, terminals.length - terminalBudget)
+      removeRunIndexes(task, new Set(terminals.slice(0, evictionCount).map(({ runIndex }) => runIndex)))
+    }
+    totalRuns += task.runs.length
   }
+  if (totalRuns <= MAX_GLOBAL_RUNS) return
 
   const indexed = schedules.flatMap((task, scheduleIndex) => (
     task.runs.map((run, runIndex): IndexedRun => ({ scheduleIndex, runIndex, run }))

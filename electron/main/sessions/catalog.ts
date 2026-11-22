@@ -37,6 +37,11 @@ export type SessionCatalogReconcileResult =
 
 const LIVE_CATALOG_TTL_MS = 2_000
 const LIVE_CATALOG_MIN_SPAWN_INTERVAL_MS = 2_000
+// A prepared snapshot is authoritative until the watcher advances the catalog
+// revision. The age bound keeps a change the watcher never reported (a bucket
+// outside the watch cap, a dropped event) self-healing on the next list call
+// instead of serving a snapshot forever.
+const PREPARED_SNAPSHOT_TTL_MS = 5_000
 const FULL_SCAN = { kind: 'full-scan' } as const
 
 export interface SessionCatalogEntry {
@@ -137,6 +142,7 @@ export class SessionMetadataCatalog {
   private readonly canonicalByName = new Map<string, { canonical: string; dev: number; ino: number }>()
   private snapshot: SessionCatalogSnapshot | null = null
   private preparedRevision: number | null = null
+  private preparedAt = 0
   private preparedView: { revision: number; promise: Promise<SessionMetadata[]> } | null = null
   private reconcileTail: Promise<void> = Promise.resolve()
   private pendingReconciles = 0
@@ -175,14 +181,19 @@ export class SessionMetadataCatalog {
     await this.waitForReconciliations()
     const revision = this.catalogRevision
     const executable = resolveExecutable(this.primeAgentPath)
+    // Concurrent readers share one live-overlay materialization.
+    const prepared = this.preparedView
+    if (prepared?.revision === revision) return prepared.promise
     const snapshot = this.snapshot
-    if (snapshot?.revision === revision && this.preparedRevision === revision) {
-      const prepared = this.preparedView
-      if (prepared?.revision === revision) return prepared.promise
+    // A published snapshot is already the answer for this revision: scanning
+    // again would re-enumerate every bucket and restat every candidate without
+    // any invalidation to justify it. Re-materializing is cheap and keeps the
+    // live overlay (and its own throttle) in charge of append-time freshness.
+    if (snapshot?.revision === revision && this.preparedRevision === revision
+      && Date.now() - this.preparedAt < PREPARED_SNAPSHOT_TTL_MS) {
       const promise = this.materialize(snapshot, executable).finally(() => {
         if (this.preparedView?.promise !== promise) return
         this.preparedView = null
-        if (this.preparedRevision === revision) this.preparedRevision = null
       })
       this.preparedView = { revision, promise }
       return promise
@@ -332,7 +343,10 @@ export class SessionMetadataCatalog {
     // Reconciles are serialized. An older result remains a private base for a
     // queued newer result, but only the newest revision is prepared for readers.
     this.snapshot = next
-    if (this.catalogRevision === revision) this.preparedRevision = revision
+    if (this.catalogRevision === revision) {
+      this.preparedRevision = revision
+      this.preparedAt = Date.now()
+    }
     return { kind: 'reconciled', paths: names.map((name) => candidatesByName.get(name)!.filePath) }
   }
 
@@ -451,7 +465,11 @@ export class SessionMetadataCatalog {
       indexByPath: new Map(sessions.map((session, index) => [session.filePath, index])),
       sessions,
     }
-    if (this.catalogRevision === revision) this.snapshot = snapshot
+    if (this.catalogRevision === revision) {
+      this.snapshot = snapshot
+      this.preparedRevision = revision
+      this.preparedAt = Date.now()
+    }
     return this.materialize(snapshot, executable, catalog)
   }
 

@@ -26,6 +26,7 @@ import { type createSingleFlightAdmission, findProjectForSession, findRuntimeFor
 import type {
   CapabilityMutationInput,
   ExtensionInstallInput,
+  InspectorTab,
   McpConnectionInput,
   McpStateInput,
   DesktopApi,
@@ -68,10 +69,9 @@ export interface WorkspaceActionsDeps {
   setSubmitting: (value: boolean, kind?: 'prompt' | 'compact') => void
   refreshSchedules(): Promise<void>
   resetBrowserView(): void
-  closeTerminalForSession(sessionPath: string): void
   clearSessionAttention(session: SessionRecord): void
-  /** 記錄「剛開啟」的 session,側欄把它排到所屬群組最上面。 */
-  bumpRecentSessionOpen(sessionId: string): void
+  /** @deprecated No longer called on click; retained optional for test mocks. */
+  bumpRecentSessionOpen?(sessionId: string): void
   reportError(error: unknown): void
   /** `onAbort` 只在可中止的指令(使用者 `!` bash)提供,面板據此顯示停止鈕。 */
   onCommandStart?(command: string, onAbort?: () => void): void
@@ -116,8 +116,7 @@ interface StartedSessionTitleInput extends StartedSessionIndexInput {
   runtimeId: string
   prompt: string
 }
-
-export async function titleStartedSession({ bridge, harness, runtimeId, sessionFile, prompt, setSessions, isCurrent }: StartedSessionTitleInput): Promise<void> {
+export async function titleStartedSession({ bridge, harness, runtimeId, sessionFile, prompt, setSessions, isCurrent }: StartedSessionTitleInput): Promise<SessionRecord | undefined> {
   if (!sessionFile) return
   const title = sessionTitleFromPrompt(prompt)
   if (!title) return
@@ -130,7 +129,7 @@ export async function titleStartedSession({ bridge, harness, runtimeId, sessionF
     setSessions((current) => current.map((session) => (session.filePath === sessionFile && session.title === 'Untitled session' ? { ...session, title } : session)))
   }
   await bridge.agent.command(runtimeId, { type: 'set_session_name', name: title }).catch(() => undefined)
-  await indexStartedSession({ bridge, harness, sessionFile, setSessions, fallbackTitle: title, isCurrent }).catch(() => undefined)
+  return await indexStartedSession({ bridge, harness, sessionFile, setSessions, fallbackTitle: title, isCurrent }).catch(() => undefined)
 }
 
 export function parseCompactCommand(prompt: string): ParsedCompactCommand | undefined {
@@ -242,20 +241,8 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     }
     persistPanel({ inspectorOpen: next })
   }
-  const toggleTerminal = async () => {
-    const { settingsState, activeProject, reportError } = getDeps()
-    if (!settingsState.terminalOpen && activeProject?.inferred) {
-      try {
-        await grantProject(activeProject)
-      } catch (error) {
-        reportError(error)
-        return
-      }
-    }
-    persistPanel({ terminalOpen: !settingsState.terminalOpen })
-  }
   const selectProject = async (project: ProjectRecord) => {
-    const { bridge, layout, settingsState, sessions, workspace, setSessions, setView, clearSessionAttention, bumpRecentSessionOpen, reportError } = getDeps()
+    const { bridge, layout, settingsState, sessions, workspace, setSessions, setView, clearSessionAttention, reportError } = getDeps()
     if (layout.compactLayout) {
       layout.setSmallestSidebarAllowed(false)
       settingsState.setSidebarOpen(false)
@@ -267,7 +254,6 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     const session = sessions.find((candidate) => !candidate.archived && projectContainsPath(project, candidate.projectPath))
     if (session) {
       clearSessionAttention(session)
-      bumpRecentSessionOpen(session.id)
       setSessions((items) => items.map((item) => (item.id === session.id ? { ...item, unread: false } : item)))
     }
     const generation = workspace.activateWorkspace(project, session)
@@ -275,7 +261,7 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     try {
       // Inferred projects come from the harness's global session history and
       // remain display-only until the user performs an action that needs a
-      // filesystem grant (starting work or opening a terminal).
+      // filesystem grant (starting work or running a project script).
       if (bridge && !project.inferred) await bridge.projects.touch(project.id, project.harness)
       await workspace.reconcileRuntime(generation)
     } catch (error) {
@@ -283,13 +269,12 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     }
   }
   const selectSession = async (session: SessionRecord) => {
-    const { bridge, layout, settingsState, projects, workspace, setSessions, setView, clearSessionAttention, bumpRecentSessionOpen, reportError } = getDeps()
+    const { bridge, layout, settingsState, projects, workspace, setSessions, setView, clearSessionAttention, reportError } = getDeps()
     if (layout.compactLayout) {
       layout.setSmallestSidebarAllowed(false)
       settingsState.setSidebarOpen(false)
     }
     clearSessionAttention(session)
-    bumpRecentSessionOpen(session.id)
     setSessions((items) => items.map((item) => (item.id === session.id ? { ...item, unread: false } : item)))
     const project = findProjectForSession(projects, session)
     if (!project) {
@@ -308,10 +293,13 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
       if (workspace.workspaceRef.current.generation === generation) reportError(error)
     }
   }
-  // The local draft reset archive/delete fall back to: a renderer placeholder
-  // only, with no engine boundary. Deliberately private — the public New
-  // action is durable, and this shape must not leak back into the API.
-  const openProjectDraft = (requestedProject?: ProjectRecord) => {
+  // Public New: an empty composer in the project, with no engine session file.
+  // The first prompt starts the runtime and indexes the session through
+  // sendPrompt's `!activeRuntime` path; until then the sidebar shows nothing.
+  // This is deliberate: an empty "Untitled session" row before the user has
+  // typed anything reads as clutter, and a pre-created JSONL file would
+  // resurface on the next catalog sync even if the row were hidden.
+  const newSession = (requestedProject?: ProjectRecord): void => {
     const { bridge, initialized, layout, settingsState, activeProject, workspace, setView, setPaletteOpen } = getDeps()
     if (!initialized) return
     const project = newSessionProject(requestedProject, workspace.workspaceRef.current.project, activeProject)
@@ -326,133 +314,11 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     setView('session')
     setPaletteOpen(false)
   }
-  /** One durable New boundary per project at a time: a rapid double click on
-   * the same project must not create two engine sessions, while a different
-   * project requested mid-flight still establishes its own independent
-   * boundary. Callers that ignore the promise share their project's flight. */
-  const durableNewSessionFlights = new Map<string, Promise<void>>()
   /** runtimeId → when Stop last sent its graceful abort for the current
    * turn. A second press while the same turn still streams escalates to the
    * hard stop; any new prompt clears the entry so a fresh turn always gets
    * a graceful stop first. */
   const gracefulAbortAttempts = new Map<string, number>()
-  // Public New: establishes an omp-owned empty session boundary on the engine
-  // (TUI parity) instead of leaving only a renderer draft the next prompt
-  // would auto-resume. The boundary rides a freshly started fileless runtime —
-  // the current runtime and session are never commanded or stopped for it —
-  // and its identity comes from the authoritative get_state plus catalog read.
-  // Errors are caught and reported: UI clicks may ignore the promise, so the
-  // action itself never rejects.
-  const newSession = (requestedProject?: ProjectRecord): Promise<void> => {
-    const { initialized, activeProject, workspace } = getDeps()
-    if (!initialized) return Promise.resolve()
-    const project = newSessionProject(requestedProject, workspace.workspaceRef.current.project, activeProject)
-    if (!project) return Promise.resolve()
-    // New always starts from an empty composer, including the repeated click
-    // that lands while the previous start is still in flight and is deduped
-    // below — otherwise the text typed into the starting draft survives the
-    // adoption and the click looks ignored.
-    clearComposerDraft(`${project.id}:new`)
-    const inFlight = durableNewSessionFlights.get(project.id)
-    if (inFlight) return inFlight
-    const run = async () => {
-      const { bridge, layout, settingsState, setView, setPaletteOpen, reportError } = getDeps()
-      if (layout.compactLayout) {
-        layout.setSmallestSidebarAllowed(false)
-        settingsState.setSidebarOpen(false)
-      }
-      const generation = workspace.activateWorkspace(project)
-      setView('session')
-      setPaletteOpen(false)
-      if (!bridge) {
-        workspace.setMessages([])
-        return
-      }
-      try {
-        // An inferred project (from the harness's global session history) has
-        // no filesystem grant yet: promoting it here keeps New session from
-        // failing the cwd authorization gate the engine enforces.
-        if (project.inferred) {
-          try {
-            await grantProject(project)
-          } catch {
-            /* the start below reports the authorization failure */
-          }
-        }
-        const cwd = workspace.workspaceRef.current.cwd ?? project.primaryFolder
-        const runtime = await bridge.agent.start({ cwd, harness: project.harness })
-        try {
-          const boundary = await bridge.agent.command(runtime.runtimeId, { type: 'new_session' })
-          const boundaryData = boundary.data
-          if (boundaryData && typeof boundaryData === 'object' && !Array.isArray(boundaryData) && (boundaryData as Record<string, unknown>).cancelled === true) {
-            throw new Error('The new session was cancelled before it was created.')
-          }
-          // new_session replies only with its cancellation flag; the boundary
-          // is metadata-only, so the authoritative id and file come from
-          // get_state and the catalog read that follows.
-          const state = await bridge.agent.command(runtime.runtimeId, { type: 'get_state' })
-          const stateData = state.data && typeof state.data === 'object' && !Array.isArray(state.data) ? (state.data as Record<string, unknown>) : {}
-          const sessionId = typeof stateData.sessionId === 'string' ? stateData.sessionId : undefined
-          const sessionFile = typeof stateData.sessionFile === 'string' ? stateData.sessionFile : undefined
-          if (!sessionFile) throw new Error('The new session did not report its session file.')
-          // The catalog row belongs in the sidebar even when the user already
-          // navigated away; only the view adoption stays generation-guarded.
-          const indexed = await indexStartedSession({ bridge, harness: project.harness, sessionFile, setSessions: getDeps().setSessions })
-          if (workspace.workspaceRef.current.generation !== generation) return
-          // A prompt submitted on the draft adopts its session without a
-          // generation bump (adoptSessionId is identity-only); the boundary
-          // must not drag that live turn off the workspace.
-          if (workspace.workspaceRef.current.session) return
-          if (indexed) workspace.adoptSessionId(indexed)
-          workspace.attachRuntime({ ...runtime, ...(sessionId ? { sessionId } : {}), sessionFile }, generation)
-        } catch (error) {
-          // The boundary did not establish: clean up this flight's own
-          // fileless runtime (never another project's) so a failed attempt
-          // leaks no process, and never pretend success.
-          await bridge.agent.stop(runtime.runtimeId).catch(() => false)
-          throw error
-        }
-      } catch (error) {
-        reportError(error)
-      }
-    }
-    const flight = run().finally(() => {
-      durableNewSessionFlights.delete(project.id)
-    })
-    durableNewSessionFlights.set(project.id, flight)
-    return flight
-  }
-  // The draft placeholder row's own activation: unlike newSession it never
-  // clears the composer draft, and re-activating the same draft is a no-op so
-  // the composer is not remounted under the click.
-  const openDraftSession = (project: ProjectRecord) => {
-    const { layout, settingsState, workspace, setView } = getDeps()
-    if (layout.compactLayout) {
-      layout.setSmallestSidebarAllowed(false)
-      settingsState.setSidebarOpen(false)
-    }
-    const current = workspace.workspaceRef.current
-    if (current.project?.id !== project.id || current.session) workspace.activateWorkspace(project)
-    setView('session')
-  }
-  // Trashing the draft placeholder discards it without a confirmation or any
-  // backend call: fall back to the project's newest unarchived session, or
-  // stay on a fresh draft when the project has none.
-  const discardDraftSession = async (project: ProjectRecord) => {
-    const { sessions, workspace, setSessions, setView, clearSessionAttention, reportError } = getDeps()
-    const session = sessions.find((candidate) => !candidate.archived && projectContainsPath(project, candidate.projectPath))
-    if (session) {
-      clearSessionAttention(session)
-      setSessions((items) => items.map((item) => (item.id === session.id ? { ...item, unread: false } : item)))
-    }
-    const generation = workspace.activateWorkspace(project, session)
-    setView('session')
-    try {
-      await workspace.reconcileRuntime(generation)
-    } catch (error) {
-      if (workspace.workspaceRef.current.generation === generation) reportError(error)
-    }
-  }
   const navigate = (nextView: WorkspaceView) => {
     const { layout, settingsState, setView, setPaletteOpen } = getDeps()
     if (layout.compactLayout) {
@@ -474,18 +340,15 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     }
   }
   const setSessionArchived = async (session: SessionRecord, archived: boolean) => {
-    const { bridge, workspace, setSessions, setToast, resetBrowserView, closeTerminalForSession, clearSessionAttention, reportError } = getDeps()
+    const { bridge, workspace, setSessions, setToast, resetBrowserView, clearSessionAttention, reportError } = getDeps()
     if (!bridge) return
     try {
       await bridge.sessions.archive(session.filePath, archived)
-      if (archived) {
-        clearSessionAttention(session)
-        closeTerminalForSession(session.filePath)
-      }
+      if (archived) clearSessionAttention(session)
       setSessions((items) => items.map((item) => (item.id === session.id ? { ...item, archived, unread: archived ? false : item.unread } : item)))
       if (archived && workspace.workspaceRef.current.session?.id === session.id) {
         resetBrowserView()
-        openProjectDraft()
+        newSession()
       }
       setToast(archived ? 'Session archived.' : 'Session restored.')
     } catch (error) {
@@ -493,18 +356,17 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     }
   }
   const deleteSession = async (session: SessionRecord) => {
-    const { bridge, workspace, settingsState, setSessions, setToast, resetBrowserView, closeTerminalForSession, clearSessionAttention, reportError } = getDeps()
+    const { bridge, workspace, settingsState, setSessions, setToast, resetBrowserView, clearSessionAttention, reportError } = getDeps()
     if (!bridge) return
     const locale = resolveLocale(settingsState.settings.locale ?? 'system')
     try {
       if (!(await bridge.sessions.delete(session.filePath))) throw new Error(translate(locale, 'sessions.deleteFailed'))
       clearSessionAttention(session)
-      closeTerminalForSession(session.filePath)
       clearComposerDraft(`${workspace.workspaceRef.current.project?.id ?? 'no-project'}:${session.id}`)
       setSessions((items) => items.filter((item) => item.filePath !== session.filePath))
       if (workspace.workspaceRef.current.session?.filePath === session.filePath) {
         resetBrowserView()
-        openProjectDraft()
+        newSession()
       }
       setToast(translate(locale, 'sessions.deleted'))
     } catch (error) {
@@ -572,7 +434,7 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     }
   }
   const removeProject = async (project: ProjectRecord) => {
-    const { bridge, projects, sessions, workspace, setProjects, setSessions, setToast, closeTerminalForSession, clearSessionAttention, reportError } = getDeps()
+    const { bridge, projects, sessions, workspace, setProjects, setSessions, setToast, clearSessionAttention, reportError } = getDeps()
     try {
       if (bridge && !(await bridge.projects.remove(project.id, project.harness))) throw new Error('This project could not be removed.')
       // The main process deleted the project's saved sessions with it; mirror
@@ -580,7 +442,6 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
       const doomed = sessions.filter((item) => projectContainsPath(project, item.projectPath))
       for (const item of doomed) {
         clearSessionAttention(item)
-        closeTerminalForSession(item.filePath)
         clearComposerDraft(`${project.id}:${item.id}`)
       }
       setProjects((items) => items.filter((item) => item.id !== project.id))
@@ -628,7 +489,7 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
    * 重讀列出現時由 reconcile 以 role 取代(id 前綴在 LOCAL_MESSAGE_ID 內)。
    * 錯誤沿用 deferred 命令模式:面板標記失敗 + throw,Composer 還原草稿。
    */
-  const runBashShorthand = async (rawText: string, command: string): Promise<void> => {
+  const runBashShorthand = async (rawText: string, command: string, excludeFromContext = false): Promise<void> => {
     const { bridge, workspace, settingsState, reportError, onCommandStart, onCommandFinish } = getDeps()
     const locale = resolveLocale(settingsState.settings.locale ?? 'system')
     const t = (key: MessageKey, values?: Record<string, string | number>) => translate(locale, key, values)
@@ -642,16 +503,17 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     const runtime = workspace.runtime
     const owned = runtime !== null && workspace.runtimeOwnerRef.current?.runtimeId === runtime.runtimeId && workspace.runtimeOwnerRef.current.generation === snapshot.generation
     if (!bridge || !runtime || !owned) return reject('bash.error.noSession')
+    if (excludeFromContext && runtime.bashExcludeFromContext !== true) return reject('bash.error.excludeUnsupported')
     if (bashInFlight) return reject('bash.error.busy')
     const generation = snapshot.generation
     bashInFlight = { runtimeId: runtime.runtimeId, generation }
-    onCommandStart?.(`!${command}`, () => {
+    onCommandStart?.(`${excludeFromContext ? '!!' : '!'}${command}`, () => {
       if (bashInFlight?.runtimeId !== runtime.runtimeId) return
       // 中止只發 abort_bash;取消後的 BashResult(cancelled: true)走正常結果路徑。
       void bridge.agent.command(runtime.runtimeId, { type: 'abort_bash' }).catch(() => undefined)
     })
     try {
-      const response = await bridge.agent.command(runtime.runtimeId, { type: 'bash', command })
+      const response = await bridge.agent.command(runtime.runtimeId, { type: 'bash', command, ...(excludeFromContext ? { excludeFromContext: true } : {}) })
       const result = readBashResult(response.data)
       if (workspace.workspaceRef.current.generation === generation) {
         const id = `bash-${Date.now()}`
@@ -750,20 +612,12 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     if (!queuedFlushPromptId) {
       const bashShorthand = parseBashShorthandInput(prompt)
       if (bashShorthand) {
-        // `!!` 要求結果排除出 context;RPC wire 的 bash 只有 command 參數,
-        // 語意無法表達,明確拒絕而不是靜默降級成 `!`(會污染模型 context)。
-        if (bashShorthand.excludeFromContext) {
-          const error = new Error(t('bash.error.excludeUnsupported'))
-          getDeps().onCommandStart?.(prompt.trim())
-          getDeps().onCommandFinish?.(error.message)
-          throw error
-        }
         // bash RPC 不承載附件;比照 /goal 的提前拒絕,避免靜默丟棄。
         if (images.length > 0) {
           reportError(t('bash.error.noAttachments'))
           return
         }
-        await runBashShorthand(prompt, bashShorthand.command)
+        await runBashShorthand(prompt, bashShorthand.command, bashShorthand.excludeFromContext)
         return
       }
       // `$ code`/`$$ code` 是 TUI 的 Python 捷徑;上游 RPC 沒有 python/eval
@@ -954,8 +808,9 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
         // semantic — both ride the follow_up command instead of a second
         // renderer-side queue that could drift from the engine's own.
         const sentAt = Date.now()
+        const sentAtIso = new Date(sentAt).toISOString()
         if (currentWorkspace.sessionFile) {
-          setSessions((items) => items.map((session) => (session.filePath === currentWorkspace.sessionFile ? { ...session, lastUserMessageAt: new Date(sentAt).toISOString() } : session)))
+          setSessions((items) => items.map((session) => (session.filePath === currentWorkspace.sessionFile ? { ...session, lastUserMessageAt: sentAtIso, updatedAt: sentAtIso } : session)))
         }
         try {
           const response = await bridge.agent.command(currentRuntime.runtimeId, { type: 'follow_up', message: prompt, ...(images.length ? { images } : {}) })
@@ -995,7 +850,7 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
         const pendingSteerId = queuedFlushPromptId ?? workspace.queuePrompt(prompt, intent, [{ type: 'text', text: prompt }, ...images], sentAt)
         if (currentWorkspace.sessionFile) {
           const sentAtIso = new Date(sentAt).toISOString()
-          setSessions((items) => items.map((session) => (session.filePath === currentWorkspace.sessionFile ? { ...session, lastUserMessageAt: sentAtIso } : session)))
+          setSessions((items) => items.map((session) => (session.filePath === currentWorkspace.sessionFile ? { ...session, lastUserMessageAt: sentAtIso, updatedAt: sentAtIso } : session)))
         }
         try {
           const response = await bridge.agent.command(currentRuntime.runtimeId, { type: 'steer', message: prompt, ...(images.length ? { images } : {}) })
@@ -1061,7 +916,7 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
           if (workspace.workspaceRef.current.generation !== generation) return
           userMessageAppended = true
           workspace.setMessages((items) => [...items, userMessage])
-          if (admitted.sessionFile) setSessions((items) => items.map((session) => (session.filePath === admitted.sessionFile ? { ...session, lastUserMessageAt: sentAtIso } : session)))
+          if (admitted.sessionFile) setSessions((items) => items.map((session) => (session.filePath === admitted.sessionFile ? { ...session, lastUserMessageAt: sentAtIso, updatedAt: sentAtIso } : session)))
         }
         const appendPendingAssistant = () => {
           if (pendingAssistantAppended || workspace.workspaceRef.current.generation !== generation) return
@@ -1139,15 +994,6 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
         }
         await grantProject(admitted.project)
         if (workspace.workspaceRef.current.generation !== generation) return
-        // A New-session boundary still establishing owns this project's next
-        // prompt: waiting for its flight lets the prompt land on the boundary
-        // runtime. Racing ahead would start a second session file and orphan
-        // the boundary as an untitled duplicate row in the catalog.
-        const boundaryFlight = durableNewSessionFlights.get(admitted.project.id)
-        if (boundaryFlight) {
-          await boundaryFlight
-          if (workspace.workspaceRef.current.generation !== generation) return
-        }
         const selected = workspace.workspaceRef.current
         if (!selected.cwd) throw new Error('The selected workspace has no working directory.')
         const liveRuntimes = (await bridge.agent.list()).filter((candidate) => candidate.harness === activeHarness)
@@ -1181,7 +1027,7 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
           // keeps the narrowing inside the setRuntime closure below.
           retractPendingTurn()
           workspace.attachRuntime(streamingRuntime, generation)
-          if (admitted.sessionFile) setSessions((items) => items.map((session) => (session.filePath === admitted.sessionFile ? { ...session, lastUserMessageAt: sentAtIso } : session)))
+          if (admitted.sessionFile) setSessions((items) => items.map((session) => (session.filePath === admitted.sessionFile ? { ...session, lastUserMessageAt: sentAtIso, updatedAt: sentAtIso } : session)))
           const response = await bridge.agent.command(streamingRuntime.runtimeId, { type: 'follow_up', message: prompt, ...(images.length ? { images } : {}) })
           const actions = parseSessionActionSnapshot(response.sessionActions)
           if (actions) {
@@ -1301,20 +1147,18 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
             sessionFile: activeRuntime.sessionFile,
             setSessions,
           })
-          // A prompt that started from the draft placeholder adopts the
-          // session it just created, replacing the placeholder with the real
-          // row without touching the in-flight turn. Adopt only when the
-          // workspace is still this one; after a switch the merged catalog row
-          // stands on its own.
+          // A prompt that started from a draft workspace adopts the session
+          // it just created, replacing the draft with the real row without
+          // touching the in-flight turn. Adopt only when the workspace is
+          // still this one; after a switch the merged catalog row stands on
+          // its own.
           if (workspace.workspaceRef.current.generation === generation && !admitted.sessionFile && indexedSession) workspace.adoptSessionId(indexedSession)
           startedSessionNeedsTitle = !indexedSession || indexedSession.title === 'Untitled session'
         }
-        // The fileless New-session flight starts with the placeholder's cwd
-        // and then adopts the session get_state reports; the workspace cwd
-        // re-resolves to the session's own folder while the runtime keeps
-        // the placeholder cwd. A runtime whose session file matches the
-        // admitted session is that same flight — its cwd divergence is the
-        // adoption, not a wrong workspace.
+        // A runtime started for a session-less draft may report the session
+        // file and cwd of the session it just created. A runtime whose file
+        // matches the admitted session is that same launch; its cwd
+        // divergence is the adoption, not a wrong workspace.
         const sameSession = Boolean(selected.sessionFile && activeRuntime.sessionFile === selected.sessionFile)
         if (!sameSession && (activeRuntime.cwd !== selected.cwd || (selected.sessionFile && activeRuntime.sessionFile !== selected.sessionFile))) {
           if (startedRuntime) await bridge.agent.stop(activeRuntime.runtimeId).catch(() => false)
@@ -1386,7 +1230,9 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
               sessionFile: activeRuntime.sessionFile,
               prompt,
               setSessions,
-            })
+            }).then((indexed) => {
+              if (indexed && workspace.workspaceRef.current.generation === generation && !workspace.workspaceRef.current.session) workspace.adoptSessionId(indexed)
+            }).catch(() => undefined)
           }
         }
       } catch (error) {
@@ -1667,25 +1513,21 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
       })
       .catch(reportError)
   }
-  const openBrowser = () => {
+  const openInspectorTab = (tab: InspectorTab) => {
     const { layout, settingsState, setView } = getDeps()
     if (layout.compactLayout && settingsState.sidebarOpen) {
       layout.setSmallestSidebarAllowed(false)
       settingsState.setSidebarOpen(false)
     }
     setView('session')
-    settingsState.selectInspectorTab('browser')
-    if (!settingsState.inspectorOpen) persistPanel({ inspectorOpen: true })
-  }
-  const openChanges = () => {
-    const { layout, settingsState } = getDeps()
-    if (layout.compactLayout && settingsState.sidebarOpen) {
-      layout.setSmallestSidebarAllowed(false)
-      settingsState.setSidebarOpen(false)
+    settingsState.selectInspectorTab(tab)
+    if (!settingsState.inspectorOpen || layout.inspectorSuppressed) {
+      layout.setSmallestInspectorAllowed(true)
+      persistPanel({ inspectorOpen: true })
     }
-    settingsState.selectInspectorTab('changes')
-    if (!settingsState.inspectorOpen) persistPanel({ inspectorOpen: true })
   }
+  const openBrowser = () => openInspectorTab('browser')
+  const openChanges = () => openInspectorTab('changes')
 
   // /mcp reload、/reload-plugins 上游無專用 RPC:以文字 prompt 轉送上游
   // dispatcher。既有 sendPrompt 管線處理 idle admission(/mcp reload 歸類
@@ -1700,12 +1542,9 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     persistPanel,
     toggleSidebar,
     toggleInspector,
-    toggleTerminal,
     selectProject,
     selectSession,
     newSession,
-    openDraftSession,
-    discardDraftSession,
     navigate,
     renameSession,
     setSessionArchived,
@@ -1728,6 +1567,7 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     updateSchedule,
     mutateSchedule,
     openScheduledSession,
+    openInspectorTab,
     openBrowser,
     openChanges,
     reloadCapabilities,

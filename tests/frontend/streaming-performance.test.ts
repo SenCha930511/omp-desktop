@@ -12,7 +12,7 @@ import { applyPrimeEvent, createPrimeEventBuffer, createSteerAcceptedEvent, crea
 import { reconcileTranscripts } from '../../src/app/transcript-reconcile'
 import { createSidebarActionProxy } from '../../src/hooks/useSidebarActions'
 import { mergeSessionCatalog } from '../../src/hooks/useBootstrap'
-import { shouldRefreshGitOnSessionTransition } from '../../src/lib/workspace'
+import { lastAssistantMessage, shouldRefreshGitOnSessionTransition } from '../../src/lib/workspace'
 import type { ProjectRecord, SessionRecord, TranscriptMessage } from '../../src/types/api'
 import { createAssistantTurnCoalescer } from '../../src/lib/assistant-turns'
 
@@ -427,15 +427,101 @@ describe('linear event batches', () => {
       const stats: PrimeEventReplayStats = { messageScans: 0, eventScans: 0, partScans: 0, transcriptCopies: 0 }
       const next = replayPrimeEvents(state, events, stats)
       commits += 1
-      expect(stats.messageScans).toBe(500)
+      // The tail-delta fast path reads only the streaming message it appends
+      // to and never rebuilds a part list or its tool index.
+      expect(stats.messageScans).toBe(1)
       expect(stats.eventScans).toBe(200)
-      expect(stats.partScans).toBeLessThanOrEqual(2)
+      expect(stats.partScans).toBe(0)
       expect(stats.transcriptCopies).toBe(1)
       expect(next[0]).toBe(state[0])
       state = next
     }
     expect(commits).toBe(50)
     expect(transcriptText([state[499]])).toHaveLength(10_000)
+  })
+})
+
+describe('tail delta fast path', () => {
+  const streamingAssistant = (parts: TranscriptMessage['parts']): TranscriptMessage[] => [
+    { id: 'user-1', role: 'user', timestamp: 1, parts: [{ type: 'text', text: 'go' }] },
+    { id: 'assistant-1', role: 'assistant', timestamp: 2, streaming: true, parts },
+  ]
+  const thinking = (text: string): Record<string, unknown> => ({
+    type: 'message_update',
+    assistantMessageEvent: { type: 'thinking_delta', delta: text },
+  })
+  const stats = (): PrimeEventReplayStats => ({ messageScans: 0, eventScans: 0, partScans: 0, transcriptCopies: 0 })
+
+  it('matches the full reducer for text and thinking batches, including the parts it has to open', () => {
+    const cases: { name: string; messages: TranscriptMessage[]; events: Record<string, unknown>[]; scans: number }[] = [
+      { name: 'merges into the streaming tail', messages: streamingAssistant([{ type: 'text', text: 'loaded:' }]), events: [delta(' one'), delta(' two')], scans: 1 },
+      { name: 'opens a thinking part, then a text part', messages: streamingAssistant([{ type: 'text', text: 'loaded:' }]), events: [thinking('plan'), thinking(' more'), delta('answer')], scans: 1 },
+      { name: 'opens the first part of an empty turn', messages: streamingAssistant([]), events: [thinking('plan'), delta('answer')], scans: 1 },
+      {
+        name: 'targets the streaming assistant above a later row',
+        messages: [...streamingAssistant([{ type: 'text', text: 'loaded:' }]), { id: 'system-1', role: 'system', timestamp: 3, parts: [{ type: 'text', text: 'notice' }] }],
+        events: [delta(' more')],
+        scans: 2,
+      },
+    ]
+    for (const { name, messages, events, scans } of cases) {
+      const before = structuredClone(messages)
+      const counts = stats()
+      resetTranscriptIdsForTests()
+      const fast = replayPrimeEvents(messages, events, counts)
+      resetTranscriptIdsForTests()
+      const slow = replayPrimeEvents(messages, events, undefined, { tailFastPath: false })
+      resetTranscriptIdsForTests()
+      const sequential = events.reduce((current, event) => applyPrimeEvent(current, event), messages)
+
+      expect(fast, name).toEqual(slow)
+      expect(fast, name).toEqual(sequential)
+      // The fast path ran: it probes the tail message and never scans the part list.
+      expect(counts.messageScans, name).toBe(scans)
+      expect(counts.partScans, name).toBe(0)
+      // The fast path reads the input without writing to it.
+      expect(messages, name).toEqual(before)
+    }
+  })
+
+  it('keeps untouched parts and earlier messages by identity', () => {
+    const base = streamingAssistant([
+      { type: 'text', text: 'earlier', partId: 'part-a' },
+      { type: 'toolCall', id: 'tool-1', name: 'Read', partId: 'part-b' },
+      { type: 'text', text: 'tail' },
+    ])
+    const next = replayPrimeEvents(base, [delta('+more')])
+
+    expect(next).not.toBe(base)
+    expect(next[0]).toBe(base[0])
+    expect(next[1]).not.toBe(base[1])
+    expect(next[1]?.streaming).toBe(true)
+    expect(next[1]?.parts).not.toBe(base[1]?.parts)
+    expect(next[1]?.parts[0]).toBe(base[1]?.parts[0])
+    expect(next[1]?.parts[1]).toBe(base[1]?.parts[1])
+    expect(next[1]?.parts[2]).toMatchObject({ type: 'text', text: 'tail+more' })
+    expect(base[1]?.parts[2]).toMatchObject({ type: 'text', text: 'tail' })
+  })
+
+  it('leaves tool, message-end, and structural batches on the full reducer', () => {
+    const messages = streamingAssistant([{ type: 'text', text: 'loaded:' }])
+    const batches: Record<string, unknown>[][] = [
+      [delta('x'), { type: 'tool_execution_start', toolCallId: 'tool-1', toolName: 'Read' }],
+      [delta('x'), { type: 'message_update', assistantMessageEvent: { type: 'toolcall_end', toolCall: { id: 'tool-1', name: 'Read' } } }],
+      [delta('x'), { type: 'agent_end' }],
+      [{ type: 'turn_start' }, delta('x')],
+    ]
+    for (const events of batches) {
+      const counts = stats()
+      resetTranscriptIdsForTests()
+      const batched = replayPrimeEvents(messages, events, counts)
+      resetTranscriptIdsForTests()
+      const sequential = events.reduce((current, event) => applyPrimeEvent(current, event), messages)
+
+      expect(batched).toEqual(sequential)
+      // The full reducer scans the whole transcript; the tail probe reads one message.
+      expect(counts.messageScans).toBe(messages.length)
+    }
   })
 })
 
@@ -527,38 +613,111 @@ describe('catalog tick session identity', () => {
 describe('streaming markdown parse throttling', () => {
   it('parses at most once per interval while holding the previous committed snapshot', async () => {
     const { advanceStreamingParse, STREAMING_PARSE_INTERVAL_MS } = await import('../../src/components/MarkdownText')
-    const first = advanceStreamingParse({ boundary: 0, lastParseAt: 0 }, 10, false, 1_000)
+    const first = advanceStreamingParse({ boundary: 0, lastParseAt: 0 }, 10, 1_000)
     expect(first.state).toEqual({ boundary: 10, lastParseAt: 1_000 })
     expect(first.delayMs).toBeUndefined()
 
     // More deltas inside the interval: keep the coherent old snapshot and retry later.
-    const throttled = advanceStreamingParse(first.state, 25, false, 1_040)
+    const throttled = advanceStreamingParse(first.state, 25, 1_040)
     expect(throttled.state).toBe(first.state)
     expect(throttled.delayMs).toBe(STREAMING_PARSE_INTERVAL_MS - 40)
 
-    // A newline in the unparsed tail commits immediately.
-    const newline = advanceStreamingParse(first.state, 25, true, 1_040)
-    expect(newline.state).toEqual({ boundary: 25, lastParseAt: 1_040 })
-
     // Once the interval elapses the boundary advances.
-    const elapsed = advanceStreamingParse(first.state, 25, false, 1_000 + STREAMING_PARSE_INTERVAL_MS)
+    const elapsed = advanceStreamingParse(first.state, 25, 1_000 + STREAMING_PARSE_INTERVAL_MS)
     expect(elapsed.state.boundary).toBe(25)
 
     // Unchanged text is a no-op; shrunk text re-parses from the new end.
-    expect(advanceStreamingParse(elapsed.state, 25, false, 2_000).state).toBe(elapsed.state)
-    expect(advanceStreamingParse(elapsed.state, 5, false, 2_000).state).toEqual({ boundary: 5, lastParseAt: 2_000 })
+    expect(advanceStreamingParse(elapsed.state, 25, 2_000).state).toBe(elapsed.state)
+    expect(advanceStreamingParse(elapsed.state, 5, 2_000).state).toEqual({ boundary: 5, lastParseAt: 2_000 })
   })
 
-  it('summarizes the transcript with a single reverse walk that stops at the first text part', async () => {
-    const { summarizeTranscript } = await import('../../src/components/inspector/SummaryPanel')
+  it('holds a newline-heavy delta stream to the same 100ms parse cadence', async () => {
+    const { advanceStreamingParse, STREAMING_PARSE_INTERVAL_MS } = await import('../../src/components/MarkdownText')
+    // Start as if the last parse happened at t=1000, then feed 100 deltas one
+    // per 10ms. Code fences and bullet lists make most of the unparsed tail
+    // contain a newline, which must not buy an extra parse.
+    let state = { boundary: 0, lastParseAt: 1_000 }
+    let parses = 0
+    for (let step = 1; step <= 100; step += 1) {
+      const result = advanceStreamingParse(state, step, 1_000 + step * 10)
+      if (result.state !== state) {
+        parses += 1
+        state = result.state
+      }
+      if (step === 5) expect(state.boundary).toBe(0)
+    }
+    expect(parses).toBe(Math.floor(1_000 / STREAMING_PARSE_INTERVAL_MS))
+    expect(state.boundary).toBe(100)
+  })
+
+  it('summarizes the transcript in the store with one reverse walk', async () => {
+    const { createTranscriptStore } = await import('../../src/app/transcript-store')
     const messages: TranscriptMessage[] = [
       { id: 'user-1', role: 'user', timestamp: 1, parts: [{ type: 'text', text: 'ask' }] },
       { id: 'assistant-1', role: 'assistant', timestamp: 2, parts: [{ type: 'toolCall', id: 'a', name: 'Read' }, { type: 'text', text: 'first answer' }] },
       { id: 'assistant-2', role: 'assistant', timestamp: 3, parts: [{ type: 'text', text: 'final answer' }, { type: 'toolCall', id: 'b', name: 'Write' }] },
       { id: 'tool-1', role: 'tool', timestamp: 4, parts: [{ type: 'toolResult', name: 'Write', text: 'done' }] },
     ]
-    expect(summarizeTranscript(messages)).toEqual({ toolCount: 2, lastText: 'final answer' })
-    expect(summarizeTranscript([])).toEqual({ toolCount: 0, lastText: undefined })
+    expect(createTranscriptStore(messages).getSummary()).toMatchObject({ count: 4, toolCount: 2, lastText: 'final answer' })
+    expect(createTranscriptStore([]).getSummary()).toMatchObject({ count: 0, toolCount: 0, lastText: undefined })
+    // The newest assistant text wins, but a newer assistant turn without text falls back to the previous reply.
+    const fallback = createTranscriptStore([messages[1]!, { ...messages[2]!, parts: [{ type: 'toolCall', id: 'b', name: 'Write' }] }])
+    expect(fallback.getSummary().lastText).toBe('first answer')
+  })
+
+  it('publishes streamed reply text to summary subscribers without waking execution subscribers', async () => {
+    const { createTranscriptStore } = await import('../../src/app/transcript-store')
+    const store = createTranscriptStore([{ id: 'live', role: 'assistant', timestamp: 1, streaming: true, parts: [{ type: 'text', text: 'Answer:' }] }])
+    const summaryNotifies = vi.fn()
+    const executionNotifies = vi.fn()
+    const messageNotifies = vi.fn()
+    const offSummary = store.subscribeSummary(summaryNotifies)
+    const offExecution = store.subscribeExecutionSummary(executionNotifies)
+    const offMessages = store.subscribe(messageNotifies)
+    try {
+      store.update((current) => [{ ...current[0]!, parts: [{ type: 'text', text: 'Answer: x' }] }])
+      expect(summaryNotifies).toHaveBeenCalledOnce()
+      expect(messageNotifies).toHaveBeenCalledOnce()
+      // The workspace owner renders the transcript itself, so only execution semantics may wake it.
+      expect(executionNotifies).not.toHaveBeenCalled()
+      expect(store.getExecutionSummary()).not.toHaveProperty('lastText')
+    } finally { offSummary(); offExecution(); offMessages() }
+  })
+
+  it('bounds lastText to 220 chars so post-preview streaming tokens stop waking summary subscribers', async () => {
+    const { createTranscriptStore } = await import('../../src/app/transcript-store')
+    const baseText = 'a'.repeat(221)
+    const olderParts = [{ type: 'toolCall' as const, id: 'old-1', name: 'Read' }]
+    const olderMessage: TranscriptMessage = { id: 'older', role: 'assistant', timestamp: 1, parts: olderParts }
+    const store = createTranscriptStore([
+      olderMessage,
+      { id: 'live', role: 'assistant', timestamp: 2, streaming: true, parts: [{ type: 'text', text: baseText }] },
+    ])
+    expect(store.getSummary().lastText).toBe(`${'a'.repeat(220)}…`)
+    expect(store.getSummary().toolCount).toBe(1)
+
+    const summaryNotifies = vi.fn()
+    const offSummary = store.subscribeSummary(summaryNotifies)
+    try {
+      store.update((current) => [current[0]!, { ...current[1]!, parts: [{ type: 'text', text: `${baseText} more tokens` }] }])
+      expect(summaryNotifies).not.toHaveBeenCalled()
+      expect(store.getSummary().lastText).toBe(`${'a'.repeat(220)}…`)
+
+      // Adding a tool call or changing message count still recomputes accurate toolCount and notifies summary subscribers.
+      store.update((current) => [
+        current[0]!,
+        { ...current[1]!, parts: [{ type: 'text', text: `${baseText} more tokens` }, { type: 'toolCall', id: 'new-1', name: 'Write' }] },
+      ])
+      expect(summaryNotifies).toHaveBeenCalledTimes(1)
+      expect(store.getSummary().toolCount).toBe(2)
+
+      store.update((current) => [
+        ...current,
+        { id: 'tail-2', role: 'assistant', timestamp: 3, streaming: true, parts: [{ type: 'text', text: 'Next turn' }] },
+      ])
+      expect(summaryNotifies).toHaveBeenCalledTimes(2)
+      expect(store.getSummary()).toMatchObject({ toolCount: 2, lastText: 'Next turn' })
+    } finally { offSummary() }
   })
 })
 
@@ -587,4 +746,18 @@ describe('scoped async ownership', () => {
     expect(guard.isCurrent(project, 4, '/project')).toBe(false)
   })
 
+})
+
+describe('transcript tail reads', () => {
+  const assistant = (id: string, outcome?: TranscriptMessage['outcome']): TranscriptMessage => ({ id, role: 'assistant', parts: [], ...(outcome ? { outcome } : {}) })
+  const user = (id: string): TranscriptMessage => ({ id, role: 'user', parts: [] })
+
+  it('finds the newest assistant row from the tail without copying the transcript', () => {
+    const messages = [assistant('first'), user('u1'), assistant('second', 'cancelled'), user('tail')]
+    expect(lastAssistantMessage(messages)?.id).toBe('second')
+    expect(lastAssistantMessage(messages)?.outcome).toBe('cancelled')
+    expect(lastAssistantMessage([assistant('only')])?.id).toBe('only')
+    expect(lastAssistantMessage([user('u1'), user('u2')])).toBeUndefined()
+    expect(lastAssistantMessage([])).toBeUndefined()
+  })
 })

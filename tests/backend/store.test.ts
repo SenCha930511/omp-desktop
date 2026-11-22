@@ -41,6 +41,24 @@ const realFileSystem: JsonStateStoreFileSystem = {
   unlink,
 }
 
+/** Records every durable-write operation the store performs through its fs seam. */
+function recordingFileSystem(events: string[]): JsonStateStoreFileSystem {
+  return {
+    open: async (path, flags, mode) => {
+      const kind = flags === 'w' ? 'file' : 'directory'
+      events.push(`${kind}-open`)
+      const handle = await realFileSystem.open(path, flags, mode)
+      return {
+        writeFile: (data, options) => { events.push(`${kind}-write`); return handle.writeFile(data, options) },
+        sync: () => { events.push(`${kind}-sync`); return handle.sync() },
+        close: () => { events.push(`${kind}-close`); return handle.close() },
+      }
+    },
+    rename: async (oldPath, newPath) => { events.push('rename'); await realFileSystem.rename(oldPath, newPath) },
+    unlink: async (path) => { events.push('unlink'); await realFileSystem.unlink(path) },
+  }
+}
+
 describe('JsonStateStore', () => {
   it('returns isolated field snapshots without exposing mutable state', async () => {
     const store = new JsonStateStore(join(makeDirectory(), 'state.json'))
@@ -53,6 +71,50 @@ describe('JsonStateStore', () => {
     schedules.length = 100
     expect(store.getProjectAuthorizationState().dismissedProjectPaths).toEqual(['/original'])
     expect(store.getSchedules()).toEqual([])
+    await store.beginShutdown()
+  })
+  it('serves internal readonly reads from the committed state without cloning', async () => {
+    const store = new JsonStateStore(join(makeDirectory(), 'state.json'))
+    await store.ready()
+    const initialProjects = store.projectsReadonly()
+    const initialSchedules = store.schedulesReadonly()
+    const initialDismissed = store.dismissedProjectPathsReadonly()
+    expect(initialProjects).toEqual([])
+    // Repeat reads hand back the committed arrays instead of fresh copies.
+    expect(store.projectsReadonly()).toBe(initialProjects)
+    expect(store.schedulesReadonly()).toBe(initialSchedules)
+    expect(store.dismissedProjectPathsReadonly()).toBe(initialDismissed)
+
+    const now = '2026-01-01T00:00:00.000Z'
+    await store.update((state) => {
+      state.projects.push({
+        id: 'project-one', harness: 'omp', name: 'One', path: '/one', folders: ['/one'], primaryFolder: '/one',
+        pinned: false, createdAt: now, lastOpenedAt: now,
+      })
+      state.dismissedProjectPaths.push('/dismissed')
+      state.schedules.push({
+        schemaVersion: 1, id: 'schedule-one', harness: 'omp', revision: 1, title: 'One', prompt: 'Review issues',
+        target: { kind: 'project', projectId: 'project-one' }, timing: { kind: 'once', at: '2026-01-02T00:00:00.000Z' },
+        execution: { model: 'auto', thinking: 'auto', speed: 'normal' }, status: 'active', createdBy: 'user',
+        createdAt: now, updatedAt: now, nextRunAt: '2026-01-02T00:00:00.000Z', runs: [],
+      })
+    })
+
+    const projects = store.projectsReadonly()
+    expect(projects).not.toBe(initialProjects)
+    expect(projects.map((project) => project.id)).toEqual(['project-one'])
+    expect(store.dismissedProjectPathsReadonly()).toEqual(['/dismissed'])
+    expect(store.schedulesReadonly().map((task) => task.id)).toEqual(['schedule-one'])
+    // Copy-on-write: the snapshot read before the update is never mutated.
+    expect(initialProjects).toEqual([])
+    expect(initialDismissed).toEqual([])
+    expect(initialSchedules).toEqual([])
+    // Renderer-facing getters keep handing out isolated clones.
+    expect(store.getProjects()).not.toBe(projects)
+    expect(store.getProjects()[0]).not.toBe(projects[0])
+    expect(store.getSchedules()).not.toBe(store.schedulesReadonly())
+    expect(store.getSchedules()[0]).not.toBe(store.schedulesReadonly()[0])
+    expect(store.getProjectAuthorizationState().dismissedProjectPaths).not.toBe(store.dismissedProjectPathsReadonly())
     await store.beginShutdown()
   })
   it('keeps ask_user off on a fresh install and preserves an explicit opt-in', async () => {
@@ -327,6 +389,85 @@ describe('JsonStateStore', () => {
     expect(JSON.parse(readFileSync(path, 'utf8')).archivedSessions).toEqual(['succeeded'])
   })
 
+  it('skips the temp write and fsyncs when an update leaves the serialized state unchanged', async () => {
+    const dir = makeDirectory()
+    const path = join(dir, 'state.json')
+    await new JsonStateStore(path).update((state) => { state.archivedSessions.push('/sessions/one.jsonl') })
+    const persisted = readFileSync(path, 'utf8')
+
+    const events: string[] = []
+    const store = new JsonStateStore(path, recordingFileSystem(events))
+    const result = await store.update((state) => {
+      state.archivedSessions = [...state.archivedSessions]
+      return 'unchanged'
+    })
+
+    expect(result).toBe('unchanged')
+    expect(events).toEqual([])
+    expect(readFileSync(path, 'utf8')).toBe(persisted)
+    expect(store.snapshot().archivedSessions).toEqual(['/sessions/one.jsonl'])
+    expect(readdirSync(dir).filter((name) => name.endsWith('.tmp'))).toEqual([])
+  })
+
+  it('writes and fsyncs the temp file, rename, and directory when an update changes the state', async () => {
+    const dir = makeDirectory()
+    const path = join(dir, 'state.json')
+    await new JsonStateStore(path).update((state) => { state.archivedSessions.push('/sessions/one.jsonl') })
+
+    const events: string[] = []
+    const store = new JsonStateStore(path, recordingFileSystem(events))
+    await store.update((state) => { state.archivedSessions.push('/sessions/two.jsonl') })
+
+    expect(events).toEqual([
+      'file-open',
+      'file-write',
+      'file-sync',
+      'file-close',
+      'rename',
+      'directory-open',
+      'directory-sync',
+      'directory-close',
+      'unlink',
+    ])
+    expect(JSON.parse(readFileSync(path, 'utf8')).archivedSessions).toEqual(['/sessions/one.jsonl', '/sessions/two.jsonl'])
+  })
+
+  it('retries the same bytes after a failed write instead of trusting the cached content', async () => {
+    const dir = makeDirectory()
+    const path = join(dir, 'state.json')
+    await new JsonStateStore(path).update((state) => { state.archivedSessions.push('/sessions/one.jsonl') })
+
+    const events: string[] = []
+    const recording = recordingFileSystem(events)
+    let failNextSync = true
+    const store = new JsonStateStore(path, {
+      ...recording,
+      open: async (openedPath, flags, mode) => {
+        const handle = await recording.open(openedPath, flags, mode)
+        if (flags !== 'w' || !failNextSync) return handle
+        failNextSync = false
+        return {
+          writeFile: handle.writeFile,
+          sync: async () => { throw new Error('injected file sync failure') },
+          close: handle.close,
+        }
+      },
+    })
+
+    await expect(store.update((state) => { state.archivedSessions.push('/sessions/two.jsonl') })).rejects.toThrow('injected file sync failure')
+    expect(store.snapshot().archivedSessions).toEqual(['/sessions/one.jsonl'])
+    expect(JSON.parse(readFileSync(path, 'utf8')).archivedSessions).toEqual(['/sessions/one.jsonl'])
+    expect(readdirSync(dir).filter((name) => name.endsWith('.tmp'))).toEqual([])
+
+    const retryStart = events.length
+    await store.update((state) => { state.archivedSessions.push('/sessions/two.jsonl') })
+    expect(events.slice(retryStart)).toContain('file-open')
+    expect(events.slice(retryStart)).toContain('file-sync')
+    expect(events.slice(retryStart)).toContain('rename')
+    expect(store.snapshot().archivedSessions).toEqual(['/sessions/one.jsonl', '/sessions/two.jsonl'])
+    expect(JSON.parse(readFileSync(path, 'utf8')).archivedSessions).toEqual(['/sessions/one.jsonl', '/sessions/two.jsonl'])
+  })
+
   it('creates private state files and directories', async () => {
     const dir = makeDirectory()
     const stateDirectory = join(dir, 'nested')
@@ -373,16 +514,16 @@ describe('JsonStateStore', () => {
     writeFileSync(path, JSON.stringify({
       version: 2,
       projects: [{ id: 'p1', name: 'One', path: '/one', folders: ['/one'], primaryFolder: '/one' }],
-      settings: { ...defaultSettings(), terminalShell: '/bin/bash' },
+      settings: { ...defaultSettings(), browserHome: 'https://example.test/' },
       archivedSessions: ['/sessions/kept.jsonl'],
       dismissedProjectPaths: [],
     }))
     const store = new JsonStateStore(path)
 
     const settings = store.getSettings()
-    expect(settings.terminalShell).toBe('/bin/bash')
-    settings.terminalShell = '/bin/tampered'
-    expect(store.getSettings().terminalShell).toBe('/bin/bash')
+    expect(settings.browserHome).toBe('https://example.test/')
+    settings.browserHome = 'https://tampered.test/'
+    expect(store.getSettings().browserHome).toBe('https://example.test/')
 
     const projects = store.getProjects()
     expect(projects.map((project) => project.id)).toEqual(['p1'])

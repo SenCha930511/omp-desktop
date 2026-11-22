@@ -140,7 +140,6 @@ function fixture({ attachedRuntime = null, bridgeOverride }: FixtureOptions = {}
         bumpRecentSessionOpen: vi.fn(),
         refreshSchedules: vi.fn(),
         resetBrowserView: vi.fn(),
-        closeTerminalForSession: vi.fn(),
         clearSessionAttention: vi.fn(),
         reportError,
         onCommandStart: vi.fn(),
@@ -187,17 +186,15 @@ describe('slash GUI entries', () => {
     expect(state.queuePrompt).not.toHaveBeenCalled()
   })
 
-  it('/new and /clear establish the durable new-session boundary', async () => {
+  it('/new and /clear open an empty draft without creating an engine session', async () => {
     const state = fixture()
     await state.actions.sendPrompt('/new')
-    // 等第一個 durable 邊界完整結束(attachRuntime 是 flight 的最後一步),
-    // 再送 /clear,避免撞進同專案的 flight dedup 視窗。
-    await waitUntil(() => state.runtimeState()?.sessionFile === '/gui-project/durable.jsonl')
-    expect(state.start).toHaveBeenCalledOnce()
-    expect(state.command).toHaveBeenCalledWith('durable-runtime', { type: 'new_session' })
     await state.actions.sendPrompt('/clear')
-    await waitUntil(() => state.start.mock.calls.length === 2)
-    expect(state.command.mock.calls.filter((call) => call[1]?.type === 'new_session')).toHaveLength(2)
+
+    expect(state.activateWorkspace).toHaveBeenCalledTimes(2)
+    expect(state.activateWorkspace).toHaveBeenCalledWith(project)
+    expect(state.start).not.toHaveBeenCalled()
+    expect(state.command).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ type: 'new_session' }))
     expect(state.queuePrompt).not.toHaveBeenCalled()
   })
 

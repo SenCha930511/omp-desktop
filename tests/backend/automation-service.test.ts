@@ -363,4 +363,32 @@ describe('AutomationService', () => {
       consoleError.mockRestore()
     }
   })
+
+  it('lists and resolves schedules from the committed state without cloning it', async () => {
+    const stateStore = store()
+    const service = new AutomationService(stateStore, {
+      validateTarget: async () => undefined,
+      validateExecution: async () => undefined,
+      run: async () => ({}),
+      now: () => new Date('2030-01-01T00:00:00Z'),
+    })
+    const created = await service.create({ title: 'Triage', prompt: 'Review issues', target, timing: onceAt('2030-01-02T00:00:00Z'), execution })
+    const committed = stateStore.schedulesReadonly()
+    const getSchedules = vi.spyOn(stateStore, 'getSchedules')
+
+    expect(service.hasActiveSchedules()).toBe(true)
+    const listed = service.list()
+    const resolved = service.get(created.id)
+
+    // Internal reads reuse the committed array instead of cloning the whole state.
+    expect(getSchedules).not.toHaveBeenCalled()
+    expect(stateStore.schedulesReadonly()).toBe(committed)
+    expect(listed.map((task) => task.id)).toEqual([created.id])
+    // Callers still receive isolated copies of each task.
+    expect(listed[0]).not.toBe(stateStore.schedulesReadonly()[0])
+    expect(resolved).not.toBe(stateStore.schedulesReadonly()[0])
+    listed[0].title = 'mutated'
+    resolved.prompt = 'mutated'
+    expect(stateStore.schedulesReadonly()[0]).toMatchObject({ title: 'Triage', prompt: 'Review issues' })
+  })
 })

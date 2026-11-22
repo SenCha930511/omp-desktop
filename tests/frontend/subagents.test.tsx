@@ -3,7 +3,7 @@ import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 import { applySubagentFrame, mergeSubagentMessages } from '../../src/hooks/useSubagents'
-import { SubagentsPanel } from '../../src/components/SubagentsPanel'
+import { SubagentsTabPanel } from '../../src/components/inspector/SubagentsTabPanel'
 import { I18nProvider } from '../../src/lib/i18n'
 import { useSubagentAttention } from '../../src/hooks/useSubagentAttention'
 import type { SubagentView } from '../../src/hooks/useSubagents'
@@ -17,15 +17,16 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals())
 
 describe('subagent observability', () => {
-  it('bounds retained transcript trees to three recently opened agents', () => {
+  it('renders one transcript at a time beside the full roster in the Agents tab', () => {
     const host = document.createElement('div')
     const root = createRoot(host)
     const agents = Array.from({ length: 6 }, (_, index) => ({ id: String(index), agent: `Agent ${index}`, status: 'completed', messages: [] }))
     try {
       for (const agent of agents) {
-        act(() => root.render(<SubagentsPanel connected state={{ agents, selectedId: agent.id, select: vi.fn(), error: undefined }} />))
-        expect(host.querySelectorAll('.subagents__page').length).toBeLessThanOrEqual(3)
-        expect(host.querySelector('.subagents__page:not([hidden]) h2')?.textContent).toBe(agent.agent)
+        act(() => root.render(<SubagentsTabPanel connected state={{ agents, selectedId: agent.id, select: vi.fn(), error: undefined }} />))
+        expect(host.querySelectorAll('.subagents__transcript')).toHaveLength(1)
+        expect(host.querySelectorAll('.subagents__roster .subagents__agent')).toHaveLength(6)
+        expect(host.querySelector('.subagents__transcript h2')?.textContent).toBe(agent.agent)
       }
     } finally { act(() => root.unmount()) }
   })
@@ -46,20 +47,24 @@ describe('subagent observability', () => {
       expect([...unread!]).toEqual(['a'])
     } finally { act(() => root.unmount()) }
   })
-  it('retains disclosure state and the mounted transcript when switching agents', () => {
+  it('swaps the transcript with the roster selection and shows the pick hint otherwise', () => {
     const host = document.createElement('div')
     const root = createRoot(host)
     const agents = ['a', 'b'].map((id) => ({ id, agent: id, status: 'completed', messages: [{ role: 'assistant', timestamp: 1, content: [{ type: 'thinking', thinking: `Reasoning ${id}` }] }] }))
-    const render = (selectedId: string | undefined) => act(() => root.render(<SubagentsPanel connected state={{ agents, selectedId, select: vi.fn(), error: undefined }} />))
+    const render = (selectedId: string | undefined) => act(() => root.render(<SubagentsTabPanel connected state={{ agents, selectedId, select: vi.fn(), error: undefined }} />))
     try {
       render('a')
       const transcript = host.querySelector('.subagents__messages')
       act(() => host.querySelector<HTMLButtonElement>('.work-disclosure__button')!.click())
       render('b')
+      expect(host.querySelector('.subagents__transcript h2')?.textContent).toBe('b')
+      expect(host.querySelectorAll('.subagents__transcript')).toHaveLength(1)
       render(undefined)
+      expect(host.querySelector('.subagents__transcript')).toBeNull()
+      expect(host.textContent).toContain('Select an agent to inspect its transcript.')
       render('a')
-      expect(host.querySelector('.subagents__page:not([hidden]) .subagents__messages')).toBe(transcript)
-      expect(host.querySelector('.subagents__page:not([hidden]) .work-disclosure__button')?.getAttribute('aria-expanded')).toBe('true')
+      expect(host.querySelector('.subagents__messages')).not.toBe(transcript)
+      expect(host.querySelector('.work-disclosure__button')?.getAttribute('aria-expanded')).toBe('false')
     } finally { act(() => root.unmount()) }
   })
   it('switches all new chrome and statuses with the UI language while preserving agent output', () => {
@@ -67,9 +72,9 @@ describe('subagent observability', () => {
     const root = createRoot(host)
     const agent = { id: 'a', agent: 'Explore', status: 'running', messages: [{ role: 'assistant', timestamp: 1, content: [{ type: 'thinking', thinking: 'Original model output' }] }] }
     try {
-      for (const [preference, back, running] of [['zh-TW', '子代理', '思考中'], ['zh-CN', '子代理', '思考中'], ['en', 'Subagents', 'Thinking']] as const) {
-        act(() => root.render(<I18nProvider preference={preference}><SubagentsPanel connected state={{ agents: [agent], selectedId: 'a', select: vi.fn(), error: undefined }} /></I18nProvider>))
-        expect(host.textContent).toContain(back)
+      for (const [preference, title, running] of [['zh-TW', '子代理', '思考中'], ['zh-CN', '子代理', '思考中'], ['en', 'Subagents', 'Thinking']] as const) {
+        act(() => root.render(<I18nProvider preference={preference}><SubagentsTabPanel connected state={{ agents: [agent], selectedId: 'a', select: vi.fn(), error: undefined }} /></I18nProvider>))
+        expect(host.querySelector('.subagents')?.getAttribute('aria-label')).toBe(title)
         expect(host.textContent).toContain(running)
         if (host.querySelector('.work-disclosure__button')?.getAttribute('aria-expanded') === 'false') act(() => host.querySelector<HTMLButtonElement>('.work-disclosure__button')!.click())
         expect(host.textContent).toContain('Original model output')
@@ -90,7 +95,7 @@ describe('subagent observability', () => {
     const host = document.createElement('div')
     const root = createRoot(host)
     try {
-      act(() => root.render(<SubagentsPanel connected state={{ agents, selectedId: 'a', select: vi.fn(), error: undefined }} />))
+      act(() => root.render(<SubagentsTabPanel connected state={{ agents, selectedId: 'a', select: vi.fn(), error: undefined }} />))
       act(() => host.querySelector<HTMLButtonElement>('.work-disclosure__button')!.click())
       expect(host.textContent).toContain('Inspecting files')
       expect(host.querySelector('h2')?.textContent).toBe('Explore')
@@ -109,9 +114,9 @@ describe('subagent observability', () => {
 })
 
 describe('subagent control and history UI', () => {
-  function renderPanel(state: Parameters<typeof SubagentsPanel>[0]['state'], host = document.createElement('div')) {
+  function renderPanel(state: Parameters<typeof SubagentsTabPanel>[0]['state'], host = document.createElement('div')) {
     const root = createRoot(host)
-    act(() => root.render(<SubagentsPanel connected pinned state={state} />))
+    act(() => root.render(<SubagentsTabPanel connected state={state} />))
     return { host, root }
   }
 
@@ -167,7 +172,7 @@ describe('subagent control and history UI', () => {
       // 失敗不清空草稿,讓使用者可以修正後重送(草稿保留原始空白)
       expect(input.value).toBe('  steer here  ')
       // 收斂後不再提供導引輸入
-      act(() => root.render(<SubagentsPanel connected pinned state={{ agents: [{ id: 'a', agent: 'Runner', status: 'completed', messages: [] }], selectedId: 'a', select: vi.fn(), error: undefined, steer, pendingActions: new Set() }} />))
+      act(() => root.render(<SubagentsTabPanel connected state={{ agents: [{ id: 'a', agent: 'Runner', status: 'completed', messages: [] }], selectedId: 'a', select: vi.fn(), error: undefined, steer, pendingActions: new Set() }} />))
       expect(host.querySelector('.subagents__steer')).toBeNull()
     } finally { act(() => root.unmount()) }
   })
@@ -200,7 +205,7 @@ describe('subagent control and history UI', () => {
       expect(loadEarlier).toHaveBeenCalledWith('a')
       expect(host.textContent).toContain('transcript unavailable')
       // 歷史補齊後按鈕消失
-      act(() => root.render(<SubagentsPanel connected pinned state={{ agents: [{ ...agents[0], historyDone: true }], selectedId: 'a', select: vi.fn(), error: undefined, loadEarlier, pendingActions: new Set() }} />))
+      act(() => root.render(<SubagentsTabPanel connected state={{ agents: [{ ...agents[0], historyDone: true }], selectedId: 'a', select: vi.fn(), error: undefined, loadEarlier, pendingActions: new Set() }} />))
       expect([...host.querySelectorAll<HTMLButtonElement>('button')].find((candidate) => candidate.textContent === 'Load earlier messages')).toBeUndefined()
     } finally { act(() => root.unmount()) }
   })
@@ -219,15 +224,14 @@ describe('subagent control and history UI', () => {
       expect(setSubscriptionLevel).toHaveBeenCalledWith('progress')
     } finally { act(() => root.unmount()) }
   })
-})
 
-  it('closes the split-view pane through its header control', async () => {
+  it('closes the transcript through its header control', async () => {
     const host = document.createElement('div')
     const root = createRoot(host)
     const select = vi.fn()
     const agent: SubagentView = { id: 'a', agent: 'Explore', status: 'running', messages: [] }
     try {
-      act(() => root.render(<I18nProvider preference="en"><SubagentsPanel connected state={{ agents: [agent], selectedId: 'a', select, error: undefined }} /></I18nProvider>))
+      act(() => root.render(<I18nProvider preference="en"><SubagentsTabPanel connected state={{ agents: [agent], selectedId: 'a', select, error: undefined }} /></I18nProvider>))
       const close = host.querySelector<HTMLButtonElement>('.subagents__pane-close')
       expect(close).not.toBeNull()
       expect(close?.getAttribute('aria-label')).toBe('Close agent transcript')
@@ -235,3 +239,4 @@ describe('subagent control and history UI', () => {
       expect(select).toHaveBeenCalledWith(undefined)
     } finally { act(() => root.unmount()) }
   })
+})

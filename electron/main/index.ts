@@ -1,5 +1,5 @@
 import { IPC_CHANNELS } from '../../src/types/ipc'
-import { app, BrowserWindow, dialog, Menu, nativeTheme, protocol, safeStorage, session, webContents } from 'electron'
+import { app, BrowserWindow, dialog, Menu, nativeTheme, protocol, safeStorage, screen, session, webContents } from 'electron'
 import type { BrowserWindowConstructorOptions, Input, WebContents } from 'electron'
 import { extname, isAbsolute, join, relative, resolve, win32 as win32Path } from 'node:path'
 import { readFile, writeFile } from 'node:fs/promises'
@@ -15,7 +15,7 @@ import { installCrashGuards } from './crash-guard'
 import { CuaDriverService } from './cua-driver'
 import { GitService } from './git'
 import { CheckoutService } from './checkouts'
-import { isTrustedRendererUrl, registerIpc, type IpcRegistration } from './ipc'
+import { createTrustedRendererUrlCache, isTrustedRendererUrl, registerIpc, type IpcRegistration } from './ipc'
 import { HarnessDiscoveryService, reconcileActiveHarness } from './harness-discovery'
 import { beginProcessShutdown, captureLoginShellEnvironment, runProcess, setLoginShellEnvironmentSnapshot, stopChildProcesses } from './process-utils'
 import { PluginService, beginPluginDiscoveryShutdown } from './plugins'
@@ -34,13 +34,14 @@ import { extensionInjection, resolveExtensionPath } from './extension-manifest'
 import { SessionService } from './sessions'
 import { ompSessionServiceOptions } from './sessions/omp'
 import { type JsonStateStore, openDesktopStateStore, StateCompatibilityError, StateMigrationError } from './store'
-import { TerminalService } from './terminal'
+import { defaultProjectShell, ProjectScriptRunner } from './project-script-runner'
 import { RepositoryUseGate } from './repository-use-gate'
 import { LEGACY_USER_DATA_DIR_NAME, migrateLegacyUserData } from './user-data-migration'
 import { VoiceService, voiceSecretStorageStatus } from './voice'
 import { isAllowedRendererAudioPermission } from './voice-permissions'
 import { createManualUpdateCheck, getAutoUpdater, isDeveloperIdSigned, UpdateService } from './updates'
 import { HarnessUpdateService } from './harness-update'
+import { bindWindowGeometryPersistence, readWindowGeometry, WINDOW_GEOMETRY_FILENAME } from './window-geometry'
 
 // Development builds run the rebranded Electron bundle, whose product name
 // matches the packaged app, so both resolve to the same userData directory
@@ -54,7 +55,7 @@ protocol.registerSchemesAsPrivileged([{ scheme: 'omp-desktop', privileges: { sta
 let mainWindow: BrowserWindow | null = null
 let ipc: IpcRegistration | null = null
 let agents: AgentRpcManager | null = null
-let terminals: TerminalService | null = null
+let projectScripts: ProjectScriptRunner | null = null
 let downloads: BrowserDownloadGuard | null = null
 let updateService: UpdateService | null = null
 let store: JsonStateStore | null = null
@@ -70,6 +71,7 @@ let confirmingShutdown = false
 let trustedRendererUrl = ''
 let packagedSmokeMarkerFile: string | null = null
 let windowCreation: Promise<BrowserWindow | null> | null = null
+let windowGeometryPersistence: { flush(): Promise<void>; dispose(): void } | null = null
 let startInBackground = false
 const keepTestWindowsHidden = process.env.OMP_DESKTOP_E2E_HIDE_WINDOWS === '1'
 
@@ -378,9 +380,12 @@ export function setTitleBarTheme(sender: WebContents, theme: ResolvedTheme): boo
 
 async function createWindow(): Promise<BrowserWindow | null> {
   if (shutdownStarted) return null
+  const geometryPath = join(app.getPath('userData'), WINDOW_GEOMETRY_FILENAME)
+  const geometry = readWindowGeometry(geometryPath, screen.getAllDisplays())
   const window = new BrowserWindow({
-    width: 1440,
-    height: 920,
+    width: geometry.width,
+    height: geometry.height,
+    ...(geometry.x !== undefined && geometry.y !== undefined ? { x: geometry.x, y: geometry.y } : {}),
     minWidth: 960,
     minHeight: 640,
     show: false,
@@ -400,6 +405,12 @@ async function createWindow(): Promise<BrowserWindow | null> {
     },
   })
   mainWindow = window
+  const geometryPersistence = bindWindowGeometryPersistence(window, geometryPath)
+  windowGeometryPersistence = geometryPersistence
+  const showWindow = () => {
+    if (geometry.maximized && !window.isMaximized()) window.maximize()
+    window.show()
+  }
   const renderer = window.webContents
   const rendererId = renderer.id
   hardenRenderer(window)
@@ -423,7 +434,7 @@ async function createWindow(): Promise<BrowserWindow | null> {
   let readyToShow = false
   window.once('ready-to-show', () => {
     readyToShow = true
-    if (!keepTestWindowsHidden && !backgroundMode?.isBackgrounded() && rendererLoaded && !shutdownStarted && !window.isDestroyed() && mainWindow === window) window.show()
+    if (!keepTestWindowsHidden && !backgroundMode?.isBackgrounded() && rendererLoaded && !shutdownStarted && !window.isDestroyed() && mainWindow === window) showWindow()
   })
   window.on('close', (event) => {
     if (shutdownStarted || shutdownApproved) return
@@ -436,25 +447,26 @@ async function createWindow(): Promise<BrowserWindow | null> {
     event.preventDefault()
     if (!confirmingShutdown) requestShutdown(window, prompt)
   })
-  window.on('closed', () => {
+  const detachWindowBinding = () => {
+    geometryPersistence.dispose()
+    if (windowGeometryPersistence === geometryPersistence) windowGeometryPersistence = null
     ipc?.revoke(rendererId)
     if (mainWindow === window) mainWindow = null
-  })
+  }
+  window.on('closed', detachWindowBinding)
   try {
     await loadInitialRenderer(window, trustedRendererUrl)
   } catch (error) {
-    ipc?.revoke(rendererId)
-    if (mainWindow === window) mainWindow = null
+    detachWindowBinding()
     throw error
   }
   if (shutdownStarted || window.isDestroyed() || mainWindow !== window) {
-    ipc?.revoke(rendererId)
+    detachWindowBinding()
     if (!window.isDestroyed()) window.destroy()
-    if (mainWindow === window) mainWindow = null
     return null
   }
   rendererLoaded = true
-  if (!keepTestWindowsHidden && !backgroundMode?.isBackgrounded() && readyToShow) window.show()
+  if (!keepTestWindowsHidden && !backgroundMode?.isBackgrounded() && readyToShow) showWindow()
   return window
 }
 
@@ -603,7 +615,7 @@ async function bootstrap(): Promise<void> {
   const projects = new ProjectService(stateStore, () => mainWindow)
   const repositoryUseGate = new RepositoryUseGate()
   const checkouts = new CheckoutService(() => stateStore.getSettings().checkoutStrategy, projects, repositoryUseGate)
-  // Git and terminals authorize against the OMP project grants.
+  // Git authorizes against the OMP project grants.
   const git = new GitService((cwd) => projects.authorizeCwd(cwd), (cwd) => projects.authorizeReadOnlyCwd(cwd))
   // This matches the renderer's startup query so both consumers share SessionService's coalesced catalog scan.
   const listCatalogSessions = (): ReturnType<SessionService['list']> => sessions.list(undefined, true)
@@ -638,9 +650,11 @@ async function bootstrap(): Promise<void> {
     rename: async (path, title) => agents?.renameForSession(path, title) ?? false,
   })
   sessions.setRuntimeForker((filePath, cwd) => ompManager.forkForSession(filePath, cwd))
-  terminals = new TerminalService(
+  // Project setup/run scripts are headless: they authorize against the OMP
+  // project grants, hold a repository-use lease, and stream bounded output.
+  projectScripts = new ProjectScriptRunner(
     (cwd) => projects.authorizeCwd(cwd),
-    () => stateStore.getSettings().terminalShell,
+    defaultProjectShell,
     (path) => sessions.requireSessionPath(path),
     (cwd, owner) => repositoryUseGate.beginWorkspaceUse(cwd, owner),
   )
@@ -649,13 +663,13 @@ async function bootstrap(): Promise<void> {
     branch: (cwd) => git.branch(cwd),
     stopProjectProcesses: async (roots) => {
       plugins.evictProjects(roots)
-      await Promise.all([ompManager.stopForProjectRoots(roots), terminals!.killForProjectRoots(roots)])
+      sessions.evictProjectPaths(roots)
+      await Promise.all([ompManager.stopForProjectRoots(roots), projectScripts!.killForProjectRoots(roots)])
     },
   })
   downloads = new BrowserDownloadGuard(isAllowedBrowserUrl, app.getPath('downloads'))
   const settings = new SettingsService(
     stateStore,
-    (shell) => terminals!.validateShell(shell),
     () => downloads?.cancelAll(true),
     (previous, next) => backgroundMode?.applySettings(previous, next),
   )
@@ -758,7 +772,7 @@ async function bootstrap(): Promise<void> {
     },
   })
   agentBrowser = browserService
-  const browserBridge = new AgentBrowserBridge({ service: browserService, terminals, extensionPath: ompBrowserExtensionPath, skillPath: computerUseSkillPath })
+  const browserBridge = new AgentBrowserBridge({ service: browserService, extensionPath: ompBrowserExtensionPath, skillPath: computerUseSkillPath })
   const collaborationBridge = new AgentCollaborationBridge({
     extensionPath: collaborationExtensionPath,
     sessions: { omp: sessions },
@@ -837,8 +851,11 @@ async function bootstrap(): Promise<void> {
     return { meta: structuredClone(meta), settings: currentSettings }
   }
   trustedRendererUrl = resolveRendererUrl()
+  // Every forwarded envelope re-checks the renderer; while the window stays on
+  // the trusted document the cached exact URL pair skips both URL parses.
+  const isTrustedForwardTarget = createTrustedRendererUrlCache(trustedRendererUrl)
   ipc = registerIpc({
-    meta, refreshHarnesses, projects, checkouts, sessions, agents: ompManager, terminals, git, plugins, catalog, settings, updates, harnessUpdates, cuaDriver, schedules, browser: browserService, voice,
+    meta, refreshHarnesses, projects, checkouts, sessions, agents: ompManager, projectScripts, git, plugins, catalog, settings, updates, harnessUpdates, cuaDriver, schedules, browser: browserService, voice,
     popupApplicationMenu, setTitleBarTheme,
     applyInterfaceZoom,
   }, trustedRendererUrl)
@@ -847,8 +864,7 @@ async function bootstrap(): Promise<void> {
   const forwardAgentEvent = (envelope: PrimeEventEnvelope): void => {
     const renderer = mainWindow?.webContents
     if (!shutdownStarted && renderer && !renderer.isDestroyed()
-      && isTrustedRendererUrl(renderer.getURL(), trustedRendererUrl)
-      && isTrustedRendererUrl(renderer.mainFrame.url, trustedRendererUrl)) {
+      && isTrustedForwardTarget(renderer.getURL(), renderer.mainFrame.url)) {
       renderer.send(IPC_CHANNELS.agent.onEvent, envelope)
     }
   }
@@ -856,16 +872,14 @@ async function bootstrap(): Promise<void> {
   updates.setEventSink((state: AppUpdateState) => {
     const renderer = mainWindow?.webContents
     if (!shutdownStarted && renderer && !renderer.isDestroyed()
-      && isTrustedRendererUrl(renderer.getURL(), trustedRendererUrl)
-      && isTrustedRendererUrl(renderer.mainFrame.url, trustedRendererUrl)) {
+      && isTrustedForwardTarget(renderer.getURL(), renderer.mainFrame.url)) {
       renderer.send(IPC_CHANNELS.updates.onChanged, state)
     }
   })
   harnessUpdates.setEventSink((state: HarnessUpdateState) => {
     const renderer = mainWindow?.webContents
     if (!shutdownStarted && renderer && !renderer.isDestroyed()
-      && isTrustedRendererUrl(renderer.getURL(), trustedRendererUrl)
-      && isTrustedRendererUrl(renderer.mainFrame.url, trustedRendererUrl)) {
+      && isTrustedForwardTarget(renderer.getURL(), renderer.mainFrame.url)) {
       renderer.send(IPC_CHANNELS.harnessUpdates.onChanged, state)
     }
     // A finished install replaced the omp binary: re-probe so the About view
@@ -1006,8 +1020,9 @@ app.on('before-quit', (event) => {
     agentBrowserBridge?.stop() ?? Promise.resolve(),
     agentCollaborationBridge?.stop() ?? Promise.resolve(),
     automation?.stop() ?? Promise.resolve(),
-    terminals?.killAll() ?? Promise.resolve(),
+    projectScripts?.killAll() ?? Promise.resolve(),
     agents?.stopAll() ?? Promise.resolve(),
+    windowGeometryPersistence?.flush() ?? Promise.resolve(),
     stopChildProcesses(),
   ]).then(async () => {
     // Await the drain so the final persist lands before the process exits.

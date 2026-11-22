@@ -1,9 +1,6 @@
-/* Side-question dock (harness /btw): a quiet second conversation running
-   beside the main turn. Lives in the right dock slot in place of the
-   inspector while open; the container mirrors .inspector's sizing contract
-   so it shares the resizable width instead of claiming the workspace. */
+/* Side-question dock (harness /btw): lives inside the Inspector panel tab. */
 
-.side-chat { position: relative; z-index: 10; display: flex; flex-direction: column; height: 100%; min-height: 0; width: var(--side-chat-width, var(--inspector-width, clamp(420px, 46vw, 660px))); min-width: 340px; flex: 0 0 var(--side-chat-width, var(--inspector-width, clamp(420px, 46vw, 660px))); background: var(--canvas); animation: panel-in 150ms ease-out; }
+.side-chat { position: relative; display: flex; flex-direction: column; width: 100%; height: 100%; min-width: 0; min-height: 0; flex: 1 1 auto; background: var(--canvas); animation: panel-in 150ms ease-out; }
 
 /* Chromeless like the main chat: no framed header, controls float as text. */
 .side-chat__header { display: flex; align-items: center; gap: 4px; padding: 7px 8px 7px 14px; flex: 0 0 auto; }
@@ -34,12 +31,9 @@
 .side-chat__status--error { background: var(--danger-soft); color: var(--danger); }
 .side-chat__status--cancelled, .side-chat__status--interrupted { color: var(--text-tertiary); }
 
-/* The mini composer mirrors the main composer capsule — same density-aware
-   radius token, border, and shadow treatment. */
-.side-chat__composer { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; margin: 10px 12px 12px; padding: 7px 7px 7px 13px; border: var(--border-hairline, 1px) solid var(--border); border-radius: var(--conversation-radius); background: var(--surface-raised); box-shadow: var(--shadow-composer); transition: border-color 180ms var(--ease-out), box-shadow 180ms var(--ease-out); }
-.side-chat__composer:hover:not(:focus-within) { border-color: var(--border-strong); box-shadow: var(--shadow-composer-hover); }
-.side-chat__composer:focus-within { border-color: var(--focus); box-shadow: var(--shadow-composer-focus); }
-.side-chat__input { flex: 1 1 auto; min-width: 0; align-self: center; border: 0; margin: 0; padding: 3px 0; background: transparent; color: var(--text); font: inherit; font-size: 14px; line-height: 1.65; resize: none; max-height: 110px; overflow-y: auto; }
-.side-chat__input:focus { outline: none; }
-.side-chat__input::placeholder { color: var(--text-tertiary); }
+/* The mini composer reuses .composer capsule, input, and footer tokens. */
+.side-chat__composer { flex: 0 0 auto; min-height: 76px; margin: 10px 12px 12px; }
+.side-chat__composer .composer-input { min-height: 32px; max-height: 110px; }
+.side-chat__composer .side-chat__input { min-height: 32px; max-height: 110px; padding: 4px 6px 6px; }
 .side-chat__input:disabled { opacity: 0.5; }
+.side-chat__composer .permissions-chip:disabled { opacity: 0.72; cursor: default; }

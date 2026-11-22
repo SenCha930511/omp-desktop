@@ -103,9 +103,6 @@ function parseWindowsLegacyTombstone(value: unknown): WindowsLegacyTombstone | n
 }
 
 export function defaultSettings(): AppSettings {
-  const defaultShell = process.platform === 'win32'
-    ? (process.env.ComSpec && isAbsolute(process.env.ComSpec) ? process.env.ComSpec : 'C:\\Windows\\System32\\cmd.exe')
-    : (process.env.SHELL?.startsWith('/') ? process.env.SHELL : '/bin/zsh')
   return {
     theme: 'system',
     locale: 'system',
@@ -119,17 +116,13 @@ export function defaultSettings(): AppSettings {
     idleSessionMinutes: 5,
     keepRunningInBackground: false,
     launchAtLogin: false,
-    terminalOpen: false,
-    defaultInspectorTab: 'summary',
     browserHome: 'https://www.google.com/',
     browserAskForDownloads: true,
-    terminalShell: defaultShell,
     reduceMotion: false,
     showReasoningSummaries: true,
     reasoningExpandedByDefault: false,
     defaultEffort: 'medium',
     conversationDensity: 'comfortable',
-    subagentsPanelPinned: false,
     showToolCalls: true,
     // 2.6:對齊 TUI 預設——執行中 Enter 插話(steer)、Ctrl/Cmd+Enter follow-up(queue)。
     messageEnterAction: 'steer',
@@ -254,17 +247,13 @@ function parseSettings(value: unknown): AppSettings {
     idleSessionMinutes: IDLE_SESSION_MINUTES.includes(value.idleSessionMinutes as AppSettings['idleSessionMinutes']) ? value.idleSessionMinutes as AppSettings['idleSessionMinutes'] : defaults.idleSessionMinutes,
     keepRunningInBackground: typeof value.keepRunningInBackground === 'boolean' ? value.keepRunningInBackground : defaults.keepRunningInBackground,
     launchAtLogin: typeof value.launchAtLogin === 'boolean' ? value.launchAtLogin : defaults.launchAtLogin,
-    terminalOpen: typeof value.terminalOpen === 'boolean' ? value.terminalOpen : defaults.terminalOpen,
-    defaultInspectorTab: value.defaultInspectorTab === 'changes' || value.defaultInspectorTab === 'browser' || value.defaultInspectorTab === 'files' || value.defaultInspectorTab === 'summary' ? value.defaultInspectorTab : defaults.defaultInspectorTab,
     browserHome: typeof value.browserHome === 'string' ? value.browserHome : defaults.browserHome,
     browserAskForDownloads: typeof value.browserAskForDownloads === 'boolean' ? value.browserAskForDownloads : defaults.browserAskForDownloads,
-    terminalShell: typeof value.terminalShell === 'string' ? value.terminalShell : defaults.terminalShell,
     reduceMotion: typeof value.reduceMotion === 'boolean' ? value.reduceMotion : defaults.reduceMotion,
     showReasoningSummaries: typeof value.showReasoningSummaries === 'boolean' ? value.showReasoningSummaries : defaults.showReasoningSummaries,
     reasoningExpandedByDefault: typeof value.reasoningExpandedByDefault === 'boolean' ? value.reasoningExpandedByDefault : defaults.reasoningExpandedByDefault,
     defaultEffort: typeof value.defaultEffort === 'string' && THINKING_LEVELS.has(value.defaultEffort) ? value.defaultEffort as PrimeEffortSelector : defaults.defaultEffort,
     conversationDensity: value.conversationDensity === 'compact' || value.conversationDensity === 'comfortable' ? value.conversationDensity : defaults.conversationDensity,
-    subagentsPanelPinned: typeof value.subagentsPanelPinned === 'boolean' ? value.subagentsPanelPinned : defaults.subagentsPanelPinned,
     showToolCalls: typeof value.showToolCalls === 'boolean' ? value.showToolCalls : defaults.showToolCalls,
     // 2.6 遷移:未蓋戳的舊狀態一律套用 TUI 預設('steer')。舊檔無法區分
     // 「沿用舊預設 queue」與「明確選了 queue」,依審查決議不把舊預設誤認為
@@ -454,6 +443,13 @@ export class JsonStateStore {
   private incompatibility: StateCompatibilityError | null = null
   private initializationFailure: Error | null = null
   private closed = false
+  /**
+   * Exact bytes last known to be published at `filePath`, or null when the
+   * on-disk content is unknown (fresh install, legacy migration, recovery) or
+   * a write failed. Ordinary updates compare against it to skip redundant
+   * temp-file writes, fsyncs, and renames.
+   */
+  private persistedContent: string | null = null
 
   constructor(
     private readonly filePath: string,
@@ -499,6 +495,9 @@ export class JsonStateStore {
       }
       const parsed = parseState(serializedState, sourcePath)
       this.state = parsed.state
+      // Only the authoritative current file may seed the cache: legacy bytes
+      // are retired after migration and never represent `filePath` content.
+      if (sourceKind === 'current') this.persistedContent = rawState.toString('utf8')
       if (this.platform === 'win32' && legacyFilePath) {
         if (sourceKind === 'legacy') this.scheduleWindowsLegacyMigration(rawState)
         else this.scheduleWindowsLegacyProtection()
@@ -557,6 +556,29 @@ export class JsonStateStore {
   getSettings(): AppSettings {
     this.assertCompatible()
     return structuredClone(this.state.settings)
+  }
+
+  /**
+   * Internal readonly views. `update()` replaces `state` wholesale with a fresh
+   * `structuredClone` draft, so a reference read here is a stable snapshot that
+   * later updates never mutate. Callers MUST still treat the returned array and
+   * its records as immutable: writing to them would corrupt the committed state.
+   * Renderer-facing reads (`snapshot()`, `getProjects()`, `getSchedules()`, …)
+   * keep cloning at the IPC boundary.
+   */
+  projectsReadonly(): readonly PersistedProject[] {
+    this.assertCompatible()
+    return this.state.projects
+  }
+
+  dismissedProjectPathsReadonly(): readonly string[] {
+    this.assertCompatible()
+    return this.state.dismissedProjectPaths
+  }
+
+  schedulesReadonly(): readonly AutomationScheduleRecord[] {
+    this.assertCompatible()
+    return this.state.schedules
   }
 
   getProjects(): PersistedProject[] {
@@ -954,11 +976,16 @@ export class JsonStateStore {
   }
 
   private async persist(state: DesktopState, requireDirectorySync = false): Promise<void> {
+    const serialized = `${JSON.stringify(state, null, 2)}\n`
+    // Ordinary updates skip the temp file, fsyncs, and rename when the bytes
+    // already published match exactly. Authority migration and recovery paths
+    // pass `requireDirectorySync` and always rewrite.
+    if (!requireDirectorySync && this.persistedContent === serialized) return
     const temp = `${this.filePath}.${process.pid}.${randomUUID()}.tmp`
     try {
       const file = await this.fileSystem.open(temp, 'w', 0o600)
       try {
-        await file.writeFile(`${JSON.stringify(state, null, 2)}\n`, { encoding: 'utf8' })
+        await file.writeFile(serialized, { encoding: 'utf8' })
         await file.sync()
       } finally {
         await file.close()
@@ -967,6 +994,12 @@ export class JsonStateStore {
       await this.fileSystem.rename(temp, this.filePath)
 
       await this.syncParentDirectory(this.filePath, requireDirectorySync)
+      this.persistedContent = serialized
+    } catch (error) {
+      // A failed attempt (even one whose rename already landed) leaves the
+      // cache unknown so the next update rewrites instead of skipping.
+      this.persistedContent = null
+      throw error
     } finally {
       await this.fileSystem.unlink(temp).catch((error: unknown) => {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
