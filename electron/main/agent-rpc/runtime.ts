@@ -108,7 +108,7 @@ const SESSION_HELD_ELSEWHERE_MESSAGE = 'This session is open in another OMP proc
 // Extension UI methods whose requests block until an extension_ui_response
 // (or OMP's own cancel frame) settles them. Presentation methods are
 // fire-and-forget and never tracked.
-const DIALOG_REQUEST_METHODS: ReadonlySet<string> = new Set(['select', 'confirm', 'input', 'editor', 'ask'])
+const DIALOG_REQUEST_METHODS: ReadonlySet<string> = new Set(['select', 'confirm', 'input', 'editor', 'ask', 'form'])
 // Commands that can start or redirect agent work: admitting one means the
 // session is no longer settled even before the next authoritative state.
 const WORK_INITIATING_COMMANDS: ReadonlySet<string> = new Set(['prompt', 'steer', 'follow_up', 'compact', 'abort', 'abort_retry', 'new_session', 'switch_session', 'clone', 'fork', 'branch'])

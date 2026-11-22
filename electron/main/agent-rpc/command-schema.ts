@@ -18,6 +18,11 @@ const SIMPLE_COMMANDS = new Set([
 // `!` 捷徑指令上限:direct bash 是使用者主動送出(對應 TUI `!`),64 KiB 足以
 // 涵蓋合理的單行/多行腳本,同時擋掉貼錯整份檔案或惡意撐大 frame 的輸入。
 const MAX_BASH_COMMAND_CHARS = 64 * 1024
+const MAX_EXTENSION_FORM_FIELDS = 512
+const MAX_EXTENSION_FORM_FIELD_NAME_CHARS = 1024
+const MAX_EXTENSION_FORM_TEXT_CHARS = 1024 * 1024
+const MAX_EXTENSION_FORM_CHOICES = 1024
+const MAX_EXTENSION_FORM_CHOICE_CHARS = 64 * 1024
 const THINKING_LEVELS: ReadonlySet<string> = new Set(['auto', ...PRIME_THINKING_LEVELS])
 // 上游 live voice 名冊(v18.12.6 packages/coding-agent/src/live/voices.ts
 
@@ -57,6 +62,37 @@ function validateImages(value: unknown): Array<{ type: 'image'; data: string; mi
     validateImageData(data, mimeType)
     return { type: 'image' as const, data, mimeType }
   })
+}
+
+type ExtensionFormWireData = Record<string, string | number | string[]>
+
+function validateExtensionFormChoices(value: unknown[], label: string): string[] {
+  if (value.length > MAX_EXTENSION_FORM_CHOICES) throw new TypeError(`${label} has too many choices`)
+  return Array.from(value, (choice, index) => requireString(choice, `${label}[${index}]`, { max: MAX_EXTENSION_FORM_CHOICE_CHARS }))
+}
+
+function validateExtensionFormData(raw: unknown): ExtensionFormWireData {
+  const data = requireRecord(raw, 'data')
+  const entries = Object.entries(data)
+  if (entries.length > MAX_EXTENSION_FORM_FIELDS) throw new TypeError('data has too many fields')
+  const validated: Array<[string, string | number | string[]]> = []
+  for (const [index, [name, value]] of entries.entries()) {
+    const label = `data[${index}]`
+    requireString(name, `${label}.name`, { min: 1, max: MAX_EXTENSION_FORM_FIELD_NAME_CHARS })
+    if (typeof value === 'string') {
+      validated.push([name, requireString(value, `${label}.value`, { max: MAX_EXTENSION_FORM_TEXT_CHARS })])
+    } else if (typeof value === 'number') {
+      if (!Number.isFinite(value)) throw new TypeError(`${label}.value must be finite`)
+      validated.push([name, value])
+    } else if (Array.isArray(value)) {
+      validated.push([name, validateExtensionFormChoices(value, `${label}.value`)])
+    } else {
+      throw new TypeError(`${label}.value must be a string, finite number, or string array`)
+    }
+  }
+  // fromEntries defines own properties, so HTML names such as "__proto__"
+  // cannot mutate the result prototype or disappear during serialization.
+  return Object.fromEntries(validated)
 }
 
 export async function validateRpcCommand(raw: unknown, validateSessionPath: (path: string) => Promise<string>): Promise<RpcObject> {
@@ -244,6 +280,12 @@ export async function validateRpcCommand(raw: unknown, validateSessionPath: (pat
           return validated
         }),
       }
+    }
+    if (command.data !== undefined) {
+      // Native forms submit named scalar or string-list values. HTML parsing
+      // and control constraints belong to the renderer/upstream, not main.
+      rejectUnknownKeys(command, ['type', 'id', 'data'], 'command')
+      return { type, id, data: validateExtensionFormData(command.data) }
     }
     if (typeof command.confirmed === 'boolean') { rejectUnknownKeys(command, ['type', 'id', 'confirmed'], 'command'); return { type, id, confirmed: command.confirmed } }
     rejectUnknownKeys(command, ['type', 'id', 'value'], 'command')

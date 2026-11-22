@@ -294,6 +294,78 @@ describe('validateRpcCommand extension UI responses', () => {
     await expect(validate({ type: 'extension_ui_response', id: 'ui-1', answers: [], value: 'x' })).rejects.toThrow('command.value is not supported')
   })
 
+  it('accepts native form data without coercing values or rejecting HTML-style names', async () => {
+    const data = {
+      'user[name]': '',
+      'preferences[]': ['one', '', 'two'],
+      emptyChoices: [],
+      zero: 0,
+      negative: -12.5,
+      positive: Number.MAX_VALUE,
+      numericText: '001.50',
+      ['__proto__']: 'prototype-safe',
+      constructor: 'constructor-safe',
+    }
+    const validated = await validate({ type: 'extension_ui_response', id: 'ui-form', data })
+    expect(validated).toEqual({ type: 'extension_ui_response', id: 'ui-form', data })
+    expect(JSON.parse(JSON.stringify(validated))).toEqual({ type: 'extension_ui_response', id: 'ui-form', data })
+
+    const validatedData = validated.data
+    if (typeof validatedData !== 'object' || validatedData === null || Array.isArray(validatedData)) throw new TypeError('expected form data object')
+    expect(Object.hasOwn(validatedData, '__proto__')).toBe(true)
+    expect(Object.hasOwn(validatedData, 'constructor')).toBe(true)
+    expect(Reflect.get(validatedData, '__proto__')).toBe('prototype-safe')
+    expect(Object.getPrototypeOf(validatedData)).toBe(Object.prototype)
+    await expect(validate({ type: 'extension_ui_response', id: 'ui-form', data: {} })).resolves.toEqual({ type: 'extension_ui_response', id: 'ui-form', data: {} })
+  })
+
+  it('rejects malformed form data and mixed response branches', async () => {
+    const invalidData: unknown[] = [
+      null,
+      [],
+      'text',
+      { field: true },
+      { field: null },
+      { field: undefined },
+      { field: {} },
+      { field: ['valid', 1] },
+      { field: [false] },
+      { field: [['nested']] },
+      { field: Array<string>(1) },
+    ]
+    for (const data of invalidData) {
+      await expect(validate({ type: 'extension_ui_response', id: 'ui-form', data })).rejects.toThrow()
+    }
+    for (const value of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      await expect(validate({ type: 'extension_ui_response', id: 'ui-form', data: { field: value } })).rejects.toThrow('data[0].value must be finite')
+    }
+    for (const sibling of [{ value: 'x' }, { confirmed: true }, { answers: [] }, { cancelled: true }, { cancelled: false }, { timedOut: true }, { extra: true }]) {
+      await expect(validate({ type: 'extension_ui_response', id: 'ui-form', data: {}, ...sibling })).rejects.toThrow()
+    }
+  })
+
+  it('bounds form fields, names, text, and choice arrays', async () => {
+    const fields = Object.fromEntries(Array.from({ length: 513 }, (_, index) => [`field-${index}`, '']))
+    await expect(validate({ type: 'extension_ui_response', id: 'ui-form', data: fields })).rejects.toThrow('data has too many fields')
+    await expect(validate({ type: 'extension_ui_response', id: 'ui-form', data: { '': 'empty name' } })).rejects.toThrow('data[0].name is too short')
+    await expect(validate({ type: 'extension_ui_response', id: 'ui-form', data: { ['x'.repeat(1025)]: 'value' } })).rejects.toThrow('data[0].name is too long')
+    await expect(validate({ type: 'extension_ui_response', id: 'ui-form', data: { field: 'x'.repeat(1024 * 1024 + 1) } })).rejects.toThrow('data[0].value is too long')
+    await expect(validate({ type: 'extension_ui_response', id: 'ui-form', data: { field: Array.from({ length: 1025 }, () => 'choice') } })).rejects.toThrow('data[0].value has too many choices')
+    await expect(validate({ type: 'extension_ui_response', id: 'ui-form', data: { field: ['x'.repeat(64 * 1024 + 1)] } })).rejects.toThrow('data[0].value[0] is too long')
+  })
+
+  it('does not include form answer values in validation errors', async () => {
+    const secret = 'private-form-answer-that-must-not-leak'
+    let message = ''
+    try {
+      await validate({ type: 'extension_ui_response', id: 'ui-form', data: { field: { secret } } })
+    } catch (error) {
+      if (error instanceof Error) message = error.message
+    }
+    expect(message).not.toBe('')
+    expect(message).not.toContain(secret)
+  })
+
   it('accepts timedOut only as a boolean alongside cancelled', async () => {
     await expect(validate({ type: 'extension_ui_response', id: 'ui-1', cancelled: true, timedOut: true })).resolves.toEqual({ type: 'extension_ui_response', id: 'ui-1', cancelled: true, timedOut: true })
     await expect(validate({ type: 'extension_ui_response', id: 'ui-1', cancelled: true, timedOut: false })).resolves.toEqual({ type: 'extension_ui_response', id: 'ui-1', cancelled: true, timedOut: false })

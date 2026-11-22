@@ -105,6 +105,7 @@ function dialogScript(id: string, method: string): string {
     input: `{ type: 'extension_ui_request', id: ${JSON.stringify(id)}, method: 'input', title: 'Project name' }`,
     editor: `{ type: 'extension_ui_request', id: ${JSON.stringify(id)}, method: 'editor', title: 'Edit the plan', prefill: 'step one' }`,
     ask: `{ type: 'extension_ui_request', id: ${JSON.stringify(id)}, method: 'ask', questions: [{ id: 'q1', prompt: 'Name?', kind: 'text' }] }`,
+    form: `{ type: 'extension_ui_request', id: ${JSON.stringify(id)}, method: 'form', html: '<form><input name="unterminated' }`,
   }
   return `send(${payloads[method]})`
 }
@@ -184,13 +185,15 @@ async function gatedRuntime(options: RetentionFakeOptions): Promise<GatedRuntime
 }
 
 describe('runtime retention safety', () => {
-  it.each(['select', 'confirm', 'input', 'editor', 'ask'] as const)('keeps a runtime with a pending %s dialog from being reclaimed', async (method) => {
+  it.each(['select', 'confirm', 'input', 'editor', 'ask', 'form'] as const)('keeps a runtime with a pending %s dialog from being reclaimed', async (method) => {
     const { manager, gate, cwd, runtime, log } = await gatedRuntime({ stateData: SETTLED_STATE, emitOnRename: dialogScript('ui-dialog', method) })
     await manager.command(runtime.runtimeId, { type: 'set_session_name', name: 'open dialog' })
     await log.wait(dialogEvent('ui-dialog'))
     await expect(checkoutProbe(manager, gate, cwd)).resolves.toBe('blocked')
 
-    await manager.command(runtime.runtimeId, { type: 'extension_ui_response', id: 'ui-dialog', cancelled: true })
+    await manager.command(runtime.runtimeId, method === 'form'
+      ? { type: 'extension_ui_response', id: 'ui-dialog', data: { answer: 'yes', count: 0, choices: ['one'] } }
+      : { type: 'extension_ui_response', id: 'ui-dialog', cancelled: true })
     await expect(checkoutProbe(manager, gate, cwd)).resolves.toBe('retired')
   }, 10_000)
 
@@ -199,7 +202,7 @@ describe('runtime retention safety', () => {
       stateData: SETTLED_STATE,
       emitOnRename: `
         if (command.name === 'open') {
-          ${dialogScript('dialog-a', 'select')}
+          ${dialogScript('dialog-a', 'form')}
           ${dialogScript('dialog-b', 'confirm')}
         } else if (command.name === 'cancel-a') {
           ${cancelScript('dialog-a')}
