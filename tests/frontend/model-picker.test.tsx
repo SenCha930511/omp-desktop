@@ -105,7 +105,7 @@ describe('ModelPicker presets', () => {
 
   it('activates a preset by click and by keyboard entry, and keeps models out of its row', async () => {
     const { onSwitchPreset } = await renderPresetPicker()
-    const search = await openPicker()
+    await openPicker()
     await act(async () => { container.querySelectorAll<HTMLButtonElement>('.model-picker__option--preset')[1]?.click() })
     expect(onSwitchPreset).toHaveBeenCalledWith(presets[1])
 

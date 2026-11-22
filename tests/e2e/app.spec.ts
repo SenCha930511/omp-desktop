@@ -161,7 +161,7 @@ function createHermeticFixture(): { userData: string; home: string; project: str
       JSON.stringify({ type: 'message', id: 'primary-message', parentId: null, timestamp: '2026-03-15T00:00:01.000Z', message: { role: 'user', content: 'Primary workspace fixture', timestamp: 1773835201000 } }),
     ],
   )
-  const todoSessionPath = writeOmpSession(
+  writeOmpSession(
     '2026-03-10T00-00-00-000Z_019fdf24-eeee-7000-8000-000000000005.jsonl',
     'Todo plan fixture',
     '2026-03-10T00:00:00.000Z',

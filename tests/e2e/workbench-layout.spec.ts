@@ -105,16 +105,20 @@ async function expectExpandedActivityReadable(page: Page): Promise<void> {
   }
 }
 
-test('keeps long session metadata right aligned through running, controls, and completion', async ({}, testInfo) => {
+test('keeps long session metadata right aligned through running, controls, and completion', async ({ testIdAttribute: _testIdAttribute }, testInfo) => {
   let fixture: WorkbenchLayoutFixture | undefined
   try {
     fixture = await launchWorkbenchLayout()
     const { page } = fixture
     mkdirSync(evidenceDirectory, { recursive: true })
-    const listedSessions = await page.evaluate(async () => (await window.desktop.sessions.list(undefined, true)).map(({ filePath, pinned }) => ({ filePath, pinned })))
+    const listedSessions = await page.evaluate(async () => (await window.desktop.sessions.list(undefined, true)).map(({ filePath, pinned, title }) => ({ filePath, pinned, title })))
     expect(listedSessions).toHaveLength(1)
     expect(listedSessions[0]?.pinned).toBe(true)
-    const row = page.locator('.project-group .session-row-wrap').filter({ hasText: 'A deliberately long running session title whose timestamp and spinner' }).first()
+    const sessionTitle = listedSessions[0]?.title
+    if (!sessionTitle) throw new Error('Expected the fixture session title')
+    expect(sessionTitle.endsWith('…')).toBe(true)
+    expect(LONG_SESSION_TITLE.startsWith(sessionTitle.slice(0, -1))).toBe(true)
+    const row = page.locator('.project-group').getByTitle(sessionTitle, { exact: true }).locator('..')
     await expect(row).toBeVisible()
     await expect(row).toHaveClass(/is-selected/)
     await expectOrdinaryRowAlignment(row)
@@ -155,7 +159,7 @@ test('keeps long session metadata right aligned through running, controls, and c
   }
 })
 
-test('keeps the side-chat disclaimer below its native composer at the inspector width', async ({}, testInfo) => {
+test('keeps the side-chat disclaimer below its native composer at the inspector width', async ({ testIdAttribute: _testIdAttribute }, testInfo) => {
   let fixture: WorkbenchLayoutFixture | undefined
   try {
     fixture = await launchWorkbenchLayout({ width: 1440, height: 1100 })
@@ -173,6 +177,7 @@ test('keeps the side-chat disclaimer below its native composer at the inspector 
     await expect(panel).toBeVisible()
     await expect(panel).toContainText('Ask a side question')
     const composer = panel.locator('form.side-chat__composer')
+    await expect(composer).toBeVisible()
     const note = panel.locator(':scope > p.composer-note.side-chat__note')
     await expect(note).toHaveCount(1)
     await expect(note).toHaveText('OMP can make mistakes. Review commands and changes before committing.')
@@ -218,7 +223,7 @@ test('keeps the side-chat disclaimer below its native composer at the inspector 
 })
 
 for (const withHud of [false, true]) {
-  test(`keeps expanded work beneath its sticky status ${withHud ? 'with' : 'without'} the todo HUD`, async ({}, testInfo) => {
+  test(`keeps expanded work beneath its sticky status ${withHud ? 'with' : 'without'} the todo HUD`, async ({ testIdAttribute: _testIdAttribute }, testInfo) => {
     let fixture: WorkbenchLayoutFixture | undefined
     try {
       fixture = await launchWorkbenchLayout()
@@ -251,7 +256,7 @@ for (const withHud of [false, true]) {
   })
 }
 
-test('keeps the HUD reserve off a natural work header and the preceding user bubble', async ({}, testInfo) => {
+test('keeps the HUD reserve off a natural work header and the preceding user bubble', async ({ testIdAttribute: _testIdAttribute }, testInfo) => {
   let fixture: WorkbenchLayoutFixture | undefined
   const nativeEvidenceDirectory = `${hudReserveEvidenceDirectory}/native-short-hud`
   try {

@@ -36,11 +36,11 @@ function stripReminders(text) {
   return clean.trim()
 }
 function lastUserText(body) {
-  const messages = Array.isArray(body && body.messages) ? body.messages : []
+  const messages = Array.isArray(body?.messages) ? body.messages : []
   let text = ''
   let count = 0
   for (const message of messages) {
-    if (!message || message.role !== 'user') continue
+    if (message?.role !== 'user') continue
     count += 1
     const content = message.content
     if (typeof content === 'string') text = content
