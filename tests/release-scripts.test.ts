@@ -658,7 +658,7 @@ else if (JSON.stringify(args) === ${JSON.stringify(JSON.stringify(expectedInstal
     const ciWorkflow = readFileSync('.github/workflows/ci.yml', 'utf8')
     expect(ciWorkflow).toMatch(/on:\n {2}push:\n {4}branches:\n {6}- main/)
     expect(ciWorkflow).toMatch(/packaging-smoke:\n {4}if: github\.event_name == 'pull_request'/)
-    for (const runner of ['macos-14', 'ubuntu-22.04', 'windows-2022']) expect(ciWorkflow).toContain(`runner: ${runner}`)
+    for (const runner of ['macos-15', 'ubuntu-22.04', 'windows-2022']) expect(ciWorkflow).toContain(`runner: ${runner}`)
     expect(ciWorkflow).toContain('node node_modules/electron-builder/cli.js --dir')
     expect(ciWorkflow).toContain('--publish=never')
     expect(ciWorkflow).not.toContain('--publish never')
