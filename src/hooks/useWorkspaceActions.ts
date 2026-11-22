@@ -284,9 +284,9 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     const generation = workspace.activateWorkspace(project, session)
     setView('session')
     try {
-      // Opening a session is use, not just navigation: the containing project
-      // takes the top slot of the recent-activity sort (creation already
-      // did). Inferred projects stay display-only until granted.
+      // Opening a session records lastOpenedAt selection bookkeeping; actual
+      // user activity is projected from user turns separately. Inferred
+      // projects stay display-only until granted.
       if (bridge && !project.inferred) await bridge.projects.touch(project.id, project.harness)
       await workspace.reconcileRuntime(generation)
     } catch (error) {

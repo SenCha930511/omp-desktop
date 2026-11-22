@@ -4,6 +4,7 @@ import { lstat, readdir, readFile, realpath } from 'node:fs/promises'
 import type { BigIntStats, Dirent } from 'node:fs'
 import { dialog, type BrowserWindow } from 'electron'
 import { homedir, tmpdir } from 'node:os'
+import { newerActivityAt, projectsWithActivity, sessionActivityAt } from '../../src/lib/project-activity'
 import { sortProjects } from '../../src/lib/project-order'
 import type { GitWorktree, HarnessId, ProjectFileEntry, ProjectFileListing, ProjectRecord, ProjectScripts, SessionRecord } from '../../src/types/api'
 import { listGitWorktrees } from './git'
@@ -82,6 +83,7 @@ interface SessionProjectStats {
   count: number
   earliestCreatedAt: string
   latestUpdatedAt: string
+  lastUserActivityAt?: string
 }
 
 function aggregateSessionProjectStats(
@@ -97,12 +99,14 @@ function aggregateSessionProjectStats(
         count: 1,
         earliestCreatedAt: session.createdAt,
         latestUpdatedAt: session.updatedAt,
+        lastUserActivityAt: sessionActivityAt(session),
       })
       continue
     }
     current.count += 1
     if (session.createdAt < current.earliestCreatedAt) current.earliestCreatedAt = session.createdAt
     if (session.updatedAt > current.latestUpdatedAt) current.latestUpdatedAt = session.updatedAt
+    current.lastUserActivityAt = newerActivityAt(current.lastUserActivityAt, sessionActivityAt(session))
   }
   return stats
 }
@@ -481,6 +485,7 @@ export class ProjectService {
     const { sessions, canonicalSessionPaths, persisted, discoveredSessionRoots } = await this.refreshAuthorization()
     const sessionStats = aggregateSessionProjectStats(sessions, canonicalSessionPaths)
     const records: ProjectRecord[] = []
+    const activityProjects: ProjectRecord[] = []
     const branchTargets: Array<{ record: ProjectRecord; cwd: string }> = []
 
     const nestedWorktreePaths = new Set<string>()
@@ -492,15 +497,31 @@ export class ProjectService {
     for (const { project, folders, primaryGranted } of persisted) {
       if (nestedWorktreePaths.has(resolve(project.path))) continue
       let sessionCount = 0
-      for (const folder of folders) sessionCount += sessionStats.get(folder)?.count ?? 0
+      let lastUserActivityAt: string | undefined
+      for (const folder of folders) {
+        const stats = sessionStats.get(folder)
+        sessionCount += stats?.count ?? 0
+        lastUserActivityAt = newerActivityAt(lastUserActivityAt, stats?.lastUserActivityAt)
+      }
       const record: ProjectRecord = {
         id: project.id, harness: project.harness, name: project.name, path: project.path, folders: [...project.folders], primaryFolder: project.primaryFolder,
-        pinned: project.pinned, createdAt: project.createdAt, lastOpenedAt: project.lastOpenedAt, scripts: project.scripts ? { ...project.scripts } : undefined,
+        pinned: project.pinned, createdAt: project.createdAt, lastOpenedAt: project.lastOpenedAt, lastUserActivityAt, scripts: project.scripts ? { ...project.scripts } : undefined,
         sessionCount,
         gitBranch: undefined,
       }
       records.push(record)
+      const canonicalFolders = [...folders]
+      activityProjects.push({ ...record, path: canonicalFolders[0] ?? '', folders: canonicalFolders })
       if (primaryGranted) branchTargets.push({ record, cwd: project.primaryFolder })
+    }
+
+    const canonicalSessions = sessions.map((session) => ({
+      ...session,
+      projectPath: canonicalSessionPaths.get(session.projectPath) ?? resolve(session.projectPath),
+    }))
+    const projectedActivity = projectsWithActivity(activityProjects, canonicalSessions)
+    for (const [index, record] of records.entries()) {
+      record.lastUserActivityAt = projectedActivity[index]?.lastUserActivityAt
     }
 
     for (const { canonical } of discoveredSessionRoots) {
@@ -515,6 +536,7 @@ export class ProjectService {
         pinned: false,
         createdAt: stats?.earliestCreatedAt ?? new Date().toISOString(),
         lastOpenedAt: stats?.latestUpdatedAt ?? new Date().toISOString(),
+        lastUserActivityAt: stats?.lastUserActivityAt,
         sessionCount: stats?.count ?? 0,
         gitBranch: undefined,
         inferred: true,

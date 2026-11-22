@@ -50,6 +50,7 @@ import { isBackgroundedSlashCommand, type SlashCommand } from '@/lib/slash-comma
 import { I18nProvider, useI18n } from '@/lib/i18n'
 import { detectRendererPlatform } from '@/lib/platform-shortcuts'
 import { activeProjectScriptKind, ProjectScriptBusyError, setupNeedsRun } from '@/lib/project-scripts'
+import { projectsWithActivity } from '@/lib/project-activity'
 import { createSingleFlightAdmission, findProjectForSession, lastAssistantMessage, shouldRefreshGitOnSessionTransition, turnFileDeltas, workspaceCwd } from '@/lib/workspace'
 import {
   type AutomationScheduleRecord,
@@ -331,6 +332,7 @@ export default function App() {
     () => findProjectForSession(projects, activeSession) ?? projects.find((project) => project.id === workspace.activeProjectId) ?? projects[0],
     [projects, activeSession, workspace.activeProjectId],
   )
+  const activityProjects = useMemo(() => projectsWithActivity(projects, sessions), [projects, sessions])
   const activeCwd = workspaceCwd(activeProject, activeSession)
   // Mention list follows the sidebar's lineage collapse (session-lineage.ts):
   // the chain's live continuation is mentionable, the folded original is not.
@@ -1271,7 +1273,7 @@ export default function App() {
   const page =
     view === 'projects' ? (
       <ProjectsPage
-        projects={projects}
+        projects={activityProjects}
         sortMode={settingsState.settings.projectSortMode}
         onAdd={() => void addProject()}
         onOpen={selectProject}
@@ -1383,7 +1385,7 @@ export default function App() {
         >
           {sidebarVisible && initialized ? (
             <Sidebar
-              projects={projects}
+              projects={activityProjects}
               sessions={sessions}
               clearedAttention={clearedAttention}
               activeProjectId={activeProject?.id}

@@ -1,12 +1,11 @@
 import type { ProjectRecord, ProjectSortMode } from '../types/api'
+import { projectActivityTime } from './project-activity'
 
 function compareRecent(a: ProjectRecord, b: ProjectRecord): number {
-  const aTime = Date.parse(a.lastOpenedAt)
-  const bTime = Date.parse(b.lastOpenedAt)
-  const aInvalid = Number.isNaN(aTime)
-  const bInvalid = Number.isNaN(bTime)
-  if (aInvalid !== bInvalid) return aInvalid ? 1 : -1
-  if (!aInvalid && aTime !== bTime) return bTime - aTime
+  const aTime = projectActivityTime(a)
+  const bTime = projectActivityTime(b)
+  if ((aTime === undefined) !== (bTime === undefined)) return aTime === undefined ? 1 : -1
+  if (aTime !== undefined && bTime !== undefined && aTime !== bTime) return bTime - aTime
   return 0
 }
 

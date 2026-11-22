@@ -3,6 +3,7 @@ import { useMemo, useState } from 'react'
 import { EmptyState, IconButton, Modal } from '@/components/ui'
 import { formatRelative } from '@/lib/data'
 import { useI18n } from '@/lib/i18n'
+import { projectActivityAt } from '@/lib/project-activity'
 import { sortProjects } from '@/lib/project-order'
 import type { ProjectRecord, ProjectSortMode } from '@/types/api'
 
@@ -73,7 +74,11 @@ export function ProjectsPage({
                         {project.gitBranch ?? t('projects.noRepository')}
                       </span>
                       <span>{t('projects.sessionCount', { count: project.sessionCount })}</span>
-                      <span>{t('projects.opened', { time: formatRelative(project.lastOpenedAt) })}</span>
+                      <span>
+                        {sortMode === 'recent'
+                          ? t('projects.activity', { time: formatRelative(projectActivityAt(project)) })
+                          : t('projects.opened', { time: formatRelative(project.lastOpenedAt) })}
+                      </span>
                     </span>
                   </span>
                 </button>

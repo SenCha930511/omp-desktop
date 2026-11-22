@@ -38,13 +38,7 @@
 .session-list { padding-left: 20px; margin-top: 1px; }
 .session-row-wrap { position: relative; border-radius: 7px; }
 .session-row-wrap:hover:not(.is-selected)::before, .session-row-wrap:has(.session-row__archive:focus-visible, .session-row__more:focus-visible, .session-row__archive.is-confirming, .session-row__more[aria-expanded="true"]):not(.is-selected)::before { content: ''; position: absolute; inset: 0 0 0 -20px; z-index: -1; border-radius: 7px; background: var(--surface-hover); }
-/* Attention (completed/updated work in an inactive row) used to paint a
-   filled prime background across the whole row. Removed per request: the row
-   looks like any other; the attention state survives only in the session
-   nav count badge. */
-/* Selected session reads the Claude way: a soft fill with strong-weight
-   foreground text and no outline ring. Keyboard focus keeps the global
-   button:focus-visible outline from base.css. */
+/* Highlight extends through the session-list indentation. */
 /* The .session-list indent shortens child rows next to the project header;
    paint the selected fill across the full content width so both rows read as
    the same-size highlight. */
@@ -66,9 +60,10 @@
 .session-row-wrap > .session-row { padding-right: 8px; transition: padding-right 140ms var(--ease-out); }
 .session-row-wrap:hover > .session-row,
 .session-row-wrap:has(.session-row__archive:focus-visible, .session-row__more:focus-visible, .session-row__archive.is-confirming, .session-row__more[aria-expanded="true"]) > .session-row { padding-right: 61px; }
-.session-row-wrap--running > .session-row { padding-right: 61px; }
 .session-row-wrap:hover .session-row__time,
-.session-row-wrap:has(.session-row__archive:focus-visible, .session-row__more:focus-visible, .session-row__archive.is-confirming, .session-row__more[aria-expanded="true"]) .session-row__time { max-width: 0; opacity: 0; pointer-events: none; }
+.session-row-wrap:hover .session-row__spinner,
+.session-row-wrap:has(.session-row__archive:focus-visible, .session-row__more:focus-visible, .session-row__archive.is-confirming, .session-row__more[aria-expanded="true"]) .session-row__time,
+.session-row-wrap:has(.session-row__archive:focus-visible, .session-row__more:focus-visible, .session-row__archive.is-confirming, .session-row__more[aria-expanded="true"]) .session-row__spinner { max-width: 0; opacity: 0; pointer-events: none; }
 .session-row__archive, .session-row__more { position: absolute; top: 6px; opacity: 0; transition: opacity 130ms var(--ease-out), color 130ms var(--ease-out), background 130ms var(--ease-out); }
 .session-row-wrap:hover .session-row__archive, .session-row-wrap:has(.session-row__archive:focus-visible, .session-row__more:focus-visible) .session-row__archive, .session-row__archive.is-confirming, .session-row-wrap:hover .session-row__more, .session-row-wrap:has(.session-row__archive:focus-visible, .session-row__more:focus-visible) .session-row__more, .session-row__more[aria-expanded="true"] { opacity: 1; }
 .session-row__archive { right: 32px; color: var(--text-tertiary); }
@@ -81,18 +76,14 @@
 .session-row__title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); font-size: 13px; }
 .session-row__meta { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; }
 .session-row__time { max-width: 56px; overflow: hidden; font-size: 11px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; white-space: nowrap; transition: opacity 130ms var(--ease-out), max-width 140ms var(--ease-out); }
-.session-row__spinner { display: inline-flex; align-items: center; align-self: center; flex: 0 0 auto; color: var(--text-tertiary); }
+.session-row__spinner { max-width: 13px; overflow: hidden; display: inline-flex; align-items: center; align-self: center; flex: 0 0 auto; color: var(--text-tertiary); transition: opacity 130ms var(--ease-out), max-width 140ms var(--ease-out); }
 .session-row--empty { min-height: 30px; align-items: center; color: var(--text-tertiary); font-size: 11.5px; }
 /* Show-all toggle: a quiet affordance that stays out of the row hover pad. */
 .session-row--expand { min-height: 30px; align-items: center; gap: 5px; color: var(--text-tertiary); font-size: 11.5px; }
 .session-row--expand:hover { color: var(--text-secondary); }
 .session-row--expand svg { flex: 0 0 auto; transition: transform 140ms var(--ease-out); }
 .session-row--expand svg.is-expanded { transform: rotate(180deg); }
-.project-working { width: 16px; height: 16px; display: inline-grid; place-items: center; flex: 0 0 auto; border-radius: 50%; color: var(--prime); background: color-mix(in srgb, var(--prime) 13%, transparent); animation: status-halo-breathe 2.4s ease-in-out infinite; }
-@keyframes status-halo-breathe {
-  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--prime) 24%, transparent); }
-  50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--prime) 14%, transparent); }
-}
+
 .sidebar__footer { flex: 0 0 auto; padding: 7px 8px 9px; border-top: var(--border-hairline, 1px) solid var(--border); }
 .sidebar__footer > .sidebar-update { opacity: 1; }
 /* The update badge reuses the footer/icon vocabulary: one small accent slot,

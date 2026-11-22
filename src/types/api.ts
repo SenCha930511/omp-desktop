@@ -97,6 +97,8 @@ export interface ProjectRecord {
   pinned: boolean
   createdAt: string
   lastOpenedAt: string
+  /** Derived from owned sessions; never advanced by opening or selecting this project. */
+  lastUserActivityAt?: string
   sessionCount: number
   gitBranch?: string
   inferred?: boolean

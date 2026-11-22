@@ -113,12 +113,10 @@
 .markdown-link-unsupported { color: var(--text-secondary); text-decoration: underline dotted; text-underline-offset: 2px; cursor: help; }
 .work-disclosure { margin: 8px 0 3px; }
 .work-disclosure.is-running { margin-top: 0; padding: 0 0 4px; }
-/* A work section taller than the viewport pins its status row — elapsed time
-   and tool count stay readable while the reader scrolls through a long live
-   session. Sticky offsets sit inside the scroller's top padding (48px, 96px
-   once the todo hud reserves its zone), so -40px docks the row at the
-   viewport edge without the hud and just under it when one is present. */
-.work-disclosure__button { width: 100%; min-height: 26px; display: flex; align-items: center; gap: 8px; padding: 3px 0; color: var(--text-tertiary); background: var(--canvas); text-align: left; font-size: 12px; font-weight: 500; position: sticky; top: -40px; z-index: 3; }
+/* A work section taller than the viewport pins its status row. The offset
+   cancels the scroller's 48px baseline padding and keeps the opaque header
+   below the hud's reserved zone instead of leaving an uncovered strip above it. */
+.work-disclosure__button { width: 100%; min-height: 26px; display: flex; align-items: center; gap: 8px; padding: 3px 0; color: var(--text-tertiary); background: var(--canvas); text-align: left; font-size: 12px; font-weight: 500; position: sticky; top: -48px; z-index: 3; }
 /* The status header rides above its rows: a hairline rule separates it from
    the timeline and marks the pinned row's edge while content scrolls
    beneath the sticky header. Collapsed sections keep a plain summary. */
@@ -162,10 +160,13 @@
 .activity-line--tool:hover, .activity-line--agent:hover { color: var(--text); }
 .activity-line--tool:hover .activity-line__kind, .activity-line--agent:hover .activity-line__kind { color: var(--text); }
 .activity-line--tool:hover .activity-line__icon, .activity-line--agent:hover .activity-line__icon { color: var(--text-secondary); }
-/* Top-docked transcript HUD: the todo plan floats at the top of the pane,
-   above the scrolling conversation, spanning the full column width. */
-.transcript-hud { position: absolute; top: 12px; left: 14px; right: 14px; z-index: 8; display: flex; flex-direction: column; gap: 6px; }
-.conversation-pane:has(.transcript-hud) .transcript { padding-top: 96px; scroll-padding-top: 80px; }
+/* Top-docked transcript HUD: the container paints the same reserved band the
+   scroller adds in flow, above ordinary rows but below the sticky header. The
+   interactive todo card remains topmost without a parent stacking context. */
+.conversation-pane:has(.transcript-hud) { --transcript-hud-reserve: 96px; }
+.conversation-pane:has(.transcript-hud) .transcript { padding-top: var(--transcript-hud-reserve); scroll-padding-top: 80px; }
+.transcript-hud { position: absolute; top: 12px; left: 14px; right: 14px; display: flex; flex-direction: column; gap: 6px; }
+.transcript-hud::before { content: ''; position: absolute; top: -12px; left: -14px; right: -14px; z-index: 1; height: var(--transcript-hud-reserve); background: var(--canvas); }
 /* Compaction renders Claude-Code style: one quiet centered divider line in
    the conversation flow. Solid colors only. */
 .compaction-divider { display: flex; align-items: center; gap: 10px; margin: 10px 0; color: var(--text-tertiary); font-size: 10.5px; line-height: 1.4; }
@@ -184,7 +185,7 @@
 .compaction-sync-retry__button:disabled { opacity: 0.6; cursor: default; }
 .compaction-sync-retry__error { color: var(--danger); }
 .compaction-sync-retry__note { color: var(--success); }
-.todo-hud { min-width: 0; border: 1px solid var(--border); border-radius: 10px; background: var(--canvas); overflow: hidden; }
+.todo-hud { position: relative; z-index: 8; min-width: 0; border: 1px solid var(--border); border-radius: 10px; background: var(--canvas); overflow: hidden; }
 .todo-hud__bar { width: 100%; display: flex; align-items: center; gap: 7px; min-height: 30px; padding: 4px 48px 4px 10px; border: 0; background: transparent; color: var(--text); font-size: 11.5px; cursor: pointer; }
 .todo-hud__bar:hover { background: var(--surface-subtle); }
 .todo-hud__title { flex: 0 0 auto; font-weight: 600; }

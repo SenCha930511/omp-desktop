@@ -78,6 +78,19 @@ function toolPreview(part: Extract<MessagePart, { type: 'toolCall' }>): string {
   return boundText(serialize(raw).replace(/\s+/g, ' ').trim(), 120, '…')
 }
 
+// OMP 19.1 uses an empty wait schema. Only an explicit handle identifies a target.
+function waitTarget(args: unknown): string {
+  if (typeof args === 'string') return boundText(args.trim(), 120, '…')
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return ''
+  const values = args as Record<string, unknown>
+  for (const key of ['target', 'handle', 'id', 'job', 'jobId', 'job_id', 'session', 'sessionId', 'session_id', 'targetSessionId', 'target_session_id']) {
+    const value = values[key]
+    if (typeof value === 'string' && value.trim()) return boundText(value.trim(), 120, '…')
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+  }
+  return ''
+}
+
 /** First line of the settled thinking text — dsh's collapsed-row summary. */
 function firstLine(text: string): string {
   const newline = text.indexOf('\n')
@@ -174,7 +187,9 @@ const ToolPart = memo(function ToolPart({ part, next, streaming }: { part: Extra
   }, [open, part.args, output, t])
   const canExpand = Boolean(output || (part.args !== undefined && part.args !== ''))
   const state = failed ? 'error' : finished ? 'done' : !streaming ? 'unknown' : kind === 'question' ? 'waiting' : 'running'
-  const preview = toolPreview(part)
+  const preview = part.name.trim().toLowerCase() === 'wait'
+    ? waitTarget(part.args) || t(finished ? 'transcript.tool.wait.finished' : streaming ? 'transcript.tool.wait.pending' : 'transcript.tool.wait.unknown')
+    : toolPreview(part)
   useEffect(
     () => () => {
       if (resetCopiedTimerRef.current !== null) window.clearTimeout(resetCopiedTimerRef.current)
