@@ -683,6 +683,13 @@ else if (JSON.stringify(args) === ${JSON.stringify(JSON.stringify(expectedInstal
     expect(steps.findIndex((step) => step.run === '${{ matrix.package }}')).toBeGreaterThan(steps.indexOf(prerequisites[0]))
   })
 
+  test('keeps formatter and runtime source files on LF across platforms', () => {
+    const sourceExtensions = ['ts', 'tsx', 'js', 'mjs', 'cjs', 'json', 'yml', 'yaml', 'css', 'html']
+    const attributes = readFileSync('.gitattributes', 'utf8').trim().split('\n')
+
+    expect(attributes).toEqual(sourceExtensions.map((extension) => `*.${extension} text=auto eol=lf`))
+  })
+
   test('gates every pull-request head and pinned release SHA on the named production audit', () => {
     type WorkflowJob = {
       name?: string
