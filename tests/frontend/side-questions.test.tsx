@@ -274,6 +274,17 @@ describe('side chat panel', () => {
     expect((container.querySelector('.side-chat__input') as HTMLTextAreaElement).disabled).toBe(true)
   })
 
+  it('renders one agent-specific disclaimer in normal flow immediately below the composer', () => {
+    renderPanel({}, { agentName: 'A deliberately long agent name' })
+    container.style.width = '180px'
+    const composer = container.querySelector('form.side-chat__composer')
+    const notes = container.querySelectorAll('.side-chat > p.composer-note.side-chat__note')
+    expect(notes).toHaveLength(1)
+    expect(notes[0]?.textContent).toBe('A deliberately long agent name can make mistakes. Review commands and changes before committing.')
+    expect(composer?.nextElementSibling).toBe(notes[0])
+    expect(composer?.contains(notes[0] ?? null)).toBe(false)
+  })
+
   it('renders read-only disabled model, effort, and fast chips matching the main composer without folder or permission controls', () => {
     renderPanel({}, { modelLabel: 'Claude Sonnet', effortLabel: 'High', fast: true, fastSupported: true, agentName: 'OMP' })
     const footer = container.querySelector('.composer.side-chat__composer .composer__footer')
