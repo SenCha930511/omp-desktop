@@ -24,8 +24,7 @@ export interface SideChatPanelProps {
   onClose(): void
 }
 
-/** Inline controller exposed for tests and the panel body. */
-export function sideChatBusy(state: SideQuestionSessionState): boolean {
+function sideChatBusy(state: SideQuestionSessionState): boolean {
   return state.sending || state.topics.some(isTopicRunning)
 }
 
@@ -253,6 +252,7 @@ export const SideChatPanel = memo(function SideChatPanel({
           </div>
         </div>
       </form>
+      <p className="composer-note side-chat__note">{t('composer.note', { name: agentName })}</p>
     </div>
   )
 })
