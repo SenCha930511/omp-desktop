@@ -72,4 +72,53 @@ describe('wait tool summaries', () => {
     expect(previewText()).not.toBe('Pending work')
     expect(previewText()).not.toBe('Waiting finished')
   })
+
+  it('renders genuine final wait jobs with native elapsed and keeps their raw result expandable', () => {
+    let messages = replayPrimeEvents([], [
+      { type: 'agent_start' },
+      { type: 'tool_execution_start', toolCallId: 'wait-native', toolName: 'wait', args: {} },
+      { type: 'tool_execution_update', toolCallId: 'wait-native', toolName: 'wait', partialResult: { content: [{ type: 'text', text: 'running snapshot' }], details: { op: 'wait', jobs: [{ id: 'job-a', type: 'bash', status: 'running', label: '初回', durationMs: 1_000 }] } } },
+    ])
+    renderParts(messages[0].parts, true)
+    expect(previewText()).toBe('1 native job')
+
+    messages = replayPrimeEvents(messages, [
+      { type: 'tool_execution_end', toolCallId: 'wait-native', toolName: 'wait', result: { content: [{ type: 'text', text: 'final native output' }], details: { op: 'wait', jobs: [{ id: 'job-a', type: 'bash', status: 'completed', label: '最終結果', durationMs: 2_000, resultText: 'résultat brut' }] } } },
+    ])
+    renderParts(messages[0].parts, true)
+    const summary = container.querySelector<HTMLButtonElement>('.activity-tool__summary')
+    expect(summary?.disabled).toBe(false)
+    expect(summary?.getAttribute('aria-expanded')).toBe('false')
+    act(() => summary?.click())
+
+    expect(container.querySelector('.activity-tool__wait-jobs')?.textContent).toContain('最終結果')
+    expect(container.querySelector('.activity-tool__wait-jobs')?.textContent).toContain('job-a')
+    expect(container.querySelector('.activity-tool__wait-jobs')?.textContent).toContain('completed')
+    expect(container.querySelector('.activity-tool__wait-jobs')?.textContent).toContain('résultat brut')
+    const elapsed = container.querySelector('.activity-tool__engine-elapsed')
+    expect(elapsed?.textContent).toBe('Engine elapsed 2s')
+    expect(elapsed?.getAttribute('title')).toBe('Engine elapsed 2s')
+    expect(container.querySelector('.activity-tool__contents')?.textContent).toContain('final native output')
+    expect(container.querySelector('.activity-line--tool .live-elapsed')).toBeNull()
+  })
+
+  it('renders only explicit bash timing and the latest reported Vitest totals beside original output', () => {
+    const output = 'Test Files 1 failed | 1 passed (2)\nTests 2 failed | 3 passed | 1 expected fail | 1 skipped (7)'
+    const messages = replayPrimeEvents([], [
+      { type: 'agent_start' },
+      { type: 'tool_execution_start', toolCallId: 'bash-native', toolName: 'bash', args: { command: 'vitest run' } },
+      { type: 'tool_execution_end', toolCallId: 'bash-native', toolName: 'bash', isError: true, result: { content: [{ type: 'text', text: output }], details: { wallTimeMs: 3_000, exitCode: 2, timedOut: false } } },
+    ])
+    renderParts(messages[0].parts, true)
+    act(() => container.querySelector<HTMLButtonElement>('.activity-tool__summary')?.click())
+
+    const metadata = container.querySelector('.activity-tool__native-metadata')
+    expect(metadata?.textContent).toContain('Engine elapsed3s')
+    expect(metadata?.textContent).toContain('Exit code2')
+    expect(metadata?.textContent).toContain('Test files 1 failed | 1 passed (2)')
+    expect(metadata?.textContent).toContain('Tests 2 failed | 3 passed | 1 expected fail | 1 skipped (7)')
+    expect(metadata?.textContent).not.toContain('Timed out')
+    expect(metadata?.textContent).not.toContain('PID')
+    expect(container.querySelector('.activity-tool__contents')?.textContent).toContain(output)
+  })
 })

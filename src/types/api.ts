@@ -195,11 +195,61 @@ export type PrimeCompactionReason = 'manual' | 'threshold' | 'overflow' | 'reque
 export type PrimeCompactionStatus = 'running' | 'sync_pending' | 'done' | 'failed' | 'cancelled'
 export type PrimeCompactionOutcome = 'failed' | 'cancelled' | 'skipped'
 
+/** Bounded renderer projection of the native wait tool's latest job snapshot. */
+export interface ToolWaitJobDetails {
+  readonly id?: string
+  readonly type?: string
+  readonly status?: string
+  readonly intent?: string
+  readonly label?: string
+  readonly stage?: string
+  readonly durationMs?: number
+  readonly resultText?: string
+  readonly errorText?: string
+}
+
+export interface ToolWaitExecutionDetails {
+  readonly kind: 'wait'
+  readonly jobs: readonly ToolWaitJobDetails[]
+  readonly truncated?: boolean
+}
+
+export interface ToolBashAsyncDetails {
+  readonly jobId: string
+  readonly state: 'running' | 'completed' | 'failed' | 'cancelled'
+}
+
+export interface ToolBashExecutionDetails {
+  readonly kind: 'bash'
+  readonly wallTimeMs?: number
+  readonly exitCode?: number
+  readonly timedOut?: boolean
+  readonly async?: ToolBashAsyncDetails
+  readonly terminalId?: string
+}
+
+export type ToolExecutionDetails = ToolWaitExecutionDetails | ToolBashExecutionDetails
+
+export interface VitestCountSummary {
+  readonly failed: number
+  readonly passed: number
+  readonly expectedFailed: number
+  readonly skipped: number
+  readonly todo: number
+  readonly total: number
+}
+
+/** CLI-observed totals, not a lifecycle assertion or a progress percentage. */
+export interface VitestReportSummary {
+  readonly files: VitestCountSummary
+  readonly tests: VitestCountSummary
+}
+
 export type MessagePart =
   | { type: 'text'; partId?: string; text: string }
   | { type: 'thinking'; partId?: string; text: string }
   | { type: 'toolCall'; partId?: string; id?: string; name: string; args?: unknown }
-  | { type: 'toolResult'; partId?: string; name?: string; text: string; isError?: boolean; streaming?: boolean }
+  | { type: 'toolResult'; partId?: string; name?: string; text: string; isError?: boolean; streaming?: boolean; details?: ToolExecutionDetails; testReport?: VitestReportSummary }
   | { type: 'agentMessage'; partId?: string; text: string; agentName?: string }
   | { type: 'image'; partId?: string; mimeType?: string; data?: string; dataTruncated?: boolean }
   /**

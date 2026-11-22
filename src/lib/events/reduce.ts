@@ -2,6 +2,7 @@ import { HARNESS_AGENT_NAMES } from '@/lib/harness'
 import { EVENT_REPLAY_MAX_BYTES, EVENT_REPLAY_MAX_EVENTS, eventPayloadBytes } from '@/lib/event-buffer'
 import { formatGoalEventUpdateText, parseGoalModeState, parseGoalSnapshot } from '@/lib/goal-rpc'
 import { translate } from '@/lib/i18n'
+import { projectToolResult } from '@/lib/tool-execution-details'
 import type { MessagePart, QueuedPrompt, TranscriptMessage } from '@/types/api'
 import { applyCompactionEvent, isCompactionEvent } from './compaction'
 import { nextTranscriptId, withPartId } from './ids'
@@ -495,7 +496,8 @@ export function replayPrimeEvents(
       upsertToolDraft(index, id, name, raw.args)
       const draft = draftParts(index)
       const call = draft.firstToolById.get(id)
-      if (call) setToolResult(draft, call, { type: 'toolResult', name, text: resultText(raw.partialResult), streaming: true })
+      const text = resultText(raw.partialResult)
+      if (call) setToolResult(draft, call, { type: 'toolResult', name, text, streaming: true, ...projectToolResult(name, text, raw.partialResult) })
       continue
     }
     if (type === 'tool_execution_end') {
@@ -504,7 +506,8 @@ export function replayPrimeEvents(
       const id = effectiveToolId(string(raw.toolCallId), name)
       const draft = draftParts(index)
       const call = draft.firstToolById.get(id)
-      const resultPart: MessagePart = { type: 'toolResult', name, text: resultText(raw.result), isError: raw.isError === true }
+      const text = resultText(raw.result)
+      const resultPart: MessagePart = { type: 'toolResult', name, text, isError: raw.isError === true, ...projectToolResult(name, text, raw.result) }
       // 圖片與無 GUI adapter 的非文字輸出以資料視圖緊接在 toolResult 之後
       // 保留（GAP 2 + 階段 6.2）；持久化讀取時同樣保留這些 part，
       // reload／fork 前後都不靜默消失。無補充內容時為共用凍結空陣列。

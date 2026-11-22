@@ -6,9 +6,17 @@ import { LEGACY_DESKTOP_STATE_FILENAME } from '../../electron/main/store'
 
 export const LONG_SESSION_TITLE = 'A deliberately long running session title whose timestamp and spinner must remain aligned at the right edge'
 
+export type ToolMetadataStage = 'wait-valid' | 'wait-malformed' | 'bash-valid' | 'bash-malformed' | 'complete'
+
+export interface ToolMetadataScenario {
+  vitestOutput: string
+  exitCode: number
+}
+
 export interface WorkbenchLayoutFixture {
   page: Page
   finishRun(): Promise<void>
+  advanceToolMetadata(stage: ToolMetadataStage): Promise<void>
   captureScreenshot(): Promise<Buffer>
   close(): Promise<void>
 }
@@ -18,7 +26,7 @@ function titleSlot(title: string, updatedAt: string): string {
   return JSON.stringify({ type: 'title', v: 1, title, updatedAt, pad: ' '.repeat(255 - Buffer.byteLength(unpadded, 'utf8')) })
 }
 
-function writeFakeOmp(fixtureRoot: string, sessionFile: string): string {
+function writeFakeOmp(fixtureRoot: string, sessionFile: string, toolMetadata?: ToolMetadataScenario): string {
   const executable = join(fixtureRoot, 'omp-layout-fixture.cjs')
   writeFileSync(executable, `#!/usr/bin/env node
 const fs = require('node:fs')
@@ -29,11 +37,13 @@ if (args[0] === 'models' && args.includes('--json')) {
   process.stdout.write(JSON.stringify({ models: [{ provider: 'openai-codex', id: 'gpt-fixture', name: 'GPT Fixture', contextWindow: 200000, maxTokens: 8192, reasoning: true, thinking: ['low', 'high'], input: ['text'] }] }) + '\\n')
   process.exit(0)
 }
-if (!args.includes('--mode') || args[args.indexOf('--mode') + 1] !== 'rpc') process.exit(2)
+if (!args.includes('--mode') || args[args.indexOf('--mode') + 1] !== 'rpc-ui') process.exit(2)
 fs.writeFileSync(${JSON.stringify(join(fixtureRoot, 'omp-layout-fixture.pid'))}, String(process.pid))
 const resumeIndex = args.indexOf('--resume')
 const activeSessionFile = resumeIndex >= 0 ? args[resumeIndex + 1] : ${JSON.stringify(sessionFile)}
 const releaseFile = ${JSON.stringify(join(fixtureRoot, 'finish-run'))}
+const metadataStageFile = ${JSON.stringify(join(fixtureRoot, 'tool-metadata-stage'))}
+const toolMetadata = ${toolMetadata ? JSON.stringify(toolMetadata) : 'undefined'}
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
 let negotiated = false
 let streaming = false
@@ -68,6 +78,45 @@ const finish = () => {
   send({ type: 'prompt_result', id: activePromptId, agentInvoked: true, status: 'completed', sessionSettled: true })
   send({ type: 'session_settled' })
 }
+const emitToolMetadataStage = (stage) => {
+  if (!toolMetadata) return
+  const waitId = 'tool-metadata-wait'
+  const bashId = 'tool-metadata-bash'
+  const sendUpdate = (toolCallId, toolName, partialResult) => send({ type: 'tool_execution_update', toolCallId, toolName, partialResult })
+  const sendEnd = (toolCallId, toolName, result) => {
+    appendMessage('toolResult', result.content, { toolCallId, toolName, isError: false })
+    send({ type: 'tool_execution_end', toolCallId, toolName, result, isError: false })
+  }
+  if (stage === 'wait-valid') {
+    const jobs = Array.from({ length: 129 }, (_, index) => index === 0 ? {
+      id: 'fixture-metadata-task-017', type: 'task', label: 'Metadata projection fixture task',
+      intent: 'Verify native wait projection in Electron', status: 'completed', stage: 'completed',
+      durationMs: 65432, resultText: 'Fixture result wraps safely: ' + 'nativeMetadataBoundary'.repeat(8),
+    } : { id: 'fixture-overflow-' + index, type: 'bash', label: 'Bounded fixture job ' + index, status: 'completed' })
+    sendUpdate(waitId, 'wait', { content: [{ type: 'text', text: 'Controlled wait snapshot: 129 supplied, 128 displayable.' }], details: { op: 'wait', jobs } })
+    return
+  }
+  if (stage === 'wait-malformed') {
+    sendUpdate(waitId, 'wait', { content: [{ type: 'text', text: 'Malformed nonempty wait jobs must not retain native details.' }], details: { op: 'wait', jobs: [null] } })
+    return
+  }
+  if (stage === 'bash-valid') {
+    sendUpdate(bashId, 'bash', { content: [{ type: 'text', text: toolMetadata.vitestOutput }], details: { wallTimeMs: 187654, exitCode: toolMetadata.exitCode } })
+    return
+  }
+  if (stage === 'bash-malformed') {
+    sendUpdate(bashId, 'bash', { content: [{ type: 'text', text: ' Test Files  2 passed (2)\\n      Tests  1 passed\\n' }], details: { wallTimeMs: 99999 } })
+    return
+  }
+  if (stage === 'complete') {
+    sendEnd(waitId, 'wait', { content: [{ type: 'text', text: 'Controlled wait completed; arguments and result remain available.' }], details: { op: 'wait', jobs: [{
+      id: 'fixture-metadata-task-017', type: 'task', label: 'Metadata projection fixture task',
+      intent: 'Verify native wait projection in Electron', status: 'completed', stage: 'completed',
+      durationMs: 65432, resultText: 'Completed native-schema fixture; this is not measured engine execution time.',
+    }] } })
+    sendEnd(bashId, 'bash', { content: [{ type: 'text', text: toolMetadata.vitestOutput }], details: { wallTimeMs: 187654, exitCode: toolMetadata.exitCode } })
+  }
+}
 readline.createInterface({ input: process.stdin }).on('line', (line) => {
   const command = JSON.parse(line)
   if (command.type === 'negotiate_protocol') {
@@ -76,6 +125,11 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   } else if (!negotiated) {
     send({ id: command.id, type: 'response', command: command.type, success: false, error: 'Protocol was not negotiated' })
   } else if (command.type === 'get_state') {
+    if (toolMetadata && streaming && fs.existsSync(metadataStageFile)) {
+      const stage = fs.readFileSync(metadataStageFile, 'utf8')
+      fs.rmSync(metadataStageFile, { force: true })
+      emitToolMetadataStage(stage)
+    }
     if (fs.existsSync(releaseFile)) finish()
     send({ id: command.id, type: 'response', command: command.type, success: true, data: {
       sessionId: 'layout-session', sessionFile: activeSessionFile, isStreaming: streaming, thinkingLevel: 'medium',
@@ -98,6 +152,14 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     appendMessage('user', message)
     send({ type: 'agent_start' })
     send({ id: command.id, type: 'response', command: command.type, success: true, data: { agentInvoked: true } })
+    if (toolMetadata && message === 'native tool metadata smoke') {
+      const waitArgs = {}
+      const bashArgs = { command: 'node node_modules/vitest/vitest.mjs run tests/frontend/vitest-report.test.ts' }
+      appendMessage('assistant', [{ type: 'toolCall', id: 'tool-metadata-wait', name: 'wait', arguments: waitArgs }, { type: 'toolCall', id: 'tool-metadata-bash', name: 'bash', arguments: bashArgs }])
+      send({ type: 'tool_execution_start', toolCallId: 'tool-metadata-wait', toolName: 'wait', args: waitArgs })
+      send({ type: 'tool_execution_start', toolCallId: 'tool-metadata-bash', toolName: 'bash', args: bashArgs })
+      return
+    }
     if (message.includes('with hud') || shortHud) {
       const args = {}
       pendingToolIds.add('layout-todo')
@@ -151,7 +213,7 @@ function stopFakeOmp(fixtureRoot: string): void {
   try { process.kill(pid, 'SIGKILL') } catch { /* The runtime may already have exited normally. */ }
 }
 
-export async function launchWorkbenchLayout(nativeWindowSize?: { width: number; height: number }): Promise<WorkbenchLayoutFixture> {
+export async function launchWorkbenchLayout(nativeWindowSize?: { width: number; height: number }, toolMetadata?: ToolMetadataScenario): Promise<WorkbenchLayoutFixture> {
   const fixtureRoot = mkdtempSync(join(tmpdir(), 'omp-workbench-layout-'))
   let app: ElectronApplication | undefined
   try {
@@ -175,7 +237,7 @@ export async function launchWorkbenchLayout(nativeWindowSize?: { width: number; 
       settings: { activeHarness: 'prime', browserHome: 'about:blank', telemetry: false, locale: 'en', showReasoningSummaries: true, showToolCalls: true, reasoningExpandedByDefault: false },
       archivedSessions: [], pinnedSessions: [realpathSync(sessionFile)], dismissedProjectPaths: [],
     }))
-    const ompExecutable = writeFakeOmp(fixtureRoot, sessionFile)
+    const ompExecutable = writeFakeOmp(fixtureRoot, sessionFile, toolMetadata)
     const cuaExecutable = join(fixtureRoot, 'cua-layout-fixture.cjs')
     writeFileSync(cuaExecutable, '#!/usr/bin/env node\nif (process.argv.includes(\'--version\')) process.stdout.write(\'cua-driver 0.19.0\\n\')\n')
     chmodSync(cuaExecutable, 0o755)
@@ -204,6 +266,20 @@ export async function launchWorkbenchLayout(nativeWindowSize?: { width: number; 
         if (!nativeWindow) throw new Error('The layout fixture Electron window is already closed')
         const base64 = await nativeWindow.evaluate(async (browserWindow) => (await browserWindow.webContents.capturePage()).toPNG().toString('base64'))
         return Buffer.from(base64, 'base64')
+      },
+      advanceToolMetadata: async (stage) => {
+        if (!toolMetadata) throw new Error('The native tool metadata scenario was not enabled for this launch')
+        writeFileSync(join(fixtureRoot, 'tool-metadata-stage'), stage)
+        const advanced = await page.evaluate(async () => {
+          const runtimes = await window.desktop.agent.list()
+          for (const runtime of runtimes) {
+            if (!runtime.isStreaming) continue
+            await window.desktop.agent.command(runtime.runtimeId, { type: 'get_state' })
+            return true
+          }
+          return false
+        })
+        if (!advanced) throw new Error('No streaming runtime was available for the metadata-stage handshake')
       },
       finishRun: async () => {
         writeFileSync(join(fixtureRoot, 'finish-run'), 'finish')

@@ -3,7 +3,7 @@ import { type ReactNode, memo, useContext, useEffect, useMemo, useRef, useState 
 import { writeClipboardText } from '@/lib/clipboard'
 import { useI18n } from '@/lib/i18n'
 import { boundText } from '@/lib/render-bounds'
-import type { MessagePart, TranscriptMessage } from '@/types/api'
+import type { MessagePart, ToolExecutionDetails, TranscriptMessage, VitestCountSummary, VitestReportSummary } from '@/types/api'
 import { MarkdownText } from '../MarkdownText'
 import { ReasoningDisclosure, ReasoningExpandedContext } from '../ReasoningDisclosure'
 import { ImagePart, UnsupportedAttachment } from './attachment-part'
@@ -168,6 +168,70 @@ export function LiveElapsed({ since }: { since?: string | number }) {
   )
 }
 
+function VitestSummaryLine({ kind, summary }: { kind: 'files' | 'tests'; summary: VitestCountSummary }) {
+  const { t } = useI18n()
+  const segments = [
+    { count: summary.failed, key: 'transcript.tool.vitest.failed' },
+    { count: summary.passed, key: 'transcript.tool.vitest.passed' },
+    { count: summary.expectedFailed, key: 'transcript.tool.vitest.expectedFailed' },
+    { count: summary.skipped, key: 'transcript.tool.vitest.skipped' },
+    { count: summary.todo, key: 'transcript.tool.vitest.todo' },
+  ] as const
+  return (
+    <div className="activity-tool__test-report-line">
+      <span>{t(kind === 'files' ? 'transcript.tool.vitest.testFiles' : 'transcript.tool.vitest.tests')}</span>{' '}
+      {segments.filter((segment) => segment.count > 0).map((segment, index) => (
+        <span key={segment.key}>{index > 0 ? ' | ' : ''}{segment.count} {t(segment.key)}</span>
+      ))}
+      {` (${summary.total})`}
+    </div>
+  )
+}
+
+function ToolExecutionMetadata({ details, testReport }: { details?: ToolExecutionDetails; testReport?: VitestReportSummary }) {
+  const { t } = useI18n()
+  if (!details && !testReport) return null
+  const elapsedLabel = (milliseconds: number) => t('transcript.tool.engineElapsed', { duration: formatWorkedDuration(milliseconds) })
+  return (
+    <div className="activity-tool__native-metadata">
+      {details?.kind === 'bash' ? (
+        <dl className="activity-tool__bash-metadata" aria-label={t('transcript.tool.nativeMetadata')}>
+          {details.wallTimeMs !== undefined ? <div title={elapsedLabel(details.wallTimeMs)}><dt>{t('transcript.tool.engine')}</dt><dd>{formatWorkedDuration(details.wallTimeMs)}</dd></div> : null}
+          {details.exitCode !== undefined ? <div><dt>{t('transcript.tool.bash.exitCode')}</dt><dd>{details.exitCode}</dd></div> : null}
+          {details.timedOut === true ? <div><dt>{t('transcript.tool.bash.timedOut')}</dt></div> : null}
+          {details.async ? <div><dt>{t('transcript.tool.bash.asyncJob')}</dt><dd>{details.async.jobId} ({details.async.state})</dd></div> : null}
+          {details.terminalId ? <div><dt>{t('transcript.tool.bash.terminalId')}</dt><dd>{details.terminalId}</dd></div> : null}
+        </dl>
+      ) : null}
+      {details?.kind === 'wait' ? (
+        <section className="activity-tool__wait-jobs" aria-label={t('transcript.tool.wait.jobList')}>
+          <div>{t(details.truncated ? 'transcript.tool.wait.jobLimit' : 'transcript.tool.wait.jobs', { count: details.jobs.length })}</div>
+          <ol>
+            {details.jobs.map((job, index) => (
+              <li key={`${job.id ?? 'job'}-${index}`}>
+                <div>
+                  <span>{job.label ?? job.id ?? job.intent ?? job.type ?? t('transcript.tool.wait.unnamedJob', { number: index + 1 })}</span>
+                  {job.id && job.label && job.id !== job.label ? <code>{job.id}</code> : null}
+                  {job.durationMs !== undefined ? <span className="activity-tool__engine-elapsed" title={elapsedLabel(job.durationMs)}>{elapsedLabel(job.durationMs)}</span> : null}
+                </div>
+                {[job.type, job.status, job.intent, job.stage].some((value) => value !== undefined) ? <div>{[job.type, job.status, job.intent, job.stage].filter((value) => value !== undefined).join(' · ')}</div> : null}
+                {job.resultText ? <div className="activity-tool__job-result">{job.resultText}</div> : null}
+                {job.errorText ? <div className="activity-tool__job-error">{job.errorText}</div> : null}
+              </li>
+            ))}
+          </ol>
+        </section>
+      ) : null}
+      {testReport ? (
+        <section className="activity-tool__test-report" aria-label={t('transcript.tool.vitest.reported')}>
+          <VitestSummaryLine kind="files" summary={testReport.files} />
+          <VitestSummaryLine kind="tests" summary={testReport.tests} />
+        </section>
+      ) : null}
+    </div>
+  )
+}
+
 const ToolPart = memo(function ToolPart({ part, next, streaming }: { part: Extract<MessagePart, { type: 'toolCall' }>; next?: MessagePart; streaming: boolean }) {
   const { t } = useI18n()
   const [manualOpen, setOpen] = useState(false)
@@ -185,10 +249,14 @@ const ToolPart = memo(function ToolPart({ part, next, streaming }: { part: Extra
     const args = serialize(part.args, true)
     return boundText(`${args}${args && output ? '\n\n' : ''}${output}`, 200_000, t('transcript.tool.outputTruncated'))
   }, [open, part.args, output, t])
-  const canExpand = Boolean(output || (part.args !== undefined && part.args !== ''))
+  const details = result?.details
+  const testReport = result?.testReport
+  const canExpand = Boolean(output || details || testReport || (part.args !== undefined && part.args !== ''))
   const state = failed ? 'error' : finished ? 'done' : !streaming ? 'unknown' : kind === 'question' ? 'waiting' : 'running'
   const preview = part.name.trim().toLowerCase() === 'wait'
-    ? waitTarget(part.args) || t(finished ? 'transcript.tool.wait.finished' : streaming ? 'transcript.tool.wait.pending' : 'transcript.tool.wait.unknown')
+    ? waitTarget(part.args) || (details?.kind === 'wait'
+      ? t(details.truncated ? 'transcript.tool.wait.jobLimit' : 'transcript.tool.wait.jobs', { count: details.jobs.length })
+      : t(finished ? 'transcript.tool.wait.finished' : streaming ? 'transcript.tool.wait.pending' : 'transcript.tool.wait.unknown'))
     : toolPreview(part)
   useEffect(
     () => () => {
@@ -235,16 +303,21 @@ const ToolPart = memo(function ToolPart({ part, next, streaming }: { part: Extra
         </span>
         {canExpand ? open ? <ChevronDown size={13} /> : <ChevronRight size={13} /> : null}
       </button>
-      {open && visibleOutput ? (
+      {open && (visibleOutput || details || testReport) ? (
         <div className="activity-tool__details">
-          <div className="activity-tool__details-toolbar">
-            <button type="button" className={`activity-tool__copy${copied ? ' is-copied' : ''}`} aria-label={copied ? t('transcript.tool.copiedContents') : t('transcript.tool.copyContents')} onClick={() => void copyContents()}>
-              {copied ? <Check size={12} /> : <Copy size={12} />} {copied ? t('transcript.copied.label') : t('transcript.copy.label')}
-            </button>
-          </div>
-          <pre className="activity-tool__contents">
-            <SyntaxText text={visibleOutput} />
-          </pre>
+          {visibleOutput ? (
+            <div className="activity-tool__details-toolbar">
+              <button type="button" className={`activity-tool__copy${copied ? ' is-copied' : ''}`} aria-label={copied ? t('transcript.tool.copiedContents') : t('transcript.tool.copyContents')} onClick={() => void copyContents()}>
+                {copied ? <Check size={12} /> : <Copy size={12} />} {copied ? t('transcript.copied.label') : t('transcript.copy.label')}
+              </button>
+            </div>
+          ) : null}
+          <ToolExecutionMetadata details={details} testReport={testReport} />
+          {visibleOutput ? (
+            <pre className="activity-tool__contents">
+              <SyntaxText text={visibleOutput} />
+            </pre>
+          ) : null}
         </div>
       ) : null}
     </div>
