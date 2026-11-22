@@ -3014,8 +3014,14 @@ test.describe('OMP Desktop desktop smoke', () => {
   })
 
   test('auto-closes both drawers at the smallest breakpoint while keeping them user-toggleable', async () => {
+    const interfaceScale = await page.evaluate(async () => ((await window.desktop.settings.get()).interfaceFontScale ?? 110) / 100)
+    const resizeToInnerWidth = async (width: number) => {
+      await page.setViewportSize({ width: Math.round(width * interfaceScale), height: 700 })
+      await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(width)
+    }
     await expect(page.locator('.sidebar')).toBeVisible()
-    await page.setViewportSize({ width: 720, height: 700 })
+    await resizeToInnerWidth(720)
+    await expect(page.locator('.app-shell')).toHaveAttribute('data-layout', 'smallest')
     await expect(page.locator('.sidebar')).toHaveCount(0)
     await expect(page.getByRole('button', { name: /Show sidebar/ })).toBeVisible()
     await expect(page.locator('.workbench')).not.toHaveAttribute('inert')
@@ -3027,10 +3033,12 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(page.locator('.sidebar')).toHaveCount(0)
     await expect.poll(() => page.evaluate(async () => (await window.desktop.settings.get()).sidebarOpen)).toBe(false)
 
-    await page.setViewportSize({ width: 721, height: 700 })
+    await resizeToInnerWidth(721)
+    await expect(page.locator('.app-shell')).toHaveAttribute('data-layout', 'compact')
     await page.getByRole('button', { name: /Show sidebar/ }).click()
     await expect(page.locator('.sidebar')).toBeVisible()
-    await page.setViewportSize({ width: 720, height: 700 })
+    await resizeToInnerWidth(720)
+    await expect(page.locator('.app-shell')).toHaveAttribute('data-layout', 'smallest')
     await expect(page.locator('.sidebar')).toHaveCount(0)
     await expect.poll(() => page.evaluate(async () => (await window.desktop.settings.get()).sidebarOpen)).toBe(false)
 
@@ -3041,10 +3049,12 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(page.locator('.inspector')).toHaveCount(0)
     await expect.poll(() => page.evaluate(async () => (await window.desktop.settings.get()).inspectorOpen)).toBe(false)
 
-    await page.setViewportSize({ width: 721, height: 700 })
+    await resizeToInnerWidth(721)
+    await expect(page.locator('.app-shell')).toHaveAttribute('data-layout', 'compact')
     await chooseToolbarAction('Toggle inspector')
     await expect(page.locator('.inspector')).toBeVisible()
-    await page.setViewportSize({ width: 720, height: 700 })
+    await resizeToInnerWidth(720)
+    await expect(page.locator('.app-shell')).toHaveAttribute('data-layout', 'smallest')
     await expect(page.locator('.inspector')).toHaveCount(0)
     await expect.poll(() => page.evaluate(async () => (await window.desktop.settings.get()).inspectorOpen)).toBe(false)
   })

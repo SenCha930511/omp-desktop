@@ -1375,6 +1375,7 @@ export default function App() {
         <div
           className="app-shell"
           data-density={settingsState.settings.conversationDensity}
+          data-layout={layout.smallestLayout ? 'smallest' : layout.compactLayout ? 'compact' : 'wide'}
           aria-busy={!initialized}
           data-platform={platform}
           data-ready={initialized ? 'true' : 'false'}

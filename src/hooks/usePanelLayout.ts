@@ -110,6 +110,7 @@ export function usePanelLayout({
 
   return {
     compactLayout,
+    smallestLayout,
     sidebarSuppressed,
     inspectorSuppressed,
     setSmallestSidebarAllowed,
