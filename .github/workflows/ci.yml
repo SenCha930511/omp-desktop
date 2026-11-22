@@ -223,6 +223,11 @@ jobs:
           key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - run: npm ci
       - run: npm run release:preflight:toolchain
+      - name: Install pacman packaging dependency
+        if: matrix.runner == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libarchive-tools
       - run: ${{ matrix.package }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

@@ -665,6 +665,24 @@ else if (JSON.stringify(args) === ${JSON.stringify(JSON.stringify(expectedInstal
     expect(ciWorkflow).toContain('verify-cross-platform-package.mjs --platform ${{ matrix.target }} --arch ${{ matrix.arch }} --unpacked-only')
   })
 
+  test('installs bsdtar before Linux local QA pacman packaging', () => {
+    type WorkflowStep = { name?: string; if?: string; run?: string }
+    const ci = load(readFileSync('.github/workflows/ci.yml', 'utf8')) as {
+      jobs: { 'local-qa-package': { steps?: WorkflowStep[] } }
+    }
+    const steps = ci.jobs['local-qa-package'].steps ?? []
+    const prerequisites = steps.filter((step) => step.name === 'Install pacman packaging dependency')
+
+    expect(prerequisites).toEqual([
+      {
+        name: 'Install pacman packaging dependency',
+        if: "matrix.runner == 'ubuntu-22.04'",
+        run: 'sudo apt-get update\nsudo apt-get install --yes --no-install-recommends libarchive-tools\n',
+      },
+    ])
+    expect(steps.findIndex((step) => step.run === '${{ matrix.package }}')).toBeGreaterThan(steps.indexOf(prerequisites[0]))
+  })
+
   test('gates every pull-request head and pinned release SHA on the named production audit', () => {
     type WorkflowJob = {
       name?: string
