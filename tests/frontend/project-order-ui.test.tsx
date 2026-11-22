@@ -20,6 +20,7 @@ const project = (id: string, name: string, lastOpenedAt: string, overrides: Part
   pinned: false,
   createdAt: '2026-01-01T00:00:00.000Z',
   lastOpenedAt,
+  lastUserActivityAt: overrides.lastOpenedAt ?? lastOpenedAt,
   sessionCount: 0,
   ...overrides,
 })

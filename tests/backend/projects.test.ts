@@ -39,7 +39,7 @@ function setup(): { root: string; service: ProjectService; store: JsonStateStore
   return { root, service, store }
 }
 
-function session(id: string, projectPath: string, createdAt: string, updatedAt: string): SessionRecord {
+function session(id: string, projectPath: string, createdAt: string, updatedAt: string, overrides: Partial<SessionRecord> = {}): SessionRecord {
   return {
     id,
     harness: 'omp',
@@ -51,6 +51,7 @@ function session(id: string, projectPath: string, createdAt: string, updatedAt: 
     status: 'idle',
     depth: 0,
     archived: false,
+    ...overrides,
   }
 }
 
@@ -146,10 +147,10 @@ describe('ProjectService list enrichment', () => {
     mkdirSync(inferred)
     mkdirSync(dismissed)
     const sessions = [
-      session('persisted-newer', root, '2026-02-03T00:00:00.000Z', '2026-02-04T00:00:00.000Z'),
-      session('persisted-alias', projectAlias, '2026-02-01T00:00:00.000Z', '2026-02-06T00:00:00.000Z'),
+      session('persisted-newer', root, '2026-02-03T00:00:00.000Z', '2026-02-04T00:00:00.000Z', { archived: true }),
+      session('persisted-alias', projectAlias, '2026-02-01T00:00:00.000Z', '2026-02-06T00:00:00.000Z', { lastUserMessageAt: '2026-02-07T00:00:00.000Z' }),
       session('persisted-additional', additionalFolder, '2026-02-02T00:00:00.000Z', '2026-02-05T00:00:00.000Z'),
-      session('inferred-newer', inferred, '2026-03-03T00:00:00.000Z', '2026-03-04T00:00:00.000Z'),
+      session('inferred-newer', inferred, '2026-03-03T00:00:00.000Z', '2026-03-04T00:00:00.000Z', { lastUserMessageAt: '2026-03-05T00:00:00.000Z' }),
       session('inferred-older', inferred, '2026-03-01T00:00:00.000Z', '2026-03-07T00:00:00.000Z'),
       session('dismissed', dismissed, '2026-04-01T00:00:00.000Z', '2026-04-02T00:00:00.000Z'),
       session('missing', missing, '2026-05-01T00:00:00.000Z', '2026-05-02T00:00:00.000Z'),
@@ -160,7 +161,7 @@ describe('ProjectService list enrichment', () => {
       state.projects.push({
         id: 'persisted', harness: 'omp', name: 'Persisted', path: root,
         // Canonical aliases and repeated folders must not multiply counts.
-        folders: [root, projectAlias, additionalFolder, additionalFolder], primaryFolder: root, pinned: true,
+        folders: [root, projectAlias, additionalFolder, additionalFolder], primaryFolder: root, pinned: false,
         createdAt: now, lastOpenedAt: '2026-05-01T00:00:00.000Z', folderIdentities: identities(root, additionalFolder),
       })
       state.dismissedProjectPaths.push(dismissed)
@@ -171,25 +172,77 @@ describe('ProjectService list enrichment', () => {
 
     expect(filterSpy).not.toHaveBeenCalled()
     expect(records.map((record) => record.id)).toEqual([
-      'persisted',
       expect.stringMatching(/^inferred-/),
+      'persisted',
     ])
     expect(records[0]).toMatchObject({
-      id: 'persisted',
-      createdAt: now,
-      lastOpenedAt: '2026-05-01T00:00:00.000Z',
-      sessionCount: 3,
-    })
-    expect(records[1]).toMatchObject({
       path: realpathSync(inferred),
       createdAt: '2026-03-01T00:00:00.000Z',
       lastOpenedAt: '2026-03-07T00:00:00.000Z',
+      lastUserActivityAt: '2026-03-05T00:00:00.000Z',
       sessionCount: 2,
       inferred: true,
       readOnly: true,
     })
+    expect(records[1]).toMatchObject({
+      id: 'persisted',
+      createdAt: now,
+      lastOpenedAt: '2026-05-01T00:00:00.000Z',
+      lastUserActivityAt: '2026-02-07T00:00:00.000Z',
+      sessionCount: 3,
+    })
     expect(records.some((record) => record.path === realpathSync(dismissed))).toBe(false)
     expect(records.some((record) => record.path === resolve(missing))).toBe(false)
+  })
+
+  it('projects nested canonical activity to the deepest registered project without changing exact session counts', async () => {
+    const { root, service, store } = setup()
+    const nested = join(root, 'packages', 'app')
+    const projectAlias = `${root}-alias`
+    mkdirSync(nested, { recursive: true })
+    symlinkSync(root, projectAlias)
+    const now = '2026-01-01T00:00:00.000Z'
+    await store.update((state) => {
+      state.projects.push({
+        id: 'parent', harness: 'omp', name: 'Parent', path: root,
+        folders: [root, projectAlias], primaryFolder: root, pinned: false,
+        createdAt: now, lastOpenedAt: now, folderIdentities: identities(root),
+      })
+    })
+    service.bindProviders({
+      sessions: async () => [session('nested-turn', join(projectAlias, 'packages', 'app'), now, now, {
+        lastUserMessageAt: '2026-02-01T00:00:00.000Z',
+      })],
+      branch: async () => undefined,
+    })
+
+    const initial = await service.list()
+    expect(initial.find((record) => record.id === 'parent')).toMatchObject({
+      lastUserActivityAt: '2026-02-01T00:00:00.000Z',
+      sessionCount: 0,
+    })
+
+    await store.update((state) => {
+      state.projects.push({
+        id: 'nested', harness: 'omp', name: 'Nested', path: nested,
+        folders: [nested], primaryFolder: nested, pinned: false,
+        createdAt: now, lastOpenedAt: now, folderIdentities: identities(nested),
+      })
+    })
+    service.bindProviders({
+      sessions: async () => [session('nested-turn', join(projectAlias, 'packages', 'app'), now, now, {
+        lastUserMessageAt: '2026-03-01T00:00:00.000Z',
+      })],
+      branch: async () => undefined,
+    })
+
+    const updated = await service.list()
+    expect(updated.find((record) => record.id === 'parent')?.lastUserActivityAt).toBeUndefined()
+    expect(updated.find((record) => record.id === 'nested')).toMatchObject({
+      lastUserActivityAt: '2026-03-01T00:00:00.000Z',
+      sessionCount: 1,
+    })
+    expect(updated.filter((record) => record.lastUserActivityAt === '2026-03-01T00:00:00.000Z')).toHaveLength(1)
   })
 
   it('enriches persisted branches without spawning git for inferred roots', async () => {
