@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, truncateSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, test } from 'vitest'
 import { SHIPPED_EXTENSION_FILENAMES } from '../electron/main/extension-manifest'
@@ -31,6 +31,7 @@ import {
   assertSupportedNode,
   assertSupportedNpm,
   assertSupportedToolchain,
+  normalizedNpmEnvironment,
   parseArchitectures,
   parseTeamIdentifier,
   parseToolchainMetadata,
@@ -39,6 +40,7 @@ import {
   readRepositoryToolchain,
   requireReleaseArtifacts,
   resolveCommandInvocation,
+  runCommand,
   validateReleaseCredentials,
   validateWindowsReleaseCredentials,
   withoutReleaseCredentials,
@@ -307,15 +309,20 @@ describe('release preflight', () => {
     const directory = mkdtempSync(join(tmpdir(), 'omp-desktop-npm-version-'))
     const npmCli = join(directory, 'npm-cli.mjs')
     writeFileSync(npmCli, "process.stdout.write('12.0.1\\n')\n")
-    const env = { ...process.env, npm_execpath: npmCli }
+    const env = { ...process.env, NPM_EXECPATH: join(directory, 'uppercase-stale.cjs'), npm_execpath: npmCli }
+    // A direct call can resolve collisions in this process, but spawnSync on
+    // Windows collapses case variants before preflight starts. Give each child
+    // one exact CLI variable so its own version assertion is what is measured.
+    const entrypointEnv = Object.fromEntries(Object.entries(env).filter(([key]) => key.toLowerCase() !== 'npm_execpath'))
+    entrypointEnv.npm_execpath = npmCli
     try {
       expect(readNpmVersion({ env })).toBe('12.0.1')
-      const preflight = spawnSync(process.execPath, ['scripts/release/preflight.mjs', '--toolchain-only'], { encoding: 'utf8', env })
+      const preflight = spawnSync(process.execPath, ['scripts/release/preflight.mjs', '--toolchain-only'], { encoding: 'utf8', env: entrypointEnv })
       expect(preflight.status).toBe(1)
       expect(preflight.stderr).toContain('npm >=12.0.2 is required')
 
       const platform = process.platform === 'darwin' ? 'mac' : process.platform === 'win32' ? 'win' : 'linux'
-      const packaging = spawnSync(process.execPath, ['scripts/release/package.mjs', '--qa', '--platform', platform, '--dry-run'], { encoding: 'utf8', env })
+      const packaging = spawnSync(process.execPath, ['scripts/release/package.mjs', '--qa', '--platform', platform, '--dry-run'], { encoding: 'utf8', env: entrypointEnv })
       expect(packaging.status).toBe(1)
       expect(packaging.stderr).toContain('npm >=12.0.2 is required')
     } finally {
@@ -338,6 +345,86 @@ describe('release preflight', () => {
       shimDirectory: 'C:\\npm\\prefix',
       shimPath: 'C:\\npm\\prefix\\npm.cmd',
     })
+  })
+
+  test('applies explicit lowercase npm values before ambient aliases on every platform', () => {
+    const canonical = {
+      npm_execpath: '/opt/node/bin/npm-cli.js',
+      npm_config_cache: '/opt/npm/cache',
+      npm_config_prefix: '/opt/npm/prefix',
+      GITHUB_PATH: '/runner/github-path',
+    }
+    expect(normalizedNpmEnvironment(canonical, 'linux')).toBe(canonical)
+
+    const colliding = {
+      ...canonical,
+      NPM_EXECPATH: '/ambient/npm-cli.js',
+      NPM_CONFIG_CACHE: '/ambient/cache',
+      NPM_CONFIG_PREFIX: '/ambient/prefix',
+      GITHUB_ENV: '/runner/github-env',
+    }
+    for (const platform of ['linux', 'win32']) {
+      const normalized = normalizedNpmEnvironment(colliding, platform)
+      expect(normalized).toMatchObject(canonical)
+      expect(normalized.GITHUB_ENV).toBe('/runner/github-env')
+      for (const name of ['npm_execpath', 'npm_config_cache', 'npm_config_prefix']) {
+        expect(Object.keys(normalized).filter((key) => key.toLowerCase() === name)).toEqual([name])
+      }
+    }
+
+    for (const environment of [{ NPM_EXECPATH: 'C:/upper/npm-cli.cjs' }, { Npm_ExEcPaTh: 'C:/mixed/npm-cli.cjs' }]) {
+      const invocation = resolveCommandInvocation('npm', ['prefix', '--global'], 'win32', environment)
+      expect(invocation).toEqual({
+        file: process.execPath,
+        args: [environment.NPM_EXECPATH ?? environment.Npm_ExEcPaTh, 'prefix', '--global'],
+        shell: false,
+      })
+    }
+    expect(resolveCommandInvocation('npm', ['--version'], 'linux', { NPM_EXECPATH: '/opt/npm-cli.cjs' })).toEqual({ file: process.execPath, args: ['/opt/npm-cli.cjs', '--version'], shell: false })
+  })
+
+  test('passes exactly one canonical value per npm key to a Windows child spawn', () => {
+    interface SpawnCapture {
+      file: string
+      args: string[]
+      options: { stdio: string; env: NodeJS.ProcessEnv; shell: boolean }
+    }
+    const spawns: SpawnCapture[] = []
+    runCommand('npm', ['--version'], {
+      platform: 'win32',
+      env: {
+        npm_execpath: 'C:/fresh/npm-cli.mjs',
+        NPM_EXECPATH: 'C:/stale/npm-cli.js',
+        npm_config_cache: 'C:/fresh/cache',
+        NPM_CONFIG_CACHE: 'C:/stale/cache',
+        npm_config_prefix: 'C:/fresh/prefix',
+        NPM_CONFIG_PREFIX: 'C:/stale/prefix',
+        Npm_Config_Prefix: 'C:/mixed-stale/prefix',
+        GITHUB_ENV: 'D:/workflow/github-env',
+      },
+      spawnProcess: (file: string, args: string[], options: SpawnCapture['options']) => {
+        spawns.push({ file, args, options })
+        return { status: 0 }
+      },
+    })
+
+    expect(spawns).toEqual([
+      {
+        file: process.execPath,
+        args: ['C:/fresh/npm-cli.mjs', '--version'],
+        options: {
+          stdio: 'inherit',
+          env: {
+            npm_execpath: 'C:/fresh/npm-cli.mjs',
+            npm_config_cache: 'C:/fresh/cache',
+            npm_config_prefix: 'C:/fresh/prefix',
+            GITHUB_ENV: 'D:/workflow/github-env',
+          },
+          shell: false,
+        },
+      },
+    ])
+    expect(normalizedNpmEnvironment({ Npm_Config_Prefix: '/mixed/prefix' }, 'linux')).toEqual({ npm_config_prefix: '/mixed/prefix' })
   })
 
   test('rejects unsafe or inconsistent npm global layout metadata', () => {
@@ -370,6 +457,8 @@ describe('release preflight', () => {
     const runs: Array<{ command: string; args: string[]; shell: boolean }> = []
     const persisted: Array<{ shimDirectory: string; destination: string | undefined }> = []
     let installed = false
+    const previousGithubEnv = process.env.GITHUB_ENV
+    process.env.GITHUB_ENV = '/runner/ambient-github-env'
     try {
       const result = bootstrapNpm({
         artifact: fixture.artifact,
@@ -409,8 +498,10 @@ describe('release preflight', () => {
         npmCliPath: '/runner/npm-global/lib/node_modules/npm/bin/npm-cli.js',
       })
       expect(persisted).toEqual([{ shimDirectory: '/runner/npm-global/bin', destination: githubPath }])
-      expect(result).toMatchObject({ current: '12.0.2', installed: '12.0.2', shimDirectory: '/runner/npm-global/bin', githubPathUpdated: true })
+      expect(result).toMatchObject({ current: '12.0.2', installed: '12.0.2', shimDirectory: '/runner/npm-global/bin', githubPathUpdated: true, githubEnvUpdated: false })
     } finally {
+      if (previousGithubEnv === undefined) delete process.env.GITHUB_ENV
+      else process.env.GITHUB_ENV = previousGithubEnv
       rmSync(fixture.temporaryDirectory, { recursive: true, force: true })
     }
   })
@@ -423,9 +514,11 @@ describe('release preflight', () => {
     const layout = resolveNpmGlobalLayout(prefix, root)
     const staleCli = join(directory, 'stale npm-cli.mjs')
     const githubPath = join(directory, 'github-path')
+    const githubEnv = join(directory, 'github-env')
     const expectedInstallArgs = ['install', '--global', '--prefix', prefix, '--offline', '--ignore-scripts', '--no-audit', '--no-fund', fixture.artifactPath]
     mkdirSync(dirname(staleCli), { recursive: true })
     writeFileSync(githubPath, '')
+    writeFileSync(githubEnv, '')
     writeFileSync(
       staleCli,
       `import { mkdirSync, writeFileSync } from 'node:fs'
@@ -446,9 +539,10 @@ else if (JSON.stringify(args) === ${JSON.stringify(JSON.stringify(expectedInstal
     )
 
     try {
-      const result = bootstrapNpm({ artifact: fixture.artifact, env: { ...process.env, GITHUB_PATH: githubPath, npm_execpath: staleCli } })
-      expect(result).toMatchObject({ current: '11.12.1', installed: '12.0.2', ...layout, githubPathUpdated: true })
+      const result = bootstrapNpm({ artifact: fixture.artifact, env: { ...process.env, GITHUB_PATH: githubPath, GITHUB_ENV: githubEnv, npm_execpath: staleCli } })
+      expect(result).toMatchObject({ current: '11.12.1', installed: '12.0.2', ...layout, githubPathUpdated: true, githubEnvUpdated: true })
       expect(readFileSync(githubPath, 'utf8')).toBe(`${layout.shimDirectory}\n`)
+      expect(readFileSync(githubEnv, 'utf8')).toBe(`npm_execpath=${layout.cliPath}\n`)
     } finally {
       rmSync(directory, { recursive: true, force: true })
       rmSync(fixture.temporaryDirectory, { recursive: true, force: true })
@@ -459,20 +553,27 @@ else if (JSON.stringify(args) === ${JSON.stringify(JSON.stringify(expectedInstal
     const directory = mkdtempSync(join(tmpdir(), 'omp-desktop real npm bootstrap & '))
     const prefix = join(directory, 'fresh global prefix')
     const githubPath = join(directory, 'github-path')
+    const githubEnv = join(directory, 'github-env')
     const cache = join(directory, 'npm cache')
+    const env = {
+      ...process.env,
+      GITHUB_PATH: githubPath,
+      GITHUB_ENV: githubEnv,
+      NPM_CONFIG_CACHE: join(directory, 'uppercase stale cache'),
+      npm_config_cache: cache,
+      NPM_CONFIG_PREFIX: join(directory, 'uppercase stale prefix'),
+      npm_config_prefix: prefix,
+    }
     writeFileSync(githubPath, '')
+    writeFileSync(githubEnv, '')
     try {
-      const result = bootstrapNpm({
-        env: {
-          ...process.env,
-          GITHUB_PATH: githubPath,
-          npm_config_cache: cache,
-          npm_config_prefix: prefix,
-        },
-      })
-      expect(result).toMatchObject({ installed: '12.0.2', prefix, githubPathUpdated: true })
+      const result = bootstrapNpm({ env })
+      expect(result).toMatchObject({ installed: '12.0.2', prefix, githubPathUpdated: true, githubEnvUpdated: true })
       expect(readFileSync(githubPath, 'utf8')).toBe(`${result.shimDirectory}\n`)
+      expect(readFileSync(githubEnv, 'utf8')).toBe(`npm_execpath=${result.cliPath}\n`)
       expect(readNpmOutput(['--version'], { npmCliPath: result.cliPath })).toBe('12.0.2')
+      expect(readNpmOutput(['prefix', '--global'], { env })).toBe(prefix)
+      expect(readNpmOutput(['config', 'get', 'cache'], { env })).toBe(cache)
     } finally {
       rmSync(directory, { recursive: true, force: true })
     }
@@ -481,16 +582,17 @@ else if (JSON.stringify(args) === ${JSON.stringify(JSON.stringify(expectedInstal
   test('persists only a validated npm shim directory for the next GitHub Actions step', () => {
     const directory = mkdtempSync(join(tmpdir(), 'omp-desktop-github-path-'))
     const githubPath = join(directory, 'github-path')
+    const shimDirectory = join(resolve('/'), 'opt', 'repository-npm', 'bin')
     writeFileSync(githubPath, '/existing/tool\n')
     try {
-      expect(persistNpmShimDirectory('/opt/repository-npm/bin', githubPath, 'linux')).toBe(true)
+      expect(persistNpmShimDirectory(shimDirectory, githubPath)).toBe(true)
       const entries = readFileSync(githubPath, 'utf8').trimEnd().split('\n')
-      expect(entries).toEqual(['/existing/tool', '/opt/repository-npm/bin'])
+      expect(entries).toEqual(['/existing/tool', shimDirectory])
       // GitHub prepends GITHUB_PATH entries to PATH for subsequent steps, so
       // the persisted entry becomes the npm selected by the next npm command.
-      expect(entries.at(-1)).toBe('/opt/repository-npm/bin')
-      expect(() => persistNpmShimDirectory('/opt/npm\n/injected', githubPath, 'linux')).toThrow(/absolute single-line path/)
-      expect(() => persistNpmShimDirectory('/opt/npm/bin', 'relative/github-path', 'linux')).toThrow(/absolute single-line path/)
+      expect(entries.at(-1)).toBe(shimDirectory)
+      expect(() => persistNpmShimDirectory(`${shimDirectory}\n/injected`, githubPath)).toThrow(/absolute single-line path/)
+      expect(() => persistNpmShimDirectory(shimDirectory, 'relative/github-path')).toThrow(/absolute single-line path/)
     } finally {
       rmSync(directory, { recursive: true, force: true })
     }
@@ -499,12 +601,13 @@ else if (JSON.stringify(args) === ${JSON.stringify(JSON.stringify(expectedInstal
   test('persists the bootstrapped npm CLI for direct Node release entry points', () => {
     const directory = mkdtempSync(join(tmpdir(), 'omp-desktop-github-env-'))
     const githubEnv = join(directory, 'github-env')
+    const cliPath = join(resolve('/'), 'opt', 'repository-npm', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js')
     writeFileSync(githubEnv, '')
     try {
-      expect(persistNpmCliPath('/opt/repository-npm/lib/node_modules/npm/bin/npm-cli.js', githubEnv, 'linux')).toBe(true)
-      expect(readFileSync(githubEnv, 'utf8')).toBe('npm_execpath=/opt/repository-npm/lib/node_modules/npm/bin/npm-cli.js\n')
-      expect(() => persistNpmCliPath('/opt/npm\n/injected', githubEnv, 'linux')).toThrow(/absolute single-line path/)
-      expect(() => persistNpmCliPath('/opt/npm/bin/npm-cli.js', 'relative/github-env', 'linux')).toThrow(/absolute single-line path/)
+      expect(persistNpmCliPath(cliPath, githubEnv)).toBe(true)
+      expect(readFileSync(githubEnv, 'utf8')).toBe(`npm_execpath=${cliPath}\n`)
+      expect(() => persistNpmCliPath(`${cliPath}\n/injected`, githubEnv)).toThrow(/absolute single-line path/)
+      expect(() => persistNpmCliPath(cliPath, 'relative/github-env')).toThrow(/absolute single-line path/)
     } finally {
       rmSync(directory, { recursive: true, force: true })
     }

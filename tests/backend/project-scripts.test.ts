@@ -1,4 +1,5 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { WebContents } from 'electron'
@@ -6,13 +7,30 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   PROJECT_SCRIPT_OUTPUT_LIMIT,
   PROJECT_SCRIPT_TRUNCATION_NOTICE,
+  defaultProjectShell,
+  projectScriptSpawnOptions,
   ProjectScriptRunner,
 } from '../../electron/main/project-script-runner'
 import type { ProjectScriptExitEvent, ProjectScriptOutputEvent } from '../../src/types/api'
 
 const dirs: string[] = []
-const shell = '/bin/sh'
+const shell = process.platform === 'win32' ? defaultProjectShell() : '/bin/sh'
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }) })
+
+function shellArgument(value: string): string {
+  if (/\0|\r|\n/.test(value)) throw new Error('fixture paths must be single-line')
+  if (process.platform !== 'win32') return `'${value.replaceAll("'", "'\\''")}'`
+  // cmd expands percent variables (and bang variables with delayed expansion)
+  // even inside double quotes, so reject them rather than relying on parser luck.
+  if (/["%!]/.test(value)) throw new Error('fixture path cannot be represented safely by cmd.exe')
+  return `"${value}"`
+}
+
+function nodeScript(cwd: string, name: string, source: string, args: string[] = []): string {
+  const script = join(cwd, `${name}.cjs`)
+  writeFileSync(script, source)
+  return [process.execPath, script, ...args].map(shellArgument).join(' ')
+}
 
 const waitFor = async (predicate: () => boolean, timeout = 8_000): Promise<void> => {
   const started = Date.now()
@@ -51,12 +69,50 @@ const outputOf = (events: ScriptEvents[], runId: string): string =>
     .join('')
 
 describe('ProjectScriptRunner', () => {
+  it('uses verbatim argv only for native cmd.exe project scripts', () => {
+    expect(projectScriptSpawnOptions('C:\\Windows\\System32\\cmd.exe', 'win32')).toMatchObject({ windowsVerbatimArguments: true, windowsHide: true, detached: false })
+    expect(projectScriptSpawnOptions('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe', 'win32')).toMatchObject({ windowsVerbatimArguments: false, detached: false })
+    expect(projectScriptSpawnOptions('cmd.exe', 'linux')).toMatchObject({ windowsVerbatimArguments: false, detached: true })
+    expect(projectScriptSpawnOptions('/bin/sh', 'linux')).toMatchObject({ windowsVerbatimArguments: false, detached: true })
+  })
+
+  it('preserves the complete original cmd command inside one /S outer quote pair', async () => {
+    const cwd = tempDir('omp-desktop-script-cmd-')
+    const { contents, events } = owner()
+    const calls: Array<{ file: string; args: string[]; options: SpawnOptions }> = []
+    const command = '"C:\\Program Files\\node.exe" "C:\\work dir\\script.cjs" "%PATH%" "!BANG!" ""'
+    const runner = new ProjectScriptRunner(
+      async () => cwd,
+      () => 'C:\\Windows\\System32\\cmd.exe',
+      async (path) => path,
+      async () => ({ release: () => undefined }),
+      'win32',
+      (file: string, args: string[], options: SpawnOptions): ChildProcess => {
+        calls.push({ file, args, options })
+        return spawn(process.execPath, ['-e', 'process.exit(0)'], { stdio: ['ignore', 'pipe', 'pipe'] })
+      },
+    )
+
+    await runner.start(contents, { runId: 'run-cmd-quoting', projectId: 'project-1', kind: 'run', cwd, command })
+    expect(calls).toHaveLength(1)
+    const call = calls[0]!
+    expect(call.file).toBe('C:\\Windows\\System32\\cmd.exe')
+    expect(call.args).toEqual(['/D', '/S', '/C', `"${command}"`])
+    expect(call.args[3]?.slice(1, -1)).toBe(command)
+    expect(call.options).toMatchObject({ windowsVerbatimArguments: true, windowsHide: true, detached: false })
+    await waitFor(() => exitEvents(events).length === 1)
+    expect(exitEvents(events)[0]).toEqual({ runId: 'run-cmd-quoting', exitCode: 0, cancelled: false })
+  })
+
   it('reports the exit code and streams output for a finished script', async () => {
     const cwd = tempDir('omp-desktop-script-exit-')
     const { contents, events } = owner()
     const runner = new ProjectScriptRunner(async () => cwd, () => shell)
 
-    await runner.start(contents, { runId: 'run-exit', projectId: 'project-1', kind: 'run', cwd, command: 'printf script-out; exit 7' })
+    await runner.start(contents, {
+      runId: 'run-exit', projectId: 'project-1', kind: 'run', cwd,
+      command: nodeScript(cwd, 'exit-seven', "process.stdout.write('script-out'); process.exit(7)"),
+    })
     await waitFor(() => exitEvents(events).length === 1)
 
     expect(exitEvents(events)[0]).toEqual({ runId: 'run-exit', exitCode: 7, cancelled: false })
@@ -67,8 +123,7 @@ describe('ProjectScriptRunner', () => {
     const cwd = tempDir('omp-desktop-script-bound-')
     const { contents, events } = owner()
     const runner = new ProjectScriptRunner(async () => cwd, () => shell)
-    const executable = process.execPath.replaceAll("'", "'\\''")
-    const command = `'${executable}' -e 'process.stdout.write("y".repeat(${PROJECT_SCRIPT_OUTPUT_LIMIT * 2}))'`
+    const command = nodeScript(cwd, 'bounded-output', `process.stdout.write('y'.repeat(${PROJECT_SCRIPT_OUTPUT_LIMIT * 2}))`)
 
     await runner.start(contents, { runId: 'run-bound', projectId: 'project-1', kind: 'setup', cwd, command })
     await waitFor(() => exitEvents(events).length === 1)
@@ -88,14 +143,14 @@ describe('ProjectScriptRunner', () => {
 
     try {
       const results = await Promise.allSettled([
-        runner.start(contents, { runId: 'first', projectId: 'project-1', kind: 'run', cwd, command: 'sleep 30' }),
-        runner.start(contents, { runId: 'second', projectId: 'project-1', kind: 'run', cwd, command: 'true' }),
+        runner.start(contents, { runId: 'first', projectId: 'project-1', kind: 'run', cwd, command: nodeScript(cwd, 'first-run', 'setInterval(() => {}, 1000)') }),
+        runner.start(contents, { runId: 'second', projectId: 'project-1', kind: 'run', cwd, command: nodeScript(cwd, 'second-run', 'process.exit(0)') }),
       ])
       expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1)
       expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1)
 
       // A different kind for the same project is a separate slot.
-      await expect(runner.start(contents, { runId: 'setup', projectId: 'project-1', kind: 'setup', cwd, command: 'exit 0' })).resolves.toEqual({ runId: 'setup' })
+      await expect(runner.start(contents, { runId: 'setup', projectId: 'project-1', kind: 'setup', cwd, command: nodeScript(cwd, 'setup-run', 'process.exit(0)') })).resolves.toEqual({ runId: 'setup' })
       await waitFor(() => exitEvents(events).some((event) => event.runId === 'setup'))
     } finally {
       await runner.killAll()
@@ -114,7 +169,7 @@ describe('ProjectScriptRunner', () => {
       projectId: 'project-1',
       kind: 'run',
       cwd,
-      command: `sh -c 'echo $$ > ${pidFile}; while true; do sleep 1; done'`,
+      command: nodeScript(cwd, 'dev-server', "require('node:fs').writeFileSync(process.argv[2], String(process.pid)); setInterval(() => {}, 1000)", [pidFile]),
     })
     await waitFor(() => existsSync(pidFile))
     const pid = Number(readFileSync(pidFile, 'utf8').trim())
@@ -137,7 +192,7 @@ describe('ProjectScriptRunner', () => {
     const begin = vi.fn(async () => ({ release }))
     const runner = new ProjectScriptRunner(async () => cwd, () => shell, async (path) => path, begin)
 
-    await runner.start(contents, { runId: 'run-lease', projectId: 'project-1', kind: 'run', cwd, command: 'exit 0' })
+    await runner.start(contents, { runId: 'run-lease', projectId: 'project-1', kind: 'run', cwd, command: nodeScript(cwd, 'exit-zero', 'process.exit(0)') })
     expect(begin).toHaveBeenCalledWith(cwd, expect.objectContaining({ kind: 'script', scriptId: 'run-lease' }))
     expect(release).not.toHaveBeenCalled()
     await waitFor(() => release.mock.calls.length === 1)
@@ -152,10 +207,10 @@ describe('ProjectScriptRunner', () => {
     const begin = vi.fn(async () => ({ release: () => undefined }))
     const runner = new ProjectScriptRunner(authorize, () => shell, async (path) => path, begin)
 
-    await expect(runner.start(contents, { runId: 'run-denied', projectId: 'project-1', kind: 'run', cwd, command: 'exit 0' })).rejects.toThrow('not authorized')
+    await expect(runner.start(contents, { runId: 'run-denied', projectId: 'project-1', kind: 'run', cwd, command: nodeScript(cwd, 'exit-zero', 'process.exit(0)') })).rejects.toThrow('not authorized')
     expect(begin).not.toHaveBeenCalled()
 
-    await expect(runner.start(contents, { runId: 'run-allowed', projectId: 'project-1', kind: 'run', cwd, command: 'exit 0' })).resolves.toEqual({ runId: 'run-allowed' })
+    await expect(runner.start(contents, { runId: 'run-allowed', projectId: 'project-1', kind: 'run', cwd, command: nodeScript(cwd, 'exit-zero', 'process.exit(0)') })).resolves.toEqual({ runId: 'run-allowed' })
   })
 
   it('kills runs bound to a deleted session or an evicted project folder', async () => {
@@ -169,7 +224,7 @@ describe('ProjectScriptRunner', () => {
       projectId: 'project-1',
       kind: 'run',
       cwd,
-      command: `sh -c 'echo $$ > ${pidFile}; while true; do sleep 1; done'`,
+      command: nodeScript(cwd, 'session-server', "require('node:fs').writeFileSync(process.argv[2], String(process.pid)); setInterval(() => {}, 1000)", [pidFile]),
       sessionPath: join(cwd, 'session.jsonl'),
     })
     await waitFor(() => existsSync(pidFile))
@@ -181,7 +236,7 @@ describe('ProjectScriptRunner', () => {
       try { process.kill(pid, 0); return false } catch { return true }
     })
 
-    await runner.start(contents, { runId: 'run-project', projectId: 'project-2', kind: 'run', cwd, command: 'sleep 30' })
+    await runner.start(contents, { runId: 'run-project', projectId: 'project-2', kind: 'run', cwd, command: nodeScript(cwd, 'project-server', 'setInterval(() => {}, 1000)') })
     await runner.killForProjectRoots([cwd])
     await waitFor(() => exitEvents(events).some((event) => event.runId === 'run-project'))
   })

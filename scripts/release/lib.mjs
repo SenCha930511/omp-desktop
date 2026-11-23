@@ -22,6 +22,24 @@ export function validateAbsoluteSingleLinePath(value, label, platform = process.
  * Windows npm and npx ship as .cmd shims Node refuses to spawn without a shell, so known
  * commands run their JavaScript entrypoint directly under the current Node executable.
  */
+export function normalizedNpmEnvironment(env, platform) {
+  let normalized = env
+  for (const name of ['npm_execpath', 'npm_config_cache', 'npm_config_prefix']) {
+    const uppercase = name.toUpperCase()
+    const variants = Object.keys(env).filter((key) => key.toLowerCase() === name)
+    if (!variants.length || (platform !== 'win32' && variants.length === 1 && variants[0] === name)) continue
+    // The object no longer records whether a value came from the caller or
+    // its parent. Canonical lowercase is the explicit override, exact
+    // uppercase is the conventional ambient fallback, and any remaining
+    // mixed-case alias is accepted deterministically in object-key order.
+    const value = env[name] ?? env[uppercase] ?? env[variants[0]]
+    if (normalized === env) normalized = { ...env }
+    for (const key of variants) delete normalized[key]
+    if (value !== undefined) normalized[name] = value
+  }
+  return normalized
+}
+
 export function resolveCommandInvocation(command, args, platform = process.platform, env = process.env) {
   if (command === 'node') return { file: process.execPath, args: [...args], shell: false }
   if (command === 'install-electron') {
@@ -31,7 +49,7 @@ export function resolveCommandInvocation(command, args, platform = process.platf
     return { file: process.execPath, args: [localRequire.resolve('electron-builder/cli.js'), ...args], shell: false }
   }
   if (command === 'npm') {
-    const npmCli = env.npm_execpath
+    const npmCli = normalizedNpmEnvironment(env, platform).npm_execpath
     if (npmCli) {
       const validatedNpmCli = validateAbsoluteSingleLinePath(npmCli, 'npm_execpath', platform)
       if (!/\.[cm]?js$/i.test(validatedNpmCli)) {
@@ -50,9 +68,11 @@ export function resolveCommandInvocation(command, args, platform = process.platf
 }
 
 export function runCommand(command, args, options = {}) {
-  const env = options.env ?? process.env
-  const invocation = resolveCommandInvocation(command, args, options.platform ?? process.platform, env)
-  const result = spawnSync(invocation.file, invocation.args, {
+  const platform = options.platform ?? process.platform
+  const env = normalizedNpmEnvironment(options.env ?? process.env, platform)
+  const invocation = resolveCommandInvocation(command, args, platform, env)
+  const spawnProcess = options.spawnProcess ?? spawnSync
+  const result = spawnProcess(invocation.file, invocation.args, {
     stdio: 'inherit',
     env,
     shell: invocation.shell,
@@ -139,7 +159,7 @@ function removeFinalLineEnding(output) {
 
 export function readNpmOutput(args, options = {}) {
   const platform = options.platform ?? process.platform
-  const env = options.env ?? process.env
+  const env = normalizedNpmEnvironment(options.env ?? process.env, platform)
   const invocation = options.npmCliPath
     ? {
         file: process.execPath,

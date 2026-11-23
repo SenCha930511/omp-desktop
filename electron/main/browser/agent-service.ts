@@ -415,6 +415,7 @@ export class AgentBrowserService {
 
   async openTab(sessionKey: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
     this.requireOpen()
+    sessionKey = canonicalSessionPath(sessionKey)
     const url = params.url === undefined ? 'about:blank' : requireString(params.url, 'url', { min: 1, max: 2048, trim: true })
     if (!isAllowedTabUrl(url)) throw new Error('Only credential-free http(s) URLs can be opened in the OMP Desktop browser')
     const sessionTabs = [...this.tabs.values()].filter((tab) => tab.sessionKey === sessionKey)
@@ -451,6 +452,7 @@ export class AgentBrowserService {
   }
 
   async listTabs(sessionKey: string): Promise<Record<string, unknown>> {
+    sessionKey = canonicalSessionPath(sessionKey)
     const active = this.activeBySession.get(sessionKey)
     const tabs: Array<Record<string, unknown>> = [...this.tabs.values()].filter((tab) => tab.sessionKey === sessionKey).map((tab) => ({
       tabId: tab.tabId,
@@ -474,6 +476,7 @@ export class AgentBrowserService {
   }
 
   async closeTabScoped(sessionKey: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+    sessionKey = canonicalSessionPath(sessionKey)
     const tabId = requireString(params.tabId, 'tabId', { min: 1, max: 64 })
     if (tabId === PREVIEW_TAB_ID) throw new Error('The Preview tab belongs to the user and cannot be closed by the agent')
     const tab = this.requireSessionTab(sessionKey, tabId)
@@ -482,6 +485,7 @@ export class AgentBrowserService {
   }
 
   async selectTabScoped(sessionKey: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+    sessionKey = canonicalSessionPath(sessionKey)
     const tabId = requireString(params.tabId, 'tabId', { min: 1, max: 64 })
     if (tabId === PREVIEW_TAB_ID) {
       if (!this.previewFor(sessionKey)) throw new Error("The user's Preview tab is not open for this thread right now")
@@ -688,6 +692,7 @@ export class AgentBrowserService {
     action: (tab: TabState, guest: WebContents) => Promise<Record<string, unknown>>,
   ): Promise<Record<string, unknown>> {
     this.requireOpen()
+    sessionKey = canonicalSessionPath(sessionKey)
     let tab: TabState
     if (params.tabId !== undefined) {
       const tabId = requireString(params.tabId, 'tabId', { min: 1, max: 64 })

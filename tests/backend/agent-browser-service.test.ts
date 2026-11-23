@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events'
+import { resolve } from 'node:path'
 import type { WebContents } from 'electron'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentBrowserService } from '../../electron/main/browser/agent-service'
@@ -128,7 +129,7 @@ function fixture(options?: { actionTimeoutMs?: number; backgroundGraceMs?: numbe
     const opening = service.openTab(sessionKey, url === undefined ? {} : { url })
     // The renderer would mount a webview for the pushed pending tab and report attachment.
     await new Promise((resolveTick) => setTimeout(resolveTick, 10))
-    const pending = service.state().tabs.find((tab) => !tab.attached && tab.sessionFile === sessionKey)
+    const pending = service.state().tabs.find((tab) => !tab.attached && tab.sessionFile === resolve(sessionKey))
     expect(pending).toBeDefined()
     service.attachTab(pending!.tabId, guest.id)
     const result = await opening
@@ -203,7 +204,7 @@ describe('AgentBrowserService', () => {
     expect(result.url).toBe('https://example.com/')
     const snapshot = service.state()
     expect(snapshot.tabs).toHaveLength(1)
-    expect(snapshot.tabs[0]).toMatchObject({ tabId, sessionFile: '/sessions/a.jsonl', attached: true, active: true })
+    expect(snapshot.tabs[0]).toMatchObject({ tabId, sessionFile: resolve('/sessions/a.jsonl'), attached: true, active: true })
   })
 
   it('rejects unapproved guests and guests already bound to another tab', async () => {
@@ -223,7 +224,7 @@ describe('AgentBrowserService', () => {
   it('promptly rejects actions waiting for attachment when their session is revoked', async () => {
     const { service } = fixture()
     const opening = service.openTab('/sessions/a.jsonl', {})
-    const pending = service.state().tabs.find((tab) => tab.sessionFile === '/sessions/a.jsonl')
+    const pending = service.state().tabs.find((tab) => tab.sessionFile === resolve('/sessions/a.jsonl'))
     expect(pending).toBeDefined()
     const action = service.evaluate('/sessions/a.jsonl', { tabId: pending!.tabId, code: "'never-executed'" })
     const openingOutcome = opening.then(() => null, (error: unknown) => error)
@@ -286,7 +287,7 @@ describe('AgentBrowserService', () => {
     const glide = pointerEvents.at(-1)!
     expect(glide).toMatchObject({ from: { x: 20, y: 30 }, to: { x: 320, y: 230 }, action: 'click' })
     expect(glide.durationMs).toBeGreaterThan(0)
-    expect(glide.sessionFile).toBe('/sessions/a.jsonl')
+    expect(glide.sessionFile).toBe(resolve('/sessions/a.jsonl'))
     // The glide sends a trail of intermediate mouseMoved events ending at the target.
     const moves = guest.inputEvents.filter((event) => event.type === 'mouseMoved')
     expect(moves.length).toBeGreaterThanOrEqual(5)
@@ -392,7 +393,7 @@ describe('AgentBrowserService', () => {
     guest.destroy()
     expect(service.state().tabs.find((tab) => tab.tabId === tabId)).toMatchObject({
       tabId,
-      sessionFile: '/sessions/a.jsonl',
+      sessionFile: resolve('/sessions/a.jsonl'),
       url: 'https://example.com/',
       title: 'Example',
       attached: false,
@@ -490,7 +491,7 @@ describe('AgentBrowserService', () => {
     }
     expect(other.guest.destroyed).toBe(false)
     expect(service.state().tabs).toEqual([
-      expect.objectContaining({ tabId: other.tabId, sessionFile: '/sessions/b.jsonl', attached: true }),
+      expect.objectContaining({ tabId: other.tabId, sessionFile: resolve('/sessions/b.jsonl'), attached: true }),
     ])
     expect((await service.listTabs('/sessions/a.jsonl')).tabs).toEqual([])
     expect(service.closeForSession('/sessions/a.jsonl')).toBe(false)
@@ -633,14 +634,14 @@ describe('AgentBrowserService', () => {
   it('announces every agent action so the UI can surface the Browser panel', async () => {
     const { service, activityEvents, newGuest, openAttached } = fixture()
     const { tabId } = await openAttached('/sessions/a.jsonl', 'https://example.com/')
-    expect(activityEvents).toEqual([{ sessionFile: '/sessions/a.jsonl', tabId }])
+    expect(activityEvents).toEqual([{ sessionFile: resolve('/sessions/a.jsonl'), tabId }])
     await service.readPage('/sessions/a.jsonl', {})
-    expect(activityEvents.at(-1)).toEqual({ sessionFile: '/sessions/a.jsonl', tabId })
+    expect(activityEvents.at(-1)).toEqual({ sessionFile: resolve('/sessions/a.jsonl'), tabId })
     // Actions on the adopted preview tab announce with the preview id.
     const preview = newGuest()
     service.setPreviewContext(preview.id, '/sessions/b.jsonl')
     await service.readPage('/sessions/b.jsonl', {})
-    expect(activityEvents.at(-1)).toEqual({ sessionFile: '/sessions/b.jsonl', tabId: 'preview' })
+    expect(activityEvents.at(-1)).toEqual({ sessionFile: resolve('/sessions/b.jsonl'), tabId: 'preview' })
   })
 
   it('rejects unapproved preview guests and clears the binding when the guest dies', async () => {
@@ -741,7 +742,7 @@ describe('AgentBrowserService', () => {
     await vi.waitFor(() => {
       expect(activityEvents.length).toBeGreaterThan(countBeforeDetach)
     })
-    expect(activityEvents.at(-1)).toEqual({ sessionFile: '/sessions/a.jsonl', tabId })
+    expect(activityEvents.at(-1)).toEqual({ sessionFile: resolve('/sessions/a.jsonl'), tabId })
 
     const replacement = newGuest()
     service.attachTab(tabId, replacement.id)
