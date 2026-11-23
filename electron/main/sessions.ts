@@ -266,7 +266,8 @@ export class SessionService {
   private normalizedFilePath(original: SessionMetadata): string {
     const cached = this.normalizedSessionPaths.get(original)
     if (cached) return cached.filePath
-    const filePath = resolve(original.filePath)
+    const resolvedFilePath = resolve(original.filePath)
+    const filePath = resolvedFilePath === original.filePath ? original.filePath : resolvedFilePath
     this.normalizedSessionPaths.set(original, { filePath })
     return filePath
   }
@@ -275,7 +276,8 @@ export class SessionService {
     const filePath = this.normalizedFilePath(original)
     const cached = this.normalizedSessionPaths.get(original)
     if (cached?.projectPath !== undefined) return cached.projectPath
-    const projectPath = resolve(original.projectPath)
+    const resolvedProjectPath = resolve(original.projectPath)
+    const projectPath = resolvedProjectPath === original.projectPath ? original.projectPath : resolvedProjectPath
     this.normalizedSessionPaths.set(original, { filePath, projectPath })
     return projectPath
   }
