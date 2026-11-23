@@ -1,6 +1,6 @@
 # Fast-anything performance pass
 
-This pass follows the `fast-anything` rule: measure first, port only the work that stays hot, and keep the zero-native packaging gates. The branch is `perf/fast-anything-plan`, cut from `origin/main` at `465cccd`.
+This pass follows the `fast-anything` rule. Measure first, port only the work that stays hot, and keep the zero-native packaging gates. The branch is `perf/fast-anything-plan`, cut from `origin/main` at `465cccd`.
 
 ## Scope
 
@@ -77,9 +77,24 @@ The project service is split out of the main entry. The entry is 483,248 bytes a
 
 The 656,910-byte largest chunk in the planning note came from an older build. The current main already lazy-loads the transcript, composer, inspector, and settings pages.
 
-## Deferred work
+## Rust/WASM core
 
-Rust or WASM stays out. The measured main-process work is about 101 ms for a 50 MiB cold open and 21 ms for 2,000 tool results. This pass found no evidence that the parser is at least 5 percent of whole-app wall time. A native module would break the zero-native packaging gates. A WASM parser would need a second implementation, a fallback switch, and renderer CSP work if it ever moved out of the main process. Revisit only with a full-app CPU profile that shows the parser above the threshold.
+The OMP metadata cold scan is ported to Rust in `crates/omp-jsonl-core`. The crate parses the JSONL tail with `serde_json`, mirrors the bucketed accumulator fields, and returns one accumulator object. It does not use `wasm-bindgen` or a native addon. The raw ABI copies the input bytes and three default strings into linear memory and reads one JSON result.
+
+`createOmpSessionMetadataReader` uses the core for the first read of an OMP session file up to 64 MiB. It parses the 256-byte title slot inside the same call, so the fast path reads the file once. Appends and rewrites use the existing incremental TS reader. A fallback result, a missing wasm, a disabled flag, or any unsupported timestamp shape returns to the TS path. `OMP_DESKTOP_DISABLE_WASM=1` forces the TS path.
+
+The artifact is `assets/wasm/omp-jsonl-core.wasm` (85,993 bytes), and `npm run build:bundle` copies it to `out/main/omp-jsonl-core.wasm`. It stays inside `app.asar`, with no `app.asar.unpacked` entry and no Electron fuse change. `scripts/release/lib.mjs` requires the wasm in the packaged ASAR.
+
+| Workload | TS | WASM | Change |
+|---|---:|---:|---:|
+| 1,000 cold OMP session files | 150.9 ms | 94.6 ms | 1.59x faster |
+| 27.6 MiB OMP session file | 48.1 ms | 46.9 ms | 1.03x faster |
+| 58 real OMP sessions | n/a | n/a | 58 fast path, 0 mismatches |
+| 500 local JSONL files | n/a | n/a | 499 fast path, 1 fallback, 0 mismatches |
+
+The small-file win comes from one read per file and a single JSONL pass. Large files are dominated by `readFile` and JSON parsing, where the core is roughly even. The fast path is on by default because the cold catalog scan is the target workload.
+
+## Deferred work
 
 Dynamic KaTeX loading stays out. The math tests render synchronously with `renderToStaticMarkup`. The initial renderer is about 43 KiB under budget, so the change would buy little today and require an async test contract.
 
@@ -89,4 +104,4 @@ Removing the `structuredClone` on a transcript cache hit stays out. `SessionServ
 
 ## Verification
 
-Canonical commands are in [validation.md](validation.md). The final branch run is recorded in the pull request checks: typecheck, lint, format, coverage, bundle size, hermetic Electron end-to-end, Windows state migration, and packaging smoke.
+Canonical commands are in [validation.md](validation.md). The final branch run is recorded in the pull request checks: typecheck, lint, format, the WASM equivalence benchmark, coverage, bundle size, hermetic Electron end-to-end, Windows state migration, and packaging smoke.

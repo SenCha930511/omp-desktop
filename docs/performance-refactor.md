@@ -4,7 +4,7 @@ The refactor keeps OMP session files authoritative and preserves IPC sender/path
 
 ## Fast-anything pass (2026-11-23)
 
-The measured pass covers streaming trajectory previews, Markdown block commits, search indexing, todo caching, main-process sorting and transcript assembly, and KaTeX font trimming. See [performance-fast-anything.md](performance-fast-anything.md) for the baseline, final numbers, and deferred work.
+The measured pass covers streaming trajectory previews, Markdown block commits, search indexing, todo caching, main-process sorting and transcript assembly, KaTeX font trimming, and the Rust/WASM OMP metadata cold scan. See [performance-fast-anything.md](performance-fast-anything.md) for the baseline, final numbers, and deferred work.
 
 ## Verification units
 
