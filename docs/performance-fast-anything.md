@@ -64,14 +64,14 @@ The OMP title slot uses one `open` and `read` through a new `readPrefix` seam. I
 
 The renderer keeps only WOFF2 KaTeX fonts. The build removes 39 WOFF and TTF files, and `release:bundle-size` fails if they return.
 
-The project service is split out of the main entry. The entry is 483,248 bytes against a 557,056-byte budget. The project chunk is 75,736 bytes. This is a measurement split, not a reduction in total main-process JavaScript.
+The project service is split out of the main entry. The entry is 488,759 bytes against a 557,056-byte budget. The project chunk is 74,885 bytes. This is a measurement split, not a reduction in total main-process JavaScript.
 
 | Metric | Baseline | Final | Budget |
 |---|---:|---:|---:|
-| Main entry | 556,078 B | 483,248 B | 557,056 B |
-| Initial renderer | 1,305,388 B | 1,307,402 B | 1,351,680 B |
-| Largest renderer chunk | 350,226 B | 352,240 B | 655,360 B |
-| Renderer JS and CSS | 1,899,784 B | 1,900,524 B | 2,375,680 B |
+| Main entry | 556,078 B | 488,759 B | 557,056 B |
+| Initial renderer | 1,305,388 B | 1,307,421 B | 1,351,680 B |
+| Largest renderer chunk | 350,226 B | 352,259 B | 655,360 B |
+| Renderer JS and CSS | 1,899,784 B | 1,900,535 B | 2,375,680 B |
 
 The 656,910-byte largest chunk in the planning note came from an older build. The current main already lazy-loads the transcript, composer, inspector, and settings pages.
 
