@@ -1131,18 +1131,36 @@ describe('JsonStateStore', () => {
     const { mkdirSync } = await import('node:fs')
     mkdirSync(sessionRoot)
     const transcript = join(sessionRoot, 'session.jsonl')
-    writeFileSync(transcript, '{"type":"session"}\n')
+    const projectPath = join(dir, 'project')
+    const transcriptSource = `${JSON.stringify({ type: 'session', id: 'visibility-session', cwd: projectPath, timestamp: '2026-01-02T03:04:05.000Z' })}\n${JSON.stringify({ type: 'session_info', name: 'Visibility sentinel', timestamp: '2026-01-02T03:04:06.000Z' })}\n`
+    writeFileSync(transcript, transcriptSource)
+    const canonicalTranscript = realpathSync.native(transcript)
     const store = new JsonStateStore(join(dir, 'state.json'))
     const sessions = new SessionService(store, null)
     Object.defineProperty(sessions, 'sessionRoot', { value: sessionRoot })
+    const beforeRecord = (await sessions.list(undefined, false, true))[0]!
+    expect(beforeRecord).toMatchObject({
+      id: 'visibility-session',
+      filePath: canonicalTranscript,
+      projectPath,
+      title: 'Visibility sentinel',
+      createdAt: '2026-01-02T03:04:05.000Z',
+      updatedAt: '2026-01-02T03:04:06.000Z',
+      archived: false,
+    })
+
     await sessions.archive(transcript, true)
-    expect(store.snapshot().archivedSessions).toContain(realpathSync(transcript))
+    // Keep the exact native physical identity: portable realpath and native
+    // realpath may preserve different supplied aliases on Windows.
+    expect(store.snapshot().archivedSessions).toEqual([canonicalTranscript])
     expect(await sessions.list()).toHaveLength(0)
-    expect((await sessions.list(undefined, true))[0]?.archived).toBe(true)
+    expect((await sessions.list(undefined, true))[0]).toEqual({ ...beforeRecord, archived: true })
+    expect(readFileSync(transcript, 'utf8')).toBe(transcriptSource)
+
     await sessions.archive(transcript, false)
-    expect(store.snapshot().archivedSessions).not.toContain(realpathSync(transcript))
-    expect((await sessions.list())[0]?.archived).toBe(false)
-    expect(readFileSync(transcript, 'utf8')).toBe('{"type":"session"}\n')
+    expect(store.snapshot().archivedSessions).toEqual([])
+    expect((await sessions.list())[0]).toEqual(beforeRecord)
+    expect(readFileSync(transcript, 'utf8')).toBe(transcriptSource)
   })
 
 })
