@@ -13,13 +13,22 @@
 .title-toolbar__identity strong { max-width: 28vw; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 12.5px; font-weight: 540; }
 .title-toolbar__actions { justify-content: flex-end; }
 .title-toolbar__overview { position: relative; }
-.toolbar-overview { position: absolute; z-index: 90; top: calc(100% + 8px); right: 0; width: min(350px, calc(100vw - 24px)); max-height: min(640px, calc(100vh - 76px)); overflow-y: auto; display: grid; gap: 0; padding: 14px; border: 1px solid var(--border-strong); border-radius: 12px; color: var(--text); background: var(--surface-raised); box-shadow: var(--shadow-popover); cursor: default; }
+.toolbar-overview { position: absolute; z-index: 90; top: calc(100% + 8px); right: 0; width: min(380px, calc(100vw - 24px)); max-height: min(640px, calc(100vh - 76px)); overflow-x: hidden; overflow-y: auto; display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; padding: 14px; border: 1px solid var(--border-strong); border-radius: 12px; color: var(--text); background: var(--surface-raised); box-shadow: var(--shadow-popover); cursor: default; }
+.toolbar-overview > * { min-width: 0; }
 /* A toolbar popover hangs below the 52px header, where the compact inspector
    (z-index 80) would cover it; lift the header only while one is open. */
 .title-toolbar:has(.toolbar-overview) { z-index: 95; }
-.toolbar-overview__hero { padding-bottom: 14px; }
-.toolbar-overview__hero h2 { margin: 10px 0 6px; font-size: 16px; }
+.toolbar-overview__hero { min-width: 0; padding-bottom: 14px; }
+.toolbar-overview__hero h2 { margin: 10px 0 6px; font-size: 16px; overflow-wrap: anywhere; }
 .toolbar-overview__hero h3 { margin: 10px 0 4px; color: var(--text-secondary); font-size: 11px; font-weight: 550; }
+.toolbar-overview__hero .prose { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.toolbar-overview__hero .prose .markdown-code-block { max-width: 100%; }
+.toolbar-overview__hero .prose pre { max-width: 100%; padding: 10px 12px; overflow-x: hidden; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; font-size: 11.5px; }
+.toolbar-overview__hero .prose pre code { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
+.toolbar-overview__hero .prose table { max-width: 100%; table-layout: fixed; word-break: break-word; }
+.toolbar-overview__hero .prose .katex-display { max-width: 100%; overflow-x: auto; font-size: .94em; }
+.toolbar-overview .detail-list > div { grid-template-columns: minmax(76px, 108px) minmax(0, 1fr); }
+.toolbar-overview .detail-list dd { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .toolbar-overview__empty { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
 .toolbar-overview__summary-section { padding: 14px 0; }
 .toolbar-overview__summary-section:last-child { padding-bottom: 2px; border-bottom: 0; }

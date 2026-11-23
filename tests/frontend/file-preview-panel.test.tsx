@@ -26,45 +26,6 @@ afterEach(async () => {
 })
 
 describe('FilePreviewPanel', () => {
-  it('renders empty state and opens a file via desktop.files.pick', async () => {
-    const pick = vi.fn(async () => ({ path: '/repo/README.md', name: 'README.md' }))
-    const read = vi.fn(async (): Promise<FilePreviewPayload> => ({
-      kind: 'markdown',
-      path: '/repo/README.md',
-      name: 'README.md',
-      content: '# Hello',
-      truncated: false,
-      sizeBytes: 7,
-    }))
-    Object.defineProperty(window, 'desktop', {
-      configurable: true,
-      value: { files: { read, pick } },
-    })
-
-    const onOpenFile = vi.fn()
-    await act(async () => {
-      root.render(
-        <FilePreviewPanel
-          files={[]}
-          activeFile={null}
-          onSelectFile={vi.fn()}
-          onCloseFile={vi.fn()}
-          onOpenFile={onOpenFile}
-          onReveal={vi.fn()}
-        />,
-      )
-    })
-
-    expect(container.textContent).toContain('No file open')
-    const openBtn = container.querySelector<HTMLButtonElement>('.file-preview__open-btn')!
-    await act(async () => {
-      openBtn.click()
-      await Promise.resolve()
-    })
-    expect(pick).toHaveBeenCalledOnce()
-    expect(onOpenFile).toHaveBeenCalledWith('/repo/README.md')
-  })
-
   it('renders markdown and toggles raw source view', async () => {
     const read = vi.fn(async (): Promise<FilePreviewPayload> => ({
       kind: 'markdown',
@@ -82,10 +43,7 @@ describe('FilePreviewPanel', () => {
     await act(async () => {
       root.render(
         <FilePreviewPanel
-          files={['/repo/README.md']}
-          activeFile="/repo/README.md"
-          onSelectFile={vi.fn()}
-          onCloseFile={vi.fn()}
+          filePath="/repo/README.md"
           onOpenFile={vi.fn()}
           onReveal={vi.fn()}
         />,
@@ -94,6 +52,7 @@ describe('FilePreviewPanel', () => {
       await Promise.resolve()
     })
 
+    expect(container.querySelector('.file-preview__path')?.textContent).toBe('/repo/README.md')
     expect(container.querySelector('.file-preview__markdown h1')?.textContent).toBe('Heading')
     expect(container.querySelector('.file-preview__markdown strong')?.textContent).toBe('Bold')
 
@@ -101,6 +60,48 @@ describe('FilePreviewPanel', () => {
     act(() => toggleRaw.click())
     expect(container.querySelector('.file-preview__code')).not.toBeNull()
     expect(container.querySelector('.file-preview__code')?.textContent).toContain('# Heading')
+  })
+
+  it('renders HTML preview in a partitioned webview, supports opening in a Browser tab, and toggles raw source', async () => {
+    const read = vi.fn(async (): Promise<FilePreviewPayload> => ({
+      kind: 'html',
+      path: '/repo/demo.html',
+      name: 'demo.html',
+      content: '<h1>Hello HTML</h1>',
+      truncated: false,
+      sizeBytes: 19,
+      previewUrl: 'http://127.0.0.1:41234/token/demo.html',
+    }))
+    Object.defineProperty(window, 'desktop', {
+      configurable: true,
+      value: { files: { read, pick: vi.fn() } },
+    })
+
+    const onOpenInBrowser = vi.fn()
+    await act(async () => {
+      root.render(
+        <FilePreviewPanel
+          filePath="/repo/demo.html"
+          onOpenFile={vi.fn()}
+          onOpenInBrowser={onOpenInBrowser}
+          onReveal={vi.fn()}
+        />,
+      )
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    const webview = container.querySelector('webview.file-preview__webview')
+    expect(webview?.getAttribute('src')).toBe('http://127.0.0.1:41234/token/demo.html')
+    expect(webview?.getAttribute('partition')).toBe('persist:omp-desktop-browser')
+
+    const openBrowserBtn = container.querySelector<HTMLButtonElement>('button[aria-label="Open in Browser tab"]')!
+    act(() => openBrowserBtn.click())
+    expect(onOpenInBrowser).toHaveBeenCalledWith('http://127.0.0.1:41234/token/demo.html', 'demo.html')
+
+    const toggleRaw = container.querySelector<HTMLButtonElement>('button[aria-label="Show raw source"]')!
+    act(() => toggleRaw.click())
+    expect(container.querySelector('.file-preview__code')?.textContent).toContain('<h1>Hello HTML</h1>')
   })
 
   it('renders text files, zoomable images, and revokes PDF blob URLs on unmount', async () => {
@@ -125,10 +126,7 @@ describe('FilePreviewPanel', () => {
     await act(async () => {
       root.render(
         <FilePreviewPanel
-          files={['/repo/app.ts']}
-          activeFile="/repo/app.ts"
-          onSelectFile={vi.fn()}
-          onCloseFile={vi.fn()}
+          filePath="/repo/app.ts"
           onOpenFile={vi.fn()}
           onReveal={vi.fn()}
         />,
@@ -141,10 +139,7 @@ describe('FilePreviewPanel', () => {
     await act(async () => {
       root.render(
         <FilePreviewPanel
-          files={['/repo/chart.png']}
-          activeFile="/repo/chart.png"
-          onSelectFile={vi.fn()}
-          onCloseFile={vi.fn()}
+          filePath="/repo/chart.png"
           onOpenFile={vi.fn()}
           onReveal={vi.fn()}
         />,
@@ -160,10 +155,7 @@ describe('FilePreviewPanel', () => {
     await act(async () => {
       root.render(
         <FilePreviewPanel
-          files={['/repo/doc.pdf']}
-          activeFile="/repo/doc.pdf"
-          onSelectFile={vi.fn()}
-          onCloseFile={vi.fn()}
+          filePath="/repo/doc.pdf"
           onOpenFile={vi.fn()}
           onReveal={vi.fn()}
         />,

@@ -149,4 +149,57 @@ describe('FilePreviewService', () => {
     expect(await service.readFile(bigImage)).toMatchObject({ kind: 'too-large', maxBytes: MAX_IMAGE_PREVIEW_BYTES })
     expect(await service.readFile(bigPdf)).toMatchObject({ kind: 'too-large', maxBytes: MAX_PDF_PREVIEW_BYTES })
   })
+
+  it('serves local HTML previews with sibling assets over loopback and blocks traversal', async () => {
+    const { projectDir, outsideDir, projects } = await createAuthorizedFixture()
+    const htmlFile = join(projectDir, 'report.html')
+    const cssFile = join(projectDir, 'style.css')
+    const outsideSecret = join(outsideDir, 'secret.txt')
+    const escapeSymlink = join(projectDir, 'escape.txt')
+    writeFileSync(htmlFile, '<!doctype html><link rel="stylesheet" href="style.css"><h1>Report</h1>')
+    writeFileSync(cssFile, 'h1 { color: red; }')
+    writeFileSync(outsideSecret, 'hidden')
+    symlinkSync(outsideSecret, escapeSymlink)
+
+    const service = new FilePreviewService({
+      authorizeProjectPath: (path) => projects.authorizePath(path),
+      windowProvider: () => null,
+    })
+
+    try {
+      const payload = await service.readFile('report.html', projectDir)
+      expect(payload).toMatchObject({
+        kind: 'html',
+        path: htmlFile,
+        name: 'report.html',
+        truncated: false,
+      })
+      if (payload.kind !== 'html' || !payload.previewUrl) throw new Error('Expected html previewUrl')
+
+      const htmlResponse = await fetch(payload.previewUrl)
+      expect(htmlResponse.status).toBe(200)
+      expect(htmlResponse.headers.get('content-type')).toContain('text/html')
+      expect(await htmlResponse.text()).toContain('<h1>Report</h1>')
+
+      const cssUrl = new URL('style.css', payload.previewUrl).href
+      const cssResponse = await fetch(cssUrl)
+      expect(cssResponse.status).toBe(200)
+      expect(cssResponse.headers.get('content-type')).toContain('text/css')
+      expect(await cssResponse.text()).toBe('h1 { color: red; }')
+
+      const normalizedTraversalResponse = await fetch(`${new URL('.', payload.previewUrl).href}%2e%2e/outside/secret.txt`)
+      expect(normalizedTraversalResponse.status).toBe(404)
+
+      const encodedTraversalResponse = await fetch(payload.previewUrl.replace('report.html', '..%2foutside%2fsecret.txt'))
+      expect(encodedTraversalResponse.status).toBe(403)
+
+      const symlinkResponse = await fetch(new URL('escape.txt', payload.previewUrl).href)
+      expect(symlinkResponse.status).toBe(403)
+
+      const badTokenResponse = await fetch(new URL('/invalidtoken/report.html', payload.previewUrl).href)
+      expect(badTokenResponse.status).toBe(404)
+    } finally {
+      await service.dispose()
+    }
+  })
 })

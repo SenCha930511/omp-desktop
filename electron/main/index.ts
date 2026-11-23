@@ -61,6 +61,7 @@ let projectScripts: ProjectScriptRunner | null = null
 let downloads: BrowserDownloadGuard | null = null
 let updateService: UpdateService | null = null
 let store: JsonStateStore | null = null
+let filePreviewService: FilePreviewService | null = null
 let automation: AutomationService | null = null
 let agentScheduleBridge: AgentScheduleBridge | null = null
 let agentBrowser: AgentBrowserService | null = null
@@ -142,6 +143,10 @@ function resolveRendererUrl(): string {
   return parsed.href
 }
 
+// Chromium's immutable built-in PDF viewer extension loads as a subframe when
+// a trusted renderer displays a same-origin blob: PDF iframe.
+const CHROMIUM_PDF_VIEWER_PREFIX = 'chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/'
+
 function isAllowedBrowserUrl(raw: string): boolean {
   if (raw === 'about:blank') return true
   try { const url = new URL(raw); return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password } catch { return false }
@@ -193,6 +198,7 @@ export function hardenRenderer(window: BrowserWindow, trustedUrl: () => string =
     const trusted = trustedUrl()
     if (isTrustedRendererUrl(event.url, trusted)) return
     if (event.isMainFrame !== true) {
+      if (event.url.startsWith(CHROMIUM_PDF_VIEWER_PREFIX)) return
       try {
         const parsed = new URL(trusted)
         const origin = parsed.origin !== 'null'
@@ -200,7 +206,7 @@ export function hardenRenderer(window: BrowserWindow, trustedUrl: () => string =
           : parsed.protocol === 'omp-desktop:' && parsed.host
             ? `${parsed.protocol}//${parsed.host}`
             : null
-        if ((origin && event.url.startsWith(`blob:${origin}/`)) || (parsed.protocol === 'file:' && event.url.startsWith('blob:null/'))) return
+        if ((origin && event.url.startsWith(`blob:${origin}/`)) || (parsed.protocol === 'file:' && (event.url.startsWith('blob:null/') || event.url.startsWith('blob:file:///')))) return
       } catch { /* fall through to deny */ }
     }
     event.preventDefault()
@@ -632,6 +638,7 @@ async function bootstrap(): Promise<void> {
     authorizeProjectPath: (path) => projects.authorizePath(path),
     windowProvider: () => mainWindow,
   })
+  filePreviewService = files
   const repositoryUseGate = new RepositoryUseGate()
   const checkouts = new CheckoutService(() => stateStore.getSettings().checkoutStrategy, projects, repositoryUseGate)
   // Git authorizes against the OMP project grants.
@@ -1040,6 +1047,7 @@ app.on('before-quit', (event) => {
   downloads?.cancelAll()
   agentBrowser?.beginShutdown()
   void settleShutdown([
+    filePreviewService?.dispose() ?? Promise.resolve(),
     agentScheduleBridge?.stop() ?? Promise.resolve(),
     agentBrowserBridge?.stop() ?? Promise.resolve(),
     agentCollaborationBridge?.stop() ?? Promise.resolve(),

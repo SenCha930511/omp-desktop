@@ -1,21 +1,18 @@
-import { Check, Code2, Copy, Eye, FolderOpen, RefreshCw, X, ZoomIn, ZoomOut } from 'lucide-react'
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { basename } from '@/lib/data'
+import { Check, Code2, Copy, Eye, FolderOpen, Globe, RefreshCw, ZoomIn, ZoomOut } from 'lucide-react'
+import { createElement, Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { writeClipboardText } from '@/lib/clipboard'
 import { errorMessage } from '@/lib/errors'
 import { useI18n } from '@/lib/i18n'
 import { MarkdownWorkspaceProvider } from '@/lib/markdown-workspace'
-import type { FilePreviewPayload } from '@/types/api'
+import { BROWSER_PARTITION, type FilePreviewPayload } from '@/types/api'
 import { MarkdownText } from '../MarkdownText'
 import { tokenizeSyntaxLine } from '../transcript/syntax'
-import { EmptyState, IconButton } from '../ui'
+import { IconButton } from '../ui'
 
 export interface FilePreviewPanelProps {
-  files: string[]
-  activeFile: string | null
-  onSelectFile(path: string): void
-  onCloseFile(path: string): void
+  filePath: string
   onOpenFile(path: string): void
+  onOpenInBrowser?(url: string, title?: string): void
   onReveal(path: string): void
 }
 
@@ -47,36 +44,30 @@ function decodeBase64ToBytes(base64: string): Uint8Array<ArrayBuffer> {
 }
 
 export function FilePreviewPanel({
-  files,
-  activeFile,
-  onSelectFile,
-  onCloseFile,
+  filePath,
   onOpenFile,
+  onOpenInBrowser,
   onReveal,
 }: FilePreviewPanelProps) {
   const { t } = useI18n()
   const [payload, setPayload] = useState<FilePreviewPayload | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const [markdownRaw, setMarkdownRaw] = useState(false)
+  const [showRaw, setShowRaw] = useState(false)
   const [copied, setCopied] = useState(false)
   const [imageZoom, setImageZoom] = useState<number | 'fit'>('fit')
   const [pdfBlobUrl, setPdfBlobUrl] = useState<string | null>(null)
+  const [reloadSeq, setReloadSeq] = useState(0)
   const loadSeqRef = useRef(0)
   const copyTimerRef = useRef<number | undefined>(undefined)
 
   useEffect(() => () => window.clearTimeout(copyTimerRef.current), [])
 
-  const loadFile = useCallback(async (targetPath: string | null) => {
+  const loadFile = useCallback(async (targetPath: string) => {
     const seq = ++loadSeqRef.current
     setError('')
     setCopied(false)
     setImageZoom('fit')
-    if (!targetPath) {
-      setPayload(null)
-      setLoading(false)
-      return
-    }
     if (typeof window === 'undefined' || !window.desktop?.files?.read) {
       setPayload(null)
       setLoading(false)
@@ -88,7 +79,7 @@ export function FilePreviewPanel({
       const next = await window.desktop.files.read(targetPath)
       if (loadSeqRef.current !== seq) return
       setPayload(next)
-      setMarkdownRaw(false)
+      setShowRaw(false)
     } catch (reason) {
       if (loadSeqRef.current !== seq) return
       setPayload(null)
@@ -99,8 +90,8 @@ export function FilePreviewPanel({
   }, [t])
 
   useEffect(() => {
-    void loadFile(activeFile)
-  }, [activeFile, loadFile])
+    void loadFile(filePath)
+  }, [filePath, loadFile])
 
   useEffect(() => {
     if (payload?.kind !== 'pdf' || typeof URL.createObjectURL !== 'function') {
@@ -116,25 +107,18 @@ export function FilePreviewPanel({
     }
   }, [payload])
 
-  const pickAndOpenFile = async () => {
-    if (!window.desktop?.files?.pick) return
-    try {
-      const picked = await window.desktop.files.pick()
-      if (picked) onOpenFile(picked.path)
-    } catch (reason) {
-      setError(errorMessage(reason))
-    }
-  }
-
   const textLines = useMemo(() => {
-    if (!payload || (payload.kind !== 'text' && payload.kind !== 'markdown')) return []
+    if (!payload || (payload.kind !== 'text' && payload.kind !== 'markdown' && payload.kind !== 'html')) return []
     return payload.content.split('\n')
   }, [payload])
 
   const highlightLines = textLines.length <= MAX_SYNTAX_HIGHLIGHT_LINES
+  const hasCopyableText = Boolean(payload && (payload.kind === 'text' || payload.kind === 'markdown' || payload.kind === 'html'))
+  const supportsRawToggle = payload?.kind === 'markdown' || payload?.kind === 'html'
+  const isFlushEmbed = !loading && !error && (payload?.kind === 'pdf' || (payload?.kind === 'html' && !showRaw))
 
   const copyContent = async () => {
-    if (!payload || (payload.kind !== 'text' && payload.kind !== 'markdown')) return
+    if (!payload || (payload.kind !== 'text' && payload.kind !== 'markdown' && payload.kind !== 'html')) return
     try {
       await writeClipboardText(payload.content)
       setCopied(true)
@@ -148,96 +132,79 @@ export function FilePreviewPanel({
   return (
     <div className="file-preview">
       <div className="file-preview__header">
-        <div className="file-preview__tabs" role="tablist" aria-label={t('filePreview.tabsAria')}>
-          {files.map((filePath) => {
-            const active = filePath === activeFile
-            const name = basename(filePath) || filePath
-            return (
-              <div key={filePath} className={`file-preview__tab${active ? ' is-active' : ''}`}>
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={active}
-                  title={filePath}
-                  className="file-preview__tab-button"
-                  onClick={() => onSelectFile(filePath)}
-                >
-                  <span>{name}</span>
-                </button>
-                <button
-                  type="button"
-                  className="file-preview__tab-close"
-                  aria-label={t('filePreview.closeFile', { name })}
-                  onClick={() => onCloseFile(filePath)}
-                >
-                  <X size={11} />
-                </button>
-              </div>
-            )
-          })}
-        </div>
+        <span className="file-preview__path" title={filePath}>
+          {filePath}
+        </span>
         <div className="file-preview__actions">
-          <button type="button" className="file-preview__open-btn" onClick={() => void pickAndOpenFile()}>
-            <FolderOpen size={13} />
-            <span>{t('filePreview.openFile')}</span>
-          </button>
-          {payload?.kind === 'markdown' ? (
+          {payload?.kind === 'html' && payload.previewUrl && onOpenInBrowser ? (
             <IconButton
               size="small"
-              label={markdownRaw ? t('filePreview.showRendered') : t('filePreview.showRaw')}
-              onClick={() => setMarkdownRaw((value) => !value)}
+              label={t('filePreview.openInBrowser')}
+              onClick={() => onOpenInBrowser(payload.previewUrl!, payload.name)}
             >
-              {markdownRaw ? <Eye size={13} /> : <Code2 size={13} />}
+              <Globe size={13} />
             </IconButton>
           ) : null}
-          {payload && (payload.kind === 'text' || payload.kind === 'markdown') ? (
+          {supportsRawToggle ? (
+            <IconButton
+              size="small"
+              label={showRaw ? t('filePreview.showRendered') : t('filePreview.showRaw')}
+              onClick={() => setShowRaw((value) => !value)}
+            >
+              {showRaw ? <Eye size={13} /> : <Code2 size={13} />}
+            </IconButton>
+          ) : null}
+          {hasCopyableText ? (
             <IconButton size="small" label={copied ? t('transcript.copied.label') : t('transcript.copy.label')} onClick={() => void copyContent()}>
               {copied ? <Check size={13} /> : <Copy size={13} />}
             </IconButton>
           ) : null}
-          {activeFile ? (
-            <>
-              <IconButton size="small" label={t('filePreview.reload')} onClick={() => void loadFile(activeFile)}>
-                <RefreshCw className={loading ? 'spin' : ''} size={13} />
-              </IconButton>
-              <IconButton size="small" label={t('filePreview.reveal')} onClick={() => onReveal(activeFile)}>
-                <FolderOpen size={13} />
-              </IconButton>
-            </>
-          ) : null}
+          <IconButton
+            size="small"
+            label={t('filePreview.reload')}
+            onClick={() => {
+              setReloadSeq((value) => value + 1)
+              void loadFile(filePath)
+            }}
+          >
+            <RefreshCw className={loading ? 'spin' : ''} size={13} />
+          </IconButton>
+          <IconButton size="small" label={t('filePreview.reveal')} onClick={() => onReveal(filePath)}>
+            <FolderOpen size={13} />
+          </IconButton>
         </div>
       </div>
 
-      <div className="file-preview__body scroll-area">
-        {!activeFile ? (
-          <EmptyState
-            icon={<Eye size={24} />}
-            title={t('filePreview.empty.title')}
-            action={
-              <button type="button" className="button button--secondary" onClick={() => void pickAndOpenFile()}>
-                {t('filePreview.openFile')}
-              </button>
-            }
-          >
-            {t('filePreview.empty.body')}
-          </EmptyState>
-        ) : loading ? (
+      <div className={`file-preview__body scroll-area${isFlushEmbed ? ' file-preview__body--flush' : ''}`}>
+        {loading ? (
           <p className="file-preview__status">{t('filePreview.loading')}</p>
         ) : error ? (
           <div className="file-preview__notice">
             <p>{t('filePreview.error', { error })}</p>
-            <button type="button" className="button button--secondary" onClick={() => onReveal(activeFile)}>
+            <button type="button" className="button button--secondary" onClick={() => onReveal(filePath)}>
               {t('filePreview.reveal')}
             </button>
           </div>
-        ) : payload?.kind === 'markdown' && !markdownRaw ? (
+        ) : payload?.kind === 'markdown' && !showRaw ? (
           <div className="file-preview__markdown">
             {payload.truncated ? <p className="file-preview__truncated">{t('filePreview.truncated')}</p> : null}
             <MarkdownWorkspaceProvider cwd={parentDirectory(payload.path)} onOpenFile={onOpenFile}>
               <MarkdownText text={payload.content} />
             </MarkdownWorkspaceProvider>
           </div>
-        ) : payload?.kind === 'text' || (payload?.kind === 'markdown' && markdownRaw) ? (
+        ) : payload?.kind === 'html' && !showRaw ? (
+          payload.previewUrl ? (
+            createElement('webview' as never, {
+              key: `${payload.path}:${reloadSeq}`,
+              src: payload.previewUrl,
+              className: 'file-preview__webview',
+              partition: BROWSER_PARTITION,
+              webpreferences: 'contextIsolation=yes,sandbox=yes,nodeIntegration=no',
+            })
+          ) : (
+            <iframe className="file-preview__pdf" sandbox="" srcDoc={payload.content} title={payload.name} />
+          )
+        ) : payload?.kind === 'text' || ((payload?.kind === 'markdown' || payload?.kind === 'html') && showRaw) ? (
           <div className="file-preview__code-wrap">
             {payload.truncated ? <p className="file-preview__truncated">{t('filePreview.truncated')}</p> : null}
             <pre className="file-preview__code" dir="ltr">

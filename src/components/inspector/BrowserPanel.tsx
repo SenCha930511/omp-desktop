@@ -1,4 +1,4 @@
-import { ArrowLeft, ArrowRight, Bot, ExternalLink, History, MessageCirclePlus, RefreshCw, ShieldCheck, X } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Bot, ExternalLink, History, MessageCirclePlus, Plus, RefreshCw, ShieldCheck, X } from 'lucide-react'
 import { createElement, useCallback, useEffect, useRef, useState } from 'react'
 import type { StampedPointerEvent } from '@/hooks/useAgentBrowserTabs'
 import type { BrowserAnnotationsApi } from '@/hooks/useBrowserAnnotations'
@@ -73,6 +73,10 @@ interface BrowserPanelProps {
   /** External URL navigation request (e.g. submitted from Inspector New Tab search). */
   navigationRequest?: { id: number; url: string } | null
   onNavigationRequestHandled?(id: number): void
+  /** Reports page title changes so top-level inspector tabs can show the active site title. */
+  onTitleChange?(title: string): void
+  /** Opens a fresh top-level browser tab. */
+  onNewBrowserTab?(): void
   /** Test hook: how often to poll the page for a clicked element while picking. */
   pollIntervalMs?: number
 }
@@ -105,6 +109,8 @@ export function BrowserPanel({
   onNavigateAgentTab,
   navigationRequest = null,
   onNavigationRequestHandled,
+  onTitleChange,
+  onNewBrowserTab,
   pollIntervalMs = 350,
   platform = detectRendererPlatform(),
 }: BrowserPanelProps) {
@@ -138,6 +144,8 @@ export function BrowserPanel({
   const [previewWebContentsId, setPreviewWebContentsId] = useState<number | null>(null)
   const onPreviewContextRef = useRef(onPreviewContext)
   onPreviewContextRef.current = onPreviewContext
+  const onTitleChangeRef = useRef(onTitleChange)
+  onTitleChangeRef.current = onTitleChange
   const [agentAddress, setAgentAddress] = useState('')
   const agentAddressEditingRef = useRef(false)
 
@@ -235,6 +243,17 @@ export function BrowserPanel({
         setCanBack(view.canGoBack())
         setCanForward(view.canGoForward())
         setHistory((items) => (items.at(-1) === url ? items : [...items.slice(-19), url]))
+        const rawTitle = view.getTitle()?.trim()
+        if (rawTitle) {
+          onTitleChangeRef.current?.(rawTitle)
+        } else {
+          try {
+            const host = new URL(url).hostname
+            if (host) onTitleChangeRef.current?.(host)
+          } catch {
+            /* ignore invalid URL */
+          }
+        }
       } catch {
         /* webview not ready */
       }
@@ -274,12 +293,14 @@ export function BrowserPanel({
     view.addEventListener('did-stop-loading', didStop)
     view.addEventListener('did-navigate', didNavigate)
     view.addEventListener('did-navigate-in-page', sync)
+    view.addEventListener('page-title-updated', sync)
     return () => {
       view.removeEventListener('dom-ready', onDomReady)
       view.removeEventListener('did-start-loading', didStart)
       view.removeEventListener('did-stop-loading', didStop)
       view.removeEventListener('did-navigate', didNavigate)
       view.removeEventListener('did-navigate-in-page', sync)
+      view.removeEventListener('page-title-updated', sync)
     }
   }, [home])
 
@@ -494,6 +515,11 @@ export function BrowserPanel({
           <IconButton label={t('browser.openExternal')} onClick={() => onOpenExternal(currentUrl)}>
             <ExternalLink size={14} />
           </IconButton>
+          {onNewBrowserTab ? (
+            <IconButton label={t('browser.newBrowserTab')} onClick={onNewBrowserTab}>
+              <Plus size={14} />
+            </IconButton>
+          ) : null}
         </div>
         {historyOpen ? (
           <div className="browser-history">

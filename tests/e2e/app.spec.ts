@@ -3335,6 +3335,57 @@ test.describe('OMP Desktop desktop smoke', () => {
     app = undefined
   })
 
+  test('previews PDF and HTML files in top-level inspector tabs and opens multiple browser tabs', async () => {
+    const projectDir = join(fixtureRoot, 'project')
+    writeFileSync(
+      join(projectDir, 'doc.pdf'),
+      '%PDF-1.4\n1 0 obj<< /Type /Catalog /Pages 2 0 R >>endobj\n2 0 obj<< /Type /Pages /Kids [3 0 R] /Count 1 >>endobj\n3 0 obj<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>endobj\nxref\n0 4\n0000000000 65535 f \n0000000009 00000 n \n0000000058 00000 n \n0000000115 00000 n \ntrailer<< /Size 4 /Root 1 0 R >>\nstartxref\n184\n%%EOF\n',
+    )
+    writeFileSync(join(projectDir, 'preview.html'), '<!doctype html><title>Local Fixture Preview</title><h1>Fixture HTML</h1>')
+
+    await page.locator('.project-group .session-row').filter({ hasText: 'Primary workspace fixture' }).click()
+    await openInspectorTab('Files')
+    await page.getByRole('button', { name: 'Refresh project files' }).click()
+    await page.getByRole('button', { name: 'Expand all folders' }).click()
+
+    const pdfRow = page.locator('.file-tree__item.is-file').filter({ hasText: 'doc.pdf' })
+    await expect(pdfRow).toBeVisible()
+    await pdfRow.click()
+
+    const pdfTab = page.getByRole('tab', { name: /^doc\.pdf/ })
+    await expect(pdfTab).toHaveAttribute('aria-selected', 'true')
+    await expect(page.locator('iframe.file-preview__pdf[src^="blob:"]')).toHaveCount(1)
+    await expect.poll(() =>
+      app!.evaluate(({ BrowserWindow }) =>
+        (BrowserWindow.getAllWindows()[0]?.webContents.mainFrame.framesInSubtree ?? [])
+          .map((frame) => frame.url)
+          .some((url) => url.startsWith('chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/')),
+      ),
+    ).toBe(true)
+
+    await page.getByRole('tab', { name: /^Files/ }).click()
+    const htmlRow = page.locator('.file-tree__item.is-file').filter({ hasText: 'preview.html' })
+    await expect(htmlRow).toBeVisible()
+    await htmlRow.click()
+
+    const htmlTab = page.getByRole('tab', { name: /^preview\.html/ })
+    await expect(htmlTab).toHaveAttribute('aria-selected', 'true')
+    const htmlWebview = page.locator('webview.file-preview__webview')
+    await expect(htmlWebview).toHaveCount(1)
+    await expect.poll(() => htmlWebview.evaluate(async (node) => {
+      const view = node as HTMLElement & { executeJavaScript(script: string): Promise<unknown> }
+      return view.executeJavaScript('document.querySelector("h1")?.textContent')
+    })).toBe('Fixture HTML')
+
+    await page.getByRole('button', { name: 'Open in Browser tab' }).click()
+    await expect(page.getByRole('tab', { name: 'Browser' })).toHaveAttribute('aria-selected', 'true')
+    await expect(page.locator('#inspector-panel-browser webview.browser-webview')).toHaveCount(1)
+
+    await page.locator('#inspector-panel-browser button[aria-label="New browser tab"]').click()
+    await expect(page.locator('#inspector-tab-browser-extra-1')).toHaveAttribute('aria-selected', 'true')
+    await expect(page.locator('webview.browser-webview')).toHaveCount(2)
+  })
+
   test('backgrounds active work and routes tray Quit through confirmation and cleanup', async () => {
     test.skip(process.platform !== 'darwin', 'macOS menu-bar lifecycle')
 

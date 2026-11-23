@@ -7,7 +7,7 @@ export const BROWSER_PARTITION = 'persist:omp-desktop-browser'
 
 export type ThemeMode = 'system' | 'light' | 'dark'
 export type WorkspaceView = 'session' | 'projects' | 'activity' | 'scheduled' | 'plugins' | 'settings'
-export type InspectorTab = 'changes' | 'browser' | 'files' | 'preview' | 'sidechat' | 'agents' | 'tasks'
+export type InspectorTab = 'changes' | 'browser' | 'files' | 'sidechat' | 'agents' | 'tasks'
 export type SessionStatus = 'idle' | 'running' | 'waiting' | 'complete' | 'failed' | 'unknown'
 
 // Shared renderer/main wire limits; transport frame-size checks remain separate.
@@ -971,6 +971,7 @@ export interface PickedFileRecord {
 
 export type FilePreviewPayload =
   | { kind: 'markdown'; path: string; name: string; content: string; truncated: boolean; sizeBytes: number }
+  | { kind: 'html'; path: string; name: string; content: string; truncated: boolean; sizeBytes: number; previewUrl?: string }
   | { kind: 'text'; path: string; name: string; content: string; truncated: boolean; sizeBytes: number }
   | { kind: 'image'; path: string; name: string; mimeType: string; base64: string; sizeBytes: number }
   | { kind: 'pdf'; path: string; name: string; mimeType: 'application/pdf'; base64: string; sizeBytes: number }

@@ -163,6 +163,7 @@ export default function App() {
   const [activeProjectScriptRun, setActiveProjectScriptRun] = useState<ActiveProjectScriptRun>()
   const [previewFiles, setPreviewFiles] = useState<string[]>([])
   const [activePreviewFile, setActivePreviewFile] = useState<string | null>(null)
+  const [previewActivationRevision, setPreviewActivationRevision] = useState(0)
   const [hostAuthSnapshot, setHostAuthSnapshot] = useState<HostAuthorizationSnapshot | null>(null)
   const [hostAuthBusyId, setHostAuthBusyId] = useState<string | null>(null)
   const activeProjectScriptRunRef = useRef<ActiveProjectScriptRun | undefined>(undefined)
@@ -630,13 +631,20 @@ export default function App() {
     if (!activity) return
     if (activity.sessionFile !== activeRuntimeSessionFile && activity.sessionFile !== activeSessionFilePath) return
     setAgentPreviewSelected(activity.tabId === 'preview')
+    setActivePreviewFile(null)
     settingsState.setInspectorOpen(true)
     settingsState.selectInspectorTab('browser')
   }, [agentBrowser.activityEvent, activeRuntimeSessionFile, activeSessionFilePath, settingsState.setInspectorOpen, settingsState.selectInspectorTab])
   useEffect(() => {
     if (!activeAgentTabs.length) setAgentPreviewSelected(true)
   }, [activeAgentTabs.length])
-  const agentTabVisible = view === 'session' && settingsState.inspectorOpen && settingsState.inspectorTab === 'browser' && !agentPreviewSelected && activeAgentTabId !== null
+  const agentTabVisible =
+    view === 'session' &&
+    settingsState.inspectorOpen &&
+    settingsState.inspectorTab === 'browser' &&
+    activePreviewFile === null &&
+    !agentPreviewSelected &&
+    activeAgentTabId !== null
   const pluginScope = activeProject?.primaryFolder && !activeProject.inferred ? activeProject.primaryFolder : undefined
   const pluginSkills = usePluginSkills({ bridge, harness: activeHarness, scope: pluginScope, generation: workspace.workspaceGeneration, initialSkills: bridge ? [] : SAMPLE_SKILLS, reportError })
   pluginSkillsRefreshRef.current = pluginSkills.refresh
@@ -795,35 +803,42 @@ export default function App() {
     },
     [settingsState.closeOtherInspectorTabs, sideQuestions, workspace.activeSessionId],
   )
-  const openFileInInspector = useCallback(
-    (filePath: string) => {
-      const normalized = filePath.trim()
-      if (!normalized) return
-      setPreviewFiles((current) => {
-        if (current.includes(normalized)) return current
-        const next = [...current, normalized]
-        return next.length > 12 ? next.slice(next.length - 12) : next
-      })
-      setActivePreviewFile(normalized)
-      openInspectorTab('preview')
+  const selectInspectorTab = useCallback(
+    (tab: InspectorTab) => {
+      setActivePreviewFile(null)
+      settingsState.selectInspectorTab(tab)
     },
-    [openInspectorTab],
+    [settingsState.selectInspectorTab],
   )
-  const closePreviewFile = useCallback(
-    (filePath: string) => {
-      setPreviewFiles((current) => {
-        const index = current.indexOf(filePath)
-        if (index === -1) return current
-        const next = current.filter((item) => item !== filePath)
-        setActivePreviewFile((active) => {
-          if (active !== filePath) return active
-          return next[Math.min(index, next.length - 1)] ?? null
-        })
-        return next
+  const openFileInInspector = useStableCallback((filePath: string) => {
+    const normalized = filePath.trim()
+    if (!normalized) return
+    setPreviewFiles((current) => {
+      if (current.includes(normalized)) return current
+      const next = [...current, normalized]
+      return next.length > 12 ? next.slice(next.length - 12) : next
+    })
+    setActivePreviewFile(normalized)
+    setPreviewActivationRevision((value) => value + 1)
+    if (!settingsState.inspectorOpen || layout.inspectorSuppressed) layout.setSmallestInspectorAllowed(true)
+    if (!settingsState.inspectorOpen) settingsState.setInspectorOpen(true)
+  })
+  const selectPreviewFile = useCallback((filePath: string | null) => {
+    setActivePreviewFile(filePath)
+    if (filePath) setPreviewActivationRevision((value) => value + 1)
+  }, [])
+  const closePreviewFile = useCallback((filePath: string) => {
+    setPreviewFiles((current) => {
+      const index = current.indexOf(filePath)
+      if (index === -1) return current
+      const next = current.filter((item) => item !== filePath)
+      setActivePreviewFile((active) => {
+        if (active !== filePath) return active
+        return next[Math.min(index, next.length - 1)] ?? null
       })
-    },
-    [],
-  )
+      return next
+    })
+  }, [])
   const toggleInspectorPanel = useCallback(() => {
     if (!settingsState.inspectorOpen || layout.inspectorSuppressed) layout.setSmallestInspectorAllowed(true)
     toggleInspector()
@@ -1734,7 +1749,7 @@ export default function App() {
                         openTabs={settingsState.inspectorOpenTabs}
                         activeTab={settingsState.inspectorTab}
                         tabActivationRevision={settingsState.inspectorTabRevision}
-                        onTabChange={settingsState.selectInspectorTab}
+                        onTabChange={selectInspectorTab}
                         onCloseTab={closeInspectorTab}
                         onCloseOtherTabs={closeOtherInspectorTabs}
                         onReorderTabs={settingsState.reorderInspectorTabs}
@@ -1768,7 +1783,8 @@ export default function App() {
                         onGrantProject={grantActiveProject}
                         previewFiles={previewFiles}
                         activePreviewFile={activePreviewFile}
-                        onSelectPreviewFile={setActivePreviewFile}
+                        previewActivationRevision={previewActivationRevision}
+                        onSelectPreviewFile={selectPreviewFile}
                         onClosePreviewFile={closePreviewFile}
                         onOpenPreviewFile={openFileInInspector}
                         sideChat={inspectorSideChat}
