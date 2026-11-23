@@ -60,14 +60,21 @@ const ompMetadataParser = createBucketedMetadataParser((state, value) => {
 })
 
 async function readOmpTitleSlot(io: SessionMetadataReaderIo, filePath: string): Promise<string | undefined> {
-  const stream = io.openStream(filePath, 0, OMP_TITLE_SLOT_BYTES - 1)
-  const chunks: Buffer[] = []
-  try {
-    for await (const chunk of stream) chunks.push(typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk as Buffer)
-  } finally {
-    stream.destroy()
+  let slot: Buffer
+  if (io.readPrefix) {
+    const prefix = await io.readPrefix(filePath, OMP_TITLE_SLOT_BYTES)
+    if (!prefix) return undefined
+    slot = prefix
+  } else {
+    const stream = io.openStream(filePath, 0, OMP_TITLE_SLOT_BYTES - 1)
+    const chunks: Buffer[] = []
+    try {
+      for await (const chunk of stream) chunks.push(typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk as Buffer)
+    } finally {
+      stream.destroy()
+    }
+    slot = Buffer.concat(chunks)
   }
-  const slot = Buffer.concat(chunks)
   const newline = slot.indexOf(0x0a)
   if (newline < 0) return undefined
   let value: unknown
