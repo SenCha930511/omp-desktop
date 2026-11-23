@@ -56,6 +56,7 @@ const fastFallback = ${JSON.stringify(fastFallback)}
 const slowMode = ${JSON.stringify(slowMode)}
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
 let fastModeEnabled = true
+const fastModeActive = false
 let slowModeEnabled = false
 let negotiated = false
 let streaming = false
@@ -70,11 +71,12 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   } else if (!negotiated) {
     send({ id: command.id, type: 'response', command: command.type, success: false, error: 'Protocol was not negotiated' })
   } else if (command.type === 'get_state') {
+    if (fastFallback) fs.appendFileSync(wireFile, JSON.stringify(command) + '\\n')
     send({ id: command.id, type: 'response', command: command.type, success: true, data: {
       sessionId: 'native-form-session', sessionFile: activeSessionFile, isStreaming: streaming, thinkingLevel: 'medium',
       model: { provider: 'openai-codex', id: ${JSON.stringify(modelId)}, name: 'GPT Fixture' },
       contextUsage: { tokens: 1200, contextWindow: 200000, percent: 1 },
-      ...(fastFallback ? { fastModeEnabled, fastModeActive: false } : {}),
+      ...(fastFallback ? { fastModeEnabled, fastModeActive } : {}),
       ...(slowMode ? { slowModeSupported: true, slowModeEnabled, slowModeScope: 'session' } : {}),
       queuedMessageCount: 0, queuedMessages: { steering: [], followUp: [] },
     } })
@@ -83,7 +85,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   } else if (fastFallback && command.type === 'set_fast_mode') {
     fs.appendFileSync(wireFile, JSON.stringify(command) + '\\n')
     fastModeEnabled = command.enabled
-    send({ id: command.id, type: 'response', command: command.type, success: true, data: {} })
+    send({ id: command.id, type: 'response', command: command.type, success: true, data: { enabled: fastModeEnabled, active: fastModeActive } })
   } else if (slowMode && command.type === 'set_slow_mode') {
     fs.appendFileSync(wireFile, JSON.stringify(command) + '\\n')
     slowModeEnabled = command.enabled

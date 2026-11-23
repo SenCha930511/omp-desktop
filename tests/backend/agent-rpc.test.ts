@@ -355,7 +355,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   })
 })
 
-function fakeAgent(promptResponse: string, stateResponse?: string, exitDelayMs = 0): { cwd: string; executable: string } {
+function fakeAgent(promptResponse: string, stateResponse?: string, exitDelayMs = 0, fastResponse?: string): { cwd: string; executable: string } {
   const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-rpc-'))
   dirs.push(cwd)
   const executable = join(cwd, 'fake-agent.cjs')
@@ -377,7 +377,7 @@ input.on('line', (line) => {
   } else if (command.type === 'abort') {
     send({ id: command.id, type: 'response', command: 'abort', success: true })
   } else if (command.type === 'set_fast_mode') {
-    send({ id: command.id, type: 'response', command: 'set_fast_mode', success: true })
+    send(${fastResponse ?? "{ id: command.id, type: 'response', command: 'set_fast_mode', success: true }"})
   }
 })
 input.on('close', () => {
@@ -1275,6 +1275,60 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
 
     expect(new Set(runtimes.map((runtime) => runtime.runtimeId)).size).toBe(5)
     expect(manager.list()).toHaveLength(5)
+  })
+
+  describe('set_fast_mode authoritative responses', () => {
+    const state = "{ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'session-1', isStreaming: false, model: { provider: 'openai-codex', id: 'gpt-5.4', name: 'GPT-5.4' } } }"
+    const providers: ProviderCatalog = {
+      requireAvailableModel: async () => { throw new Error('not used') },
+      capabilities: async () => ({
+        key: 'openai-codex/gpt-5.4', provider: 'openai-codex', id: 'gpt-5.4', name: 'GPT-5.4', reasoning: true,
+        input: ['text'], contextWindow: 1_000_000, maxTokens: 100_000, availableThinkingLevels: ['medium', 'high'], fastModeSupported: true, available: true,
+      }),
+      catalog: async () => ({ primeVersion: 'test', refreshedAt: '2026-01-01T00:00:00.000Z', models: [], providers: [] }),
+    }
+
+    it.each([
+      { label: 'provider preference remains active after Fast is disabled', requested: 'priority', data: { enabled: false, active: true }, expectedTier: 'default', expectedActive: true },
+      { label: 'requested priority remains inactive in native fallback', requested: 'priority', data: { enabled: true, active: false }, expectedTier: 'priority', expectedActive: false },
+      { label: 'provider preference remains active after a default request', requested: 'default', data: { enabled: false, active: true }, expectedTier: 'default', expectedActive: true },
+      { label: 'older runtime omits all optional response fields', requested: 'priority', data: {}, expectedTier: 'priority', expectedActive: undefined },
+      { label: 'older runtime omits active', requested: 'priority', data: { enabled: false }, expectedTier: 'default', expectedActive: undefined },
+      { label: 'response contains only actual active state', requested: 'default', data: { active: true }, expectedTier: 'default', expectedActive: true },
+      { label: 'malformed booleans do not become authoritative facts', requested: 'priority', data: { enabled: 'false', active: 0 }, expectedTier: 'priority', expectedActive: undefined },
+    ] as const)('$label', async ({ requested, data, expectedTier, expectedActive }) => {
+      const response = `{ id: command.id, type: 'response', command: 'set_fast_mode', success: true, data: ${JSON.stringify(data)} }`
+      const fake = fakeAgent("{ id: command.id, type: 'response', command: 'prompt', success: true }", state, 0, response)
+      const manager = new AgentRpcManager(fake.executable, async (cwd) => cwd, async (path) => path, providers)
+      managers.push(manager)
+      const runtime = await manager.start({ cwd: fake.cwd })
+
+      await manager.command(runtime.runtimeId, { type: 'set_service_tier', serviceTier: requested })
+
+      expect(manager.list()[0]?.serviceTier).toBe(expectedTier)
+      expect(manager.list()[0]?.serviceTierActive).toBe(expectedActive)
+      expect(manager.list()[0]?.fastModeAvailable).toBe(true)
+      expect(manager.list()[0]?.model).toEqual({ provider: 'openai-codex', id: 'gpt-5.4', name: 'GPT-5.4' })
+    })
+
+    it('keeps the last confirmed tier and model after a native Fast refusal', async () => {
+      const response = "command.enabled ? { id: command.id, type: 'response', command: 'set_fast_mode', success: false, error: 'Fast mode is unavailable for the current model.' } : { id: command.id, type: 'response', command: 'set_fast_mode', success: true, data: { enabled: false, active: false } }"
+      const fake = fakeAgent("{ id: command.id, type: 'response', command: 'prompt', success: true }", state, 0, response)
+      const manager = new AgentRpcManager(fake.executable, async (cwd) => cwd, async (path) => path, providers)
+      managers.push(manager)
+      const runtime = await manager.start({ cwd: fake.cwd })
+      await manager.command(runtime.runtimeId, { type: 'set_service_tier', serviceTier: 'default' })
+
+      await expect(manager.command(runtime.runtimeId, { type: 'set_service_tier', serviceTier: 'priority' }))
+        .rejects.toThrow('Fast mode is unavailable for the current model.')
+
+      expect(manager.list()).toHaveLength(1)
+      expect(manager.list()[0]?.runtimeId).toBe(runtime.runtimeId)
+      expect(manager.list()[0]?.serviceTier).toBe('default')
+      expect(manager.list()[0]?.serviceTierActive).toBe(false)
+      expect(manager.list()[0]?.fastModeAvailable).toBe(false)
+      expect(manager.list()[0]?.model).toEqual({ provider: 'openai-codex', id: 'gpt-5.4', name: 'GPT-5.4' })
+    })
   })
 
   it('decorates runtime reasoning and fast-mode capabilities from the model catalog', async () => {

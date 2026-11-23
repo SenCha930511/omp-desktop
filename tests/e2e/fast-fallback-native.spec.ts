@@ -55,9 +55,12 @@ test('Retry Fast re-arms the preference without claiming activation, then the or
     mkdirSync(evidence, { recursive: true })
     await page.screenshot({ path: join(evidence, 'retry-visible.png') })
 
+    // Start capture after bootstrap/manual reconciliation so subsequent state
+    // reads can be attributed to Retry or the ordinary Fast toggle.
+    writeFileSync(wireFile, '')
     await retry.click()
-    await expect.poll(() => readNativeWire(wireFile).length).toBe(1)
-    const [retryCommand] = readNativeWire(wireFile)
+    await expect.poll(() => readNativeWire(wireFile).filter((command) => command.type === 'set_fast_mode').length).toBe(1)
+    const [retryCommand] = readNativeWire(wireFile).filter((command) => command.type === 'set_fast_mode')
     expect(retryCommand).toEqual({ type: 'set_fast_mode', enabled: true, id: expect.any(String) })
     await page.evaluate(async () => {
       const [runtime] = await window.desktop.agent.list()
@@ -72,12 +75,9 @@ test('Retry Fast re-arms the preference without claiming activation, then the or
     await expect(fastToggle).toHaveAttribute('aria-pressed', 'true')
 
     await fastToggle.click()
-    await expect.poll(() => readNativeWire(wireFile).length).toBe(2)
-    await page.evaluate(async () => {
-      const [runtime] = await window.desktop.agent.list()
-      if (!runtime) throw new Error('The native fixture runtime must remain available')
-      await window.desktop.agent.command(runtime.runtimeId, { type: 'get_state' })
-    })
+    await expect.poll(() => readNativeWire(wireFile).filter((command) => command.type === 'set_fast_mode').length).toBe(2)
+    // No user-generated get_state here: the UI mutation itself must request
+    // the authoritative state that makes Retry disappear.
     await expect(retry).toHaveCount(0)
     await expect(fastToggle).toHaveAttribute('aria-pressed', 'false')
     await expect.poll(async () => page.evaluate(async () => {
@@ -90,15 +90,21 @@ test('Retry Fast re-arms the preference without claiming activation, then the or
     })).toEqual({ fastModeSupported: true, preference: 'default', active: false })
 
     const commands = readNativeWire(wireFile)
-    expect(commands).toEqual([
+    const fastCommands = commands.filter((command) => command.type === 'set_fast_mode')
+    const stateReads = commands.filter((command) => command.type === 'get_state')
+    expect(fastCommands).toEqual([
       { type: 'set_fast_mode', enabled: true, id: retryCommand.id },
       { type: 'set_fast_mode', enabled: false, id: expect.any(String) },
     ])
-    expect(commands[1]?.id).not.toBe(retryCommand.id)
+    // One manual read verifies Retry/re-arm; the second must have been issued
+    // automatically by changeFast after the disable command succeeded.
+    expect(stateReads).toHaveLength(2)
+    expect(commands.at(-1)?.type).toBe('get_state')
+    expect(fastCommands[1]?.id).not.toBe(retryCommand.id)
     expect(diagnostics).toEqual([])
     copyFileSync(wireFile, join(evidence, 'fake-omp-wire.jsonl'))
     writeFileSync(join(evidence, 'renderer-diagnostics.json'), `${JSON.stringify(diagnostics, null, 2)}\n`)
-    writeFileSync(join(evidence, 'ui.json'), `${JSON.stringify({ locale: 'en', viewport, retryBounds, controlsBounds, commands: commands.length }, null, 2)}\n`)
+    writeFileSync(join(evidence, 'ui.json'), `${JSON.stringify({ locale: 'en', viewport, retryBounds, controlsBounds, commands: fastCommands.length, stateReads: stateReads.length }, null, 2)}\n`)
   } finally {
     await probe?.close()
   }

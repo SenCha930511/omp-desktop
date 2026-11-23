@@ -229,6 +229,93 @@ describe('provider runtime mutations', () => {
     expect(hook.value.fast).toBe(true)
   })
 
+  it('refreshes authoritative Fast state exactly once before reattaching the UI', async () => {
+    const acknowledged = deferred<Record<string, unknown>>()
+    const refreshed = deferred<RuntimeInfo>()
+    const order: string[] = []
+    const command = vi.fn().mockImplementation(() => { order.push('command'); return acknowledged.promise })
+    const refreshState = vi.fn().mockImplementation(() => { order.push('refresh'); return refreshed.promise })
+    const syncRuntime = vi.fn().mockImplementation(async () => { order.push('sync') })
+    const hook = await mountCatalogHook({ command, refreshState, syncRuntime })
+
+    act(() => hook.value.changeFast(true))
+    await act(async () => { await Promise.resolve() })
+    expect(command).toHaveBeenCalledExactlyOnceWith('runtime-1', { type: 'set_service_tier', serviceTier: 'priority' })
+    expect(hook.value.fast).toBe(true)
+    expect(hook.refreshState).not.toHaveBeenCalled()
+
+    await act(async () => { acknowledged.resolve({ success: true }); await acknowledged.promise; await Promise.resolve() })
+    expect(hook.refreshState).toHaveBeenCalledExactlyOnceWith('runtime-1')
+    expect(hook.syncRuntime).not.toHaveBeenCalled()
+    expect(hook.value.fastActive).toBeUndefined()
+
+    await act(async () => {
+      refreshed.resolve({ ...runtime, serviceTier: 'priority', serviceTierActive: false })
+      await refreshed.promise
+      await Promise.resolve()
+    })
+    await hook.updateRuntime({ ...runtime, serviceTier: 'priority', serviceTierActive: false })
+    expect(hook.value.fast).toBe(true)
+    expect(hook.value.fastActive).toBe(false)
+    expect(order).toEqual(['command', 'refresh', 'sync'])
+    expect(hook.syncRuntime).toHaveBeenCalledExactlyOnceWith('runtime-1')
+  })
+
+  it('rolls an optimistic Fast toggle back and reports an authoritative refresh failure', async () => {
+    const acknowledged = deferred<Record<string, unknown>>()
+    const refreshRejected = deferred<RuntimeInfo>()
+    const hook = await mountCatalogHook({
+      command: vi.fn().mockReturnValueOnce(acknowledged.promise),
+      refreshState: vi.fn().mockReturnValueOnce(refreshRejected.promise),
+    })
+
+    act(() => hook.value.changeFast(true))
+    await act(async () => { acknowledged.resolve({ success: true }); await acknowledged.promise; await Promise.resolve() })
+    expect(hook.refreshState).toHaveBeenCalledExactlyOnceWith('runtime-1')
+    await act(async () => {
+      refreshRejected.reject(new Error('fast state refresh rejected'))
+      try { await refreshRejected.promise } catch { /* expected */ }
+      await Promise.resolve()
+    })
+
+    expect(hook.value.fast).toBe(false)
+    expect(hook.syncRuntime).toHaveBeenCalledExactlyOnceWith('runtime-1')
+    expect(hook.reportError).toHaveBeenCalledWith(expect.objectContaining({ message: 'fast state refresh rejected' }))
+  })
+
+  it.each([
+    ['runtime generation', { runtimeId: 'runtime-2' }, undefined],
+    ['model identity', { model: { provider: 'anthropic', id: 'claude-sonnet', name: 'Claude Sonnet' } }, undefined],
+    ['Fast preference', { serviceTier: 'priority' }, undefined],
+    ['Fast preference in zh-TW', { serviceTier: 'priority' }, 'zh-TW'],
+  ] as const)('does not issue a queued Fast command after the authorized %s changes', async (_label, patch, localePreference) => {
+    const thinkingChanged = deferred<Record<string, unknown>>()
+    const command = vi.fn().mockReturnValueOnce(thinkingChanged.promise)
+    const hook = await mountCatalogHook({ command, localePreference })
+    act(() => {
+      hook.value.changeEffort('low')
+      hook.value.changeFast(true)
+    })
+    await act(async () => { await Promise.resolve() })
+    expect(command).toHaveBeenCalledExactlyOnceWith('runtime-1', { type: 'set_thinking_level', level: 'low' })
+
+    await hook.updateRuntime({ ...runtime, ...patch })
+    await act(async () => {
+      thinkingChanged.resolve({ success: true })
+      await thinkingChanged.promise
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(command).toHaveBeenCalledTimes(1)
+    expect(hook.refreshState).not.toHaveBeenCalled()
+    expect(hook.reportError).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      message: localePreference === 'zh-TW'
+        ? '要求執行前，模型或快速偏好設定已變更。請檢查目前的快速狀態後再試一次。'
+        : 'The model or Fast preference changed before the request ran. Review the current Fast state and try again.',
+    }))
+  })
+
   it('rolls the fast preference back when its request is rejected', async () => {
     const rejected = deferred<Record<string, unknown>>()
     const command = vi.fn().mockReturnValueOnce(rejected.promise)

@@ -320,12 +320,35 @@ export function useProviderCatalog({ bridge, ready = true, harness = 'omp', loca
     const previous = fastRef.current
     updateFast(enabled)
     if (!bridge || !runtime) return
+    const authorizedRuntimeId = runtime.runtimeId
+    const authorizedServiceTier = runtime.serviceTier
+    const authorizedProvider = runtime.model?.provider
+    const authorizedModelId = runtime.model?.id
     queueRuntimeMutation(
-      runtime.runtimeId,
-      async () => { await bridge.agent.command(runtime.runtimeId, { type: 'set_service_tier', serviceTier: enabled ? 'priority' : 'default' }) },
+      authorizedRuntimeId,
+      async () => {
+        // Fast is session-scoped. Reauthorize against the latest model and
+        // preference when this queued click actually executes; a preceding
+        // model/session mutation may have replaced its original target.
+        const current = latestRuntimeRef.current
+        if (
+          !current
+          || current.runtimeId !== authorizedRuntimeId
+          || current.serviceTier !== authorizedServiceTier
+          || current.model?.provider !== authorizedProvider
+          || current.model?.id !== authorizedModelId
+        ) {
+          reportError(new Error(t('composer.fastReviewRetry')))
+          return
+        }
+        await bridge.agent.command(authorizedRuntimeId, { type: 'set_service_tier', serviceTier: enabled ? 'priority' : 'default' })
+        // The response and syncRuntime's published snapshot are not a state
+        // refresh. Fetch the actual active tier once before reattaching the UI.
+        await bridge.agent.refreshState(authorizedRuntimeId)
+      },
       () => updateFast(previous),
     )
-  }, [bridge, queueRuntimeMutation, runtime, updateFast])
+  }, [bridge, queueRuntimeMutation, reportError, runtime, t, updateFast])
 
   const changeSlow = useCallback((enabled: boolean) => {
     if (!bridge || !runtime) return

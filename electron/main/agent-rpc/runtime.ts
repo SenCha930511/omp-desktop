@@ -357,9 +357,14 @@ export class RpcRuntime {
       return false
     }
     try {
-      await this.request(buildServiceTierCommand(serviceTier), 10_000)
-      this.requestedServiceTier = serviceTier
-      this.info.serviceTier = serviceTier
+      const response = await this.request(buildServiceTierCommand(serviceTier), 10_000)
+      const data = isRecord(response.data) ? response.data : undefined
+      // New OMP builds return the resulting preference and actual tier. Older
+      // builds omit them, so only an absent/invalid enabled field uses the request.
+      const confirmedTier = typeof data?.enabled === 'boolean' ? data.enabled ? 'priority' : 'default' : serviceTier
+      this.requestedServiceTier = confirmedTier
+      this.info.serviceTier = confirmedTier
+      if (typeof data?.active === 'boolean') this.info.serviceTierActive = data.active
       this.info.fastModeAvailable = true
       return true
     } catch (error) {
