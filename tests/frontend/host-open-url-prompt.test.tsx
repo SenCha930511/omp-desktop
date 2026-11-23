@@ -10,7 +10,6 @@ import type { HostAuthorizationSnapshot } from '../../src/types/api'
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
 function renderPrompt(
-  container: HTMLElement,
   root: Root,
   snapshot: HostAuthorizationSnapshot,
   onDecision: (decision: 'approve' | 'deny') => void,
@@ -44,7 +43,6 @@ describe('HostOpenUrlPrompt', () => {
   it('renders the validated URL and dispatches approve or deny actions', () => {
     const onDecision = vi.fn()
     renderPrompt(
-      container,
       root,
       {
         runtimeId: 'rt-1',
@@ -81,7 +79,6 @@ describe('HostOpenUrlPrompt', () => {
   it('disables decision buttons while a response is in flight', () => {
     const onDecision = vi.fn()
     renderPrompt(
-      container,
       root,
       {
         runtimeId: 'rt-1',
