@@ -1008,6 +1008,13 @@ export class JsonStateStore {
   }
 
   private async syncParentDirectory(path: string, required = false): Promise<void> {
+    // libuv can open Windows directories with FILE_FLAG_BACKUP_SEMANTICS, but
+    // fsync becomes FlushFileBuffers, whose GENERIC_WRITE requirement does not
+    // provide a supported directory-entry flush for this read-only handle.
+    // Node's fsync/rename interfaces expose no directory-entry flush (and its
+    // rename does not request MOVEFILE_WRITE_THROUGH). Windows therefore keeps
+    // per-file fsync, rename publication, and the recoverable tombstone protocol;
+    // it does not claim crash durability for the directory entry itself.
     if (this.platform === 'win32') return
     try {
       const directory = await this.fileSystem.open(dirname(path), 'r')

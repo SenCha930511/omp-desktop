@@ -65,7 +65,7 @@ describe('validateExtensionInstallInput', () => {
 })
 
 describe('installOmpExtension', () => {
-  it('installs into the OMP user extension directory with owner-only permissions', async () => {
+  it('installs into the OMP user extension directory', async () => {
     const root = makeRoot()
     const agentDir = join(root, 'agent')
     const source = writeExtension(root)
@@ -73,7 +73,17 @@ describe('installOmpExtension', () => {
     expect(outcome).toEqual({ ok: true, output: 'Installed OMP extension “clock.ts”. Start a new OMP session to load it.' })
     const installed = join(agentDir, 'extensions', 'clock.ts')
     expect(readFileSync(installed, 'utf8')).toContain('export default')
-    expect(statSync(installed).mode & 0o777).toBe(0o600)
+    expect(statSync(installed).isFile()).toBe(true)
+  })
+
+  it.runIf(process.platform !== 'win32')('installs user extensions with owner-only POSIX permissions', async () => {
+    const root = makeRoot()
+    const agentDir = join(root, 'agent')
+    const source = writeExtension(root)
+    await installOmpExtension({ source, scope: 'user' }, agentDir)
+
+    // Windows mode bits only reflect writability, not owner/group ACL privacy.
+    expect(statSync(join(agentDir, 'extensions', 'clock.ts')).mode & 0o777).toBe(0o600)
   })
 
   it('installs into the project .omp/extensions directory', async () => {
