@@ -24,9 +24,23 @@ interface TranscriptTrajectoryProps {
 const PROMPT_PREVIEW_LIMIT = 120
 const REPLY_PREVIEW_LIMIT = 160
 const DENSE_THRESHOLD = 28
+// A preview shows at most 160 characters. Scanning the first few KiB keeps
+// long tool output and code blocks out of eight full-text regex passes.
+const PREVIEW_SOURCE_LIMIT = 4_096
+
+interface MessagePreview {
+  prompt: string
+  hasImagePrompt: boolean
+  reply: string
+  hasActivity: boolean
+}
+
+const messagePreviewCache = new WeakMap<TranscriptMessage, MessagePreview>()
+const timeFormatters = new Map<string, Intl.DateTimeFormat>()
 
 function stripMarkdownPreview(raw: string): string {
-  return raw
+  const bounded = raw.length > PREVIEW_SOURCE_LIMIT ? raw.slice(0, PREVIEW_SOURCE_LIMIT) : raw
+  return bounded
     .replace(/```[\w-]*\s*/g, ' ')
     .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
     .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
@@ -47,26 +61,70 @@ function messageParts(message: TranscriptMessage): readonly MessagePart[] {
   return Array.isArray(message.parts) ? message.parts : []
 }
 
-function collectTextParts(message: TranscriptMessage): string {
+function collectTextParts(message: TranscriptMessage, limit: number): string {
   const chunks: string[] = []
+  let length = 0
   for (const part of messageParts(message)) {
-    if ((part.type === 'text' || part.type === 'agentMessage') && typeof part.text === 'string' && part.text.trim()) chunks.push(part.text)
+    if ((part.type === 'text' || part.type === 'agentMessage') && typeof part.text === 'string' && part.text.trim()) {
+      const remaining = limit - length
+      if (remaining <= 0) break
+      const text = part.text.length > remaining ? part.text.slice(0, remaining) : part.text
+      chunks.push(text)
+      length += text.length
+      if (length >= limit) break
+    }
   }
   return stripMarkdownPreview(chunks.join(' '))
 }
 
+function messagePreview(message: TranscriptMessage): MessagePreview {
+  const cached = messagePreviewCache.get(message)
+  if (cached) return cached
+  const parts = messageParts(message)
+  if (message.role === 'user') {
+    const prompt = truncatePreview(collectTextParts(message, PROMPT_PREVIEW_LIMIT + 32), PROMPT_PREVIEW_LIMIT)
+    const preview = { prompt, hasImagePrompt: !prompt && parts.some((part) => part.type === 'image'), reply: '', hasActivity: false }
+    messagePreviewCache.set(message, preview)
+    return preview
+  }
+  let hasActivity = false
+  for (const part of parts) {
+    if (part.type === 'thinking' || part.type === 'toolCall' || part.type === 'toolResult' || part.type === 'agentMessage') {
+      hasActivity = true
+      break
+    }
+  }
+  const preview = {
+    prompt: '',
+    hasImagePrompt: false,
+    reply: truncatePreview(collectTextParts(message, REPLY_PREVIEW_LIMIT + 32), REPLY_PREVIEW_LIMIT),
+    hasActivity,
+  }
+  messagePreviewCache.set(message, preview)
+  return preview
+}
+
+function sameTurn(left: TrajectoryTurn, right: TrajectoryTurn): boolean {
+  return left.id === right.id
+    && left.messageIndex === right.messageIndex
+    && left.prompt === right.prompt
+    && left.hasImagePrompt === right.hasImagePrompt
+    && left.reply === right.reply
+    && left.hasActivity === right.hasActivity
+    && left.streaming === right.streaming
+    && left.timestamp === right.timestamp
+}
+
 /** Extract user turns paired with their latest assistant reply for trajectory navigation. */
-export function extractTrajectoryTurns(messages: readonly TranscriptMessage[]): TrajectoryTurn[] {
+export function extractTrajectoryTurns(messages: readonly TranscriptMessage[], previousTurns: readonly TrajectoryTurn[] = []): TrajectoryTurn[] {
   const turns: TrajectoryTurn[] = []
   for (let index = 0; index < messages.length; index++) {
     const message = messages[index]
     if (!message) continue
     if (message.role !== 'user' || message.kind === 'steer-read-marker') continue
 
-    const parts = messageParts(message)
-    const promptText = collectTextParts(message)
-    const hasImagePrompt = !promptText && parts.some((part) => part.type === 'image')
-    if (!promptText && !hasImagePrompt) continue
+    const preview = messagePreview(message)
+    if (!preview.prompt && !preview.hasImagePrompt) continue
 
     let latestReply = ''
     let hasActivity = false
@@ -78,29 +136,26 @@ export function extractTrajectoryTurns(messages: readonly TranscriptMessage[]): 
       if (candidate.role === 'user' && candidate.kind !== 'steer-read-marker') break
       if (candidate.streaming) streaming = true
       if (candidate.role === 'assistant' || candidate.role === 'agent') {
-        const text = collectTextParts(candidate)
-        if (text) latestReply = text
-        for (const part of messageParts(candidate)) {
-          if (part.type === 'thinking' || part.type === 'toolCall' || part.type === 'toolResult' || part.type === 'agentMessage') {
-            hasActivity = true
-            break
-          }
-        }
+        const candidatePreview = messagePreview(candidate)
+        if (candidatePreview.reply) latestReply = candidatePreview.reply
+        if (candidatePreview.hasActivity) hasActivity = true
       } else if (candidate.role === 'tool' || candidate.role === 'goal') {
         hasActivity = true
       }
     }
 
-    turns.push({
+    const next: TrajectoryTurn = {
       id: message.id,
       messageIndex: index,
-      prompt: truncatePreview(promptText, PROMPT_PREVIEW_LIMIT),
-      hasImagePrompt,
-      reply: truncatePreview(latestReply, REPLY_PREVIEW_LIMIT),
+      prompt: preview.prompt,
+      hasImagePrompt: preview.hasImagePrompt,
+      reply: latestReply,
       hasActivity,
       streaming,
       timestamp: message.timestamp ?? message.startedAt,
-    })
+    }
+    const previous = previousTurns[turns.length]
+    turns.push(previous && sameTurn(previous, next) ? previous : next)
   }
   return turns
 }
@@ -110,7 +165,12 @@ function formatTurnTime(timestamp: string | number | undefined, locale: string):
   const date = new Date(timestamp)
   if (Number.isNaN(date.getTime())) return null
   try {
-    return new Intl.DateTimeFormat(locale, { hour: 'numeric', minute: '2-digit' }).format(date)
+    let formatter = timeFormatters.get(locale)
+    if (!formatter) {
+      formatter = new Intl.DateTimeFormat(locale, { hour: 'numeric', minute: '2-digit' })
+      timeFormatters.set(locale, formatter)
+    }
+    return formatter.format(date)
   } catch {
     return null
   }
@@ -151,7 +211,12 @@ function resolveActiveTurnFromScroll(container: HTMLDivElement, turns: readonly 
 
 function TranscriptTrajectoryView({ messages, scrollRef, onJumpToIndex, active = true }: TranscriptTrajectoryProps) {
   const { locale, t } = useI18n()
-  const turns = useMemo(() => extractTrajectoryTurns(messages), [messages])
+  const turnsRef = useRef<TrajectoryTurn[]>([])
+  const turns = useMemo(() => {
+    const next = extractTrajectoryTurns(messages, turnsRef.current)
+    turnsRef.current = next
+    return next
+  }, [messages])
   const [activeIndex, setActiveIndex] = useState(() => Math.max(0, turns.length - 1))
   const [previewState, setPreviewState] = useState<{ index: number; topPx?: number } | null>(null)
   const navRef = useRef<HTMLElement>(null)
@@ -171,7 +236,7 @@ function TranscriptTrajectoryView({ messages, scrollRef, onJumpToIndex, active =
     let frame: number | undefined
     const sync = () => {
       frame = undefined
-      setActiveIndex(resolveActiveTurnFromScroll(container, turns))
+      setActiveIndex(resolveActiveTurnFromScroll(container, turnsRef.current))
     }
     const schedule = () => {
       if (frame === undefined) frame = requestAnimationFrame(sync)
@@ -183,7 +248,7 @@ function TranscriptTrajectoryView({ messages, scrollRef, onJumpToIndex, active =
       container.removeEventListener('scroll', schedule)
       if (frame !== undefined) cancelAnimationFrame(frame)
     }
-  }, [active, scrollRef, turns])
+  }, [active, scrollRef, turns.length])
 
   useEffect(() => {
     const rail = railRef.current

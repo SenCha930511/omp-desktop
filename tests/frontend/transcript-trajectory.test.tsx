@@ -75,6 +75,21 @@ describe('extractTrajectoryTurns', () => {
     expect(turns.map((turn) => turn.id)).toEqual(['img-turn', 'text-turn'])
     expect(turns[0]).toMatchObject({ prompt: '', hasImagePrompt: true, reply: '', hasActivity: true })
   })
+  it('reuses unchanged history turns when only the streaming reply grows', () => {
+    const messages: TranscriptMessage[] = [
+      userMsg('u1', 'First question'),
+      assistantMsg('a1', [{ type: 'text', text: 'First answer' }]),
+      userMsg('u2', 'Second question'),
+      assistantMsg('a2', [{ type: 'text', text: 'Partial' }], true),
+    ]
+    const first = extractTrajectoryTurns(messages)
+    const streamed = [...messages.slice(0, -1), assistantMsg('a2', [{ type: 'text', text: 'Partial answer' }], true)]
+    const second = extractTrajectoryTurns(streamed, first)
+
+    expect(second[0]).toBe(first[0])
+    expect(second[1]).not.toBe(first[1])
+    expect(second[1]?.reply).toBe('Partial answer')
+  })
 })
 
 describe('TranscriptTrajectory component', () => {
