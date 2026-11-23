@@ -93,7 +93,7 @@ Discovery lives in `process-utils.ts` (`harnessExecutableCandidates`/`findHarnes
 ### Renderer
 
 - `App.tsx` scopes workspaces, sessions, projects, and the model catalog to the single harness. Title strings and the settings harness card follow it.
-- Settings: the Agent section shows the OMP status card and an "Approval mode" select (Inherit config / Always ask / Write / YOLO → argv flag only when not Inherit). The Providers section lists OMP providers with desktop-owned visibility toggles that never touch OMP's own configuration; authentication remains owned by the omp CLI.
+- Settings: the Agent section shows the OMP status card and an "Approval mode" select (Inherit config, Always ask, Always ask (cached), Write, or YOLO). The adapter adds an argv flag only for explicit overrides. The Providers section lists OMP providers with desktop-owned visibility toggles that never touch OMP's own configuration; authentication remains owned by the omp CLI.
 
 ## Security invariants
 

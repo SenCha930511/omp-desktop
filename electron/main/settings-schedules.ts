@@ -1,6 +1,6 @@
 import { session } from 'electron'
 import { isAbsolute } from 'node:path'
-import { ACCENT_COLORS, BROWSER_PARTITION, HARNESS_IDS, IDLE_SESSION_MINUTES, INTERFACE_FONT_SCALES, PRIME_EFFORT_SELECTORS, PROJECT_SORT_MODES, type AppSettings, type ProjectSortMode } from '../../src/types/api'
+import { ACCENT_COLORS, BROWSER_PARTITION, HARNESS_IDS, IDLE_SESSION_MINUTES, INTERFACE_FONT_SCALES, OMP_APPROVAL_MODES, PRIME_EFFORT_SELECTORS, PROJECT_SORT_MODES, type AppSettings, type ProjectSortMode } from '../../src/types/api'
 import type { JsonStateStore } from './store'
 import { isRecord, rejectUnknownKeys, requireBoolean, requireSelfHostedVoiceUrl, requireString, requireWebUrl } from './validation'
 
@@ -90,8 +90,9 @@ export class SettingsService {
         return value
       },
       ompApprovalMode: (value) => {
-        if (value !== 'inherit' && value !== 'always-ask' && value !== 'write' && value !== 'yolo') throw new TypeError('Invalid OMP approval mode')
-        return value
+        const mode = OMP_APPROVAL_MODES.find((mode) => mode === value)
+        if (!mode) throw new TypeError('Invalid OMP approval mode')
+        return mode
       },
       voiceTranscriptionProvider: (value) => {
         if (value !== 'openai-live' && value !== 'openai' && value !== 'groq' && value !== 'deepgram' && value !== 'self-hosted' && value !== 'local-whisper') throw new TypeError('Invalid voice transcription provider')
