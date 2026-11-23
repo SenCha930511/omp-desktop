@@ -99,6 +99,7 @@ function rendererMessages(messageCount) {
       timestamp: new Date(startedAt + turn * 2_000).toISOString(),
       parts: [{ type: 'text', text: `Prompt ${turn}: inspect the retained transcript prefix and report the result.` }],
     })
+    /** @type {Array<import('../../src/types/api').MessagePart>} */
     const parts = [{ type: 'text', text: `Answer ${turn} with **markdown**, a [link](https://example.com/${turn}), and retained history.` }]
     if (turn % 10 === 0) parts.push({ type: 'toolCall', id: `tool-${turn}`, name: 'Read', args: { path: `/tmp/artifact-${turn}.txt` } })
     messages.push({
