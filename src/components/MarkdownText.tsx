@@ -11,6 +11,7 @@ import type { PluggableList } from 'unified'
 import 'katex/dist/katex.min.css'
 import { writeClipboardText } from '@/lib/clipboard'
 import { rehypeKatexCjkClass } from '@/lib/katex-cjk'
+import { normalizeLatexDelimiters } from '@/lib/markdown-math'
 import { openExternalUrl } from '@/lib/desktop-actions'
 import { useI18n } from '@/lib/i18n'
 import { type SyntaxToken, tokenizeSyntaxLine } from './transcript/syntax'
@@ -231,16 +232,17 @@ export const MarkdownText = memo(function MarkdownText({ text, streaming = false
 
   const boundary = streaming ? Math.min(parseStateRef.current.boundary, text.length) : text.length
   const parsedText = boundary === text.length ? text : text.slice(0, boundary)
+  const normalizedText = useMemo(() => normalizeLatexDelimiters(parsedText), [parsedText])
   // Keep the committed Markdown subtree intact between parses. Rendering the
   // unparsed suffix as a sibling block makes punctuation and partial words
   // jump onto separate lines while tokens are still arriving.
   const markdown = useMemo(
     () => (
       <ReactMarkdown remarkPlugins={markdownPlugins} rehypePlugins={[[rehypeKatex, katexOptions], rehypeKatexCjkClass]} skipHtml components={markdownComponents}>
-        {parsedText}
+        {normalizedText}
       </ReactMarkdown>
     ),
-    [parsedText],
+    [normalizedText],
   )
   return <div className="prose">{markdown}</div>
 })
