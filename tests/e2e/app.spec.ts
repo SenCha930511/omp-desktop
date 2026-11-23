@@ -1093,6 +1093,13 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(page.locator('.approval-mode__menu').getByRole('menuitemradio', { name: 'Ask', exact: true })).toHaveAttribute('aria-checked', 'true')
     await page.keyboard.press('Escape')
     await expect(page.locator('.approval-mode__menu')).toHaveCount(0)
+    await pill.click()
+    await page.locator('.approval-mode__menu').getByRole('menuitemradio', { name: 'Ask (cached)', exact: true }).click()
+    await expect(page.locator('.approval-mode-toggle__label')).toHaveText('Ask (cached)')
+    await expect.poll(() => page.evaluate(async () => (await window.desktop.settings.get()).ompApprovalMode)).toBe('always-ask-cached')
+    await pill.click()
+    await expect(page.locator('.approval-mode__menu').getByRole('menuitemradio', { name: 'Ask (cached)', exact: true })).toHaveAttribute('aria-checked', 'true')
+    await expect(pill).toBeFocused()
   })
 
   test('adapts terminal command output, notifications, empty results and failures to the desktop panel', async () => {
