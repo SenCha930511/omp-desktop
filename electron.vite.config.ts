@@ -9,9 +9,7 @@ const katexWoff2Only = {
   enforce: 'pre' as const,
   transform(code: string, id: string) {
     if (!id.includes('/katex/dist/katex.min.css')) return
-    return code
-      .replace(/,url\([^)]*\.woff\) format\("woff"\)/g, '')
-      .replace(/,url\([^)]*\.ttf\) format\("truetype"\)/g, '')
+    return code.replace(/,url\([^)]*\.woff\) format\("woff"\)/g, '').replace(/,url\([^)]*\.ttf\) format\("truetype"\)/g, '')
   },
 }
 

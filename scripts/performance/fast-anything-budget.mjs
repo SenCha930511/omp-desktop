@@ -70,6 +70,7 @@ results.push(measure('trajectory-500-frames', 1, () => {
 }))
 
 const searchModule = await loadModule(`export { searchTranscript } from '@/lib/transcript-search'`)
+/** @type {Array<{ id: string, role: string, parts: Array<Record<string, unknown>> }>} */
 const searchMessages = Array.from({ length: 1_000 }, (_, index) => ({
   id: String(index),
   role: index % 2 ? 'assistant' : 'user',
