@@ -323,7 +323,9 @@ export const Inspector = memo(function Inspector({
     const tab = openTabs[next]
     if (!tab) return
     activate(tab)
-    requestAnimationFrame(() => document.getElementById(`inspector-tab-${tab}`)?.focus())
+    // Keep consecutive key events on the newly selected tab. Deferring focus
+    // lets the next arrow arrive before the frame and repeat the same move.
+    document.getElementById(`inspector-tab-${tab}`)?.focus()
   }
 
   const renderPanel = (tab: InspectorTab) => {
