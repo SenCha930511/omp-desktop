@@ -17,6 +17,7 @@ type PluginDiscovery = typeof discoverPlugins
 interface PluginServiceOptions {
   harness?: HarnessId
   agentDir?: string
+  homeDir?: string
   discover?: PluginDiscovery
   builtInSkills?: SkillRecord[] | (() => SkillRecord[] | Promise<SkillRecord[]>)
 }
@@ -82,6 +83,7 @@ export class PluginService {
   private readonly discoveryInFlight = createSingleFlight<string, PluginCatalog>()
   private readonly catalogCache = new Map<string, { catalog: PluginCatalog; expiresAt: number }>()
   private readonly agentDir: string
+  private readonly homeDir: string
   private readonly discoverCatalog: PluginDiscovery
   private readonly builtInSkills: () => SkillRecord[] | Promise<SkillRecord[]>
   private readonly harness: HarnessId
@@ -92,7 +94,8 @@ export class PluginService {
     options: PluginServiceOptions = {},
   ) {
     this.harness = options.harness ?? 'omp'
-    this.agentDir = options.agentDir ?? HARNESSES[this.harness].agentDir(homedir())
+    this.homeDir = options.homeDir ?? homedir()
+    this.agentDir = options.agentDir ?? HARNESSES[this.harness].agentDir(this.homeDir)
     this.discoverCatalog = options.discover ?? discoverPlugins
     const builtInSkills = options.builtInSkills
     this.builtInSkills = typeof builtInSkills === 'function'
@@ -146,11 +149,17 @@ export class PluginService {
 
   private async discover(safeProjectPath: string | undefined, ownerKey: string): Promise<PluginCatalog> {
     if (safeProjectPath) this.lastProjectPath = safeProjectPath
-    const result = await this.discoverCatalog(this.agentDir, safeProjectPath, resolveExecutable(this.agentPath), this.harness)
+    const result = await this.discoverCatalog(this.agentDir, safeProjectPath, resolveExecutable(this.agentPath), this.harness, this.homeDir)
     const builtInSkills = await this.builtInSkills()
     const fixed = [...builtInSkills]
     const combined = dedupeAssociatedMcpPackages([...fixed, ...result.skills.filter((item) => !fixed.some((builtIn) => builtIn.id === item.id))])
-    const knownPaths = combined.flatMap((item) => item.path ? [item.path] : []).slice(0, MAX_KNOWN_PATHS_PER_OWNER)
+    // Authorize exactly the physical identity recorded for this owner. Custom
+    // or built-in catalogs use the same native canonicalization as production
+    // discovery; unresolved paths never become revealable.
+    const knownPaths = combined.flatMap((item) => {
+      if (!item.path) return []
+      try { return [realpathSync.native(item.path)] } catch { return [] }
+    }).slice(0, MAX_KNOWN_PATHS_PER_OWNER)
     // Delete-then-set keeps insertion order as LRU order for owner eviction.
     this.knownPathsByOwner.delete(ownerKey)
     this.knownPathsByOwner.set(ownerKey, new Set(knownPaths))
