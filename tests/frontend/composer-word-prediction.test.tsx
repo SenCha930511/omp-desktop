@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import './jsdom-storage'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -56,6 +57,8 @@ class ResizeObserverMock {
 }
 
 beforeEach(() => {
+  window.sessionStorage.clear()
+  window.localStorage.clear()
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
   resizeObserverInstance = null
   observedElement = null
@@ -71,6 +74,8 @@ afterEach(async () => {
   await act(async () => root.unmount())
   container.remove()
   window.sessionStorage.clear()
+  window.localStorage.clear()
+  vi.clearAllTimers()
   vi.useRealTimers()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
@@ -451,8 +456,19 @@ describe('Composer optional native word prediction', () => {
     expect(textarea.value).toBe('')
     expect(ghost()).toBeNull()
     expect(feedback(command)).toEqual([])
+
+    const setTimeoutSpy = vi.spyOn(window, 'setTimeout')
+    const clearTimeoutSpy = vi.spyOn(window, 'clearTimeout')
+    changeValue(textarea, 'pending')
+    const debounceCallIndex = setTimeoutSpy.mock.calls.findIndex(([, delay]) => delay === 300)
+    expect(debounceCallIndex).toBeGreaterThanOrEqual(0)
+    const timerId = setTimeoutSpy.mock.results[debounceCallIndex]?.value
+    expect(timerId).toBeDefined()
+
     await act(async () => root.unmount())
-    expect(vi.getTimerCount()).toBe(0)
+    expect(clearTimeoutSpy).toHaveBeenCalledWith(timerId)
+    await act(async () => vi.advanceTimersByTimeAsync(1_000))
+    expect(command).toHaveBeenCalledTimes(1)
     expect(feedback(command)).toEqual([])
     root = createRoot(container)
   })
