@@ -36,7 +36,9 @@ import { compactText, type TranscriptFileReader } from './transcript'
  * record shapes lives in `./bucketed`.
  */
 export const OMP_TITLE_SLOT_BYTES = 256
-const MAX_WASM_FAST_BYTES = 64 * 1024 * 1024
+// The WASM path wins on the catalog's many small files. Above 4 MiB the
+// streaming TS reader is at least as fast, so large sessions stay on it.
+const MAX_WASM_FAST_BYTES = 4 * 1024 * 1024
 const MAX_FAST_CACHE_ENTRIES = 5_000
 
 export function ompSessionRoot(): string {

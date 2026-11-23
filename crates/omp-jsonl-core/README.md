@@ -30,7 +30,7 @@ The module exports raw functions over linear memory:
 
 ## Limits
 
-- The fast path handles files up to 64 MiB.
+- The integration fast path handles files up to 4 MiB. Larger sessions use the streaming TypeScript reader.
 - Timestamps must be finite epoch milliseconds or RFC3339 strings. Anything else returns `fallback`, and the TypeScript reader handles the file.
 - UTF-16 truncation that would split a surrogate pair returns `fallback`.
 - More than 200,000 records or a record over 64 MiB returns `error`, matching the TypeScript limits.

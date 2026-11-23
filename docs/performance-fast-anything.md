@@ -81,18 +81,17 @@ The 656,910-byte largest chunk in the planning note came from an older build. Th
 
 The OMP metadata cold scan is ported to Rust in `crates/omp-jsonl-core`. The crate parses the JSONL tail with `serde_json`, mirrors the bucketed accumulator fields, and returns one accumulator object. It does not use `wasm-bindgen` or a native addon. The raw ABI copies the input bytes and three default strings into linear memory and reads one JSON result.
 
-`createOmpSessionMetadataReader` uses the core for the first read of an OMP session file up to 64 MiB. It parses the 256-byte title slot inside the same call, so the fast path reads the file once. Appends and rewrites use the existing incremental TS reader. A fallback result, a missing wasm, a disabled flag, or any unsupported timestamp shape returns to the TS path. `OMP_DESKTOP_DISABLE_WASM=1` forces the TS path.
+`createOmpSessionMetadataReader` uses the core for the first read of an OMP session file up to 4 MiB. It parses the 256-byte title slot inside the same call, so the fast path reads the file once. Appends and rewrites use the existing incremental TS reader. A fallback result, a missing wasm, a disabled flag, or any unsupported timestamp shape returns to the TS path. `OMP_DESKTOP_DISABLE_WASM=1` forces the TS path.
 
-The artifact is `assets/wasm/omp-jsonl-core.wasm` (85,993 bytes), and `npm run build:bundle` copies it to `out/main/omp-jsonl-core.wasm`. It stays inside `app.asar`, with no `app.asar.unpacked` entry and no Electron fuse change. `scripts/release/lib.mjs` requires the wasm in the packaged ASAR.
+The artifact is `assets/wasm/omp-jsonl-core.wasm` (86,030 bytes), and `npm run build:bundle` copies it to `out/main/omp-jsonl-core.wasm`. It stays inside `app.asar`, with no `app.asar.unpacked` entry and no Electron fuse change. `scripts/release/lib.mjs` requires the wasm in the packaged ASAR.
 
 | Workload | TS | WASM | Change |
 |---|---:|---:|---:|
 | 1,000 cold OMP session files | 150.9 ms | 94.6 ms | 1.59x faster |
-| 27.6 MiB OMP session file | 48.1 ms | 46.9 ms | 1.03x faster |
 | 58 real OMP sessions | n/a | n/a | 58 fast path, 0 mismatches |
 | 500 local JSONL files | n/a | n/a | 499 fast path, 1 fallback, 0 mismatches |
 
-The small-file win comes from one read per file and a single JSONL pass. Large files are dominated by `readFile` and JSON parsing, where the core is roughly even. The fast path is on by default because the cold catalog scan is the target workload.
+The small-file win comes from one read per file and a single JSONL pass. Above 4 MiB the streaming TS reader stays in use, because a local size sweep showed the core is even or slightly slower there. The fast path is on by default because the cold catalog scan is the target workload.
 
 ## Deferred work
 
