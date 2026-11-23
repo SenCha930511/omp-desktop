@@ -12,15 +12,15 @@ const CONTENT_HASH_CACHE_LIMIT = 2_000
 const contentHashCache = new Map<string, string>()
 
 interface FileIdentity {
-  dev: number
-  ino: number
-  size: number
-  mtimeMs: number
-  ctimeMs: number
+  dev: bigint
+  ino: bigint
+  size: bigint
+  mtimeNs: bigint
+  ctimeNs: bigint
 }
 
 function identityKey(path: string, stat: FileIdentity): string {
-  return `${path}\0${stat.dev}\0${stat.ino}\0${stat.size}\0${stat.mtimeMs}\0${stat.ctimeMs}`
+  return `${path}\0${stat.dev}\0${stat.ino}\0${stat.size}\0${stat.mtimeNs}\0${stat.ctimeNs}`
 }
 
 function rememberDigest(key: string, digest: string): void {
@@ -36,7 +36,7 @@ function rememberDigest(key: string, digest: string): void {
 /** Hash bytes without invoking Git filters; links describe their target, not its contents. */
 export async function gitWorktreeContentHash(path: string): Promise<string> {
   try {
-    const stat = await lstat(path)
+    const stat = await lstat(path, { bigint: true })
     if (stat.isSymbolicLink()) return `link:${await readlink(path)}`
     if (!stat.isFile()) return `other:${stat.mode}:${stat.mtimeMs}`
     const key = identityKey(path, stat)
@@ -52,7 +52,7 @@ export async function gitWorktreeContentHash(path: string): Promise<string> {
     const digest = `${stat.mode}:${hash.digest('hex')}`
     // Cache only when the file did not change while it was read, so a racing
     // writer cannot pin a digest to an identity the bytes no longer match.
-    const after = await lstat(path).catch(() => undefined)
+    const after = await lstat(path, { bigint: true }).catch(() => undefined)
     if (after && identityKey(path, after) === key) rememberDigest(key, digest)
     return digest
   } catch (error) {
