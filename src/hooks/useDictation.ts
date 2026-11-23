@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { WebRtcAudioSession } from '@/lib/webrtc-audio-session'
 import type { DesktopApi, VoiceTranscriptionProvider } from '@/types/api'
 
 export type DictationState = 'idle' | 'connecting' | 'recording' | 'transcribing'
@@ -18,9 +19,7 @@ interface BatchCapture {
 
 interface LiveCapture {
   kind: 'live'
-  stream: MediaStream
-  peer: RTCPeerConnection
-  channel: RTCDataChannel
+  session: WebRtcAudioSession
   transcript: string
   completed?: (value: string) => void
   failed?: (error: Error) => void
@@ -29,22 +28,22 @@ interface LiveCapture {
 type Capture = BatchCapture | LiveCapture
 const MAX_RECORDING_SECONDS = 4 * 60
 
-function stopTracks(stream: MediaStream): void {
+function stopTracks(stream: MediaStream | null): void {
+  if (!stream) return
   for (const track of stream.getTracks()) track.stop()
 }
 
 function closeCapture(capture: Capture | null): void {
   if (!capture) return
-  stopTracks(capture.stream)
   if (capture.kind === 'live') {
-    try { capture.channel.close() } catch { /* already closed */ }
-    capture.peer.close()
-  } else {
-    capture.processor.disconnect()
-    capture.source.disconnect()
-    capture.sink.disconnect()
-    void capture.context.close().catch(() => undefined)
+    capture.session.close()
+    return
   }
+  stopTracks(capture.stream)
+  capture.processor.disconnect()
+  capture.source.disconnect()
+  capture.sink.disconnect()
+  void capture.context.close().catch(() => undefined)
 }
 
 function encodeWav(chunks: Float32Array[], frames: number, sampleRate: number): Uint8Array {
@@ -68,13 +67,14 @@ function encodeWav(chunks: Float32Array[], frames: number, sampleRate: number): 
   return new Uint8Array(buffer)
 }
 
-function waitForChannel(channel: RTCDataChannel): Promise<void> {
-  if (channel.readyState === 'open') return Promise.resolve()
-  return new Promise((resolve, reject) => {
-    const timer = window.setTimeout(() => reject(new Error('Realtime transcription did not connect.')), 15_000)
-    channel.addEventListener('open', () => { window.clearTimeout(timer); resolve() }, { once: true })
-    channel.addEventListener('error', () => { window.clearTimeout(timer); reject(new Error('Realtime transcription connection failed.')) }, { once: true })
-  })
+function receiveLiveMessage(capture: LiveCapture, data: string): void {
+  let payload: unknown
+  try { payload = JSON.parse(data) } catch { return }
+  if (!payload || typeof payload !== 'object') return
+  const message = payload as Record<string, unknown>
+  if (message.type === 'conversation.item.input_audio_transcription.delta' && typeof message.delta === 'string') capture.transcript += message.delta
+  if (message.type === 'conversation.item.input_audio_transcription.completed') capture.completed?.(typeof message.transcript === 'string' ? message.transcript : capture.transcript)
+  if (message.type === 'error') capture.failed?.(new Error('Realtime transcription failed.'))
 }
 
 export function useDictation(voice: DesktopApi['voice'] | null | undefined, provider: VoiceTranscriptionProvider, onError: (message: string) => void) {
@@ -99,51 +99,56 @@ export function useDictation(voice: DesktopApi['voice'] | null | undefined, prov
     setState('connecting')
     onError('')
     let stream: MediaStream | null = null
+    let context: AudioContext | null = null
+    let capture: Capture | null = null
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false })
-      if (generation !== generationRef.current) { stopTracks(stream); return }
       if (provider === 'openai-live') {
-        const peer = new RTCPeerConnection()
-        for (const track of stream.getTracks()) peer.addTrack(track, stream)
-        const channel = peer.createDataChannel('oai-events')
-        const capture: LiveCapture = { kind: 'live', stream, peer, channel, transcript: '' }
-        captureRef.current = capture
-        channel.addEventListener('message', (event) => {
-          let payload: unknown
-          try { payload = JSON.parse(String(event.data)) } catch { return }
-          if (!payload || typeof payload !== 'object') return
-          const message = payload as Record<string, unknown>
-          if (message.type === 'conversation.item.input_audio_transcription.delta' && typeof message.delta === 'string') capture.transcript += message.delta
-          if (message.type === 'conversation.item.input_audio_transcription.completed') capture.completed?.(typeof message.transcript === 'string' ? message.transcript : capture.transcript)
-          if (message.type === 'error') capture.failed?.(new Error('Realtime transcription failed.'))
+        const live: LiveCapture = { kind: 'live', session: new WebRtcAudioSession(), transcript: '' }
+        capture = live
+        captureRef.current = live
+        const connected = await live.session.connect({
+          exchangeSdp: (sdp) => voice.createRealtimeCall({ mode: 'transcription', sdp }),
+          onMessage: (data) => receiveLiveMessage(live, data),
         })
-        const offer = await peer.createOffer()
-        await peer.setLocalDescription(offer)
-        const answer = await voice.createRealtimeCall({ mode: 'transcription', sdp: offer.sdp ?? '' })
-        await peer.setRemoteDescription({ type: 'answer', sdp: answer })
-        await waitForChannel(channel)
+        if (!connected || generation !== generationRef.current || captureRef.current !== live) {
+          live.session.close()
+          return
+        }
       } else {
-        const context = new AudioContext()
+        stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false })
+        if (generation !== generationRef.current) { stopTracks(stream); return }
+        context = new AudioContext()
         await context.resume()
+        if (generation !== generationRef.current) {
+          stopTracks(stream)
+          void context.close().catch(() => undefined)
+          return
+        }
         const source = context.createMediaStreamSource(stream)
         const processor = context.createScriptProcessor(4_096, 1, 1)
         const sink = context.createGain()
         sink.gain.value = 0
-        const capture: BatchCapture = { kind: 'batch', stream, context, source, processor, sink, chunks: [], frames: 0, sampleRate: context.sampleRate, overflowed: false }
+        const batch: BatchCapture = { kind: 'batch', stream, context, source, processor, sink, chunks: [], frames: 0, sampleRate: context.sampleRate, overflowed: false }
+        capture = batch
         processor.onaudioprocess = (event) => {
           const samples = event.inputBuffer.getChannelData(0)
-          if (capture.frames + samples.length > capture.sampleRate * MAX_RECORDING_SECONDS) { capture.overflowed = true; return }
-          capture.chunks.push(new Float32Array(samples))
-          capture.frames += samples.length
+          if (batch.frames + samples.length > batch.sampleRate * MAX_RECORDING_SECONDS) { batch.overflowed = true; return }
+          batch.chunks.push(new Float32Array(samples))
+          batch.frames += samples.length
         }
         source.connect(processor); processor.connect(sink); sink.connect(context.destination)
-        captureRef.current = capture
+        captureRef.current = batch
       }
       if (generation === generationRef.current) setState('recording')
     } catch (error) {
-      if (stream && !captureRef.current) stopTracks(stream)
+      if (!capture) {
+        stopTracks(stream)
+        if (context) void context.close().catch(() => undefined)
+      }
       if (generation === generationRef.current) {
-        closeCapture(captureRef.current); captureRef.current = null; setState('idle')
+        closeCapture(capture)
+        captureRef.current = null
+        setState('idle')
         onError(error instanceof Error ? error.message : 'Could not start microphone capture.')
       }
     }
@@ -152,29 +157,36 @@ export function useDictation(voice: DesktopApi['voice'] | null | undefined, prov
   const finish = useCallback(async (): Promise<string> => {
     const capture = captureRef.current
     if (!voice || !capture || state !== 'recording') return ''
+    const generation = generationRef.current
+    const isCurrent = () => generation === generationRef.current && captureRef.current === capture
     setState('transcribing')
     try {
       if (capture.kind === 'live') {
-        const result = new Promise<string>((resolve, reject) => {
-          const timer = window.setTimeout(() => reject(new Error('Realtime transcription timed out.')), 20_000)
-          capture.completed = (text) => { window.clearTimeout(timer); resolve(text) }
-          capture.failed = (error) => { window.clearTimeout(timer); reject(error) }
-        })
-        capture.channel.send(JSON.stringify({ type: 'input_audio_buffer.commit' }))
-        return (await result).trim()
+        const { promise: result, resolve, reject } = Promise.withResolvers<string>()
+        const timer = window.setTimeout(() => reject(new Error('Realtime transcription timed out.')), 20_000)
+        capture.completed = (text) => { window.clearTimeout(timer); resolve(text) }
+        capture.failed = (error) => { window.clearTimeout(timer); reject(error) }
+        try {
+          capture.session.send(JSON.stringify({ type: 'input_audio_buffer.commit' }))
+        } catch (error) {
+          capture.failed(error instanceof Error ? error : new Error('Realtime transcription is not connected.'))
+        }
+        const transcript = await result
+        return isCurrent() ? transcript.trim() : ''
       }
       if (capture.overflowed) throw new Error('Dictation is limited to four minutes per recording.')
       if (capture.frames === 0) return ''
       if (provider === 'openai-live') throw new Error('The transcription provider changed while recording.')
       const audio = encodeWav(capture.chunks, capture.frames, capture.sampleRate)
-      return (await voice.transcribe({ provider, audio })).trim()
+      const transcript = await voice.transcribe({ provider, audio })
+      return isCurrent() ? transcript.trim() : ''
     } catch (error) {
-      onError(error instanceof Error ? error.message : 'Could not transcribe the recording.')
+      if (isCurrent()) onError(error instanceof Error ? error.message : 'Could not transcribe the recording.')
       return ''
     } finally {
-      captureRef.current = null
+      if (captureRef.current === capture) captureRef.current = null
       closeCapture(capture)
-      setState('idle')
+      if (generation === generationRef.current) setState('idle')
     }
   }, [onError, provider, state, voice])
 
