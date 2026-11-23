@@ -2,7 +2,7 @@ import type { CSSProperties } from 'react'
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { activityNotificationSignature, readClearedActivity, readClearedAttention, sessionCompanionNotificationSignature } from '@/app/session-attention'
 import { AgentBrowserLayer, type AgentSlotRect } from '@/components/AgentBrowserLayer'
-import { Composer, type HarnessQueuedPreview } from '@/components/Composer'
+import type { HarnessQueuedPreview } from '@/components/Composer'
 import { ExtensionUiPresentation } from '@/components/ExtensionUiPresentation'
 import { readComposerDraft } from '@/lib/composer-draft'
 import { ReasoningExpandedContext } from '@/components/ReasoningDisclosure'
@@ -74,6 +74,7 @@ import {
   type WorkspaceView,
 } from '@/types/api'
 
+const Composer = lazy(() => import('@/components/Composer').then((module) => ({ default: module.Composer })))
 const Transcript = lazy(() => import('@/components/ConversationTranscript').then((module) => ({ default: module.ConversationTranscript })))
 const Inspector = lazy(() => import('@/components/WorkspaceInspector').then((module) => ({ default: module.WorkspaceInspector })))
 const CommandPalette = lazy(() => import('@/components/CommandPalette').then((module) => ({ default: module.CommandPalette })))
@@ -1523,7 +1524,17 @@ export default function App() {
                           onDismissOpenUrl={() => extension.dismissOpenUrlRequest()}
                           onDismissCapabilityNotice={extension.dismissCapabilityNotice}
                         >
-                          <Composer
+                          <Suspense fallback={(
+                            <div className="composer-input" aria-busy="true">
+                              <textarea
+                                rows={2}
+                                disabled
+                                placeholder={t('composer.placeholderLoading')}
+                                aria-label={t('composer.ariaLabel', { name: HARNESS_SHORT_NAMES[activeHarness] })}
+                              />
+                            </div>
+                          )}>
+                            <Composer
                             availableCommands={visibleSlashCommands}
                             key={
                               workspace.activeSessionId
@@ -1603,7 +1614,10 @@ export default function App() {
                             onRetryStoppedTurn={retryTurn}
                             onRemoveAnnotation={browserAnnotations.remove}
                             onClearAnnotations={browserAnnotations.clear}
-                          />
+                            wordPredictionAgent={bridge?.agent}
+                            wordPredictionSessionId={workspace.runtime?.sessionId}
+                            />
+                          </Suspense>
                         </ExtensionUiPresentation>
                       </ConversationDock>
                     </main>

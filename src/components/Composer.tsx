@@ -3,6 +3,7 @@ import type { CSSProperties } from 'react'
 import { Fragment, memo, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useComposerImages } from '@/hooks/useComposerImages'
 import { useDictation } from '@/hooks/useDictation'
+import { useWordPrediction, type WordPredictionAgent } from '@/hooks/useWordPrediction'
 import { appendAnnotationsToPrompt } from '@/lib/browser-annotations'
 import { appendCapabilityRouting } from '@/lib/capability-mentions'
 import { readComposerDraft, saveComposerDraft, takeComposerDraft } from '@/lib/composer-draft'
@@ -39,6 +40,7 @@ import type {
   VoiceTranscriptionProvider,
 } from '@/types/api'
 import { CheckoutPicker } from './CheckoutPicker'
+import { ComposerGhostText } from './ComposerGhostText'
 import { ExecutingModelChip, type ExecutingModelChipProps } from './ExecutingModelChip'
 import { EffortPicker } from './EffortPicker'
 import { ModelPicker } from './ModelPicker'
@@ -105,6 +107,8 @@ interface ComposerProps {
   sessionUsage?: SessionUsage
   /** 查詢回合指標(TTFT/TPS)的 runtime;切換後自然回到 —。 */
   runtimeId?: string | null
+  wordPredictionAgent?: WordPredictionAgent | null
+  wordPredictionSessionId?: string | null
   /** Harness-reported output rate of the last turn; preferred over the local estimate. */
   harnessTokensPerSecond?: number
   voice?: DesktopApi['voice'] | null
@@ -229,6 +233,8 @@ export const Composer = memo(function Composer({
   executingModel,
   sessionUsage,
   runtimeId,
+  wordPredictionAgent,
+  wordPredictionSessionId,
   harnessTokensPerSecond,
   voice,
   transcriptionProvider = 'openai-live',
@@ -345,6 +351,19 @@ export const Composer = memo(function Composer({
   const mountedRef = useRef(true)
   const restoredDraftRef = useRef(false)
   const enabledSkills = useMemo(() => skills.filter((skill) => skill.enabled), [skills])
+  const wordPredictionHintId = useId()
+  const wordPrediction = useWordPrediction({
+    agent: wordPredictionAgent,
+    runtimeId,
+    sessionId: wordPredictionSessionId,
+    draftKey,
+    value,
+    enabled: !disabled && !loading,
+    menuOpen: menu !== null,
+    textareaRef,
+    composingRef,
+    setValue,
+  })
 
   useEffect(() => {
     if (!draftKey || restoredDraftRef.current) return
@@ -1047,6 +1066,14 @@ export const Composer = memo(function Composer({
           </div>
         ) : null}
         <div className="composer-input">
+          {wordPrediction.visible ? (
+            <ComposerGhostText
+              textareaRef={textareaRef}
+              text={wordPrediction.visible.text}
+              cursor={wordPrediction.visible.cursor}
+              suggestion={wordPrediction.visible.suggestion}
+            />
+          ) : null}
           <textarea
             ref={textareaRef}
             data-draft-scope={draftKey}
@@ -1066,11 +1093,15 @@ export const Composer = memo(function Composer({
             }
             aria-label={t('composer.ariaLabel', { name: shortName })}
             role="combobox"
-            aria-autocomplete="list"
+            aria-autocomplete={wordPrediction.visible ? 'inline' : 'list'}
             aria-expanded={Boolean(menu && suggestions.length)}
             aria-controls={menu ? menuId : undefined}
             aria-activedescendant={menu && suggestions.length ? `${menuId}-option-${activeSuggestion}` : undefined}
-            onChange={(event) => setValue(event.target.value)}
+            aria-describedby={wordPrediction.visible ? wordPredictionHintId : undefined}
+            onChange={(event) => {
+              wordPrediction.onChange(event)
+              setValue(event.target.value)
+            }}
             onPaste={(event) => {
               const files = [...event.clipboardData.items]
                 .filter((item) => item.kind === 'file')
@@ -1086,11 +1117,16 @@ export const Composer = memo(function Composer({
             }}
             onCompositionStart={() => {
               composingRef.current = true
+              wordPrediction.onCompositionStart()
             }}
             onCompositionEnd={(event) => {
               composingRef.current = false
               lastCompositionEndAtRef.current = event.nativeEvent.timeStamp
+              wordPrediction.onCompositionEnd(event)
             }}
+            onSelect={wordPrediction.onSelect}
+            onKeyUp={wordPrediction.onKeyUp}
+            onBlur={wordPrediction.onBlur}
             onKeyDown={(event) => {
               if (isImeComposingOrGuarded(event.nativeEvent, composingRef.current, lastCompositionEndAtRef.current)) {
                 // A swallowed Enter must die here: without preventDefault the
@@ -1100,6 +1136,7 @@ export const Composer = memo(function Composer({
                 if (event.key === 'Enter' && !isImeComposing(event.nativeEvent, composingRef.current)) event.preventDefault()
                 return
               }
+              if (wordPrediction.onKeyDown(event)) return
               if (event.key !== 'Escape') lastIdleEmptyEscapeAtRef.current = null
               const hasDraftContent = Boolean(value.trim()) || images.length > 0 || unsupportedFiles.length > 0 || annotations.length > 0
               // TUI 預設鍵對齊(2.6/2.7):
@@ -1208,6 +1245,7 @@ export const Composer = memo(function Composer({
               }
             }}
           />
+          {wordPrediction.visible ? <span id={wordPredictionHintId} className="sr-only">{t('composer.wordPredictionHint')}</span> : null}
         </div>
         {menu && suggestions.length ? (
           <div
