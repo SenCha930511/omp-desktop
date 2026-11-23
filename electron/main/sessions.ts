@@ -18,6 +18,11 @@ interface RuntimeSessionState { isStreaming: boolean; isCompacting?: boolean }
 
 interface RuntimeSessionSnapshot extends RuntimeSessionState { sessionFile?: string }
 
+interface NormalizedSessionPaths {
+  readonly filePath: string
+  readonly projectPath?: string
+}
+
 const MAX_SESSION_FILES = 5_000
 const MAX_SESSION_WATCH_DIRECTORIES = 512
 const MAX_CONCURRENT_TRANSCRIPT_READS = 2
@@ -127,6 +132,9 @@ export class SessionService {
   private renameRuntimeSession: (filePath: string, title: string) => Promise<boolean> = async () => false
   private readonly catalog: SessionMetadataCatalog
   private readonly metadataReader: SessionMetadataReader
+  // Replacement metadata objects invalidate these derived strings by identity;
+  // weak keys avoid retaining snapshots removed from the catalog.
+  private readonly normalizedSessionPaths = new WeakMap<SessionMetadata, NormalizedSessionPaths>()
   private readonly transcriptReads = createSingleFlight<string, TranscriptMessage[]>()
   private readonly transcriptPageReads = createSingleFlight<string, TranscriptReadPageResult>()
   private readonly transcriptSnapshots = new Map<string, TranscriptSnapshotRecord>()
@@ -237,13 +245,13 @@ export class SessionService {
     const pinned = new Set(this.store.getPinnedSessions().map((path) => resolve(path)))
     const records: SessionRecord[] = []
     for (const original of sessions) {
-      const filePath = resolve(original.filePath)
+      const filePath = this.normalizedFilePath(original)
       // parentSession rides along: the renderer folds continued chains
       // (compact rollover / fork) into one sidebar row via session-lineage.
       const { sessionName: _sessionName, previousSessionFiles: _previousSessionFiles, ...record } = original
       const isArchived = archived.has(filePath)
       const isPinned = pinned.has(filePath)
-      if ((isArchived && !includeArchived) || (project && resolve(record.projectPath) !== project)) continue
+      if ((isArchived && !includeArchived) || (project && this.normalizedProjectPath(original) !== project)) continue
       const runtime = runtimeBySession
         ? runtimeBySession.get(filePath)
         : this.runtimeForSession(record.filePath)
@@ -253,6 +261,23 @@ export class SessionService {
     const ordered = records.map((record) => ({ record, sortKey: Date.parse(record.lastUserMessageAt ?? record.createdAt) }))
     ordered.sort((left, right) => right.sortKey - left.sortKey || comparePaths(left.record.filePath, right.record.filePath))
     return ordered.map((entry) => entry.record)
+  }
+
+  private normalizedFilePath(original: SessionMetadata): string {
+    const cached = this.normalizedSessionPaths.get(original)
+    if (cached) return cached.filePath
+    const filePath = resolve(original.filePath)
+    this.normalizedSessionPaths.set(original, { filePath })
+    return filePath
+  }
+
+  private normalizedProjectPath(original: SessionMetadata): string {
+    const filePath = this.normalizedFilePath(original)
+    const cached = this.normalizedSessionPaths.get(original)
+    if (cached?.projectPath !== undefined) return cached.projectPath
+    const projectPath = resolve(original.projectPath)
+    this.normalizedSessionPaths.set(original, { filePath, projectPath })
+    return projectPath
   }
 
   private snapshotRuntimeSessions(): Map<string, RuntimeSessionSnapshot> | null {
