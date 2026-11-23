@@ -139,6 +139,13 @@ export class BoundedLineReader {
     this.buffer = this.buffer.length === 0 ? chunk : Buffer.concat([this.buffer, chunk])
     let newlineIndex = this.buffer.indexOf(0x0a)
     while (newlineIndex >= 0) {
+      if (newlineIndex > this.limitBytes) {
+        this.failed = true
+        this.buffer = Buffer.alloc(0)
+        this.stream.destroy()
+        this.onFatal(new Error(`frame exceeded ${this.limitBytes} bytes`))
+        return
+      }
       const line = this.buffer.subarray(0, newlineIndex).toString('utf8')
       this.buffer = this.buffer.subarray(newlineIndex + 1)
       newlineIndex = this.buffer.indexOf(0x0a)
@@ -227,7 +234,7 @@ export class ChunkReassembler {
 
 /** Owns one spawned omp RPC child: framed reads, chunk reassembly, requests, and teardown. */
 export class OmpRpcClient {
-  constructor({ executable, args, cwd, env, requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, remainingTime = () => Number.POSITIVE_INFINITY }) {
+  constructor({ executable, args, cwd, env, requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, lineLimitBytes = LINE_LIMIT_BYTES, remainingTime = () => Number.POSITIVE_INFINITY }) {
     this.requestTimeoutMs = requestTimeoutMs
     this.remainingTime = remainingTime
     this.pending = new Map()
@@ -248,6 +255,7 @@ export class OmpRpcClient {
     const invocation = parityExecutableInvocation(executable, args)
     this.child = spawn(invocation.executable, invocation.args, { cwd, env, shell: false, stdio: ['pipe', 'pipe', 'pipe'], detached: this.detached, windowsHide: true })
     new BoundedLineReader(this.child.stdout, {
+      limitBytes: lineLimitBytes,
       onLine: (line) => this.handleLine(line),
       onFatal: (error) => this.failTransport(error),
     })
@@ -662,7 +670,7 @@ export async function runParityVerification(options = {}) {
 
     if (cases.every((entry) => entry.ok)) {
       rpcSuiteRun = true
-      client = new OmpRpcClient({ executable: ompPath, args: buildRpcArgs(workspace, sessionsDir), cwd: workspace, env, requestTimeoutMs, remainingTime })
+      client = new OmpRpcClient({ executable: ompPath, args: buildRpcArgs(workspace, sessionsDir), cwd: workspace, env, requestTimeoutMs, lineLimitBytes: options.lineLimitBytes, remainingTime })
       const ctx = {}
       let failed = false
       for (const [name, step] of rpcSuiteSteps(client)) {

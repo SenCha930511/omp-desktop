@@ -43,6 +43,8 @@ interface FakeOmpOptions {
   sensitiveCommand?: 'negotiate_protocol' | 'new_session' | 'fork' | 'abort_and_restore_queue'
   /** happy speaks the full parity protocol; the others simulate lifecycle failures. */
   mode?: 'happy' | 'silent' | 'oversize' | 'corrupt-chunk'
+  /** Test-only byte size allows exact real-pipe boundary coverage without a multi-megabyte timing race. */
+  negotiateFrameBytes?: number
   /** happy mode only: deliver get_state responses as v2 rpc_chunk sequences. */
   chunked?: boolean
 }
@@ -95,7 +97,6 @@ function fakeOmp(options: FakeOmpOptions = {}): string {
           "require('node:readline').createInterface({ input: process.stdin }).on('line', (line) => {",
           ...(mode === 'oversize'
             ? [
-                "  process.stdout.write('x'.repeat(17 * 1024 * 1024))",
                 '  return',
                 '})',
                 'setInterval(() => {}, 1000)',
@@ -122,7 +123,16 @@ function fakeOmp(options: FakeOmpOptions = {}): string {
                       '  }',
                     ]
                   : []),
-                "  if (command.type === 'negotiate_protocol') { reply({ protocolVersion: 2 }); return }",
+                "  if (command.type === 'negotiate_protocol') {",
+                '    const data = { protocolVersion: 2 }',
+                `    const frameBytes = ${options.negotiateFrameBytes ?? 'null'}`,
+                '    if (frameBytes !== null) {',
+                "      const baseBytes = Buffer.byteLength(JSON.stringify({ id: command.id, type: 'response', command: command.type, success: true, data: { ...data, padding: '' } }))",
+                '      data.padding = \'x\'.repeat(frameBytes - baseBytes)',
+                '    }',
+                '    reply(data)',
+                '    return',
+                '  }',
                 "  if (command.type === 'get_state') { reply({ sessionId, ...(sessionFile ? { sessionFile } : {}) }); return }",
                 "  if (command.type === 'new_session') { sessionFile = path.join(sessionsDir, 'new.jsonl'); fs.writeFileSync(sessionFile, ''); sessionId = 'new-session'; reply({ cancelled: false }); return }",
                 "  if (command.type === 'set_session_name') { fs.appendFileSync(sessionFile, JSON.stringify({ type: 'title', title: command.name }) + '\\n'); reply({}); return }",
@@ -384,12 +394,45 @@ describe('verify-omp-parity against an injectable fake executable', () => {
   }, 30000)
 
   it('fails the transport when a frame exceeds the line bound instead of hanging', async () => {
-    const summary = (await runParityVerification({ ompPath: fakeOmp({ mode: 'oversize' }), timeoutMs: 30000, requestTimeoutMs: 2000 })) as ParitySummary
+    const summary = (await runParityVerification({ ompPath: fakeOmp({ mode: 'oversize' }), timeoutMs: 30000, requestTimeoutMs: 2000, lineLimitBytes: 16 })) as ParitySummary
     expect(summary.ok).toBe(false)
     expect(summary.transport?.transportError).toContain('exceeded')
     expect(summary.cleanup.stillRunning).toBe(false)
     expect(summary.cleanup.tempDirRemoved).toBe(true)
   }, 30000)
+
+  it.each([
+    { extraBytes: 0, accepted: true },
+    { extraBytes: 1, accepted: false },
+  ])('handles a complete child frame at the byte boundary (extraBytes=$extraBytes)', async ({ extraBytes, accepted }) => {
+    const lineLimitBytes = 64 * 1024
+    const executable = fakeOmp({ negotiateFrameBytes: lineLimitBytes + extraBytes })
+    const cwd = dirname(executable)
+    const client = new OmpRpcClient({
+      executable,
+      args: buildRpcArgs(cwd, join(cwd, 'sessions')),
+      cwd,
+      env: buildIsolatedEnv(cwd),
+      requestTimeoutMs: 2000,
+      lineLimitBytes,
+    })
+    const cleanup: ParitySummary['cleanup'] = { exit: 'not-started', stillRunning: false, tempDirRemoved: false }
+    try {
+      await client.waitForReady()
+      const negotiation = client.request({ type: 'negotiate_protocol', protocolVersion: 2 })
+      if (accepted) {
+        await expect(negotiation).resolves.toMatchObject({ success: true, command: 'negotiate_protocol' })
+        expect(client.transportError).toBeNull()
+      } else {
+        await expect(negotiation).rejects.toThrow(`RPC transport failed: frame exceeded ${lineLimitBytes} bytes`)
+        expect(client.transportError).toContain(`frame exceeded ${lineLimitBytes} bytes`)
+      }
+    } finally {
+      await client.dispose(cleanup)
+    }
+    expect(cleanup.stillRunning).toBe(false)
+    expect(cleanup.exit).not.toBe('still-running')
+  }, 10000)
 
   it('rejects out-of-order chunked frames safely and fails the pending request by timeout', async () => {
     const summary = (await runParityVerification({ ompPath: fakeOmp({ mode: 'corrupt-chunk' }), timeoutMs: 15000, requestTimeoutMs: 600 })) as ParitySummary
