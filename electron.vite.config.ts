@@ -31,6 +31,9 @@ export default defineConfig({
         input: resolve('index.html'),
         output: {
           manualChunks(id) {
+            // Keep the large, synchronous locale dictionaries together without
+            // turning translation into an asynchronous loading boundary.
+            if (id.includes('/src/i18n/keys/')) return 'i18n-catalogs'
             if (!id.includes('node_modules')) return undefined
             if (id.includes('/react-markdown/') || id.includes('/remark-') || id.includes('/unified/')) return 'markdown-vendor'
             if (id.includes('/katex/') || id.includes('/rehype-katex/')) return 'katex-vendor'
