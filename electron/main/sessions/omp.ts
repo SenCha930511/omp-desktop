@@ -160,6 +160,7 @@ export function createOmpSessionMetadataReader(io: SessionMetadataReaderIo = nod
     } catch {
       return undefined
     }
+    if (bytes.byteLength > MAX_WASM_FAST_BYTES) return undefined
     const nameTimestamp = timestampFromBucketedSessionName(filePath)
     const result = await scanOmpMetadataBytes(bytes, {
       id: idFromBucketedFileName(filePath),

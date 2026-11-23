@@ -1,5 +1,4 @@
 use chrono::{DateTime, Datelike, SecondsFormat, TimeZone, Utc};
-use serde_json::error::Category;
 use serde_json::{json, Map, Value};
 use std::alloc::{alloc as rust_alloc, dealloc as rust_dealloc, Layout};
 use std::cell::RefCell;
@@ -87,7 +86,11 @@ pub extern "C" fn scan(
     updated_len: usize,
     title_slot_len: usize,
 ) -> usize {
-    let bytes = unsafe { slice::from_raw_parts(bytes_ptr, bytes_len) };
+    let bytes: &[u8] = if bytes_len == 0 {
+        &[]
+    } else {
+        unsafe { slice::from_raw_parts(bytes_ptr, bytes_len) }
+    };
     let Some(id) = string_arg(id_ptr, id_len) else {
         set_result(fallback("id"));
         return result_len();
@@ -154,8 +157,15 @@ fn scan_inner(bytes: &[u8], id: String, created_at: String, updated_at: String, 
         let slot = &bytes[..record_start];
         if let Some(newline) = slot.iter().position(|byte| *byte == b'\n') {
             let line = slot[..newline].strip_suffix(b"\r").unwrap_or(&slot[..newline]);
-            if let Ok(text) = std::str::from_utf8(line) {
-                if let Ok(Value::Object(object)) = serde_json::from_str::<Value>(text) {
+            let Ok(text) = std::str::from_utf8(line) else {
+                return fallback("title-utf8");
+            };
+            if !is_blank(text) {
+                let value = match serde_json::from_str::<Value>(text) {
+                    Ok(value) => value,
+                    Err(_) => return fallback("title-json"),
+                };
+                if let Value::Object(object) = value {
                     if object.get("type").and_then(Value::as_str) == Some("title") {
                         if let Some(title) = object.get("title").and_then(Value::as_str) {
                             if !is_blank(title) {
@@ -185,7 +195,6 @@ fn scan_inner(bytes: &[u8], id: String, created_at: String, updated_at: String, 
         };
         let value = match serde_json::from_str::<Value>(text) {
             Ok(value) => value,
-            Err(error) if error.classify() == Category::Syntax => continue,
             Err(_) => return fallback("json"),
         };
         let Some(object) = value.as_object() else {
@@ -301,9 +310,10 @@ fn ingest_thinking_level(state: &mut Accumulator, object: &Map<String, Value>) {
 }
 
 fn ingest_model_change(state: &mut Accumulator, object: &Map<String, Value>) {
-    let role = object.get("role").and_then(Value::as_str);
-    if role.is_some() && role != Some("default") {
-        return;
+    if let Some(role) = object.get("role") {
+        if role.as_str() != Some("default") {
+            return;
+        }
     }
     let Some(model) = object.get("model").and_then(Value::as_str) else {
         return;
@@ -370,8 +380,11 @@ fn valid_timestamp(value: &Value) -> Result<Option<String>, ()> {
         }
         let millis = number.trunc() as i64;
         let Some(date) = Utc.timestamp_millis_opt(millis).single() else {
-            return Ok(None);
+            return Err(());
         };
+        if !(0..=9999).contains(&date.year()) {
+            return Err(());
+        }
         return Ok(Some(date.to_rfc3339_opts(SecondsFormat::Millis, true)));
     }
     if let Some(text) = value.as_str() {

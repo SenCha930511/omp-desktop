@@ -47,11 +47,18 @@ export function ompWasmEnabled(): boolean {
 function wasmCandidates(): string[] {
   const candidates: string[] = []
   const override = process.env.OMP_DESKTOP_WASM_PATH
-  if (override) candidates.push(override)
+  if (override) return [override]
   if (typeof __dirname === 'string') candidates.push(join(__dirname, DEFAULT_WASM_NAME))
   candidates.push(join(process.cwd(), 'out', 'main', DEFAULT_WASM_NAME))
   candidates.push(join(process.cwd(), 'assets', 'wasm', DEFAULT_WASM_NAME))
   return [...new Set(candidates)]
+}
+
+function isOmpWasmExports(value: unknown): value is OmpWasmExports {
+  if (!value || typeof value !== 'object') return false
+  const memory = Reflect.get(value, 'memory')
+  if (!memory || typeof memory !== 'object' || typeof Reflect.get(memory, 'buffer') !== 'object') return false
+  return ['alloc', 'dealloc', 'scan', 'result_ptr', 'result_len', 'clear_result'].every((name) => typeof Reflect.get(value, name) === 'function')
 }
 
 async function loadInstance(): Promise<OmpWasmExports | null> {
@@ -60,8 +67,7 @@ async function loadInstance(): Promise<OmpWasmExports | null> {
     try {
       const bytes = readFileSync(candidate)
       const { instance } = await WebAssembly.instantiate(bytes, {})
-      const exports = instance.exports as unknown as OmpWasmExports
-      if (exports.memory && typeof exports.memory.buffer === 'object') return exports
+      if (isOmpWasmExports(instance.exports)) return instance.exports
     } catch {
       // Try the next candidate. A broken artifact must never take the app down.
     }
@@ -74,11 +80,20 @@ function instance(): Promise<OmpWasmExports | null> {
   return instancePromise
 }
 
+export function resetOmpWasmForTests(): void {
+  instancePromise = undefined
+}
+
 function writeBytes(exports: OmpWasmExports, bytes: Uint8Array): { pointer: number; length: number } {
   if (bytes.length === 0) return { pointer: 0, length: 0 }
   const pointer = exports.alloc(bytes.length)
   if (pointer === 0) throw new Error('WASM allocation failed')
-  new Uint8Array(exports.memory.buffer, pointer, bytes.length).set(bytes)
+  try {
+    new Uint8Array(exports.memory.buffer, pointer, bytes.length).set(bytes)
+  } catch (error) {
+    exports.dealloc(pointer, bytes.length)
+    throw error
+  }
   return { pointer, length: bytes.length }
 }
 
@@ -89,6 +104,7 @@ function writeString(exports: OmpWasmExports, value: string): { pointer: number;
 function readResult(exports: OmpWasmExports, length: number): string {
   if (length === 0) return ''
   const pointer = exports.result_ptr()
+  if (pointer === 0) throw new Error('WASM result pointer is missing')
   return Buffer.from(new Uint8Array(exports.memory.buffer, pointer, length)).toString('utf8')
 }
 
@@ -136,11 +152,16 @@ export async function scanOmpMetadataBytes(bytes: Uint8Array, defaults: OmpWasmD
   if (!ompWasmEnabled()) return { status: 'fallback', reason: 'disabled' }
   const exports = await instance()
   if (!exports) return { status: 'fallback', reason: 'unavailable' }
-  const input = writeBytes(exports, bytes)
-  const id = writeString(exports, defaults.id)
-  const createdAt = writeString(exports, defaults.createdAt)
-  const updatedAt = writeString(exports, defaults.updatedAt)
+  const allocations: Array<{ pointer: number; length: number }> = []
   try {
+    const input = writeBytes(exports, bytes)
+    allocations.push(input)
+    const id = writeString(exports, defaults.id)
+    allocations.push(id)
+    const createdAt = writeString(exports, defaults.createdAt)
+    allocations.push(createdAt)
+    const updatedAt = writeString(exports, defaults.updatedAt)
+    allocations.push(updatedAt)
     const length = exports.scan(input.pointer, input.length, id.pointer, id.length, createdAt.pointer, createdAt.length, updatedAt.pointer, updatedAt.length, titleSlotLength)
     const parsed: unknown = JSON.parse(readResult(exports, length))
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { status: 'fallback', reason: 'shape' }
@@ -156,10 +177,7 @@ export async function scanOmpMetadataBytes(bytes: Uint8Array, defaults: OmpWasmD
   } finally {
     try {
       exports.clear_result()
-      exports.dealloc(input.pointer, input.length)
-      exports.dealloc(id.pointer, id.length)
-      exports.dealloc(createdAt.pointer, createdAt.length)
-      exports.dealloc(updatedAt.pointer, updatedAt.length)
+      for (const allocation of allocations) exports.dealloc(allocation.pointer, allocation.length)
     } catch {
       // A trapped instance is already unusable; the next call falls back.
     }

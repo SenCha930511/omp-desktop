@@ -1297,6 +1297,7 @@ describe('post-package verification helpers', () => {
     expect(() => assertAsarLayout(entries)).not.toThrow()
     expect(() => assertAsarLayout([...entries, '/node_modules/react/index.js'])).toThrow(/duplicated/)
     expect(() => assertAsarLayout(entries.filter((entry) => !entry.includes('out/main')))).toThrow(/missing required/)
+    expect(() => assertAsarLayout(entries.filter((entry) => !entry.endsWith('omp-jsonl-core.wasm')))).toThrow(/missing required/)
     expect(() => assertAsarLayout(entries.map((entry) => entry.replaceAll('/', '\\')))).not.toThrow()
   })
 
