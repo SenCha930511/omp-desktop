@@ -57,6 +57,7 @@ function sessionFixture({ calls, textBytes }) {
   push({ type: 'session', version: 3, cwd: '/tmp', timestamp: '2026-11-22T12:00:00.000Z' })
   const callsPerRecord = 10
   for (let offset = 0; offset < calls; offset += callsPerRecord) {
+    /** @type {Array<Record<string, unknown>>} */
     const content = [{ type: 'text', text: `Turn ${offset}` }]
     for (let index = offset; index < Math.min(calls, offset + callsPerRecord); index += 1) {
       content.push({ type: 'toolCall', id: `call-${index}`, name: 'bash', arguments: { command: `echo ${index} ${'a'.repeat(Math.max(0, textBytes - 16))}` } })
@@ -79,7 +80,7 @@ const results = []
 try {
   for (const fixture of [
     { name: 'transcript-2000-tool-results', calls: 2_000, textBytes: 1_024, iterations: 3 },
-    { name: 'transcript-50mb-cold-open', calls: 1_000, textBytes: 25_600, iterations: 1 },
+    { name: 'transcript-50mb-cold-open', calls: 1_000, textBytes: 25_600, iterations: 3 },
   ]) {
     const filePath = join(directory, `${fixture.name}.jsonl`)
     writeFileSync(filePath, sessionFixture(fixture))

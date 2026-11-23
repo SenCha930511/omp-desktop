@@ -2,6 +2,10 @@
 
 The refactor keeps OMP session files authoritative and preserves IPC sender/path authorization, atomic state persistence, and background project-script/browser ownership.
 
+## Fast-anything pass (2026-11-23)
+
+The measured pass covers streaming trajectory previews, Markdown block commits, search indexing, todo caching, main-process sorting and transcript assembly, and KaTeX font trimming. See [performance-fast-anything.md](performance-fast-anything.md) for the baseline, final numbers, and deferred work.
+
 ## Verification units
 
 - [x] Enable streaming Markdown at its actual callers and defer collapsed reasoning bodies.
