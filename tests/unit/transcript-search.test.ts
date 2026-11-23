@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { searchTranscript } from '../../src/lib/transcript-search'
 import { failedTurn } from '../../src/components/TurnRecovery'
 import type { TranscriptMessage } from '../../src/types/api'
@@ -16,6 +16,19 @@ describe('conversation search and recovery', () => {
     expect(searchTranscript(messages, ' ', 'all')).toEqual([])
   })
 
+
+  it('serializes a tool argument once across repeated queries', () => {
+    const part = { type: 'toolCall' as const, id: 'call', name: 'bash', args: { command: 'needle' } }
+    const messages: TranscriptMessage[] = [{ id: 'one', role: 'assistant', parts: [part] }]
+    const stringify = vi.spyOn(JSON, 'stringify')
+    try {
+      expect(searchTranscript(messages, 'needle', 'tools')).toEqual(['one'])
+      expect(searchTranscript(messages, 'needle', 'tools')).toEqual(['one'])
+      expect(stringify).toHaveBeenCalledTimes(1)
+    } finally {
+      stringify.mockRestore()
+    }
+  })
   it('offers recovery only for the latest failed turn and preserves its user prompt', () => {
     const messages = [message('user', 'user', 'Original prompt'), message('error:1', 'system', 'Provider rejected the request')]
     expect(failedTurn(messages)).toEqual({ error: 'Provider rejected the request', prompt: 'Original prompt' })

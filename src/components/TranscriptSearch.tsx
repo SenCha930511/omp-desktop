@@ -23,22 +23,40 @@ function highlightResult(element: HTMLElement, query: string): Highlight | undef
   if (typeof Highlight === 'undefined' || !CSS.highlights) return
   const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT)
   const nodes: Text[] = []
+  const offsets: number[] = []
+  let total = 0
   let node = walker.nextNode()
-  while (node) { if (node instanceof Text && !node.parentElement?.closest('[aria-hidden="true"]')) nodes.push(node); node = walker.nextNode() }
+  while (node) {
+    if (node instanceof Text && node.data.length > 0 && !node.parentElement?.closest('[aria-hidden="true"]')) {
+      nodes.push(node)
+      offsets.push(total)
+      total += node.data.length
+    }
+    node = walker.nextNode()
+  }
   const raw = nodes.map((item) => item.data).join('')
   const text = raw.toLocaleLowerCase()
   if (text.length !== raw.length) return
   const needle = query.trim().toLocaleLowerCase()
-  const ranges: Range[] = []
-  for (let start = text.indexOf(needle); start >= 0 && needle && ranges.length < 1000; start = text.indexOf(needle, start + needle.length)) {
-    const range = new Range()
-    let offset = 0
-    for (const item of nodes) {
-      if (start >= offset && start < offset + item.length) range.setStart(item, start - offset)
-      const end = start + needle.length
-      if (end > offset && end <= offset + item.length) { range.setEnd(item, end - offset); break }
-      offset += item.length
+  if (!needle) return
+  const nodeAt = (offset: number): number => {
+    let low = 0
+    let high = offsets.length - 1
+    while (low < high) {
+      const middle = (low + high + 1) >> 1
+      if (offsets[middle]! <= offset) low = middle
+      else high = middle - 1
     }
+    return low
+  }
+  const ranges: Range[] = []
+  for (let start = text.indexOf(needle); start >= 0 && ranges.length < 1000; start = text.indexOf(needle, start + needle.length)) {
+    const end = start + needle.length
+    const startNode = nodeAt(start)
+    const endNode = nodeAt(end - 1)
+    const range = new Range()
+    range.setStart(nodes[startNode]!, start - offsets[startNode]!)
+    range.setEnd(nodes[endNode]!, end - offsets[endNode]!)
     ranges.push(range)
   }
   return new Highlight(...ranges)
@@ -78,28 +96,52 @@ export function useTranscriptSearch(messages: TranscriptMessage[], root: RefObje
     return () => cancelAnimationFrame(frame)
   }, [matchId, active, root, query, scope])
   useEffect(() => {
-    if (!active || !matchId || !root.current) return
+    const container = root.current
+    if (!active || !matchId || !container) return
     let highlight: Highlight | undefined
     let frame: number | undefined
+    let observed: HTMLElement | null = null
+    const selector = `[data-message-id="${CSS.escape(matchId)}"]`
     const refresh = () => {
       frame = undefined
-      const element = root.current?.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(matchId)}"]`)
-      if (element) { highlight = highlightResult(element, query); if (highlight) CSS.highlights.set('conversation-search', highlight) }
+      const element = container.querySelector<HTMLElement>(selector)
+      if (!element) {
+        if (observed) {
+          observer.disconnect()
+          observed = null
+          observer.observe(container, { childList: true, subtree: true })
+        }
+        return
+      }
+      highlight = highlightResult(element, query)
+      if (highlight) CSS.highlights.set('conversation-search', highlight)
+      if (observed !== element) {
+        observer.disconnect()
+        observer.observe(element, { childList: true, characterData: true, subtree: true })
+        observed = element
+      }
     }
     const schedule = () => {
       if (frame === undefined) frame = requestAnimationFrame(refresh)
     }
-    // Revealing a virtualized match commits after the search effect. Observe
-    // its mount and disclosure contents instead of assuming one frame suffices.
-    const observer = new MutationObserver(schedule)
-    observer.observe(root.current, { childList: true, characterData: true, subtree: true })
+    // Revealing a virtualized match commits after the search effect. Watch the
+    // container only until the match mounts, then watch that one row.
+    const observer = new MutationObserver(() => {
+      if (observed && !observed.isConnected) {
+        observed = null
+        observer.disconnect()
+        if (container.isConnected) observer.observe(container, { childList: true, subtree: true })
+      }
+      schedule()
+    })
+    observer.observe(container, { childList: true, subtree: true })
     schedule()
     return () => {
       observer.disconnect()
       if (frame !== undefined) cancelAnimationFrame(frame)
       if (highlight && CSS.highlights.get('conversation-search') === highlight) CSS.highlights.delete('conversation-search')
     }
-  }, [active, matchId, messages, query, root])
+  }, [active, matchId, query, root])
   return { open, query, scope, index: results.length ? index % results.length : 0, total: results.length, matchId, inputRef,
     show: () => { if (document.activeElement instanceof HTMLElement) previousFocus.current = document.activeElement; setOpen(true); inputRef.current?.focus() },
     close: () => { setOpen(false); if (previousFocus.current?.isConnected) previousFocus.current.focus(); else root.current?.focus() },

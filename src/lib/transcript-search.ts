@@ -14,9 +14,24 @@ export function searchablePart(part: MessagePart, scope: SearchScope): string {
   return ''
 }
 
+const normalizedPartCache = new WeakMap<MessagePart, Partial<Record<SearchScope, string>>>()
+
+function normalizedSearchablePart(part: MessagePart, scope: SearchScope): string {
+  let byScope = normalizedPartCache.get(part)
+  if (!byScope) {
+    byScope = {}
+    normalizedPartCache.set(part, byScope)
+  }
+  const cached = byScope[scope]
+  if (cached !== undefined) return cached
+  const normalized = searchablePart(part, scope).toLocaleLowerCase()
+  byScope[scope] = normalized
+  return normalized
+}
+
 /** One result per message, including history outside the current rendering window. */
 export function searchTranscript(messages: readonly TranscriptMessage[], query: string, scope: SearchScope): string[] {
   const needle = query.trim().toLocaleLowerCase()
   if (!needle) return []
-  return messages.filter((message) => message.parts.some((part) => searchablePart(part, scope).toLocaleLowerCase().includes(needle))).map((message) => message.id)
+  return messages.filter((message) => message.parts.some((part) => normalizedSearchablePart(part, scope).includes(needle))).map((message) => message.id)
 }
