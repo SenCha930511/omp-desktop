@@ -31,9 +31,14 @@ function safeEqual(left: string, right: string): boolean {
   return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer)
 }
 
-function send(response: ServerResponse, status: number, body: Record<string, unknown>): void {
+function send(response: ServerResponse, status: number, body: Record<string, unknown>, closeConnection = false): void {
   const payload = JSON.stringify(body)
-  response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(payload), 'Cache-Control': 'no-store' })
+  response.writeHead(status, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': Buffer.byteLength(payload),
+    'Cache-Control': 'no-store',
+    ...(closeConnection ? { Connection: 'close' } : {}),
+  })
   response.end(payload)
 }
 
@@ -48,6 +53,7 @@ export abstract class CapabilityBridge {
   private server: Server | null = null
   private port = 0
   private readonly claims = new Map<string, CapabilityClaim>()
+  private readonly pendingRequests = new Set<Promise<void>>()
 
   /** Requests allowed per claim per minute. */
   protected abstract readonly rateLimit: number
@@ -59,7 +65,17 @@ export abstract class CapabilityBridge {
 
   async start(): Promise<void> {
     if (this.server) return
-    this.server = createServer((request, response) => { void this.handle(request, response) })
+    this.server = createServer((request, response) => {
+      const { promise: responseComplete, resolve: resolveResponseComplete } = Promise.withResolvers<void>()
+      response.once('finish', resolveResponseComplete)
+      response.once('close', resolveResponseComplete)
+      const pending = this.handle(request, response).then(() => responseComplete)
+      this.pendingRequests.add(pending)
+      void pending.then(
+        () => { this.pendingRequests.delete(pending) },
+        () => { this.pendingRequests.delete(pending) },
+      )
+    })
     this.server.on('clientError', (_error, socket) => socket.destroy())
     await new Promise<void>((resolveStart, reject) => {
       const server = this.server!
@@ -124,25 +140,30 @@ export abstract class CapabilityBridge {
     this.server = null
     this.port = 0
     if (!server) return
-    await new Promise<void>((resolveStop) => server.close(() => resolveStop()))
+    const { promise: closed, resolve: resolveStop } = Promise.withResolvers<void>()
+    server.close(() => resolveStop())
+    server.closeIdleConnections()
+    while (this.pendingRequests.size > 0) await Promise.allSettled([...this.pendingRequests])
+    server.closeAllConnections()
+    await closed
   }
 
   private async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     try {
       if (request.method !== 'POST' || request.url !== '/v1/call' || request.headers.origin !== undefined) {
-        send(response, 404, { ok: false, error: 'Not found' }); return
+        send(response, 404, { ok: false, error: 'Not found' }, true); return
       }
       const contentType = request.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase()
-      if (contentType !== 'application/json') { send(response, 415, { ok: false, error: 'Unsupported media type' }); return }
+      if (contentType !== 'application/json') { send(response, 415, { ok: false, error: 'Unsupported media type' }, true); return }
       const authorization = request.headers.authorization
-      if (!authorization?.startsWith('Bearer ')) { send(response, 401, { ok: false, error: 'Unauthorized' }); return }
+      if (!authorization?.startsWith('Bearer ')) { send(response, 401, { ok: false, error: 'Unauthorized' }, true); return }
       const presented = authorization.slice(7)
       const claim = [...this.claims.values()].find((candidate) => safeEqual(candidate.token, presented))
-      if (!claim) { send(response, 401, { ok: false, error: 'Capability expired' }); return }
-      if (claim.expiresAt <= Date.now()) { this.revoke(claim.token); send(response, 401, { ok: false, error: 'Capability expired' }); return }
+      if (!claim) { send(response, 401, { ok: false, error: 'Capability expired' }, true); return }
+      if (claim.expiresAt <= Date.now()) { this.revoke(claim.token); send(response, 401, { ok: false, error: 'Capability expired' }, true); return }
       if (Date.now() - claim.windowStartedAt >= RATE_WINDOW_MS) { claim.windowStartedAt = Date.now(); claim.requests = 0 }
       claim.requests += 1
-      if (claim.requests > this.rateLimit) { send(response, 429, { ok: false, error: this.rateLimitError }); return }
+      if (claim.requests > this.rateLimit) { send(response, 429, { ok: false, error: this.rateLimitError }, true); return }
       const raw = await this.readBody(request)
       const input = requireRecord(JSON.parse(raw), 'request')
       const method = requireString(input.method, 'method', { min: 1, max: 32, trim: true })

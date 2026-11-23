@@ -7,7 +7,21 @@ export default defineConfig({
     plugins: [externalizeDepsPlugin()],
     // Fully minify production code: Electron never consumes readable output,
     // and less source is faster for V8 to read, parse, and compile at startup.
-    build: { lib: { entry: 'electron/main/index.ts' }, minify: 'esbuild' },
+    build: {
+      lib: { entry: 'electron/main/index.ts' },
+      minify: 'esbuild',
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            // Keep these cohesive runtime modules separate while preserving
+            // synchronous initialization and every existing startup lifecycle.
+            if (id.endsWith('/electron/main/agent-rpc/word-prediction.ts') || id.endsWith('/src/lib/word-prediction.ts')) return 'word-prediction'
+            if (id.endsWith('/electron/main/sessions/transcript.ts')) return 'session-transcript'
+            return undefined
+          },
+        },
+      },
+    },
   },
   preload: {
     plugins: [externalizeDepsPlugin()],
