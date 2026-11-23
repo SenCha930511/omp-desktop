@@ -35,6 +35,8 @@ interface MessagePreview {
   hasActivity: boolean
 }
 
+// Keyed by message identity. The reducer and transcript parser replace message
+// objects on change; callers must not mutate parts in place.
 const messagePreviewCache = new WeakMap<TranscriptMessage, MessagePreview>()
 const timeFormatters = new Map<string, Intl.DateTimeFormat>()
 
@@ -82,7 +84,7 @@ function messagePreview(message: TranscriptMessage): MessagePreview {
   if (cached) return cached
   const parts = messageParts(message)
   if (message.role === 'user') {
-    const prompt = truncatePreview(collectTextParts(message, PROMPT_PREVIEW_LIMIT + 32), PROMPT_PREVIEW_LIMIT)
+    const prompt = truncatePreview(collectTextParts(message, PREVIEW_SOURCE_LIMIT), PROMPT_PREVIEW_LIMIT)
     const preview = { prompt, hasImagePrompt: !prompt && parts.some((part) => part.type === 'image'), reply: '', hasActivity: false }
     messagePreviewCache.set(message, preview)
     return preview
@@ -97,7 +99,7 @@ function messagePreview(message: TranscriptMessage): MessagePreview {
   const preview = {
     prompt: '',
     hasImagePrompt: false,
-    reply: truncatePreview(collectTextParts(message, REPLY_PREVIEW_LIMIT + 32), REPLY_PREVIEW_LIMIT),
+    reply: truncatePreview(collectTextParts(message, PREVIEW_SOURCE_LIMIT), REPLY_PREVIEW_LIMIT),
     hasActivity,
   }
   messagePreviewCache.set(message, preview)

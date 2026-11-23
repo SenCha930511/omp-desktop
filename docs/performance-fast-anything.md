@@ -60,8 +60,6 @@ The transcript assembler builds the active assistant parts as a linked draft. A 
 
 The OMP title slot uses one `open` and `read` through a new `readPrefix` seam. Injected readers without the seam keep the stream fallback.
 
-`ProjectService.listFiles` reads up to eight directories at once, then emits the collected entries in deterministic depth-first order. It keeps the 5,000-entry cap, ignored directories, symlink rejection, and skipped-directory count.
-
 ## Bundle changes
 
 The renderer keeps only WOFF2 KaTeX fonts. The build removes 39 WOFF and TTF files, and `release:bundle-size` fails if they return.
@@ -91,9 +89,11 @@ The artifact is `assets/wasm/omp-jsonl-core.wasm` (86,030 bytes), and `npm run b
 | 58 real OMP sessions | n/a | n/a | 58 fast path, 0 mismatches |
 | 500 local JSONL files | n/a | n/a | 499 fast path, 1 fallback, 0 mismatches |
 
-The small-file win comes from one read per file and a single JSONL pass. Above 4 MiB the streaming TS reader stays in use, because a local size sweep showed the core is even or slightly slower there. The fast path is on by default because the cold catalog scan is the target workload.
+Repeat runs on the same host ranged from 1.55x to 1.81x; the table shows one representative run. The small-file win comes from one read per file and a single JSONL pass. Above 4 MiB the streaming TS reader stays in use, because a local size sweep showed the core is even or slightly slower there. The fast path is on by default because the cold catalog scan is the target workload.
 
 ## Deferred work
+
+Parallel project listing stays out. A bounded breadth-first scan changed which entries survive the 5,000-entry cap, so the review reverted it. A depth-first frontier needs its own cap test and a measured large-repository trace.
 
 Dynamic KaTeX loading stays out. The math tests render synchronously with `renderToStaticMarkup`. The initial renderer is about 43 KiB under budget, so the change would buy little today and require an async test contract.
 

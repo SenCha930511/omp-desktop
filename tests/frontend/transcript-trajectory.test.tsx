@@ -75,6 +75,12 @@ describe('extractTrajectoryTurns', () => {
     expect(turns.map((turn) => turn.id)).toEqual(['img-turn', 'text-turn'])
     expect(turns[0]).toMatchObject({ prompt: '', hasImagePrompt: true, reply: '', hasActivity: true })
   })
+  it('strips Markdown after the full preview source window', () => {
+    const url = `https://example.com/${'x'.repeat(300)}`
+    const turns = extractTrajectoryTurns([userMsg('long-link', `See [the docs](${url}) for details.`)])
+    expect(turns[0]?.prompt).toBe('See the docs for details.')
+  })
+
   it('reuses unchanged history turns when only the streaming reply grows', () => {
     const messages: TranscriptMessage[] = [
       userMsg('u1', 'First question'),

@@ -26,6 +26,11 @@ describe('streaming Markdown block split', () => {
     expect(splitMarkdownBlocks(ordered)).toEqual([ordered])
   })
 
+  it('keeps reference and footnote definitions with their uses', () => {
+    const text = '[ref]: https://example.com\n\nUse [ref] and [^note].\n\n[^note]: Footnote.'
+    expect(splitMarkdownBlocks(text)).toEqual([text])
+  })
+
   it('does not split before blockquotes, tables, or reference definitions', () => {
     expect(splitMarkdownBlocks('Intro\n\n> quote')).toEqual(['Intro\n\n> quote'])
     expect(splitMarkdownBlocks('Intro\n\n| A | B |\n| - | - |')).toEqual(['Intro\n\n| A | B |\n| - | - |'])

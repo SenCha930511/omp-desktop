@@ -102,44 +102,43 @@ export function useTranscriptSearch(messages: TranscriptMessage[], root: RefObje
     let frame: number | undefined
     let observed: HTMLElement | null = null
     const selector = `[data-message-id="${CSS.escape(matchId)}"]`
+    const clearHighlight = () => {
+      if (highlight && CSS.highlights.get('conversation-search') === highlight) CSS.highlights.delete('conversation-search')
+      highlight = undefined
+    }
     const refresh = () => {
       frame = undefined
       const element = container.querySelector<HTMLElement>(selector)
       if (!element) {
-        if (observed) {
-          observer.disconnect()
-          observed = null
-          observer.observe(container, { childList: true, subtree: true })
-        }
+        clearHighlight()
+        rowObserver.disconnect()
+        observed = null
         return
       }
       highlight = highlightResult(element, query)
       if (highlight) CSS.highlights.set('conversation-search', highlight)
       if (observed !== element) {
-        observer.disconnect()
-        observer.observe(element, { childList: true, characterData: true, subtree: true })
+        rowObserver.disconnect()
+        rowObserver.observe(element, { childList: true, characterData: true, subtree: true })
         observed = element
       }
     }
     const schedule = () => {
       if (frame === undefined) frame = requestAnimationFrame(refresh)
     }
-    // Revealing a virtualized match commits after the search effect. Watch the
-    // container only until the match mounts, then watch that one row.
-    const observer = new MutationObserver(() => {
-      if (observed && !observed.isConnected) {
-        observed = null
-        observer.disconnect()
-        if (container.isConnected) observer.observe(container, { childList: true, subtree: true })
-      }
-      schedule()
+    // Revealing a virtualized match commits after the search effect. Keep a
+    // parent observer for mount and removal, and a row observer for streaming text.
+    const rowObserver = new MutationObserver(() => schedule())
+    const mountObserver = new MutationObserver(() => {
+      if (!observed || !observed.isConnected) schedule()
     })
-    observer.observe(container, { childList: true, subtree: true })
+    mountObserver.observe(container, { childList: true, subtree: true })
     schedule()
     return () => {
-      observer.disconnect()
+      mountObserver.disconnect()
+      rowObserver.disconnect()
       if (frame !== undefined) cancelAnimationFrame(frame)
-      if (highlight && CSS.highlights.get('conversation-search') === highlight) CSS.highlights.delete('conversation-search')
+      clearHighlight()
     }
   }, [active, matchId, query, root])
   return { open, query, scope, index: results.length ? index % results.length : 0, total: results.length, matchId, inputRef,

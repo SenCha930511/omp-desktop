@@ -14,6 +14,8 @@ export function searchablePart(part: MessagePart, scope: SearchScope): string {
   return ''
 }
 
+// Keyed by part identity. The reducer replaces tool call parts on update;
+// callers must not mutate part text or args in place.
 const normalizedPartCache = new WeakMap<MessagePart, Partial<Record<SearchScope, string>>>()
 
 function normalizedSearchablePart(part: MessagePart, scope: SearchScope): string {

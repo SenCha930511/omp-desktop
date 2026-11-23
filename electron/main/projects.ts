@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { basename, dirname, join, posix, relative, resolve, win32 } from 'node:path'
 import { lstat, readdir, readFile, realpath } from 'node:fs/promises'
-import type { BigIntStats } from 'node:fs'
+import type { BigIntStats, Dirent } from 'node:fs'
 import { dialog, type BrowserWindow } from 'electron'
 import { homedir, tmpdir } from 'node:os'
 import { newerActivityAt, projectsWithActivity, sessionActivityAt } from '../../src/lib/project-activity'
@@ -929,7 +929,7 @@ export class ProjectService {
 
   async listFiles(rootValue: unknown): Promise<ProjectFileListing> {
     const root = await this.authorizeReadOnlyCwd(rootValue as string)
-    const collected: Array<ProjectFileEntry & { name: string }> = []
+    const entries: ProjectFileEntry[] = []
     let skipped = 0
     const ignoredDirectories = new Set([
       '.git',
@@ -945,59 +945,32 @@ export class ProjectService {
     ])
     const maxEntries = 5_000
 
-    const queue: string[] = [root]
-    let queueIndex = 0
-    while (queueIndex < queue.length && collected.length < maxEntries) {
-      const batch = queue.slice(queueIndex, queueIndex + 8)
-      queueIndex += batch.length
-      const listings = await Promise.all(batch.map(async (directory) => {
-        try {
-          return { directory, children: await readdir(directory, { withFileTypes: true }) }
-        } catch {
-          // An unreadable directory (permissions, races) must not fail the whole
-          // listing; report it so the UI can note the gap.
-          return { directory, children: undefined }
-        }
-      }))
-      for (const { directory, children } of listings) {
-        if (!children) {
-          skipped += 1
-          continue
-        }
-        children.sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || a.name.localeCompare(b.name))
-        for (const child of children) {
-          if (collected.length >= maxEntries) break
-          if (child.isSymbolicLink()) continue
-          if (child.isDirectory() && ignoredDirectories.has(child.name)) continue
-          if (!child.isDirectory() && !child.isFile()) continue
-          const absolutePath = resolve(directory, child.name)
-          const relativePath = relative(root, absolutePath)
-          const path = process.platform === 'win32' ? relativePath.split('\\').join('/') : relativePath
-          collected.push({ path, type: child.isDirectory() ? 'directory' : 'file', name: child.name })
-          if (child.isDirectory()) queue.push(absolutePath)
-        }
+    const visit = async (directory: string): Promise<void> => {
+      if (entries.length >= maxEntries) return
+      let children: Dirent[]
+      try {
+        children = await readdir(directory, { withFileTypes: true })
+      } catch {
+        // An unreadable directory (permissions, races) must not fail the whole
+        // listing; report it so the UI can note the gap.
+        skipped += 1
+        return
+      }
+      children.sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || a.name.localeCompare(b.name))
+      for (const child of children) {
+        if (entries.length >= maxEntries) break
+        if (child.isSymbolicLink()) continue
+        if (child.isDirectory() && ignoredDirectories.has(child.name)) continue
+        if (!child.isDirectory() && !child.isFile()) continue
+        const absolutePath = resolve(directory, child.name)
+        const relativePath = relative(root, absolutePath)
+        const path = process.platform === 'win32' ? relativePath.split('\\').join('/') : relativePath
+        entries.push({ path, type: child.isDirectory() ? 'directory' : 'file' })
+        if (child.isDirectory()) await visit(absolutePath)
       }
     }
 
-    const childrenByParent = new Map<string, Array<ProjectFileEntry & { name: string }>>()
-    for (const entry of collected) {
-      const slash = entry.path.lastIndexOf('/')
-      const parent = slash === -1 ? '' : entry.path.slice(0, slash)
-      const siblings = childrenByParent.get(parent)
-      if (siblings) siblings.push(entry)
-      else childrenByParent.set(parent, [entry])
-    }
-    const entries: ProjectFileEntry[] = []
-    const visit = (parent: string): void => {
-      const children = childrenByParent.get(parent)
-      if (!children) return
-      children.sort((a, b) => a.type !== b.type ? (a.type === 'directory' ? -1 : 1) : a.name.localeCompare(b.name))
-      for (const child of children) {
-        entries.push({ path: child.path, type: child.type })
-        if (child.type === 'directory') visit(child.path)
-      }
-    }
-    visit('')
+    await visit(root)
     return { entries, skipped }
   }
 

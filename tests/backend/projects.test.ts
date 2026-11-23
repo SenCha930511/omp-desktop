@@ -582,7 +582,7 @@ describe('ProjectService file listing', () => {
     })
   })
 
-  it('keeps depth-first order after a concurrent directory scan', async () => {
+  it('keeps depth-first order for nested directories', async () => {
     const { root, service, store } = setup()
     mkdirSync(join(root, 'src', 'components'), { recursive: true })
     mkdirSync(join(root, 'docs'))

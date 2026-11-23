@@ -25,6 +25,9 @@ function startsUnsafeContinuation(line: string): boolean {
 export function splitMarkdownBlocks(text: string): string[] {
   if (!text) return []
   const lines = text.split('\n')
+  // A reference or footnote definition applies to the whole document. Splitting
+  // before its use would parse the use without the definition.
+  if (lines.some((line) => REFERENCE_DEFINITION.test(line) || FOOTNOTE_DEFINITION.test(line))) return [text]
   const blocks: string[] = []
   let start = 0
   let fence: { char: string; length: number } | null = null
