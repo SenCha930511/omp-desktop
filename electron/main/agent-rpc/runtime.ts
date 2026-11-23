@@ -401,7 +401,7 @@ export class RpcRuntime {
     // timeoutMs 是 600_000(rpc.md);用戶端逾時必須蓋過整個流程,否則
     // 「已送達、可能仍在執行」的錯誤會誤導面板狀態。取消入口是
     // extension_ui input dialog 的 cancel(上游中止 flow)。
-    const timeout = command.type === 'compact' || command.type === 'bash' || command.type === 'login' ? 10 * 60_000 : 60_000
+    const timeout = command.type === 'predict_word' ? 150_000 : command.type === 'compact' || command.type === 'bash' || command.type === 'login' ? 10 * 60_000 : 60_000
     const response = await this.request(command, timeout)
     if (command.type === 'set_thinking_level' && response.success === true) {
       this.info.configuredThinkingLevel = command.level as RuntimeInfo['configuredThinkingLevel']

@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import { MAX_EXTENSION_FORM_CHOICE_CHARS, MAX_EXTENSION_FORM_TEXT_CHARS } from '../../src/types/api'
 import { isThinkingLevel, validateRpcCommand } from '../../electron/main/agent-rpc/command-schema'
+import { MAX_RPC_WRITE_FRAME_BYTES, rpcRequestFrameBytes } from '../../electron/main/agent-rpc/limits'
+import { MAX_PREDICTION_SUFFIX_CHARS, MAX_PREDICTION_TEXT_CHARS, parsePredictWordResponse } from '../../src/lib/word-prediction'
 
 const passthrough = async (path: string) => path
 
@@ -419,6 +421,86 @@ describe('validateRpcCommand goal', () => {
     await expect(validate({ type: 'goal', op: 'create', objective: 'x', token_budget: 1.5 })).rejects.toThrow('token_budget must be a positive integer')
     await expect(validate({ type: 'goal', op: 'create', objective: 'x', token_budget: '50000' })).rejects.toThrow('token_budget must be a positive integer')
     await expect(validate({ type: 'goal', op: 'create', objective: 'x', token_budget: Number.MAX_SAFE_INTEGER + 1 })).rejects.toThrow('token_budget must be a positive integer')
+  })
+})
+
+describe('validateRpcCommand word prediction', () => {
+  it('accepts only the exact native predict_word and feedback shapes', async () => {
+    await expect(validate({ type: 'predict_word', text: 'hello', cursor: 5 })).resolves.toEqual({ type: 'predict_word', text: 'hello', cursor: 5 })
+    await expect(validate({ type: 'predict_word', text: '', cursor: 0 })).resolves.toEqual({ type: 'predict_word', text: '', cursor: 0 })
+    await expect(validate({ type: 'predict_word_feedback', text: 'hello', cursor: 5, suggestion: ' world', accepted: true })).resolves.toEqual({ type: 'predict_word_feedback', text: 'hello', cursor: 5, suggestion: ' world', accepted: true })
+    await expect(validate({ type: 'predict_word_feedback', text: 'hello', cursor: 5, suggestion: ' world', accepted: false })).resolves.toEqual({ type: 'predict_word_feedback', text: 'hello', cursor: 5, suggestion: ' world', accepted: false })
+    await expect(validate({ type: 'predict_word', text: 'hello', cursor: 5, provider: 'openai' })).rejects.toThrow('command.provider is not supported')
+    await expect(validate({ type: 'predict_word_feedback', text: 'hello', cursor: 5, suggestion: ' world', accepted: true, modelId: 'gpt' })).rejects.toThrow('command.modelId is not supported')
+  })
+
+  it('uses native integer UTF-16 cursor bounds, including astral characters', async () => {
+    const text = 'a😀b'
+    expect(text.length).toBe(4)
+    for (const cursor of [0, 1, 2, 3, 4]) {
+      await expect(validate({ type: 'predict_word', text, cursor })).resolves.toEqual({ type: 'predict_word', text, cursor })
+    }
+    for (const cursor of [-1, 1.5, NaN, Infinity, -Infinity, '0', null, undefined, 5]) {
+      await expect(validate({ type: 'predict_word', text, cursor })).rejects.toThrow('cursor must be an integer UTF-16 offset within text')
+    }
+    await expect(validate({ type: 'predict_word', text: 42, cursor: 0 })).rejects.toThrow('text must be a string')
+  })
+
+  it('bounds draft text and exact feedback suggestions without truncation', async () => {
+    const text = 'x'.repeat(MAX_PREDICTION_TEXT_CHARS)
+    const suggestion = 'y'.repeat(MAX_PREDICTION_SUFFIX_CHARS)
+    await expect(validate({ type: 'predict_word', text, cursor: text.length })).resolves.toEqual({ type: 'predict_word', text, cursor: text.length })
+    await expect(validate({ type: 'predict_word', text: `${text}x`, cursor: 0 })).rejects.toThrow('text is too long')
+    await expect(validate({ type: 'predict_word_feedback', text, cursor: text.length, suggestion, accepted: true })).resolves.toEqual({ type: 'predict_word_feedback', text, cursor: text.length, suggestion, accepted: true })
+    await expect(validate({ type: 'predict_word_feedback', text: '', cursor: 0, suggestion: '', accepted: true })).rejects.toThrow('suggestion is too short')
+    await expect(validate({ type: 'predict_word_feedback', text: '', cursor: 0, suggestion: `${suggestion}y`, accepted: true })).rejects.toThrow('suggestion is too long')
+    for (const accepted of [undefined, null, 0, 1, 'true']) {
+      await expect(validate({ type: 'predict_word_feedback', text: '', cursor: 0, suggestion: 'x', accepted })).rejects.toThrow('accepted must be a boolean')
+    }
+  })
+
+  it('accounts for a UUID and UTF-8 bytes at the existing write-frame boundary', async () => {
+    const base = { type: 'predict_word', text: 'x', cursor: 1, extra: '字"\n' }
+    const padding = MAX_RPC_WRITE_FRAME_BYTES - rpcRequestFrameBytes(base)
+    expect(padding).toBeGreaterThan(0)
+    const atBoundary = { ...base, extra: `${base.extra}${'x'.repeat(padding)}` }
+    expect(rpcRequestFrameBytes(atBoundary)).toBe(MAX_RPC_WRITE_FRAME_BYTES)
+    await expect(validate(atBoundary)).rejects.toThrow('command.extra is not supported')
+    await expect(validate({ ...atBoundary, extra: `${atBoundary.extra}x` })).rejects.toThrow('command is too large for the RPC transport')
+  })
+})
+
+describe('parsePredictWordResponse', () => {
+  it('returns an exact bounded suffix payload and preserves response correlation', () => {
+    expect(parsePredictWordResponse({ id: 'request-1', type: 'response', command: 'predict_word', success: true, data: { suffix: ' continuation' } })).toEqual({
+      id: 'request-1', type: 'response', command: 'predict_word', success: true, data: { suffix: ' continuation' },
+    })
+    for (const suffix of [null, '', '😀'.repeat(MAX_PREDICTION_SUFFIX_CHARS / 2)]) {
+      const response = parsePredictWordResponse({ type: 'response', command: 'predict_word', success: true, data: { suffix } })
+      expect(response.data.suffix).toBe(suffix || null)
+    }
+  })
+
+  it('rejects malformed envelopes, unknown fields, missing data, and invalid suffixes', () => {
+    const valid = { id: 'request-1', type: 'response', command: 'predict_word', success: true, data: { suffix: 'x' } }
+    for (const response of [
+      null,
+      [],
+      { ...valid, success: false },
+      { ...valid, type: 'event' },
+      { ...valid, command: 'predict_word_feedback' },
+      { ...valid, extra: true },
+      { ...valid, id: 42 },
+      { ...valid, data: null },
+      { ...valid, data: [] },
+      { ...valid, data: {} },
+      { ...valid, data: { suffix: undefined } },
+      { ...valid, data: { suffix: 42 } },
+      { ...valid, data: { suffix: 'x', extra: true } },
+      { ...valid, data: { suffix: 'x'.repeat(MAX_PREDICTION_SUFFIX_CHARS + 1) } },
+    ]) {
+      expect(() => parsePredictWordResponse(response)).toThrow()
+    }
   })
 })
 

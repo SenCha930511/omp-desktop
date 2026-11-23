@@ -1,4 +1,5 @@
 import { MAX_EXTENSION_FORM_CHOICE_CHARS, MAX_EXTENSION_FORM_TEXT_CHARS, PRIME_THINKING_LEVELS, type PrimeEffortSelector } from '../../../src/types/api'
+import { parsePredictWordFeedbackRequest, parsePredictWordRequest } from '../../../src/lib/word-prediction'
 import { rejectUnknownKeys, requireBoolean, requireId, requireRecord, requireString } from '../validation'
 import { MAX_RPC_WRITE_FRAME_BYTES, rpcRequestFrameBytes } from './limits'
 import type { RpcObject } from './types'
@@ -105,6 +106,8 @@ export async function validateRpcCommand(raw: unknown, validateSessionPath: (pat
     }
     return { type }
   }
+  if (type === 'predict_word') return parsePredictWordRequest(command)
+  if (type === 'predict_word_feedback') return parsePredictWordFeedbackRequest(command)
   if (type === 'prompt' || type === 'steer' || type === 'follow_up') {
     rejectUnknownKeys(command, ['type', 'message', 'images', 'streamingBehavior'], 'command')
     const result: RpcObject = { type, message: requireString(command.message, 'message', { min: 1, max: 1024 * 1024 }) }
