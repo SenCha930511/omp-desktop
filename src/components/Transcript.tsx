@@ -3,10 +3,12 @@ import { memo, useCallback, useEffect, useMemo, useRef } from 'react'
 import { createAssistantTurnCoalescer } from '@/lib/assistant-turns'
 import { HARNESS_SHORT_NAMES } from '@/lib/harness'
 import { useI18n } from '@/lib/i18n'
+import { MarkdownWorkspaceProvider } from '@/lib/markdown-workspace'
 import type { GitStatus, HarnessId, TranscriptMessage } from '@/types/api'
 import { ChangesCard } from './ChangesCard'
 import { ErrorBoundary } from './ErrorBoundary'
 import { MarkdownText } from './MarkdownText'
+import { ImagePart } from './transcript/attachment-part'
 import { ActivityMessage, AgentMessage, AssistantMessage, GoalMessage, isAgentNoticeKind, NoticeMessage, SteerReadMarker, UserMessage } from './transcript/messages'
 import { useTranscriptScroll } from './transcript/scroll'
 import { TranscriptHud } from './TranscriptHud'
@@ -43,6 +45,8 @@ export interface TranscriptProps {
   onUndoChanges?(): void
   queuedMessageCount?: number
   onOpenSessionReference?(sessionId: string, harness: HarnessId): void
+  cwd?: string
+  onOpenFile?(path: string): void
   onRetry?(): Promise<void>
   onRestorePrompt?(prompt: string): void
 }
@@ -59,7 +63,11 @@ function ActiveAssistantMessage({ message, showReasoning, showTools, entering = 
           <WorkDisclosure message={message} parts={message.parts} showReasoning={showReasoning} showTools={showTools} running />
         ) : (
           <>
-            {message.parts.map((part, index) => (part.type === 'text' ? <MarkdownText key={index} text={part.text} streaming /> : null))}
+            {message.parts.map((part, index) => {
+              if (part.type === 'text') return <MarkdownText key={index} text={part.text} streaming />
+              if (part.type === 'image') return <ImagePart key={index} part={part} alt={t('transcript.image.assistantOutput')} />
+              return null
+            })}
             <div className="streaming-state" aria-live="polite">
               <ThinkingDots /> <span className="shine-sweep">{t('transcript.workStatus.thinking')}</span> <LiveElapsed since={message.startedAt ?? message.timestamp} />
             </div>
@@ -87,6 +95,8 @@ function TranscriptView({
   onUndoChanges,
   queuedMessageCount = 0,
   onOpenSessionReference,
+  cwd,
+  onOpenFile,
   followKey,
   onRetry,
   onRestorePrompt,
@@ -166,7 +176,7 @@ function TranscriptView({
     .join(' ')
 
   return (
-    <>
+    <MarkdownWorkspaceProvider cwd={cwd} onOpenFile={onOpenFile}>
       <TranscriptSearchBar state={search} />
       <div ref={scrollRef} tabIndex={-1} className={transcriptClasses} aria-busy={loading} onScroll={updatePinnedState}>
         <div className="sr-only" role="status" aria-live="polite">
@@ -259,7 +269,7 @@ function TranscriptView({
           <ChevronDown size={17} />
         </button>
       ) : null}
-    </>
+    </MarkdownWorkspaceProvider>
   )
 }
 

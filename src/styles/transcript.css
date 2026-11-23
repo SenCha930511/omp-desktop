@@ -109,8 +109,11 @@
 .prose tbody tr:nth-child(even) td { background: color-mix(in srgb, var(--surface-subtle) 55%, transparent); }
 .prose tr:last-child td { border-bottom: 0; }
 .prose hr { margin: 17px 0; border: 0; border-top: 1px solid var(--border); }
+.markdown-image { display: inline-block; max-width: 100%; margin: 6px 0; }
 .markdown-image-placeholder { color: var(--text-tertiary); font-style: italic; }
 .markdown-link-unsupported { color: var(--text-secondary); text-decoration: underline dotted; text-underline-offset: 2px; cursor: help; }
+.markdown-file-link { display: inline; padding: 0; border: 0; color: var(--annotation); background: transparent; font: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.markdown-file-link:hover { opacity: .82; }
 .work-disclosure { margin: 8px 0 3px; }
 .work-disclosure.is-running { margin-top: 0; padding: 0 0 4px; }
 /* A work section taller than the viewport pins its status row. The offset
