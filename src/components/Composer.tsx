@@ -723,7 +723,7 @@ export const Composer = memo(function Composer({
               // get_available_commands 的 source 欄位(builtin/skill/extension/custom/
               // mcp_prompt/file);subcommand 建議沿用主命令的 source。
               source,
-              icon: source === 'skill' ? <WandSparkles size={14} /> : <Command size={14} />,
+              icon: source === 'skill' ? <WandSparkles size={14} aria-hidden="true" /> : <Command size={14} aria-hidden="true" />,
               choose: () => {
                 setValue(`${item.command} ${value.startsWith('/') ? '' : value}`)
                 setMenu(null)
@@ -744,7 +744,7 @@ export const Composer = memo(function Composer({
                 label: `@${session.title}`,
                 detail: `${session.harness.toUpperCase()} session · ${session.status}`,
                 source: undefined,
-                icon: <MessageCirclePlus size={14} />,
+                icon: <MessageCirclePlus size={14} aria-hidden="true" />,
                 choose: () => insertMention(session.title, session),
               })),
             ...enabledSkills
@@ -755,7 +755,7 @@ export const Composer = memo(function Composer({
                 label: `@${skill.name}`,
                 detail: skill.description,
                 source: undefined,
-                icon: <AtSign size={14} />,
+                icon: <AtSign size={14} aria-hidden="true" />,
                 choose: () => insertMention(skill.name),
               })),
           ].slice(0, 8)
@@ -766,7 +766,7 @@ export const Composer = memo(function Composer({
                 label: t('composer.addFiles'),
                 detail: t('composer.addFilesDetail'),
                 source: undefined,
-                icon: <Paperclip size={14} />,
+                icon: <Paperclip size={14} aria-hidden="true" />,
                 choose: () => {
                   setMenu(null)
                   fileInputRef.current?.click()
@@ -778,7 +778,7 @@ export const Composer = memo(function Composer({
                     label: t('composer.skills'),
                     detail: t('composer.skillsDetail'),
                     source: undefined,
-                    icon: <WandSparkles size={14} />,
+                    icon: <WandSparkles size={14} aria-hidden="true" />,
                     choose: () => {
                       setValue('/skill:')
                       setMenu('command')
@@ -786,7 +786,7 @@ export const Composer = memo(function Composer({
                     },
                   }]
                 : []),
-              { key: 'commands', label: t('slash.menu.label'), detail: t('slash.menu.detail'), source: undefined, icon: <Command size={14} />, choose: () => { if (!value) setValue('/'); setMenu('command'); textareaRef.current?.focus() } },
+              { key: 'commands', label: t('slash.menu.label'), detail: t('slash.menu.detail'), source: undefined, icon: <Command size={14} aria-hidden="true" />, choose: () => { if (!value) setValue('/'); setMenu('command'); textareaRef.current?.focus() } },
             ]
           : []
 
