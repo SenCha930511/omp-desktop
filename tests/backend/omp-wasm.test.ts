@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createOmpSessionMetadataReader } from '../../electron/main/sessions/omp'
 import { nodeMetadataReaderIo } from '../../electron/main/sessions/metadata'
-import { resetOmpWasmForTests, scanOmpMetadataBytes } from '../../electron/main/sessions/omp-wasm'
+import { releaseOmpWasmAllocations, resetOmpWasmForTests, scanOmpMetadataBytes } from '../../electron/main/sessions/omp-wasm'
 
 const wasmPath = resolve('assets/wasm/omp-jsonl-core.wasm')
 const defaults = { id: 'fallback-id', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' }
@@ -136,6 +136,22 @@ describe('OMP metadata WASM scanner', () => {
     await expect(scanOmpMetadataBytes(Buffer.from(`${yearTenThousand}\n`), defaults)).resolves.toMatchObject({ status: 'fallback' })
     const maximum = line({ type: 'session', id: 's1', timestamp: 8.64e15 })
     await expect(scanOmpMetadataBytes(Buffer.from(`${maximum}\n`), defaults)).resolves.toMatchObject({ status: 'fallback' })
+  })
+
+  it('continues freeing allocations when cleanup throws', () => {
+    const freed: number[] = []
+    releaseOmpWasmAllocations({
+      clear_result() { throw new Error('trap') },
+      dealloc(pointer) { freed.push(pointer); if (pointer === 1) throw new Error('trap') },
+    }, [{ pointer: 1, length: 1 }, { pointer: 2, length: 1 }, { pointer: 3, length: 1 }])
+    expect(freed).toEqual([1, 2, 3])
+  })
+
+  it('falls back on deep JSON that JavaScript accepts', async () => {
+    const nested = '['.repeat(500) + '0' + ']'.repeat(500)
+    const raw = `{"type":"message","message":{"role":"user","content":"deep"},"deep":${nested}}`
+    expect(() => JSON.parse(raw)).not.toThrow()
+    await expect(scanOmpMetadataBytes(Buffer.from(`${raw}\n`), defaults)).resolves.toMatchObject({ status: 'fallback' })
   })
 
   it('falls back when the title slot contains a lone surrogate', async () => {

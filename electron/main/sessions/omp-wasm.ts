@@ -84,6 +84,26 @@ export function resetOmpWasmForTests(): void {
   instancePromise = undefined
 }
 
+interface OmpWasmCleanup {
+  clear_result(): void
+  dealloc(pointer: number, length: number): void
+}
+
+export function releaseOmpWasmAllocations(exports: OmpWasmCleanup, allocations: ReadonlyArray<{ pointer: number; length: number }>): void {
+  try {
+    exports.clear_result()
+  } catch {
+    // Keep freeing the independently allocated arguments.
+  }
+  for (const allocation of allocations) {
+    try {
+      exports.dealloc(allocation.pointer, allocation.length)
+    } catch {
+      // A trapped free must not skip the remaining allocations.
+    }
+  }
+}
+
 function writeBytes(exports: OmpWasmExports, bytes: Uint8Array): { pointer: number; length: number } {
   if (bytes.length === 0) return { pointer: 0, length: 0 }
   const pointer = exports.alloc(bytes.length)
@@ -175,11 +195,6 @@ export async function scanOmpMetadataBytes(bytes: Uint8Array, defaults: OmpWasmD
   } catch {
     return { status: 'fallback', reason: 'exception' }
   } finally {
-    try {
-      exports.clear_result()
-      for (const allocation of allocations) exports.dealloc(allocation.pointer, allocation.length)
-    } catch {
-      // A trapped instance is already unusable; the next call falls back.
-    }
+    releaseOmpWasmAllocations(exports, allocations)
   }
 }
