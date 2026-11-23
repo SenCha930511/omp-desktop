@@ -61,8 +61,9 @@ export default defineConfig({
             // turning translation into an asynchronous loading boundary.
             if (id.includes('/src/i18n/keys/')) return 'i18n-catalogs'
             if (!id.includes('node_modules')) return undefined
+            // Keep the lazy math chunk ahead of the broad Markdown vendor rule.
+            if (id.includes('/remark-math/') || id.includes('/katex/') || id.includes('/rehype-katex/')) return 'katex-vendor'
             if (id.includes('/react-markdown/') || id.includes('/remark-') || id.includes('/unified/')) return 'markdown-vendor'
-            if (id.includes('/katex/') || id.includes('/rehype-katex/')) return 'katex-vendor'
             if (id.includes('/react/') || id.includes('/react-dom/') || id.includes('/scheduler/')) return 'react-vendor'
             if (id.includes('/lucide-react/')) return 'icons-vendor'
             return undefined
