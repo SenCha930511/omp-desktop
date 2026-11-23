@@ -41,7 +41,21 @@ afterEach(async () => {
   vi.unstubAllGlobals()
 })
 
-function renderComposer(onSend = vi.fn(), imageInputSupported = true, busy = false, messageEnterAction: 'queue' | 'steer' = 'queue', contextUsage?: PrimeContextUsage, executingModel?: RuntimeInfo['executingModel'], harnessTokensPerSecond?: number, availableCommands?: RuntimeInfo['availableCommands']) {
+function renderComposer(
+  onSend = vi.fn(),
+  imageInputSupported = true,
+  busy = false,
+  messageEnterAction: 'queue' | 'steer' = 'queue',
+  contextUsage?: PrimeContextUsage,
+  executingModel?: RuntimeInfo['executingModel'],
+  harnessTokensPerSecond?: number,
+  availableCommands?: RuntimeInfo['availableCommands'],
+  callbacks: {
+    onContinue?(deliverQueued: boolean): Promise<boolean>
+    onStop?(): Promise<void> | void
+    onOpenSessionTree?(): void
+  } = {},
+) {
   act(() => root.render(<Composer
     busy={busy}
     model="provider/vision"
@@ -63,7 +77,9 @@ function renderComposer(onSend = vi.fn(), imageInputSupported = true, busy = fal
     onEffortChange={vi.fn()}
     onFastChange={vi.fn()}
     onSend={onSend}
-    onStop={vi.fn()}
+    onContinue={callbacks.onContinue}
+    onStop={callbacks.onStop ?? vi.fn()}
+    onOpenSessionTree={callbacks.onOpenSessionTree}
   />))
   return onSend
 }
@@ -78,6 +94,19 @@ function pngFile(name: string, read?: () => Promise<ArrayBuffer>): File {
 function withTimeStamp<T extends Event>(event: T, timeStamp: number): T {
   Object.defineProperty(event, 'timeStamp', { configurable: true, value: timeStamp })
   return event
+}
+
+async function enterDraft(value: string, init: KeyboardEventInit = {}) {
+  const textarea = container.querySelector('textarea') as HTMLTextAreaElement
+  await act(async () => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+    setter?.call(textarea, value)
+    textarea.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+  await act(async () => {
+    textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, ...init }))
+    await Promise.resolve()
+  })
 }
 
 it('does not accept commands or close the command menu during IME composition', async () => {
@@ -270,7 +299,6 @@ describe('Composer image ingestion', () => {
     expect(container.querySelector('[role="alert"]')?.textContent).toContain('up to 8 files')
   })
 
-
   it('restores the text and image draft when prompt admission fails', async () => {
     const onSend = renderComposer(vi.fn(async () => { throw new Error('rejected') }))
     await pasteFiles([pastedPng()], 'Keep this draft')
@@ -326,7 +354,6 @@ describe('Composer image ingestion', () => {
     expect(container.querySelector('[role="alert"]')?.textContent).toContain('1 submitted image could not be restored because the attachment limits are full')
     expect(container.querySelector('[role="status"]')?.textContent).toContain('8 files attached')
   })
-
 
   it('opens a general file picker from the add menu and attaches its selection', async () => {
     renderComposer()
@@ -454,19 +481,6 @@ describe('Composer image ingestion', () => {
 
 
 describe('Composer message delivery shortcuts', () => {
-  const enterDraft = async (value: string, init: KeyboardEventInit = {}) => {
-    const textarea = container.querySelector('textarea') as HTMLTextAreaElement
-    await act(async () => {
-      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
-      setter?.call(textarea, value)
-      textarea.dispatchEvent(new Event('input', { bubbles: true }))
-    })
-    await act(async () => {
-      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, ...init }))
-      await Promise.resolve()
-    })
-  }
-
   it('queues with Enter and steers with Ctrl+Enter while OMP is working', async () => {
     const onSend = renderComposer(vi.fn(async () => undefined), true, true)
     await enterDraft('Queue this')
@@ -498,6 +512,114 @@ describe('Composer message delivery shortcuts', () => {
     expect(onSend).toHaveBeenNthCalledWith(1, 'Steer this', [], 'steer')
     expect(onSend).toHaveBeenNthCalledWith(2, 'Queue this', [], 'queue')
     expect(onSend).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('Composer native continue and tree shortcuts', () => {
+  it('uses queue delivery for busy empty Enter instead of stop or a prompt', async () => {
+    const onContinue = vi.fn(async () => true)
+    const onStop = vi.fn()
+    const onSend = renderComposer(vi.fn(), true, true, 'queue', undefined, undefined, undefined, undefined, { onContinue, onStop })
+
+    await act(async () => {
+      container.querySelector('textarea')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    })
+
+    expect(onContinue).toHaveBeenCalledExactlyOnceWith(true)
+    expect(onStop).not.toHaveBeenCalled()
+    expect(onSend).not.toHaveBeenCalled()
+  })
+
+  it('routes dot and c through idle resume and busy queue delivery without prompt text', async () => {
+    const onContinue = vi.fn(async () => true)
+    const onSend = renderComposer(vi.fn(), true, false, 'queue', undefined, undefined, undefined, undefined, { onContinue })
+    await enterDraft('.')
+    expect(onContinue).toHaveBeenLastCalledWith(false)
+
+    renderComposer(onSend, true, true, 'queue', undefined, undefined, undefined, undefined, { onContinue })
+    await enterDraft('c')
+    expect(onContinue).toHaveBeenLastCalledWith(true)
+    expect(onContinue).toHaveBeenCalledTimes(2)
+    expect(onSend).not.toHaveBeenCalled()
+  })
+
+  it('keeps Ctrl+Enter as a literal follow-up rather than a continue command', async () => {
+    const onContinue = vi.fn(async () => true)
+    const onSend = renderComposer(vi.fn(async () => undefined), true, true, 'queue', undefined, undefined, undefined, undefined, { onContinue })
+
+    await enterDraft('.', { ctrlKey: true })
+
+    expect(onSend).toHaveBeenCalledExactlyOnceWith('.', [], 'steer')
+    expect(onContinue).not.toHaveBeenCalled()
+  })
+
+  it('restores the shorthand draft when the runtime does not accept continue', async () => {
+    const onContinue = vi.fn(async () => false)
+    const onSend = renderComposer(vi.fn(), true, false, 'queue', undefined, undefined, undefined, undefined, { onContinue })
+
+    await enterDraft('.')
+
+    expect(onContinue).toHaveBeenCalledExactlyOnceWith(false)
+    expect(container.querySelector('textarea')).toHaveProperty('value', '.')
+    expect(onSend).not.toHaveBeenCalled()
+  })
+
+  it('keeps busy Escape on stop and never routes it through continue or the tree', () => {
+    const onContinue = vi.fn(async () => true)
+    const onStop = vi.fn()
+    const onOpenSessionTree = vi.fn()
+    renderComposer(vi.fn(), true, true, 'queue', undefined, undefined, undefined, undefined, { onContinue, onStop, onOpenSessionTree })
+    const textarea = container.querySelector('textarea')!
+
+    act(() => textarea.dispatchEvent(withTimeStamp(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }), 1000)))
+    act(() => textarea.dispatchEvent(withTimeStamp(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }), 1100)))
+
+    expect(onStop).toHaveBeenCalledTimes(2)
+    expect(onContinue).not.toHaveBeenCalled()
+    expect(onOpenSessionTree).not.toHaveBeenCalled()
+  })
+
+  it('opens the existing tree for consecutive idle empty Escape presses within and at 500ms only', () => {
+    const onStop = vi.fn()
+    const onOpenSessionTree = vi.fn()
+    renderComposer(vi.fn(), true, false, 'queue', undefined, undefined, undefined, undefined, { onStop, onOpenSessionTree })
+    const textarea = container.querySelector('textarea')!
+    const escapeAt = (timeStamp: number) => {
+      act(() => textarea.dispatchEvent(withTimeStamp(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }), timeStamp)))
+    }
+
+    escapeAt(1000)
+    expect(onOpenSessionTree).not.toHaveBeenCalled()
+    escapeAt(1499)
+    expect(onOpenSessionTree).toHaveBeenCalledTimes(1)
+    escapeAt(2000)
+    escapeAt(2500)
+    expect(onOpenSessionTree).toHaveBeenCalledTimes(2)
+    escapeAt(3000)
+    escapeAt(3501)
+    expect(onOpenSessionTree).toHaveBeenCalledTimes(2)
+    expect(onStop).not.toHaveBeenCalled()
+  })
+
+  it('does not open the tree for modified escapes or a nonempty draft', () => {
+    const onOpenSessionTree = vi.fn()
+    const onSend = renderComposer(vi.fn(), true, false, 'queue', undefined, undefined, undefined, undefined, { onOpenSessionTree })
+    const textarea = container.querySelector('textarea')!
+    const escapeAt = (timeStamp: number, altKey = false) => {
+      act(() => textarea.dispatchEvent(withTimeStamp(new KeyboardEvent('keydown', { key: 'Escape', altKey, bubbles: true, cancelable: true }), timeStamp)))
+    }
+
+    escapeAt(1000, true)
+    escapeAt(1100)
+    expect(onOpenSessionTree).not.toHaveBeenCalled()
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, 'keep editing')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    escapeAt(1200)
+    escapeAt(1300)
+    expect(onOpenSessionTree).not.toHaveBeenCalled()
+    expect(onSend).not.toHaveBeenCalled()
   })
 })
 

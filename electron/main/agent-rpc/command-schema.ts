@@ -4,7 +4,7 @@ import { MAX_RPC_WRITE_FRAME_BYTES, rpcRequestFrameBytes } from './limits'
 import type { RpcObject } from './types'
 
 const SIMPLE_COMMANDS = new Set([
-  'abort', 'abort_and_restore_queue', 'new_session', 'get_state', 'cycle_model', 'get_available_models', 'cycle_thinking_level',
+  'abort', 'abort_and_restore_queue', 'abort_and_deliver_queue', 'resume', 'new_session', 'get_state', 'cycle_model', 'get_available_models', 'cycle_thinking_level',
   'abort_retry', 'get_session_stats', 'get_branch_messages', 'get_tree', 'get_last_assistant_text',
   'get_messages', 'get_available_commands', 'get_subagents',
   // abort_bash takes no parameters (upstream wire/commands.ts); it cancels the
@@ -23,6 +23,7 @@ const MAX_EXTENSION_FORM_FIELD_NAME_CHARS = 1024
 const MAX_EXTENSION_FORM_CHOICES = 1024
 const THINKING_LEVELS: ReadonlySet<string> = new Set(['auto', ...PRIME_THINKING_LEVELS])
 // 上游 live voice 名冊(v18.12.6 packages/coding-agent/src/live/voices.ts
+
 
 function validateImageData(data: string, mimeType: string): void {
   if (data.length % 4 !== 0 || !/^[a-z\d+/]*={0,2}$/i.test(data)) throw new TypeError('Image data must be canonical base64')

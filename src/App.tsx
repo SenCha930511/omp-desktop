@@ -666,6 +666,7 @@ export default function App() {
     togglePinProject,
     setProjectSortMode,
     sendPrompt,
+    continueRuntime,
     stopRuntime,
     installSkill,
     installExtension,
@@ -1588,7 +1589,9 @@ export default function App() {
                             onEffortChange={provider.changeEffort}
                             onFastChange={provider.changeFast}
                             onSend={sendVisiblePrompt}
+                            onContinue={continueRuntime}
                             onStop={stopRuntime}
+                            onOpenSessionTree={openSessionTree}
                             retryStoppedTurn={stoppedTurnRetryAvailable}
                             onRetryStoppedTurn={retryTurn}
                             onRemoveAnnotation={browserAnnotations.remove}

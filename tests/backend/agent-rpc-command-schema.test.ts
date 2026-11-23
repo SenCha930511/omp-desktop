@@ -62,6 +62,9 @@ describe('isThinkingLevel', () => {
 describe('validateRpcCommand simple commands', () => {
   it('passes through argument-free commands and rejects extra keys', async () => {
     await expect(validate({ type: 'abort' })).resolves.toEqual({ type: 'abort' })
+    await expect(validate({ type: 'abort_and_deliver_queue' })).resolves.toEqual({ type: 'abort_and_deliver_queue' })
+    await expect(validate({ type: 'resume' })).resolves.toEqual({ type: 'resume' })
+    await expect(validate({ type: 'resume', force: true })).rejects.toThrow('command.force is not supported')
     await expect(validate({ type: 'get_available_commands' })).resolves.toEqual({ type: 'get_available_commands' })
     await expect(validate({ type: 'get_commands' })).rejects.toThrow('not exposed to the renderer')
     await expect(validate({ type: 'abort', force: true })).rejects.toThrow('command.force is not supported')

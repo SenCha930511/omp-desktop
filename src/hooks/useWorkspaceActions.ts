@@ -721,7 +721,8 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
           const match =
             sessions.find((item) => item.id.toLowerCase().startsWith(lowerTarget)) ??
             sessions.find((item) => item.title.toLowerCase() === lowerTarget) ??
-            sessions.find((item) => item.filePath.toLowerCase() === lowerTarget || item.filePath.toLowerCase().endsWith(`/${lowerTarget}`))
+            sessions.find((item) => item.filePath.toLowerCase() === lowerTarget || item.filePath.toLowerCase().endsWith(`/${lowerTarget}`)) ??
+            sessions.find((item) => item.title.toLowerCase().includes(lowerTarget))
           if (!match) {
             reportError(t('slash.resume.notFound', { query: target }))
             return
@@ -1269,6 +1270,19 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
       throw error
     }
   }
+  const continueRuntime = async (deliverQueued: boolean): Promise<boolean> => {
+    const { bridge, workspace, reportError } = getDeps()
+    const runtime = workspace.runtime
+    if (!bridge || !runtime) return false
+    try {
+      await bridge.agent.command(runtime.runtimeId, { type: deliverQueued ? 'abort_and_deliver_queue' : 'resume' })
+      return true
+    } catch (error) {
+      reportError(error)
+      return false
+    }
+  }
+
   const stopRuntime = async () => {
     const { bridge, workspace, reportError } = getDeps()
     const stoppedRuntime = workspace.runtime
@@ -1557,6 +1571,7 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     togglePinProject,
     setProjectSortMode,
     sendPrompt,
+    continueRuntime,
     stopRuntime,
     installSkill,
     installExtension,

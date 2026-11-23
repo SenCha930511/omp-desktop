@@ -62,8 +62,8 @@ const transcript = (id: string, streaming = true): TranscriptMessage => ({
   parts: [{ type: 'text', text: id }],
 })
 
-function stopFixture() {
-  let currentRuntime: RuntimeInfo | null = runtime('runtime-a')
+function stopFixture(isStreaming = true) {
+  let currentRuntime: RuntimeInfo | null = runtime('runtime-a', isStreaming)
   let currentMessages = [transcript('message-a')]
   const workspaceRef = { current: { generation: 1 } }
   const runtimeIdRef = { current: 'runtime-a' as string | null }
@@ -223,6 +223,41 @@ describe('stop restores omp’s withdrawn queue', () => {
     const notices = fixture.messages().filter((message) => message.role === 'system')
     expect(notices).toHaveLength(1)
     expect(notices[0].parts[0]).toMatchObject({ type: 'text' })
+  })
+})
+
+describe('continue uses the upstream resume lifecycle', () => {
+  it('delivers queued input while busy without stopping or reclaiming it', async () => {
+    const fixture = stopFixture()
+
+    await expect(fixture.actions.continueRuntime(true)).resolves.toBe(true)
+
+    expect(fixture.agentCommand).toHaveBeenCalledExactlyOnceWith('runtime-a', { type: 'abort_and_deliver_queue' })
+    expect(fixture.agentStop).not.toHaveBeenCalled()
+    expect(fixture.pauseQueuedPrompts).not.toHaveBeenCalled()
+    expect(fixture.restoreWithdrawnQueue).not.toHaveBeenCalled()
+  })
+
+  it('resumes directly while idle rather than sending a model prompt', async () => {
+    const fixture = stopFixture(false)
+
+    await expect(fixture.actions.continueRuntime(false)).resolves.toBe(true)
+
+    expect(fixture.agentCommand).toHaveBeenCalledExactlyOnceWith('runtime-a', { type: 'resume' })
+    expect(fixture.agentCommand).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ type: 'prompt' }))
+  })
+
+  it('reports an RPC rejection without changing runtime or queue state', async () => {
+    const fixture = stopFixture()
+    const failure = new Error('RPC command resume is not supported')
+    fixture.agentCommand.mockRejectedValueOnce(failure)
+
+    await expect(fixture.actions.continueRuntime(true)).resolves.toBe(false)
+
+    expect(fixture.reportError).toHaveBeenCalledExactlyOnceWith(failure)
+    expect(fixture.runtime()).toMatchObject({ runtimeId: 'runtime-a', isStreaming: true })
+    expect(fixture.restoreWithdrawnQueue).not.toHaveBeenCalled()
+    expect(fixture.agentStop).not.toHaveBeenCalled()
   })
 })
 
