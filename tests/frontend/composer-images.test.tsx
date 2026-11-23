@@ -5,6 +5,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Composer } from '../../src/components/Composer'
 import { groupModelsByProvider } from '../../src/hooks/useProviderCatalog'
+import { I18nProvider, type ResolvedLocale } from '../../src/lib/i18n'
 import type { PrimeContextUsage, PrimeModelDescriptor, PrimeProviderDescriptor, RuntimeInfo, SkillRecord } from '../../src/types/api'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
@@ -55,17 +56,26 @@ function renderComposer(
     onStop?(): Promise<void> | void
     onOpenSessionTree?(): void
   } = {},
+  fastOptions: {
+    fast?: boolean
+    fastSupported?: boolean
+    fastActive?: boolean
+    onFastChange?(value: boolean): void
+    onFastRetry?(): void
+    locale?: ResolvedLocale
+  } = {},
 ) {
-  act(() => root.render(<Composer
+  const composer = <Composer
     busy={busy}
     model="provider/vision"
     effort="medium"
     modelsByProvider={modelsByProvider}
     providers={providers}
     reasoningLevels={['medium']}
-    fast={false}
-    fastSupported={false}
+    fast={fastOptions.fast ?? false}
+    fastSupported={fastOptions.fastSupported ?? false}
     fastAvailable
+    fastActive={fastOptions.fastActive}
     imageInputSupported={imageInputSupported}
     messageEnterAction={messageEnterAction}
     contextUsage={contextUsage}
@@ -75,14 +85,81 @@ function renderComposer(
     availableCommands={availableCommands}
     onModelChange={vi.fn()}
     onEffortChange={vi.fn()}
-    onFastChange={vi.fn()}
+    onFastChange={fastOptions.onFastChange ?? vi.fn()}
+    onFastRetry={fastOptions.onFastRetry}
     onSend={onSend}
     onContinue={callbacks.onContinue}
     onStop={callbacks.onStop ?? vi.fn()}
     onOpenSessionTree={callbacks.onOpenSessionTree}
-  />))
+  />
+  act(() => root.render(fastOptions.locale
+    ? <I18nProvider preference={fastOptions.locale}>{composer}</I18nProvider>
+    : composer))
   return onSend
 }
+
+describe('Composer Fast retry', () => {
+  const retryLabel = 'Retry Fast'
+
+  it('retries the actual service tier without changing the enabled Fast preference', () => {
+    const changeFast = vi.fn()
+    const retryFast = vi.fn()
+    renderComposer(vi.fn(), true, false, 'queue', undefined, undefined, undefined, undefined, {}, {
+      fast: true, fastSupported: true, fastActive: false, onFastChange: changeFast, onFastRetry: retryFast,
+    })
+
+    const retry = container.querySelector<HTMLButtonElement>(`button[aria-label="${retryLabel}"]`)
+    expect(retry).not.toBeNull()
+    expect(retry?.title).toBe('Fast mode is enabled, but OMP is not using its priority service. Retry without changing your Fast preference.')
+    expect(retry?.hasAttribute('aria-pressed')).toBe(false)
+    act(() => retry!.click())
+    expect(retryFast).toHaveBeenCalledTimes(1)
+    expect(changeFast).not.toHaveBeenCalled()
+  })
+
+  it('keeps the Fast toggle independent from the retry command', () => {
+    const changeFast = vi.fn()
+    const retryFast = vi.fn()
+    renderComposer(vi.fn(), true, false, 'queue', undefined, undefined, undefined, undefined, {}, {
+      fast: true, fastSupported: true, fastActive: false, onFastChange: changeFast, onFastRetry: retryFast,
+    })
+
+    const toggle = container.querySelector<HTMLButtonElement>('.fast-mode-toggle[aria-pressed="true"]')!
+    act(() => toggle.click())
+    expect(changeFast).toHaveBeenCalledTimes(1)
+    expect(changeFast).toHaveBeenCalledWith(false)
+    expect(retryFast).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { label: 'active', fast: true, fastSupported: true, fastActive: true, retryAvailable: true },
+    { label: 'unknown', fast: true, fastSupported: true, fastActive: undefined, retryAvailable: true },
+    { label: 'preference off', fast: false, fastSupported: true, fastActive: false, retryAvailable: true },
+    { label: 'unsupported', fast: true, fastSupported: false, fastActive: false, retryAvailable: true },
+    { label: 'retry callback absent', fast: true, fastSupported: true, fastActive: false, retryAvailable: false },
+  ] as const)('does not offer Retry when Fast is $label', ({ fast, fastSupported, fastActive, retryAvailable }) => {
+    renderComposer(vi.fn(), true, false, 'queue', undefined, undefined, undefined, undefined, {}, {
+      fast, fastSupported, fastActive, onFastRetry: retryAvailable ? vi.fn() : undefined,
+    })
+
+    expect(container.querySelector(`button[aria-label="${retryLabel}"]`)).toBeNull()
+  })
+
+  it.each([
+    ['en', 'Retry Fast', 'Fast mode is enabled, but OMP is not using its priority service. Retry without changing your Fast preference.'],
+    ['zh-TW', '重試快速模式', '已啟用快速模式，但 OMP 目前未使用優先服務。重試時不會變更快速模式偏好設定。'],
+    ['zh-CN', '重试快速模式', '已启用快速模式，但 OMP 当前未使用优先服务。重试不会更改快速模式偏好设置。'],
+  ] as const)('renders localized Retry text for %s', (locale, label, title) => {
+    renderComposer(vi.fn(), true, false, 'queue', undefined, undefined, undefined, undefined, {}, {
+      fast: true, fastSupported: true, fastActive: false, onFastRetry: vi.fn(), locale,
+    })
+
+    const retry = container.querySelector<HTMLButtonElement>('.fast-mode-retry')
+    expect(retry?.getAttribute('aria-label')).toBe(label)
+    expect(retry?.textContent).toContain(label)
+    expect(retry?.getAttribute('title')).toBe(title)
+  })
+})
 
 function pngFile(name: string, read?: () => Promise<ArrayBuffer>): File {
   const bytes = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10])

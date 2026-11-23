@@ -54,7 +54,10 @@ interface UseProviderCatalogOptions {
 export interface ProviderCatalog {
   model: string
   effort: PrimeEffortSelector
+  /** Requested fast setting. */
   fast: boolean
+  /** Actual provider state; absent until OMP explicitly reports it. */
+  fastActive?: boolean
   /** 帳號限流狀態(low_priority/wrap_up);顯示之避免誤判為 app bug。 */
   usageLimit: UsageLimitState | undefined
   catalog: PrimeModelCatalog | null
@@ -68,6 +71,8 @@ export interface ProviderCatalog {
   changeModel(modelKey: string): void
   changeEffort(value: PrimeEffortSelector): void
   changeFast(enabled: boolean): void
+  /** Re-arm the selected fast setting only after OMP explicitly reports it inactive. */
+  retryFast(): void
 }
 
 export function useProviderCatalog({ bridge, ready = true, harness = 'omp', runtime, activeSession, lastSelectedModel = '', defaultEffort = 'medium', rememberModel, syncRuntime, reportError }: UseProviderCatalogOptions): ProviderCatalog {
@@ -302,6 +307,16 @@ export function useProviderCatalog({ bridge, ready = true, harness = 'omp', runt
     )
   }, [bridge, queueRuntimeMutation, runtime, updateFast])
 
+  const retryFast = useCallback(() => {
+    if (!bridge || !runtime || !fastRef.current || runtime.serviceTierActive !== false) return
+    queueRuntimeMutation(
+      runtime.runtimeId,
+      async () => { await bridge.agent.command(runtime.runtimeId, { type: 'set_service_tier', serviceTier: 'priority' }) },
+      // Retrying does not change the preference or optimistic actual state.
+      () => undefined,
+    )
+  }, [bridge, queueRuntimeMutation, runtime])
+
   const resolvedAutoEffort = effort !== 'auto' || runtime?.autoThinkingResolved !== true ? undefined : PRIME_THINKING_LEVELS.find((level) => level === runtime.thinkingLevel)
 
   const resolveSelection = async () => {
@@ -319,8 +334,9 @@ export function useProviderCatalog({ bridge, ready = true, harness = 'omp', runt
 
   return {
     model, effort, fast,
+    fastActive: runtime?.serviceTierActive,
     usageLimit: runtime?.usageLimit,
     catalog, selectedModel, reasoningLevels, resolvedAutoEffort, modelsByProvider,
-    refresh, resolveSelection, changeModel, changeEffort, changeFast,
+    refresh, resolveSelection, changeModel, changeEffort, changeFast, retryFast,
   }
 }

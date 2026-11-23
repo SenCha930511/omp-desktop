@@ -364,7 +364,8 @@ export class RpcRuntime {
       return true
     } catch (error) {
       this.info.fastModeAvailable = false
-      this.info.serviceTier = 'default'
+      // A rejected/lost request does not prove that OMP's preference changed.
+      // Keep the last confirmed tier until get_state supplies an authoritative update.
       if (!probe) throw error
       return false
     }
@@ -1242,6 +1243,9 @@ export class RpcRuntime {
       this.info.fastModeAvailable = true
       this.requestedServiceTier = reading.serviceTier
     }
+    // fastModeEnabled is the requested setting, never proof of actual state.
+    // Older runtimes omit fastModeActive: preserve unknown rather than inventing false.
+    if (reading.serviceTierActive !== undefined) this.info.serviceTierActive = reading.serviceTierActive
     if (reading.slowModeSupported !== undefined) this.info.slowModeSupported = reading.slowModeSupported
     if (reading.slowModeEnabled !== undefined) this.info.slowModeEnabled = reading.slowModeEnabled
     // state dump 以欄位缺席表達「未限流」;據此清除。

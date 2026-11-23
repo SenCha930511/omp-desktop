@@ -1548,6 +1548,7 @@ export default function App() {
                             onSavePreset={saveModelPreset}
                             reasoningLevels={provider.reasoningLevels}
                             fast={provider.fast}
+                            fastActive={provider.fastActive}
                             fastSupported={provider.selectedModel?.fastModeSupported ?? false}
                             fastAvailable={workspace.runtime?.fastModeAvailable !== false}
                             usageLimit={provider.usageLimit}
@@ -1588,6 +1589,7 @@ export default function App() {
                             onModelChange={provider.changeModel}
                             onEffortChange={provider.changeEffort}
                             onFastChange={provider.changeFast}
+                            onFastRetry={provider.retryFast}
                             onSend={sendVisiblePrompt}
                             onContinue={continueRuntime}
                             onStop={stopRuntime}

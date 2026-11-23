@@ -50,6 +50,11 @@ interface FakeOmpOptions {
   catalogModels?: unknown[]
   /** get_state 回報的 usageLimit 初值;可被 promptScript 改寫。 */
   usageLimit?: 'low_priority' | 'wrap_up'
+  /** Selected fast preference and independently computed actual state. */
+  fastModeEnabled?: boolean
+  fastModeActive?: boolean
+  /** Reject this many native fast-mode requests to exercise the real runtime error path. */
+  fastModeRejections?: number
   /** When false the ready frame omits supportsBashExcludeFromContext. */
   bashExcludeFromContext?: boolean
 }
@@ -73,6 +78,7 @@ let negotiated = false
 let streaming = false
 let askDialogEnabled = false
 let usageLimitVar = ${JSON.stringify(fakeUsageLimit)}
+let remainingFastModeRejections = ${options.fastModeRejections ?? 0}
 let sessionFileVar = ${JSON.stringify(options.initialSessionFile ?? null)}
 send({ type: 'ready', protocolVersion: 1, supportedProtocolVersions: [1, 2]${options.bashExcludeFromContext === false ? '' : ', supportsBashExcludeFromContext: true'} })
 send({ type: 'available_commands_update', commands: [{ name: 'help' }] })
@@ -99,7 +105,8 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     }
     send({ id: command.id, type: 'response', command: 'get_state', success: true, data: {
       sessionId: 'omp-session', isStreaming: streaming, isCompacting: false, thinkingLevel: 'medium',
-      fastModeEnabled: true, slowModeSupported: true, slowModeEnabled: false, model: { provider: 'openai-codex', id: 'gpt-5.6-luna', name: 'Luna GPT-5.6' },
+      fastModeEnabled: ${JSON.stringify(options.fastModeEnabled ?? true)}, slowModeSupported: true, slowModeEnabled: false, model: { provider: 'openai-codex', id: 'gpt-5.6-luna', name: 'Luna GPT-5.6' },
+      ${options.fastModeActive === undefined ? '' : `fastModeActive: ${options.fastModeActive},`}
       queuedMessageCount: ${options.queuedMessageCount ?? 0},
       fakeAskDialogEnabled: askDialogEnabled,
       ...(sessionFileVar ? { sessionFile: sessionFileVar } : {}),
@@ -140,8 +147,13 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   } else if (command.type === 'side_question' || command.type === 'side_question_cancel' || command.type === 'side_question_history') {
     send({ id: command.id, type: 'response', command: command.type, success: false, error: 'Unknown command ' + command.type })
   } else if (command.type === 'set_fast_mode') {
-    send({ type: 'fake_received', command: 'set_fast_mode', enabled: command.enabled })
-    send({ id: command.id, type: 'response', command: 'set_fast_mode', success: true })
+    if (remainingFastModeRejections > 0) {
+      remainingFastModeRejections -= 1
+      send({ id: command.id, type: 'response', command: 'set_fast_mode', success: false, error: 'Injected fast mode rejection' })
+    } else {
+      send({ type: 'fake_received', command: 'set_fast_mode', enabled: command.enabled })
+      send({ id: command.id, type: 'response', command: 'set_fast_mode', success: true })
+    }
   } else if (command.type === 'set_service_tier') {
     send({ id: command.id, type: 'response', command: 'set_service_tier', success: false, error: 'Unknown command set_service_tier' })
   } else if (command.type === 'new_session') {
@@ -406,6 +418,8 @@ describe('OMP RPC handshake', () => {
     expect(runtime.model).toEqual({ provider: 'openai-codex', id: 'gpt-5.6-luna', name: 'Luna GPT-5.6' })
     // fastModeEnabled: true in get_state maps to the priority service tier.
     expect(runtime.serviceTier).toBe('priority')
+    // Older runtimes omitting fastModeActive leave actual state unknown.
+    expect(runtime.serviceTierActive).toBeUndefined()
     expect(runtime.slowModeSupported).toBe(true)
     expect(runtime.slowModeEnabled).toBe(false)
     expect(runtime.fastModeAvailable).toBe(true)
@@ -418,6 +432,41 @@ describe('OMP RPC handshake', () => {
     // Unsolicited pre-request frames are tolerated and forwarded for the renderer to ignore.
     await waitUntil(() => events.some((event) => event.type === 'ready'))
     expect(events.some((event) => event.type === 'available_commands_update')).toBe(true)
+  })
+
+  it.each([false, true])('reads fastModeActive=%s independently from the selected preference', async (fastModeActive) => {
+    const fake = fakeOmpAgent({ fastModeEnabled: true, fastModeActive })
+    const manager = ompManager(fake.executable, { providers: ompCatalog })
+
+    const runtime = await manager.start({ cwd: fake.cwd })
+
+    expect(runtime.serviceTier).toBe('priority')
+    expect(runtime.serviceTierActive).toBe(fastModeActive)
+  })
+
+  it('does not infer actual fast state when set_fast_mode is acknowledged', async () => {
+    const fake = fakeOmpAgent({ fastModeEnabled: true, fastModeActive: false })
+    const manager = ompManager(fake.executable, { providers: ompCatalog })
+    const runtime = await manager.start({ cwd: fake.cwd })
+
+    await manager.command(runtime.runtimeId, { type: 'set_service_tier', serviceTier: 'priority' })
+
+    expect(manager.list()[0]).toMatchObject({ serviceTier: 'priority', serviceTierActive: false })
+    const refreshed = await manager.refreshState(runtime.runtimeId)
+    expect(refreshed).toMatchObject({ serviceTier: 'priority', serviceTierActive: false })
+  })
+
+  it('retains the last confirmed fast preference after wire request rejection', async () => {
+    const fake = fakeOmpAgent({ fastModeEnabled: true, fastModeActive: false, fastModeRejections: 2 })
+    const manager = ompManager(fake.executable, { providers: ompCatalog })
+    const runtime = await manager.start({ cwd: fake.cwd })
+    expect(runtime).toMatchObject({ serviceTier: 'priority', serviceTierActive: false })
+
+    await expect(manager.command(runtime.runtimeId, { type: 'set_service_tier', serviceTier: 'priority' })).rejects.toThrow('Injected fast mode rejection')
+    await expect(manager.command(runtime.runtimeId, { type: 'set_service_tier', serviceTier: 'default' })).rejects.toThrow('Injected fast mode rejection')
+    expect(manager.list()[0]).toMatchObject({ serviceTier: 'priority', serviceTierActive: false, fastModeAvailable: false })
+
+    await expect(manager.refreshState(runtime.runtimeId)).resolves.toMatchObject({ serviceTier: 'priority', serviceTierActive: false, fastModeAvailable: true })
   })
 
   it('rejects excluded bash when the ready frame did not advertise it', async () => {

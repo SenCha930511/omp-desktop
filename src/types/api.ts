@@ -357,7 +357,10 @@ export interface RuntimeInfo {
   fastModeSupported?: boolean
   imageInputSupported?: boolean
   fastModeAvailable?: boolean
+  /** Selected fast-mode preference; independent of whether the provider is actually using it. */
   serviceTier?: PrimeServiceTier
+  /** Actual fast-mode state from get_state; absent when the runtime has not reported it. */
+  serviceTierActive?: boolean
   /** 上游 get_state 的 slowModeSupported / slowModeEnabled(`/slow` 只適用部分模型)。 */
   slowModeSupported?: boolean
   slowModeEnabled?: boolean

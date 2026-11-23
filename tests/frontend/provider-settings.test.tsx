@@ -145,6 +145,7 @@ describe('provider runtime mutations', () => {
 
   function mountCatalogHook(options: {
     command: DesktopApi['agent']['command']
+    runtime?: RuntimeInfo | null
     syncRuntime?: (runtimeId: string) => Promise<void>
     reportError?: (error: unknown) => void
   }) {
@@ -159,7 +160,7 @@ describe('provider runtime mutations', () => {
     const syncRuntime = options.syncRuntime ?? vi.fn().mockResolvedValue(undefined)
     const reportError = options.reportError ?? vi.fn()
     function Harness() {
-      value = useProviderCatalog({ bridge, runtime, syncRuntime, reportError })
+      value = useProviderCatalog({ bridge, runtime: options.runtime === undefined ? runtime : options.runtime, syncRuntime, reportError })
       return null
     }
     return render(<Harness />).then(() => ({ get value() { return value! }, catalogMock, syncRuntime, reportError }))
@@ -215,5 +216,111 @@ describe('provider runtime mutations', () => {
     await act(async () => { await hook.value.refresh(true) })
 
     expect(hook.value.fast).toBe(true)
+  })
+
+  it('rolls the fast preference back when its request is rejected', async () => {
+    const rejected = deferred<Record<string, unknown>>()
+    const command = vi.fn().mockReturnValueOnce(rejected.promise)
+    const hook = await mountCatalogHook({ command })
+    await act(async () => { await Promise.resolve() })
+
+    act(() => hook.value.changeFast(true))
+    expect(hook.value.fast).toBe(true)
+    await act(async () => {
+      rejected.reject(new Error('fast rejected'))
+      try { await rejected.promise } catch { /* expected */ }
+      await Promise.resolve()
+    })
+
+    expect(command).toHaveBeenCalledExactlyOnceWith('runtime-1', { type: 'set_service_tier', serviceTier: 'priority' })
+    expect(hook.value.fast).toBe(false)
+    expect(hook.value.fastActive).toBeUndefined()
+    expect(hook.syncRuntime).toHaveBeenCalledExactlyOnceWith('runtime-1')
+    expect(hook.reportError).toHaveBeenCalledWith(expect.objectContaining({ message: 'fast rejected' }))
+  })
+
+  it('retries an explicitly inactive fast selection once without inventing active state', async () => {
+    const requested = deferred<Record<string, unknown>>()
+    const command = vi.fn().mockReturnValueOnce(requested.promise)
+    const hook = await mountCatalogHook({
+      command,
+      runtime: { ...runtime, serviceTier: 'priority', serviceTierActive: false },
+    })
+
+    expect(hook.value.fast).toBe(true)
+    expect(hook.value.fastActive).toBe(false)
+    act(() => hook.value.retryFast())
+    await act(async () => { await Promise.resolve() })
+
+    expect(command).toHaveBeenCalledExactlyOnceWith('runtime-1', { type: 'set_service_tier', serviceTier: 'priority' })
+    expect(hook.value.fast).toBe(true)
+    expect(hook.value.fastActive).toBe(false)
+    expect(hook.syncRuntime).not.toHaveBeenCalled()
+
+    await act(async () => { requested.resolve({}); await requested.promise; await Promise.resolve() })
+    expect(command).toHaveBeenCalledTimes(1)
+    expect(hook.value.fastActive).toBe(false)
+    expect(hook.syncRuntime).toHaveBeenCalledExactlyOnceWith('runtime-1')
+  })
+
+  it('keeps the fast preference after a retry request fails', async () => {
+    const rejected = deferred<Record<string, unknown>>()
+    const command = vi.fn().mockReturnValueOnce(rejected.promise)
+    const hook = await mountCatalogHook({
+      command,
+      runtime: { ...runtime, serviceTier: 'priority', serviceTierActive: false },
+    })
+
+    act(() => hook.value.retryFast())
+    await act(async () => {
+      await Promise.resolve()
+      rejected.reject(new Error('retry rejected'))
+      try { await rejected.promise } catch { /* expected */ }
+      await Promise.resolve()
+    })
+
+    expect(command).toHaveBeenCalledExactlyOnceWith('runtime-1', { type: 'set_service_tier', serviceTier: 'priority' })
+    expect(hook.value.fast).toBe(true)
+    expect(hook.value.fastActive).toBe(false)
+    expect(hook.syncRuntime).toHaveBeenCalledExactlyOnceWith('runtime-1')
+    expect(hook.reportError).toHaveBeenCalledWith(expect.objectContaining({ message: 'retry rejected' }))
+  })
+
+  it('does not retry when actual fast state is unknown, already active, or preference is off', async () => {
+    const command = vi.fn().mockResolvedValue({})
+    const unknown = await mountCatalogHook({ command, runtime: { ...runtime, serviceTier: 'priority' } })
+    expect(unknown.value.fastActive).toBeUndefined()
+
+    act(() => unknown.value.retryFast())
+    await act(async () => { await Promise.resolve() })
+    expect(command).not.toHaveBeenCalled()
+    expect(unknown.syncRuntime).not.toHaveBeenCalled()
+
+    const active = await mountCatalogHook({ command, runtime: { ...runtime, serviceTier: 'priority', serviceTierActive: true } })
+    act(() => active.value.retryFast())
+    await act(async () => { await Promise.resolve() })
+    expect(command).not.toHaveBeenCalled()
+    expect(active.value.fastActive).toBe(true)
+
+    const disabled = await mountCatalogHook({ command, runtime: { ...runtime, serviceTier: 'default', serviceTierActive: false } })
+    act(() => disabled.value.retryFast())
+    await act(async () => { await Promise.resolve() })
+    expect(command).not.toHaveBeenCalled()
+    expect(disabled.value.fast).toBe(false)
+  })
+
+  it('keeps local fast selection inert for retry without an active runtime', async () => {
+    const command = vi.fn().mockResolvedValue({})
+    const hook = await mountCatalogHook({ command, runtime: null })
+    await act(async () => { await Promise.resolve() })
+
+    act(() => hook.value.changeFast(true))
+    expect(hook.value.fast).toBe(true)
+    expect(hook.value.fastActive).toBeUndefined()
+    act(() => hook.value.retryFast())
+    await act(async () => { await Promise.resolve() })
+
+    expect(command).not.toHaveBeenCalled()
+    expect(hook.syncRuntime).not.toHaveBeenCalled()
   })
 })

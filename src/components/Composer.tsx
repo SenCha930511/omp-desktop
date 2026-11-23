@@ -81,6 +81,8 @@ interface ComposerProps {
   fast: boolean
   fastSupported: boolean
   fastAvailable: boolean
+  /** Actual service tier reported by the runtime, independent of the saved preference. */
+  fastActive?: boolean
   /** 帳號限流狀態(low_priority/wrap_up);顯示之避免誤把降速當 app bug。 */
   usageLimit?: UsageLimitState
   /** App-level OMP approval mode shown as a compact pill with an inline mode menu. */
@@ -129,6 +131,7 @@ interface ComposerProps {
   onModelChange(value: string): void
   onEffortChange(value: PrimeEffortSelector): void
   onFastChange(value: boolean): void
+  onFastRetry?(): void
   checkoutCatalog?: CheckoutCatalog
   /** Branch/worktree name shown before or without the linked-worktree catalog. */
   checkoutLabel?: string
@@ -203,6 +206,7 @@ export const Composer = memo(function Composer({
   fast,
   fastSupported,
   fastAvailable,
+  fastActive,
   usageLimit,
   approvalMode = 'inherit',
   onApprovalModeChange,
@@ -237,6 +241,7 @@ export const Composer = memo(function Composer({
   onModelChange,
   onEffortChange,
   onFastChange,
+  onFastRetry,
   checkoutCatalog,
   checkoutLabel,
   checkoutsLoading = false,
@@ -1398,6 +1403,17 @@ export const Composer = memo(function Composer({
                 onClick={() => onFastChange(!fast)}
               >
                 <Zap size={12} fill={fast ? 'currentColor' : 'none'} /> <span className="fast-mode-toggle__label">{t('composer.fast')}</span>
+              </button>
+            ) : null}
+            {fastSupported && fast && fastActive === false && onFastRetry ? (
+              <button
+                type="button"
+                className="fast-mode-toggle fast-mode-retry"
+                aria-label={t('composer.fastRetry')}
+                title={t('composer.fastRetryTitle', { name: agentName })}
+                onClick={onFastRetry}
+              >
+                <RotateCcw size={12} /> <span className="fast-mode-toggle__label">{t('composer.fastRetry')}</span>
               </button>
             ) : null}
             {usageLimit && usageLimitTitle ? (

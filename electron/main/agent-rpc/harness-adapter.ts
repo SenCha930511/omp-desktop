@@ -24,6 +24,8 @@ export interface HarnessStartArgsInput {
 /** Harness-specific fields read from get_state data, normalized to Prime vocabulary. */
 export interface HarnessStateReading {
   serviceTier?: 'default' | 'priority'
+  /** Actual provider state; absence is unknown, not inactive. */
+  serviceTierActive?: boolean
   /** 回報表示帳號進入限流;state dump 缺席該欄代表未限流(讀取方清除)。 */
   usageLimit?: UsageLimitState
   contextUsage?: PrimeContextUsage
@@ -272,6 +274,7 @@ export const OMP_RPC_ADAPTER: HarnessRpcAdapter = {
   readState: (data) => {
     const reading: HarnessStateReading = {}
     if (typeof data.fastModeEnabled === 'boolean') reading.serviceTier = data.fastModeEnabled ? 'priority' : 'default'
+    if (typeof data.fastModeActive === 'boolean') reading.serviceTierActive = data.fastModeActive
     if (typeof data.slowModeSupported === 'boolean') reading.slowModeSupported = data.slowModeSupported
     if (typeof data.slowModeEnabled === 'boolean') reading.slowModeEnabled = data.slowModeEnabled
     // state dump 以欄位缺席表達「未限流」;讀取方據此清除。

@@ -11,14 +11,21 @@ export interface NativeFormProbe {
   close(): Promise<void>
 }
 
+export interface NativeFormProbeOptions {
+  /** Opt-in sticky-fast state; the ordinary form probe remains unchanged. */
+  fastFallback?: boolean
+}
+
 function titleSlot(timestamp: string): string {
   const unpadded = JSON.stringify({ type: 'title', v: 1, title: 'Native form fixture', updatedAt: timestamp, pad: '' })
   return JSON.stringify({ type: 'title', v: 1, title: 'Native form fixture', updatedAt: timestamp, pad: ' '.repeat(255 - Buffer.byteLength(unpadded, 'utf8')) })
 }
 
 /** An interactive rpc-ui wire fake; ordinary `--mode rpc` is proved separately against the real CLI. */
-function writeFakeOmp(fixtureRoot: string, sessionFile: string, wireFile: string): string {
+function writeFakeOmp(fixtureRoot: string, sessionFile: string, wireFile: string, options: NativeFormProbeOptions = {}): string {
   const executable = join(fixtureRoot, 'omp-native-form-fake.cjs')
+  const fastFallback = options.fastFallback === true
+  const modelId = fastFallback ? 'gpt-5.6' : 'gpt-fixture'
   const html = `<form action="https://invalid.example/ignored" onsubmit="throw new Error('must not execute')">
     <h1>Native wire probe</h1>
     <label for="nativeProject">Native project</label><input id="nativeProject" name="project" required>
@@ -35,14 +42,16 @@ const readline = require('node:readline')
 const args = process.argv.slice(2)
 if (args.includes('--version')) { process.stdout.write('omp/19.1.0\\n'); process.exit(0) }
 if (args[0] === 'models' && args.includes('--json')) {
-  process.stdout.write(JSON.stringify({ models: [{ provider: 'openai-codex', id: 'gpt-fixture', name: 'GPT Fixture', contextWindow: 200000, maxTokens: 8192, reasoning: true, thinking: ['low', 'high'], input: ['text'] }] }) + '\\n')
+  process.stdout.write(JSON.stringify({ models: [{ provider: 'openai-codex', id: ${JSON.stringify(modelId)}, name: 'GPT Fixture', contextWindow: 200000, maxTokens: 8192, reasoning: true, thinking: ['low', 'high'], input: ['text'] }] }) + '\\n')
   process.exit(0)
 }
 if (!args.includes('--mode') || args[args.indexOf('--mode') + 1] !== 'rpc-ui') process.exit(2)
 const activeSessionFile = args.includes('--resume') ? args[args.indexOf('--resume') + 1] : ${JSON.stringify(sessionFile)}
 const formHtml = ${JSON.stringify(html)}
 const wireFile = ${JSON.stringify(wireFile)}
+const fastFallback = ${JSON.stringify(fastFallback)}
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
+let fastModeEnabled = true
 let negotiated = false
 let streaming = false
 let activePromptId
@@ -58,12 +67,17 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   } else if (command.type === 'get_state') {
     send({ id: command.id, type: 'response', command: command.type, success: true, data: {
       sessionId: 'native-form-session', sessionFile: activeSessionFile, isStreaming: streaming, thinkingLevel: 'medium',
-      model: { provider: 'openai-codex', id: 'gpt-fixture', name: 'GPT Fixture' },
+      model: { provider: 'openai-codex', id: ${JSON.stringify(modelId)}, name: 'GPT Fixture' },
       contextUsage: { tokens: 1200, contextWindow: 200000, percent: 1 },
+      ...(fastFallback ? { fastModeEnabled, fastModeActive: false } : {}),
       queuedMessageCount: 0, queuedMessages: { steering: [], followUp: [] },
     } })
   } else if (command.type === 'get_session_stats') {
     send({ id: command.id, type: 'response', command: command.type, success: true, data: { contextUsage: { tokens: 1200, contextWindow: 200000, percent: 1 } } })
+  } else if (fastFallback && command.type === 'set_fast_mode') {
+    fs.appendFileSync(wireFile, JSON.stringify(command) + '\\n')
+    fastModeEnabled = command.enabled
+    send({ id: command.id, type: 'response', command: command.type, success: true, data: {} })
   } else if (command.type === 'set_subagent_subscription') {
     send({ id: command.id, type: 'response', command: command.type, success: true, data: { level: command.level } })
     send({ type: 'available_commands_update', commands: [] })
@@ -105,7 +119,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   return executable
 }
 
-export async function launchNativeFormProbe(): Promise<NativeFormProbe> {
+export async function launchNativeFormProbe(options: NativeFormProbeOptions = {}): Promise<NativeFormProbe> {
   const fixtureRoot = mkdtempSync(join(tmpdir(), 'omp-native-form-renderer-'))
   let app: ElectronApplication | undefined
   let page: Page | undefined
@@ -132,7 +146,7 @@ export async function launchNativeFormProbe(): Promise<NativeFormProbe> {
     }))
     const wireFile = join(fixtureRoot, 'native-form-wire.jsonl')
     writeFileSync(wireFile, '')
-    const ompExecutable = writeFakeOmp(fixtureRoot, sessionFile, wireFile)
+    const ompExecutable = writeFakeOmp(fixtureRoot, sessionFile, wireFile, options)
     const cuaExecutable = join(fixtureRoot, 'cua-native-form-fake.cjs')
     writeFileSync(cuaExecutable, '#!/usr/bin/env node\nif (process.argv.includes(\'--version\')) process.stdout.write(\'cua-driver 0.19.0\\n\')\n')
     chmodSync(cuaExecutable, 0o755)
@@ -144,6 +158,13 @@ export async function launchNativeFormProbe(): Promise<NativeFormProbe> {
     app = await electron.launch({ args: ['.', `--user-data-dir=${userData}`], cwd: process.cwd(), env: environment as Record<string, string>, timeout: 20_000 })
     page = await app.firstWindow({ timeout: 15_000 })
     await expect(page.locator('.app-shell')).toHaveAttribute('data-ready', 'true', { timeout: 20_000 })
+    if (options.fastFallback) {
+      // Start only the local RPC runtime; the sticky-state probe never prompts
+      // the model or emits an agent_start/provider interaction.
+      await page.evaluate(async ({ cwd, sessionPath }) => {
+        await window.desktop.agent.start({ cwd, sessionPath, model: 'openai-codex/gpt-5.6' })
+      }, { cwd: canonicalProject, sessionPath: sessionFile })
+    }
     const target = app
     const targetPage = page
     return {
