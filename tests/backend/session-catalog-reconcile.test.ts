@@ -14,13 +14,15 @@ import {
   type Stats,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createBucketedCatalogIo } from '../../electron/main/sessions/bucketed'
 import { SessionMetadataCatalog, type SessionCatalogEntry, type SessionCatalogIo } from '../../electron/main/sessions/catalog'
 import type { SessionMetadata } from '../../electron/main/sessions/metadata'
 
-const root = '/sessions'
+const root = resolve('/sessions')
+const outsideRoot = resolve('/outside')
+const sessionPath = (name: string): string => join(root, name)
 const realDirectories: string[] = []
 
 interface FileState {
@@ -38,7 +40,7 @@ function sessionName(index: number): string {
 }
 
 function metadataFor(filePath: string, version: number): SessionMetadata {
-  const name = filePath.slice(filePath.lastIndexOf('/') + 1, -'.jsonl'.length)
+  const name = basename(filePath, '.jsonl')
   return {
     id: `${name}-v${version}`,
     filePath,
@@ -91,20 +93,20 @@ function fixture(count: number, maxSessionFiles = count) {
   })))
   const canonicalize = vi.fn(async (path: string) => {
     if (path === root) return root
-    const name = path.slice(path.lastIndexOf('/') + 1)
+    const name = basename(path)
     const state = files.get(name)
     if (!state) throw Object.assign(new Error('missing'), { code: 'ENOENT' })
     return state.canonical ?? path
   })
   const inspect = vi.fn(async (path: string) => {
     if (path === root) return fakeDirectoryStats(rootState)
-    const name = path.slice(path.lastIndexOf('/') + 1)
+    const name = basename(path)
     const state = files.get(name)
     if (!state) throw Object.assign(new Error('missing'), { code: 'ENOENT' })
     return fakeStats(state)
   })
   const inspectLink = vi.fn(async (path: string) => {
-    const name = path.slice(path.lastIndexOf('/') + 1)
+    const name = basename(path)
     const state = files.get(name)
     if (!state) throw Object.assign(new Error('missing'), { code: 'ENOENT' })
     return {
@@ -114,7 +116,7 @@ function fixture(count: number, maxSessionFiles = count) {
     } as Stats
   })
   const readMetadata = vi.fn(async (filePath: string) => {
-    const name = filePath.slice(filePath.lastIndexOf('/') + 1)
+    const name = basename(filePath)
     const state = files.get(name)
     if (!state) throw Object.assign(new Error('missing'), { code: 'ENOENT' })
     return metadataFor(filePath, state.version)
@@ -157,7 +159,7 @@ describe('SessionMetadataCatalog known-file reconciliation', () => {
     Object.assign(changed, { mtimeMs: 10_000, size: 150, version: 1 })
     await expect(catalog.reconcileKnownChanges([changedName])).resolves.toEqual({
       kind: 'reconciled',
-      paths: [`${root}/${changedName}`],
+      paths: [sessionPath(changedName)],
     })
     const refreshed = await catalog.all()
     const refreshedByPath = byPath(refreshed)
@@ -167,9 +169,9 @@ describe('SessionMetadataCatalog known-file reconciliation', () => {
     expect(inspect).toHaveBeenCalledTimes(10_005)
     expect(inspectLink).toHaveBeenCalledTimes(2)
     expect(readMetadata).toHaveBeenCalledTimes(5_001)
-    expect(refreshedByPath.get(`${root}/${changedName}`)?.id).toBe('session-02500-v1')
-    expect(refreshedByPath.get(`${root}/${changedName}`)).not.toBe(initialByPath.get(`${root}/${changedName}`))
-    expect(refreshedByPath.get(`${root}/${unchangedName}`)).toBe(initialByPath.get(`${root}/${unchangedName}`))
+    expect(refreshedByPath.get(sessionPath(changedName))?.id).toBe('session-02500-v1')
+    expect(refreshedByPath.get(sessionPath(changedName))).not.toBe(initialByPath.get(sessionPath(changedName)))
+    expect(refreshedByPath.get(sessionPath(unchangedName))).toBe(initialByPath.get(sessionPath(unchangedName)))
   })
 
   it('reconciles multiple known files in one batch and preserves every untouched metadata identity', async () => {
@@ -185,7 +187,7 @@ describe('SessionMetadataCatalog known-file reconciliation', () => {
     const beforeInspect = inspect.mock.calls.length
     await expect(catalog.reconcileKnownChanges([sessionName(1), sessionName(3), sessionName(1)])).resolves.toMatchObject({
       kind: 'reconciled',
-      paths: [`${root}/${sessionName(1)}`, `${root}/${sessionName(3)}`],
+      paths: [sessionPath(sessionName(1)), sessionPath(sessionName(3))],
     })
     const refreshed = byPath(await catalog.all())
 
@@ -193,10 +195,10 @@ describe('SessionMetadataCatalog known-file reconciliation', () => {
     // Two leaf checks per changed file plus one root-identity check before and
     // after the batch: constant in catalog size and deduplicated across files.
     expect(inspect.mock.calls.length - beforeInspect).toBe(6)
-    expect(refreshed.get(`${root}/${sessionName(1)}`)?.id).toBe('session-00001-v1')
-    expect(refreshed.get(`${root}/${sessionName(3)}`)?.id).toBe('session-00003-v1')
-    expect(refreshed.get(`${root}/${sessionName(0)}`)).toBe(initialByPath.get(`${root}/${sessionName(0)}`))
-    expect(refreshed.get(`${root}/${sessionName(2)}`)).toBe(initialByPath.get(`${root}/${sessionName(2)}`))
+    expect(refreshed.get(sessionPath(sessionName(1)))?.id).toBe('session-00001-v1')
+    expect(refreshed.get(sessionPath(sessionName(3)))?.id).toBe('session-00003-v1')
+    expect(refreshed.get(sessionPath(sessionName(0)))).toBe(initialByPath.get(sessionPath(sessionName(0))))
+    expect(refreshed.get(sessionPath(sessionName(2)))).toBe(initialByPath.get(sessionPath(sessionName(2))))
   })
 
   it('falls back to a full scan for absent baselines, admission changes, deletion, and identity changes', async () => {
@@ -268,7 +270,7 @@ describe('SessionMetadataCatalog known-file reconciliation', () => {
       mtimeMs: 2,
       size: 101,
       version: 1,
-      canonical: '/outside/session.jsonl',
+      canonical: join(outsideRoot, 'session.jsonl'),
     })
     await expect(escaped.catalog.reconcileKnownChanges([sessionName(0)])).resolves.toEqual({ kind: 'full-scan' })
     await expect(escaped.catalog.all()).resolves.toEqual([])
@@ -282,7 +284,7 @@ describe('SessionMetadataCatalog known-file reconciliation', () => {
       mtimeMs: 2,
       size: 101,
       version: 1,
-      canonical: '/outside/session.jsonl',
+      canonical: join(outsideRoot, 'session.jsonl'),
     })
 
     await expect(catalog.reconcileKnownChanges([sessionName(0)])).resolves.toEqual({ kind: 'full-scan' })
@@ -293,24 +295,26 @@ describe('SessionMetadataCatalog known-file reconciliation', () => {
 
   it('falls back when the watched root alias changes its canonical target', async () => {
     const name = sessionName(0)
+    const watchedRoot = resolve('/watch')
+    const watchedFile = join(watchedRoot, name)
     let moved = false
     const fileState: FileState = { dev: 1, ino: 1, mtimeMs: 1, size: 100, version: 0 }
     const entries = vi.fn(async (): Promise<readonly SessionCatalogEntry[]> => [{ name, isFile: () => true }])
     const canonicalize = vi.fn(async (path: string) => {
-      if (path === '/watch') return moved ? '/outside' : root
-      if (path === `/watch/${name}`) return moved ? `/outside/${name}` : `${root}/${name}`
+      if (path === watchedRoot) return moved ? outsideRoot : root
+      if (path === watchedFile) return moved ? join(outsideRoot, name) : sessionPath(name)
       return path
     })
     const io: SessionCatalogIo = {
       readDirectory: entries,
       canonicalize,
-      inspect: async (path) => path === '/watch'
+      inspect: async (path) => path === watchedRoot
         ? fakeDirectoryStats({ dev: 1, ino: 2, mtimeMs: 1, size: 0, version: 0 })
         : fakeStats(fileState),
       inspectLink: async () => ({ ...fakeStats(fileState), isSymbolicLink: () => false } as Stats),
     }
     const catalog = new SessionMetadataCatalog(
-      () => '/watch',
+      () => watchedRoot,
       null,
       1,
       async (filePath) => metadataFor(filePath, 0),

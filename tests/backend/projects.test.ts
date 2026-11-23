@@ -32,7 +32,7 @@ afterEach(() => {
 })
 
 function setup(): { root: string; service: ProjectService; store: JsonStateStore } {
-  const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-files-')); dirs.push(dir)
+  const dir = mkdtempSync(join(realpathSync.native(tmpdir()), 'omp-desktop-files-')); dirs.push(dir)
   const root = join(dir, 'project'); mkdirSync(root)
   const store = new JsonStateStore(join(dir, 'state.json'))
   const service = new ProjectService(store, () => null)

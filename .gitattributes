@@ -1,3 +1,4 @@
+.gitattributes text=auto eol=lf
 *.ts text=auto eol=lf
 *.tsx text=auto eol=lf
 *.js text=auto eol=lf

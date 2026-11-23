@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events'
+import { basename, dirname, join, resolve } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import type { DownloadItem, Event, WebContents } from 'electron'
 import { automaticDownloadPath, BrowserDownloadGuard } from '../../electron/main/browser-downloads'
@@ -40,8 +41,11 @@ describe('BrowserDownloadGuard', () => {
 
     expect(requested.preventDefault).not.toHaveBeenCalled()
     expect(item.saveOptions).toBeUndefined()
-    expect(item.savePath).toMatch(/^\/safe-downloads\/download-[0-9a-f-]+\.bin$/)
-    expect(automaticDownloadPath('/safe-downloads', '../../escape.txt', 'unique')).toBe('/safe-downloads/escape-unique.txt')
+    const savePath = item.savePath ?? ''
+    expect(savePath).not.toBe('')
+    expect(dirname(savePath)).toBe(resolve('/safe-downloads'))
+    expect(basename(savePath)).toMatch(/^download-[0-9a-f-]+\.bin$/)
+    expect(automaticDownloadPath('/safe-downloads', '../../escape.txt', 'unique')).toBe(join(resolve('/safe-downloads'), 'escape-unique.txt'))
   })
 
   it('caps concurrent downloads and cancels every item owned by a destroyed guest', () => {

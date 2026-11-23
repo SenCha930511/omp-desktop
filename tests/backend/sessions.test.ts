@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { appendFileSync, chmodSync, createReadStream, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync, type Stats } from 'node:fs'
 import { lstat, readdir, realpath, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AgentRpcManager } from '../../electron/main/agent-rpc'
 import { ProjectService } from '../../electron/main/projects'
@@ -26,7 +26,7 @@ function setup(
   maxSessionFiles?: number,
   options?: SessionServiceOptions,
 ): { root: string; project: string; service: SessionService; store: JsonStateStore } {
-  const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-sessions-')); dirs.push(dir)
+  const dir = mkdtempSync(join(realpathSync.native(tmpdir()), 'omp-desktop-sessions-')); dirs.push(dir)
   const root = join(dir, 'sessions'); mkdirSync(root)
   const project = join(dir, 'project'); mkdirSync(project)
   const store = new JsonStateStore(join(dir, 'state.json')); stores.push(store)
@@ -60,7 +60,7 @@ function metadata(filePath: string, projectPath: string, id: string): SessionMet
 
 /** OMP-dialect service over a bucketed temp root, matching the production wiring. */
 async function ompSetup(): Promise<{ root: string; project: string; service: SessionService; store: JsonStateStore }> {
-  const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-lineage-')); dirs.push(dir)
+  const dir = mkdtempSync(join(realpathSync.native(tmpdir()), 'omp-desktop-lineage-')); dirs.push(dir)
   const root = join(dir, 'sessions'); mkdirSync(root); mkdirSync(join(root, '-bucket'))
   const project = join(dir, 'project'); mkdirSync(project)
   const store = new JsonStateStore(join(dir, 'state.json')); stores.push(store)
@@ -223,7 +223,7 @@ describe('SessionService catalog scaling', () => {
   })
 
   it('bounds canonicalize and stat work before scanning a huge directory', async () => {
-    const root = '/sessions'
+    const root = resolve('/sessions')
     const maxSessionFiles = 3
     const sessionName = (timestamp: number): string => {
       const prefix = timestamp.toString(16).padStart(12, '0')
@@ -235,7 +235,7 @@ describe('SessionService catalog scaling', () => {
       if (path === root) {
         return { isFile: () => false, isDirectory: () => true, mtimeMs: 1, size: 0, dev: 1, ino: 1 } as Stats
       }
-      const name = path.slice(path.lastIndexOf('/') + 1)
+      const name = basename(path)
       const timestamp = Number.parseInt(name.slice(0, 8) + name.slice(9, 13), 16)
       return { isFile: () => true, isDirectory: () => false, mtimeMs: timestamp, size: 100, dev: 1, ino: timestamp + 2 } as Stats
     })
@@ -245,7 +245,7 @@ describe('SessionService catalog scaling', () => {
       inspect,
     }
     const readMetadata = vi.fn(async (filePath: string) => ({
-      id: filePath.slice(filePath.lastIndexOf('/') + 1, -'.jsonl'.length),
+      id: basename(filePath, '.jsonl'),
       filePath,
       projectPath: '/project',
       title: 'Session',
@@ -270,7 +270,7 @@ describe('SessionService catalog scaling', () => {
   })
 
   it('re-canonicalizes only entries whose file identity changed between scans', async () => {
-    const root = '/sessions'
+    const root = resolve('/sessions')
     const identities = new Map<string, { dev: number; ino: number }>([
       ['a.jsonl', { dev: 1, ino: 10 }],
       ['b.jsonl', { dev: 1, ino: 11 }],
@@ -283,7 +283,7 @@ describe('SessionService catalog scaling', () => {
         if (path === root) {
           return { isFile: () => false, isDirectory: () => true, mtimeMs: 1, size: 0, dev: 1, ino: 1 } as Stats
         }
-        const name = path.slice(path.lastIndexOf('/') + 1)
+        const name = basename(path)
         const identity = identities.get(name) ?? { dev: 1, ino: 99 }
         return { isFile: () => true, isDirectory: () => false, mtimeMs: 1, size: 100, dev: identity.dev, ino: identity.ino } as Stats
       }),
@@ -292,7 +292,7 @@ describe('SessionService catalog scaling', () => {
       () => root,
       null,
       20,
-      async (filePath) => metadata(filePath, '/project', filePath.slice(filePath.lastIndexOf('/') + 1)),
+      async (filePath) => metadata(filePath, '/project', basename(filePath)),
       io,
     )
 
@@ -311,13 +311,13 @@ describe('SessionService catalog scaling', () => {
     catalog.invalidateLiveCatalog()
     await catalog.all()
     expect(canonicalize).toHaveBeenCalledTimes(6)
-    expect(canonicalize.mock.calls.slice(4).flat().sort()).toEqual([root, `${root}/b.jsonl`])
+    expect(canonicalize.mock.calls.slice(4).flat().sort()).toEqual([root, join(root, 'b.jsonl')])
   })
 })
 
 describe('incremental session metadata reads', () => {
   it('counts completed accumulator strings against the retained payload budget', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-cache-budget-')); dirs.push(dir)
+    const dir = mkdtempSync(join(realpathSync.native(tmpdir()), 'omp-desktop-cache-budget-')); dirs.push(dir)
     const file = join(dir, 'large.jsonl')
     writeFileSync(file, `${'x'.repeat(8 * 1024)}\n`)
     const openStream = vi.fn((path: string, start: number, end: number) => createReadStream(path, { start, end }))
@@ -352,7 +352,7 @@ describe('incremental session metadata reads', () => {
   }
 
   it('reads only the appended byte range plus the verification tail after the initial parse', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-incremental-')); dirs.push(dir)
+    const dir = mkdtempSync(join(realpathSync.native(tmpdir()), 'omp-desktop-incremental-')); dirs.push(dir)
     const file = join(dir, 'incremental.jsonl')
     writeLargeSession(file, 'incremental')
     const { reader, opens } = trackedReader()
@@ -375,7 +375,7 @@ describe('incremental session metadata reads', () => {
   })
 
   it('resumes a verified partial line and matches the one-shot parser', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-partial-line-')); dirs.push(dir)
+    const dir = mkdtempSync(join(realpathSync.native(tmpdir()), 'omp-desktop-partial-line-')); dirs.push(dir)
     const file = join(dir, 'partial.jsonl')
     writeLargeSession(file, 'partial')
     const { reader, opens } = trackedReader()
@@ -399,7 +399,7 @@ describe('incremental session metadata reads', () => {
   })
 
   it('falls back to a full re-read on truncation and rewritten tails', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-truncate-')); dirs.push(dir)
+    const dir = mkdtempSync(join(realpathSync.native(tmpdir()), 'omp-desktop-truncate-')); dirs.push(dir)
     const file = join(dir, 'truncate.jsonl')
     writeSession(file, '/project', 'original')
     appendFileSync(file, JSON.stringify({ type: 'message', id: 'tail', message: { role: 'assistant', content: 'tail' } }).slice(0, 30))
@@ -428,7 +428,7 @@ describe('incremental session metadata reads', () => {
 
 describe('Prime task-state freshness', () => {
   it('ignores a persisted verdict after later messages and accepts a current verdict', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-task-state-')); dirs.push(dir)
+    const dir = mkdtempSync(join(realpathSync.native(tmpdir()), 'omp-desktop-task-state-')); dirs.push(dir)
     const file = join(dir, 'task-state.jsonl')
     writeFileSync(file, [
       JSON.stringify({ type: 'session', id: 'task-state', cwd: '/project', timestamp: '2025-01-01T00:00:00.000Z' }),
@@ -486,7 +486,7 @@ describe('SessionService user-message ordering', () => {
 
 describe('SessionMetadataCatalog live synchronization', () => {
   it('keeps live overlays when a known-file reconcile refreshes JSONL metadata', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-live-reconcile-')); dirs.push(dir)
+    const dir = mkdtempSync(join(realpathSync.native(tmpdir()), 'omp-desktop-live-reconcile-')); dirs.push(dir)
     const root = join(dir, 'sessions'); mkdirSync(root)
     const project = join(dir, 'project'); mkdirSync(project)
     const file = join(root, 'live.jsonl')
@@ -507,7 +507,7 @@ process.stdout.write(JSON.stringify({ sessions: [{ sessionFile: ${JSON.stringify
   })
 
   it('does not join an in-flight scan owned by the previous executable', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-scan-executable-race-')); dirs.push(dir)
+    const dir = mkdtempSync(join(realpathSync.native(tmpdir()), 'omp-desktop-scan-executable-race-')); dirs.push(dir)
     const root = join(dir, 'sessions'); mkdirSync(root)
     const project = join(dir, 'project'); mkdirSync(project)
     const file = join(root, 'scan.jsonl')
@@ -546,7 +546,7 @@ process.stdout.write(JSON.stringify({ sessions: [{ sessionFile: ${JSON.stringify
   })
 
   it('does not reuse the previous executable cache after runtime discovery changes', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-catalog-executable-')); dirs.push(dir)
+    const dir = mkdtempSync(join(realpathSync.native(tmpdir()), 'omp-desktop-catalog-executable-')); dirs.push(dir)
     const root = join(dir, 'sessions'); mkdirSync(root)
     const project = join(dir, 'project'); mkdirSync(project)
     const firstFile = join(root, 'first.jsonl')
@@ -577,7 +577,7 @@ process.stdout.write(JSON.stringify({ sessions: [{ sessionFile: ${JSON.stringify
   })
 
   it('canonicalizes daemon session paths and never regresses the JSONL update time', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-live-catalog-')); dirs.push(dir)
+    const dir = mkdtempSync(join(realpathSync.native(tmpdir()), 'omp-desktop-live-catalog-')); dirs.push(dir)
     const root = join(dir, 'sessions'); mkdirSync(root)
     const project = join(dir, 'project'); mkdirSync(project)
     const file = join(root, 'live.jsonl')
@@ -602,7 +602,7 @@ process.exit(2)
   })
 
   it('rate limits the live-catalog CLI spawn independently of change events', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-catalog-throttle-')); dirs.push(dir)
+    const dir = mkdtempSync(join(realpathSync.native(tmpdir()), 'omp-desktop-catalog-throttle-')); dirs.push(dir)
     const root = join(dir, 'sessions'); mkdirSync(root)
     const project = join(dir, 'project'); mkdirSync(project)
     const file = join(root, 'burst.jsonl')
@@ -644,7 +644,7 @@ process.exit(0)
   })
 
   it('does not let an in-flight pre-append scan satisfy a post-invalidation refresh', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-scan-race-')); dirs.push(dir)
+    const dir = mkdtempSync(join(realpathSync.native(tmpdir()), 'omp-desktop-scan-race-')); dirs.push(dir)
     const root = join(dir, 'sessions'); mkdirSync(root)
     const project = join(dir, 'project'); mkdirSync(project)
     const file = join(root, 'race.jsonl')
@@ -1143,7 +1143,7 @@ describe('SessionService orchestration', () => {
   })
 
   it('marks a session running and stops its runtime when the agent reports the file via a symlinked root', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-sessions-symlink-')); dirs.push(dir)
+    const dir = mkdtempSync(join(realpathSync.native(tmpdir()), 'omp-desktop-sessions-symlink-')); dirs.push(dir)
     const realRoot = join(dir, 'real-sessions'); mkdirSync(realRoot)
     const aliasRoot = join(dir, 'alias-sessions'); symlinkSync(realRoot, aliasRoot)
     const project = join(dir, 'project'); mkdirSync(project)
@@ -1242,7 +1242,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   })
 
   it('does not call renameFile for Prime when a CLI path exists', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-rename-cli-')); dirs.push(dir)
+    const dir = mkdtempSync(join(realpathSync.native(tmpdir()), 'omp-desktop-rename-cli-')); dirs.push(dir)
     const root = join(dir, 'sessions'); mkdirSync(root)
     const project = join(dir, 'project'); mkdirSync(project)
     const file = join(root, 'prime.jsonl')
@@ -1404,7 +1404,7 @@ describe('SessionService project path validation cache', () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
     try {
-      const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-project-cache-')); dirs.push(dir)
+      const dir = mkdtempSync(join(realpathSync.native(tmpdir()), 'omp-desktop-project-cache-')); dirs.push(dir)
       const firstTarget = join(dir, 'first-target'); mkdirSync(firstTarget)
       const secondTarget = join(dir, 'second-target'); mkdirSync(secondTarget)
       const link = join(dir, 'project'); symlinkSync(firstTarget, link, 'dir')
@@ -1421,7 +1421,7 @@ describe('SessionService project path validation cache', () => {
   })
 
   it('revalidates once the project path is evicted', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-project-evict-')); dirs.push(dir)
+    const dir = mkdtempSync(join(realpathSync.native(tmpdir()), 'omp-desktop-project-evict-')); dirs.push(dir)
     const firstTarget = join(dir, 'first-target'); mkdirSync(firstTarget)
     const secondTarget = join(dir, 'second-target'); mkdirSync(secondTarget)
     const link = join(dir, 'project'); symlinkSync(firstTarget, link, 'dir')
@@ -1434,7 +1434,7 @@ describe('SessionService project path validation cache', () => {
   })
 
   it('never caches a failed validation', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-project-negative-')); dirs.push(dir)
+    const dir = mkdtempSync(join(realpathSync.native(tmpdir()), 'omp-desktop-project-negative-')); dirs.push(dir)
     const missing = join(dir, 'created-later')
     const { service } = setup(undefined, { metadataReader: async (filePath) => metadata(filePath, missing, 'negative') })
 
@@ -1444,7 +1444,7 @@ describe('SessionService project path validation cache', () => {
   })
 
   it('keeps entries scoped to their own project path', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-project-scope-')); dirs.push(dir)
+    const dir = mkdtempSync(join(realpathSync.native(tmpdir()), 'omp-desktop-project-scope-')); dirs.push(dir)
     const firstTarget = join(dir, 'first-target'); mkdirSync(firstTarget)
     const firstNext = join(dir, 'first-next'); mkdirSync(firstNext)
     const secondTarget = join(dir, 'second-target'); mkdirSync(secondTarget)

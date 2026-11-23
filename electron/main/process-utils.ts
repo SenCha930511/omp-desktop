@@ -347,18 +347,28 @@ export interface ExecutableSpawnInvocation {
   env: NodeJS.ProcessEnv
 }
 
+const JAVASCRIPT_EXECUTABLE_PATTERN = /\.[cm]?js$/i
 
 /**
  * Normalizes the child environment for an executable spawn. OMP ships a
- * native executable on every platform, so no command-shim translation is
- * needed and the spawn stays shell-free.
+ * native executable on every platform, so only explicit JavaScript fixtures
+ * need translation. Windows cannot execute a script through its POSIX
+ * shebang; in a pure Node host those trusted fixtures run through the
+ * current Node executable, argv-only and without a shell. An Electron host
+ * keeps the original invocation because its process.execPath is the app,
+ * not a Node interpreter. Every other file remains a native spawn.
  */
 export function prepareExecutableSpawn(
   file: string,
   args: readonly string[],
   env: NodeJS.ProcessEnv = safeChildEnvironment(),
+  platform = process.platform,
 ): ExecutableSpawnInvocation {
-  return { file, args: [...args], env: executableChildEnvironment(file, env, process.platform) }
+  const childEnvironment = executableChildEnvironment(file, env, platform)
+  if (platform === 'win32' && process.versions.electron === undefined && JAVASCRIPT_EXECUTABLE_PATTERN.test(file)) {
+    return { file: process.execPath, args: [file, ...args], env: childEnvironment }
+  }
+  return { file, args: [...args], env: childEnvironment }
 }
 
 const MAX_RUNTIME_DIR_CACHE_ENTRIES = 4

@@ -109,6 +109,14 @@ function delay(ms) {
   })
 }
 
+/** Explicit trusted JavaScript fixtures need Node on Windows; native OMP binaries never take this route. */
+export function parityExecutableInvocation(executable, args, platform = process.platform) {
+  if (platform === 'win32' && /\.[cm]?js$/i.test(executable)) {
+    return { executable: process.execPath, args: [executable, ...args] }
+  }
+  return { executable, args: [...args] }
+}
+
 /** Splits a stream into newline-delimited frames, failing fast when a frame exceeds the bound instead of buffering forever. */
 export class BoundedLineReader {
   constructor(stream, { limitBytes = LINE_LIMIT_BYTES, onLine, onFatal }) {
@@ -237,7 +245,8 @@ export class OmpRpcClient {
     this.closed = new Promise((resolve) => {
       this.resolveClosed = resolve
     })
-    this.child = spawn(executable, args, { cwd, env, shell: false, stdio: ['pipe', 'pipe', 'pipe'], detached: this.detached, windowsHide: true })
+    const invocation = parityExecutableInvocation(executable, args)
+    this.child = spawn(invocation.executable, invocation.args, { cwd, env, shell: false, stdio: ['pipe', 'pipe', 'pipe'], detached: this.detached, windowsHide: true })
     new BoundedLineReader(this.child.stdout, {
       onLine: (line) => this.handleLine(line),
       onFatal: (error) => this.failTransport(error),
@@ -415,7 +424,8 @@ export class OmpRpcClient {
 
 async function queryOmpVersion(executable, env, cwd, timeoutMs) {
   const detached = process.platform !== 'win32'
-  const child = spawn(executable, ['--version'], { cwd, env, shell: false, stdio: ['ignore', 'pipe', 'ignore'], detached, windowsHide: true })
+  const invocation = parityExecutableInvocation(executable, ['--version'])
+  const child = spawn(invocation.executable, invocation.args, { cwd, env, shell: false, stdio: ['ignore', 'pipe', 'ignore'], detached, windowsHide: true })
   let output = ''
   let spawnFailed = false
   let outputFailed = false

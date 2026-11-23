@@ -687,7 +687,7 @@ else if (JSON.stringify(args) === ${JSON.stringify(JSON.stringify(expectedInstal
     const sourceExtensions = ['ts', 'tsx', 'js', 'mjs', 'cjs', 'json', 'yml', 'yaml', 'css', 'html']
     const attributes = readFileSync('.gitattributes', 'utf8').trim().split('\n')
 
-    expect(attributes).toEqual(sourceExtensions.map((extension) => `*.${extension} text=auto eol=lf`))
+    expect(attributes).toEqual(['.gitattributes text=auto eol=lf', ...sourceExtensions.map((extension) => `*.${extension} text=auto eol=lf`)])
   })
 
   test('gates every pull-request head and pinned release SHA on the named production audit', () => {

@@ -104,10 +104,17 @@ function readMarker(markerPath) {
   return parseReadinessMarker(readFileSync(markerPath, 'utf8'))
 }
 
-function runPackagedApp(executable, args, { cwd, timeoutMs, platform = process.platform }) {
+/** @typedef {(command: string, args: string[], options: import('node:child_process').SpawnOptions) => import('node:child_process').ChildProcess} PackagedSpawnProcess */
+
+/**
+ * @param {string} executable
+ * @param {string[]} args
+ * @param {{ cwd: string, timeoutMs: number, platform?: NodeJS.Platform, spawnProcess?: PackagedSpawnProcess }} options
+ */
+function runPackagedApp(executable, args, { cwd, timeoutMs, platform = process.platform, spawnProcess = spawn }) {
   const { command, args: launchArgs } = launchCommand(executable, args, { platform })
   return new Promise((resolvePromise, rejectPromise) => {
-    const child = spawn(command, launchArgs, {
+    const child = spawnProcess(command, launchArgs, {
       cwd,
       detached: platform !== 'win32',
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -120,8 +127,8 @@ function runPackagedApp(executable, args, { cwd, timeoutMs, platform = process.p
       // Bound memory even for a runaway logger; the tail is what diagnoses a failure.
       if (chunks.length > 512) chunks.splice(0, chunks.length - 512)
     }
-    child.stdout.on('data', collect)
-    child.stderr.on('data', collect)
+    child.stdout?.on('data', collect)
+    child.stderr?.on('data', collect)
     let timedOut = false
     const deadline = setTimeout(() => {
       timedOut = true
@@ -140,7 +147,12 @@ function runPackagedApp(executable, args, { cwd, timeoutMs, platform = process.p
   })
 }
 
-export async function smokePackagedApp(target, architecture, { timeoutMs = SMOKE_TIMEOUT_MS, diagnosticsPath = '' } = {}) {
+/**
+ * @param {string} target
+ * @param {string} architecture
+ * @param {{ timeoutMs?: number, diagnosticsPath?: string, spawnProcess?: PackagedSpawnProcess }} [options]
+ */
+export async function smokePackagedApp(target, architecture, { timeoutMs = SMOKE_TIMEOUT_MS, diagnosticsPath = '', spawnProcess = spawn } = {}) {
   const outputDirectory = resolve('release', target, architecture)
   const report = diagnosticsPath || join(outputDirectory, 'packaged-smoke-diagnostics.log')
   let workspace = ''
@@ -150,7 +162,7 @@ export async function smokePackagedApp(target, architecture, { timeoutMs = SMOKE
     const executable = packagedExecutablePath(unpacked, target)
     workspace = mkdtempSync(join(tmpdir(), 'gooeypi-packaged-smoke-'))
     const markerPath = join(workspace, 'ready.json')
-    launch = await runPackagedApp(executable, smokeArguments(markerPath, join(workspace, 'user-data')), { cwd: unpacked, timeoutMs })
+    launch = await runPackagedApp(executable, smokeArguments(markerPath, join(workspace, 'user-data')), { cwd: unpacked, timeoutMs, spawnProcess })
     if (launch.timedOut) throw new Error(`Packaged application did not report renderer readiness within ${timeoutMs}ms`)
     if (launch.code !== 0) throw new Error(`Packaged application exited with code ${launch.code ?? 'null'} (signal ${launch.signal ?? 'none'})`)
     const marker = readMarker(markerPath)

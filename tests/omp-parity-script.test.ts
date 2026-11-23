@@ -12,6 +12,7 @@ import {
   buildIsolatedEnv,
   buildRpcArgs,
   parseArgs,
+  parityExecutableInvocation,
   runParityVerification,
   sanitizeDiagnostic,
 } from '../scripts/verify-omp-parity.mjs'
@@ -54,7 +55,7 @@ function fakeOmp(options: FakeOmpOptions = {}): string {
   const chunked = options.chunked === true
   const dir = mkdtempSync(join(tmpdir(), 'omp-parity-test-'))
   fakeDirs.push(dir)
-  const executable = join(dir, 'fake-omp')
+  const executable = join(dir, 'fake-omp.cjs')
   const source = [
     '#!/usr/bin/env node',
     "const fs = require('node:fs')",
@@ -174,6 +175,16 @@ describe('verify-omp-parity diagnostics and argv helpers', () => {
       '--no-lsp',
       '--no-title',
     ])
+  })
+
+  it('routes only trusted JavaScript fixtures through Node on Windows', () => {
+    const script = 'C:\\fixtures with spaces\\fake omp.cjs'
+    const args = ['--mode', 'rpc', '--cwd', 'C:\\work tree']
+    expect(parityExecutableInvocation(script, args, 'win32')).toEqual({ executable: process.execPath, args: [script, ...args] })
+    for (const native of ['C:\\Tools\\omp.exe', 'C:\\Tools\\omp', 'C:\\Tools\\omp.cjs.backup']) {
+      expect(parityExecutableInvocation(native, ['--version'], 'win32')).toEqual({ executable: native, args: ['--version'] })
+    }
+    expect(parityExecutableInvocation('/opt/fake-omp.cjs', ['--version'], 'linux')).toEqual({ executable: '/opt/fake-omp.cjs', args: ['--version'] })
   })
 
   it('parses CLI arguments strictly', () => {

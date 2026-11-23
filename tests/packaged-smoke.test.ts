@@ -1,3 +1,4 @@
+import { spawn, type SpawnOptions } from 'node:child_process'
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -108,11 +109,19 @@ describe('packaged smoke launch', () => {
   const writeFakeApplication = (script: string): void => {
     // electron-builder names the Linux executable after the package name.
     const executable = join(unpacked, 'omp-desktop')
-    writeFileSync(executable, `#!/usr/bin/env bash\nset -euo pipefail\n${script}\n`, { encoding: 'utf8' })
+    // Keep the product-owned native filename for path validation; execute the
+    // corresponding explicitly named CommonJS fixture through the injected seam.
+    writeFileSync(executable, 'packaged path placeholder\n', { encoding: 'utf8' })
+    writeFileSync(`${executable}.cjs`, `${script}\n`, { encoding: 'utf8' })
     chmodSync(executable, 0o755)
   }
 
-  const markerArgument = 'for argument in "$@"; do case "$argument" in --packaged-smoke=*) marker="${argument#--packaged-smoke=}";; esac; done'
+  // This opt-in seam runs only the known generated CommonJS application fixture.
+  // Production still resolves and launches the native packaged executable itself.
+  const fixtureSpawn = {
+    spawnProcess: (script: string, args: string[], options: SpawnOptions) => spawn(process.execPath, [`${script}.cjs`, ...args], options),
+  }
+  const markerArgument = "const marker = process.argv.slice(2).find((argument) => argument.startsWith('--packaged-smoke='))?.slice('--packaged-smoke='.length)"
 
   beforeAll(() => {
     sandbox = mkdtempSync(join(tmpdir(), 'gooeypi-smoke-test-'))
@@ -136,18 +145,18 @@ describe('packaged smoke launch', () => {
   const temporaryWorkspaces = (): string[] => readdirSync(tmpdir()).filter((name) => name.startsWith('gooeypi-packaged-smoke-'))
 
   it('accepts an application that reports readiness and leaves no temporary state', async () => {
-    writeFakeApplication(`${markerArgument}\nprintf '{"event":"${PACKAGED_SMOKE_READY_EVENT}","url":"${PACKAGED_RENDERER_URL}","version":"9.9.9"}' > "$marker"`)
+    writeFakeApplication(`${markerArgument}\nrequire('node:fs').writeFileSync(marker, '{"event":"${PACKAGED_SMOKE_READY_EVENT}","url":"${PACKAGED_RENDERER_URL}","version":"9.9.9"}')`)
     const before = temporaryWorkspaces()
 
-    await expect(launcher.smokePackagedApp('linux', 'x64')).resolves.toEqual({ event: PACKAGED_SMOKE_READY_EVENT, url: PACKAGED_RENDERER_URL, version: '9.9.9' })
+    await expect(launcher.smokePackagedApp('linux', 'x64', fixtureSpawn)).resolves.toEqual({ event: PACKAGED_SMOKE_READY_EVENT, url: PACKAGED_RENDERER_URL, version: '9.9.9' })
 
     expect(temporaryWorkspaces()).toEqual(before)
   })
 
   it('fails when the application exits without reporting readiness, and writes bounded diagnostics', async () => {
-    writeFakeApplication('echo "renderer failed to load" >&2\nexit 3')
+    writeFakeApplication("console.error('renderer failed to load')\nprocess.exit(3)")
 
-    await expect(launcher.smokePackagedApp('linux', 'x64')).rejects.toThrow('exited with code 3')
+    await expect(launcher.smokePackagedApp('linux', 'x64', fixtureSpawn)).rejects.toThrow('exited with code 3')
 
     const diagnostics = readFileSync(join(sandbox, 'release', 'linux', 'x64', 'packaged-smoke-diagnostics.log'), 'utf8')
     expect(diagnostics).toContain('renderer failed to load')
@@ -155,17 +164,17 @@ describe('packaged smoke launch', () => {
   })
 
   it('fails when a started application never reports readiness', async () => {
-    writeFakeApplication(`${markerArgument}\nexit 0`)
+    writeFakeApplication(`${markerArgument}\nprocess.exit(0)`)
 
-    await expect(launcher.smokePackagedApp('linux', 'x64')).rejects.toThrow('exited without reporting renderer readiness')
+    await expect(launcher.smokePackagedApp('linux', 'x64', fixtureSpawn)).rejects.toThrow('exited without reporting renderer readiness')
   })
 
   it('kills a hung application at its deadline instead of waiting for it', async () => {
     const survived = join(sandbox, 'survived-the-deadline')
-    writeFakeApplication(`sleep 30\ntouch ${survived}`)
+    writeFakeApplication(`setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(survived)}, 'survived'), 30000)`)
     const before = temporaryWorkspaces()
 
-    await expect(launcher.smokePackagedApp('linux', 'x64', { timeoutMs: 750 })).rejects.toThrow('did not report renderer readiness within 750ms')
+    await expect(launcher.smokePackagedApp('linux', 'x64', { timeoutMs: 750, ...fixtureSpawn })).rejects.toThrow('did not report renderer readiness within 750ms')
 
     expect(readdirSync(sandbox)).not.toContain('survived-the-deadline')
     expect(temporaryWorkspaces()).toEqual(before)
@@ -174,7 +183,7 @@ describe('packaged smoke launch', () => {
   it('reports a missing packaged executable rather than launching something else', async () => {
     rmSync(join(unpacked, 'omp-desktop'), { force: true })
 
-    await expect(launcher.smokePackagedApp('linux', 'x64')).rejects.toThrow('missing its executable')
+    await expect(launcher.smokePackagedApp('linux', 'x64', fixtureSpawn)).rejects.toThrow('missing its executable')
 
     // Every failure leaves the diagnostics artifact CI uploads.
     expect(readFileSync(join(sandbox, 'release', 'linux', 'x64', 'packaged-smoke-diagnostics.log'), 'utf8')).toContain('missing its executable')
