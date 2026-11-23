@@ -69,11 +69,17 @@ The [CI workflow](../.github/workflows/ci.yml) runs on pull requests, pushes to 
 | Job | When it runs | What a pass establishes |
 |---|---|---|
 | `production-audit` | Pull request, `main`, manual dispatch | The exception-aware production dependency audit passes for the exact checked-out commit. |
-| `quality` | Pull request, `main`, manual dispatch | TypeScript checks; configured lint and format checks; the coverage suite and thresholds; production bundle creation; bundle-size budgets; coverage artifact upload. |
+| `quality` | Pull request, `main`, manual dispatch | TypeScript checks; configured lint and format checks; the Rust/WASM metadata equivalence benchmark; the coverage suite and thresholds; production bundle creation; bundle-size budgets; coverage artifact upload. |
 | `hermetic-e2e` | Pull request, `main`, manual dispatch | The built application passes the Playwright Electron suite on the pinned macOS runner without relying on developer state. Failure artifacts are uploaded when available. |
 | `windows-state-migration` | Pull request, `main`, manual dispatch | The state migration suite passes on a real `windows-2022` runner, including the production-platform fresh-install, migration, restart, and update path. Simulating `platform: 'win32'` on another OS is useful unit coverage but is not a substitute for this job. |
 | `packaging-smoke` | Pull requests only | Native macOS arm64, Linux x64, and Windows x64 runners can build unpacked application directories. Linux and Windows additionally verify the ASAR layout and exact native-unpack allowlist. These are unsigned smoke builds, not public installers. |
 | `local-qa-package` | Manual dispatch only | Native runners create and verify installable local-QA artifacts for macOS, Linux, and Windows, then upload the configured artifact set. These artifacts are not represented as signed or notarized public releases. |
+
+## Rust/WASM core
+
+`npm run wasm:build` rebuilds `assets/wasm/omp-jsonl-core.wasm` from `crates/omp-jsonl-core` with the `wasm32-unknown-unknown` target. It requires a Rust toolchain with that target. CI does not rebuild the wasm. It runs `npm run wasm:verify` against the committed artifact, and the coverage suite loads the same artifact in `tests/backend/omp-wasm.test.ts`.
+
+`npm run build:bundle` copies the artifact to `out/main/omp-jsonl-core.wasm`. The packaged ASAR layout requires that path. `OMP_DESKTOP_DISABLE_WASM=1` forces the TypeScript metadata reader at runtime.
 
 Expected skips are part of this design:
 

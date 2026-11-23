@@ -1293,7 +1293,7 @@ describe('post-package verification helpers', () => {
   })
 
   test('requires the ASAR and rejects duplicated renderer dependencies', () => {
-    const entries = ['/out/main/index.js', '/out/preload/index.js', '/out/renderer/index.html']
+    const entries = ['/out/main/index.js', '/out/main/omp-jsonl-core.wasm', '/out/preload/index.js', '/out/renderer/index.html']
     expect(() => assertAsarLayout(entries)).not.toThrow()
     expect(() => assertAsarLayout([...entries, '/node_modules/react/index.js'])).toThrow(/duplicated/)
     expect(() => assertAsarLayout(entries.filter((entry) => !entry.includes('out/main')))).toThrow(/missing required/)
