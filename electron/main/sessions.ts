@@ -238,17 +238,16 @@ export class SessionService {
     const records: SessionRecord[] = []
     for (const original of sessions) {
       const filePath = resolve(original.filePath)
-      const metadata = { ...original }
-      const isArchived = archived.has(filePath)
-      const isPinned = pinned.has(filePath)
-      if ((isArchived && !includeArchived) || (project && resolve(metadata.projectPath) !== project)) continue
-      const runtime = runtimeBySession
-        ? runtimeBySession.get(filePath)
-        : this.runtimeForSession(metadata.filePath)
-      if (runtime) metadata.status = runtime.isStreaming || runtime.isCompacting ? 'running' : 'idle'
       // parentSession rides along: the renderer folds continued chains
       // (compact rollover / fork) into one sidebar row via session-lineage.
-      const { sessionName: _sessionName, previousSessionFiles: _previousSessionFiles, ...record } = metadata
+      const { sessionName: _sessionName, previousSessionFiles: _previousSessionFiles, ...record } = original
+      const isArchived = archived.has(filePath)
+      const isPinned = pinned.has(filePath)
+      if ((isArchived && !includeArchived) || (project && resolve(record.projectPath) !== project)) continue
+      const runtime = runtimeBySession
+        ? runtimeBySession.get(filePath)
+        : this.runtimeForSession(record.filePath)
+      if (runtime) record.status = runtime.isStreaming || runtime.isCompacting ? 'running' : 'idle'
       records.push({ ...record, harness: this.harness, archived: isArchived, pinned: isPinned })
     }
     const ordered = records.map((record) => ({ record, sortKey: Date.parse(record.lastUserMessageAt ?? record.createdAt) }))

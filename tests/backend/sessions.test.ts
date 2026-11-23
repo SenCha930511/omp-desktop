@@ -153,6 +153,33 @@ describe('SessionService catalog scaling', () => {
     expect(invalidate).toHaveBeenCalledOnce()
   })
 
+  it('returns fresh records without retaining runtime status or caller mutations', async () => {
+    const { root, project, service } = setup()
+    const file = join(root, 'fresh-record.jsonl')
+    writeSession(file, project, 'fresh-record')
+    service.bindRuntimeHooks({
+      get: () => ({ isStreaming: true }),
+      stop: async () => undefined,
+      rename: async () => false,
+    })
+
+    const [running] = await service.list()
+    expect(running.status).toBe('running')
+    const expected = { ...running, status: 'idle' }
+    service.bindRuntimeHooks({
+      get: () => undefined,
+      stop: async () => undefined,
+      rename: async () => false,
+    })
+    running.title = 'caller mutation'
+    running.archived = true
+    running.pinned = true
+
+    const [idle] = await service.list()
+    expect(idle.status).toBe('idle')
+    expect([idle]).toEqual([expected])
+  })
+
   it('coalesces concurrent lists and reuses metadata by canonical path, mtime, and size', async () => {
     const { root, project, service } = setup()
     const file = join(root, 'one.jsonl')
