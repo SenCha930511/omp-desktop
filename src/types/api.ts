@@ -961,6 +961,9 @@ export interface SideQuestionTopic extends SideQuestionTurn {
   followUps: SideQuestionTurn[]
 }
 
+export type { HostAuthorizationResponseInput, HostAuthorizationSnapshot, HostOpenUrlPending } from './host-capabilities'
+import type { HostAuthorizationResponseInput, HostAuthorizationSnapshot } from './host-capabilities'
+
 export interface PickedFileRecord {
   path: string
   name: string
@@ -1079,6 +1082,11 @@ export interface DesktopApi {
     delete(id: string): Promise<boolean>
     runNow(id: string): Promise<ScheduleRunRecord>
     onChanged(callback: (event: ScheduleChangeEvent) => void): () => void
+  }
+  hostAuth: {
+    snapshot(runtimeId: string): Promise<HostAuthorizationSnapshot>
+    respond(input: HostAuthorizationResponseInput): Promise<boolean>
+    onChanged(callback: (snapshot: HostAuthorizationSnapshot) => void): () => void
   }
 }
 

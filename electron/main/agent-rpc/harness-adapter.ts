@@ -270,6 +270,9 @@ export const OMP_RPC_ADAPTER: HarnessRpcAdapter = {
       if (event.error !== undefined && typeof event.error !== 'string') return null
       return event.error === undefined ? { type: 'live_end' } : { type: 'live_end', error: event.error.slice(0, 4_000) }
     }
+    if (event.type === 'host_tool_call' || event.type === 'host_tool_cancel' || event.type === 'host_tool_update' || event.type === 'host_tool_result') {
+      return null
+    }
     return event
   },
   buildServiceTierCommand: (serviceTier) => ({ type: 'set_fast_mode', enabled: serviceTier === 'priority' }),

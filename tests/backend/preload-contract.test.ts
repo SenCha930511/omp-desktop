@@ -95,6 +95,8 @@ const INVOKE_CASES: Array<[domain: string, method: string, channel: string, args
   ['schedules', 'resume', 'schedules:resume', ['schedule']],
   ['schedules', 'delete', 'schedules:delete', ['schedule']],
   ['schedules', 'runNow', 'schedules:run-now', ['schedule']],
+  ['hostAuth', 'snapshot', 'hostAuth:snapshot', ['runtime-1']],
+  ['hostAuth', 'respond', 'hostAuth:respond', [{ runtimeId: 'runtime-1', registrationGeneration: 1, requestId: 'req-1', decision: 'approve' }]],
 ]
 
 const SUBSCRIPTION_CASES: Array<[domain: string, method: string, channel: string]> = [
@@ -108,6 +110,7 @@ const SUBSCRIPTION_CASES: Array<[domain: string, method: string, channel: string
   ['browser', 'onPointer', 'browser:pointer'],
   ['browser', 'onActivity', 'browser:activity'],
   ['schedules', 'onChanged', 'schedules:changed'],
+  ['hostAuth', 'onChanged', 'hostAuth:changed'],
 ]
 
 describe('preload bridge contract', () => {

@@ -212,6 +212,7 @@ export class RpcRuntime {
     watchdogTimings: Partial<CompactionWatchdogTimings> = {},
     private readonly adapter: HarnessRpcAdapter = OMP_RPC_ADAPTER,
     private readonly chunkAssemblyTiming: RpcChunkAssemblyTiming = DEFAULT_RPC_CHUNK_ASSEMBLY_TIMING,
+    private readonly onHostToolFrame?: (frame: RpcObject) => void,
   ) {
     this.watchdogTimings = {
       ...DEFAULT_COMPACTION_WATCHDOG_TIMINGS,
@@ -377,6 +378,15 @@ export class RpcRuntime {
   }
 
   serviceTierPreference(): 'default' | 'priority' { return this.requestedServiceTier === 'priority' ? 'priority' : 'default' }
+
+  async writeRawFrame(frame: RpcObject): Promise<void> {
+    if (!this.transport.writable()) throw new Error('Runtime is not available')
+    await this.transport.enqueue(`${JSON.stringify(frame)}\n`).done
+  }
+
+  registerHostTools(tools: unknown[]): Promise<RpcObject> {
+    return this.request({ type: 'set_host_tools', tools }, 10_000)
+  }
 
   async command(command: RpcObject): Promise<RpcObject> {
     this.lastActivityAt = Date.now()
@@ -884,6 +894,11 @@ export class RpcRuntime {
       this.handleChunkFrame(raw)
       return
     }
+    if (raw.type === 'host_tool_call' || raw.type === 'host_tool_cancel') {
+      this.onHostToolFrame?.(raw)
+      return
+    }
+    if (raw.type === 'host_tool_update' || raw.type === 'host_tool_result') return
     const value = this.adapter.normalizeEvent(raw)
     if (!value) return
     if (value.type === 'notice' && value.source === 'session-persistence'

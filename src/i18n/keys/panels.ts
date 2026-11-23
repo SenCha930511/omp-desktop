@@ -230,6 +230,10 @@ export const panelsFragment = defineCatalogFragment({
     'extensionCapability.unsupported': 'Unsupported extension update: {method}',
     'extensionCapability.unknown': 'Unrecognized extension update: {method}',
     'extensionCapability.dismiss': 'Dismiss extension notice',
+    'hostAuth.openUrl.title': 'Open external web page?',
+    'hostAuth.openUrl.body': 'The assistant requested to open the following URL in your default browser.',
+    'hostAuth.openUrl.approve': 'Open page',
+    'hostAuth.openUrl.deny': 'Deny',
   },
   'zh-TW': {
     'inspector.aria': '工作階段檢查器',
@@ -459,6 +463,10 @@ export const panelsFragment = defineCatalogFragment({
     'extensionCapability.unsupported': '此應用不支援的 extension 更新：{method}',
     'extensionCapability.unknown': '無法辨識的 extension 更新：{method}',
     'extensionCapability.dismiss': '關閉 extension 提示',
+    'hostAuth.openUrl.title': '要在外部瀏覽器開啟網頁嗎？',
+    'hostAuth.openUrl.body': '助理請求在您的預設瀏覽器中開啟下列網址。',
+    'hostAuth.openUrl.approve': '開啟網頁',
+    'hostAuth.openUrl.deny': '拒絕',
   },
   'zh-CN': {
     'inspector.aria': '会话检查器',
@@ -688,5 +696,9 @@ export const panelsFragment = defineCatalogFragment({
     'extensionCapability.unsupported': '此应用不支持的扩展更新：{method}',
     'extensionCapability.unknown': '无法识别的扩展更新：{method}',
     'extensionCapability.dismiss': '关闭扩展提示',
+    'hostAuth.openUrl.title': '要在外部浏览器中打开网页吗？',
+    'hostAuth.openUrl.body': '助手请求在您的默认浏览器中打开以下网址。',
+    'hostAuth.openUrl.approve': '打开网页',
+    'hostAuth.openUrl.deny': '拒绝',
   },
 })

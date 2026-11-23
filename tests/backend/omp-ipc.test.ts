@@ -39,12 +39,15 @@ interface TestServices {
   browser: { closeForSession: Mock }
   projectScripts: { killForSession: Mock }
   harnessUpdates: { getState: Mock; install: Mock }
+  hostOpenUrl: { snapshot: Mock; respond: Mock; onAnyChanged: Mock; revokeOwner: Mock }
 }
 
 interface Harness {
   invoke(channel: string, ...args: unknown[]): unknown
   services: TestServices
   registration: IpcRegistration
+  sender: { id: number; isDestroyed: () => boolean; getURL: () => string; mainFrame: { url: string }; send: Mock }
+  emitHostAuth(ownerId: number, snapshot: Record<string, unknown>): void
 }
 
 function buildServices() {
@@ -102,7 +105,7 @@ function buildServices() {
       stop: vi.fn(async () => true),
       list: vi.fn(() => [{ runtimeId: 'omp-runtime', harness: 'omp' }]),
     },
-    projectScripts: { ...serviceStub(), killForSession: vi.fn(async () => undefined) },
+    projectScripts: { ...serviceStub(), killOwner: vi.fn(async () => undefined), killForSession: vi.fn(async () => undefined) },
     git: serviceStub(),
     plugins: { ...serviceStub(), list: vi.fn(async () => 'omp-plugins'), install: vi.fn(async () => undefined), installExtension: vi.fn(async () => undefined), connectMcp: vi.fn(async () => undefined), setMcpEnabled: vi.fn(async () => undefined), refresh: vi.fn(async () => 'omp-plugins') },
     catalog: { catalog: vi.fn(async (_force: unknown) => catalog('omp')) },
@@ -114,6 +117,12 @@ function buildServices() {
     schedules: { ...serviceStub(), onDidChange: vi.fn(() => () => undefined), list: vi.fn(() => 'scheduled'), create: vi.fn(async () => 'created') },
     browser: { ...serviceStub(), closeForSession: vi.fn(() => true), onDidChange: vi.fn(() => vi.fn()), onPointer: vi.fn(() => vi.fn()), onActivity: vi.fn(() => vi.fn()) },
     harnessUpdates: { ...serviceStub(), getState: vi.fn(async () => ({ phase: 'idle' })), install: vi.fn(async () => ({ phase: 'idle' })) },
+    hostOpenUrl: {
+      snapshot: vi.fn((runtimeId: string, ownerId: number) => ({ runtimeId, ownerId, registrationGeneration: 1, pending: null })),
+      respond: vi.fn(async () => true),
+      onAnyChanged: vi.fn((_listener: (ownerId: number, snapshot: Record<string, unknown>) => void) => () => undefined),
+      revokeOwner: vi.fn(async () => undefined),
+    },
   }
 }
 
@@ -122,21 +131,28 @@ describe('harness-aware IPC routing', () => {
 
   beforeEach(() => {
     const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>()
+    let hostAuthListener: ((ownerId: number, snapshot: Record<string, unknown>) => void) | undefined
     electronMocks.ipcMain.handle.mockReset()
     electronMocks.ipcMain.on.mockReset()
     electronMocks.ipcMain.handle.mockImplementation((channel: string, listener: (event: unknown, ...args: unknown[]) => unknown) => {
       handlers.set(channel, listener)
     })
     const services = buildServices()
+    services.hostOpenUrl.onAnyChanged.mockImplementation((listener: (ownerId: number, snapshot: Record<string, unknown>) => void) => {
+      hostAuthListener = listener
+      return () => { hostAuthListener = undefined }
+    })
     const registration = registerIpc(services as never, EXPECTED_URL)
     const mainFrame = { url: EXPECTED_URL }
-    const sender = { id: 1, isDestroyed: () => false, getURL: () => EXPECTED_URL, mainFrame }
+    const sender = { id: 1, isDestroyed: () => false, getURL: () => EXPECTED_URL, mainFrame, send: vi.fn() }
     registration.authorize(sender as never)
     const event = { sender, senderFrame: mainFrame }
     harness = {
       invoke: (channel, ...args) => handlers.get(channel)!(event, ...args),
       services,
       registration,
+      sender,
+      emitHostAuth: (ownerId, snapshot) => hostAuthListener?.(ownerId, snapshot),
     }
   })
 
@@ -161,9 +177,48 @@ describe('harness-aware IPC routing', () => {
 
   it('routes agent:start to the single manager and strips the routing field before it sees the options', async () => {
     await expect(harness.invoke('agent:start', { cwd: '/work', harness: 'omp' })).resolves.toEqual({ started: 'omp', options: { cwd: '/work' } })
-    expect(harness.services.agents.start).toHaveBeenCalledWith({ cwd: '/work' })
+    expect(harness.services.agents.start).toHaveBeenCalledWith({ cwd: '/work' }, 1)
     await expect(harness.invoke('agent:start', { cwd: '/work' })).resolves.toEqual({ started: 'omp', options: { cwd: '/work' } })
-    expect(harness.services.agents.start).toHaveBeenLastCalledWith({ cwd: '/work' })
+    expect(harness.services.agents.start).toHaveBeenLastCalledWith({ cwd: '/work' }, 1)
+  })
+
+  it('binds hostAuth snapshot, respond, event forwarding, and revocation to the authorized owner window', async () => {
+    expect(harness.invoke('hostAuth:snapshot', 'omp-runtime')).toEqual({ runtimeId: 'omp-runtime', ownerId: 1, registrationGeneration: 1, pending: null })
+    expect(harness.services.hostOpenUrl.snapshot).toHaveBeenCalledWith('omp-runtime', 1)
+
+    await expect(harness.invoke('hostAuth:respond', {
+      runtimeId: 'omp-runtime',
+      registrationGeneration: 1,
+      requestId: 'req-1',
+      decision: 'approve',
+    })).resolves.toBe(true)
+    expect(harness.services.hostOpenUrl.respond).toHaveBeenCalledWith(1, {
+      runtimeId: 'omp-runtime',
+      registrationGeneration: 1,
+      requestId: 'req-1',
+      decision: 'approve',
+    })
+
+    for (const invalid of [
+      null,
+      { runtimeId: 'omp-runtime', registrationGeneration: 1, requestId: 'req-1', decision: 'approve', url: 'https://evil.test' },
+      { runtimeId: 'omp-runtime', registrationGeneration: '1', requestId: 'req-1', decision: 'approve' },
+      { runtimeId: 'omp-runtime', registrationGeneration: 1, requestId: 'req-1', decision: 'always' },
+      { runtimeId: '', registrationGeneration: 1, requestId: 'req-1', decision: 'deny' },
+    ]) {
+      await expect(async () => harness.invoke('hostAuth:respond', invalid)).rejects.toThrow(TypeError)
+    }
+    expect(harness.services.hostOpenUrl.respond).toHaveBeenCalledTimes(1)
+
+    harness.emitHostAuth(1, { runtimeId: 'omp-runtime', registrationGeneration: 1, pending: null })
+    expect(harness.sender.send).toHaveBeenCalledWith('hostAuth:changed', { runtimeId: 'omp-runtime', registrationGeneration: 1, pending: null })
+
+    harness.sender.send.mockClear()
+    harness.emitHostAuth(2, { runtimeId: 'omp-runtime', registrationGeneration: 1, pending: null })
+    expect(harness.sender.send).not.toHaveBeenCalled()
+
+    harness.registration.revoke(1)
+    expect(harness.services.hostOpenUrl.revokeOwner).toHaveBeenCalledWith(1)
   })
 
   it('routes agent:command and agent:stop through the single manager', async () => {

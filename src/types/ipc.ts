@@ -133,6 +133,11 @@ export const IPC_CHANNELS = {
     runNow: 'schedules:run-now',
     onChanged: 'schedules:changed',
   },
+  hostAuth: {
+    snapshot: 'hostAuth:snapshot',
+    respond: 'hostAuth:respond',
+    onChanged: 'hostAuth:changed',
+  },
 } as const satisfies { [Domain in keyof DesktopApi]: { [Method in keyof DesktopApi[Domain]]: `${WireNamespace<Domain>}:${string}` } }
 
 export type IpcChannel = { [Domain in keyof typeof IPC_CHANNELS]: typeof IPC_CHANNELS[Domain][keyof typeof IPC_CHANNELS[Domain]] }[keyof typeof IPC_CHANNELS]

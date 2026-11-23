@@ -1,5 +1,5 @@
 import { IPC_CHANNELS } from '../../src/types/ipc'
-import { app, BrowserWindow, dialog, Menu, nativeTheme, protocol, safeStorage, screen, session, webContents } from 'electron'
+import { app, BrowserWindow, dialog, Menu, nativeTheme, protocol, safeStorage, screen, session, shell, webContents } from 'electron'
 import type { BrowserWindowConstructorOptions, Input, WebContents } from 'electron'
 import { extname, isAbsolute, join, relative, resolve, win32 as win32Path } from 'node:path'
 import { readFile, writeFile } from 'node:fs/promises'
@@ -13,6 +13,7 @@ import { MacBackgroundController, shouldStartInBackground } from './background'
 import { BrowserDownloadGuard } from './browser-downloads'
 import { installCrashGuards } from './crash-guard'
 import { CuaDriverService } from './cua-driver'
+import { DesktopOpenUrlService } from './desktop-open-url'
 import { GitService } from './git'
 import { CheckoutService } from './checkouts'
 import { createTrustedRendererUrlCache, isTrustedRendererUrl, registerIpc, type IpcRegistration } from './ipc'
@@ -872,8 +873,13 @@ async function bootstrap(): Promise<void> {
   // Every forwarded envelope re-checks the renderer; while the window stays on
   // the trusted document the cached exact URL pair skips both URL parses.
   const isTrustedForwardTarget = createTrustedRendererUrlCache(trustedRendererUrl)
+  const hostOpenUrl = new DesktopOpenUrlService({
+    openExternal: (url) => shell.openExternal(url, { activate: true }),
+    writeResult: (runtimeId, result) => ompManager.writeHostToolResult(runtimeId, result),
+  })
+  ompManager.setHostOpenUrlService(hostOpenUrl)
   ipc = registerIpc({
-    meta, refreshHarnesses, projects, files, checkouts, sessions, agents: ompManager, projectScripts, git, plugins, catalog, settings, updates, harnessUpdates, cuaDriver, schedules, browser: browserService, voice,
+    meta, refreshHarnesses, projects, files, checkouts, sessions, agents: ompManager, projectScripts, git, plugins, catalog, settings, updates, harnessUpdates, cuaDriver, schedules, browser: browserService, voice, hostOpenUrl,
     popupApplicationMenu, setTitleBarTheme,
     applyInterfaceZoom,
   }, trustedRendererUrl)

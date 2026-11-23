@@ -9,6 +9,8 @@
 .modal__body > p:last-child { margin-bottom: 0; }
 .modal__footer { min-height: 53px; display: flex; align-items: center; justify-content: flex-end; gap: 7px; padding: 9px 12px; border-top: 1px solid var(--border); background: var(--surface-subtle); }
 .modal-intro, .muted-copy { color: var(--text-secondary); font-size: 11.5px; line-height: 1.55; }
+.host-auth-url { margin-top: 10px; padding: 9px 11px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-subtle); max-height: 140px; overflow-y: auto; }
+.host-auth-url code { display: block; border: 0; padding: 0; background: transparent; color: var(--text); font-size: 11.5px; line-height: 1.5; word-break: break-all; }
 .field { display: flex; flex-direction: column; gap: 6px; margin-top: 13px; }
 .field--checkbox { flex-direction: row; align-items: center; gap: 8px; }
 .field--checkbox > span { margin: 0; }

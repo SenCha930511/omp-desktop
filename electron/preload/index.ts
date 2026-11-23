@@ -1,6 +1,6 @@
 import { IPC_CHANNELS, type IpcChannel } from '../../src/types/ipc'
 import { contextBridge, ipcRenderer } from 'electron'
-import type { AgentBrowserActivityEvent, AgentBrowserPointerEvent, AgentBrowserState, AppUpdateState, HarnessUpdateState, PrimeEventEnvelope, DesktopApi, ProjectScriptExitEvent, ProjectScriptOutputEvent, ScheduleChangeEvent, SessionChangeEvent } from '../../src/types/api'
+import type { AgentBrowserActivityEvent, AgentBrowserPointerEvent, AgentBrowserState, AppUpdateState, HarnessUpdateState, HostAuthorizationSnapshot, PrimeEventEnvelope, DesktopApi, ProjectScriptExitEvent, ProjectScriptOutputEvent, ScheduleChangeEvent, SessionChangeEvent } from '../../src/types/api'
 
 function subscribe<T>(channel: IpcChannel, callback: (payload: T) => void): () => void {
   if (typeof callback !== 'function') throw new TypeError('callback must be a function')
@@ -157,6 +157,11 @@ const api: DesktopApi = {
     delete: (id) => invoke(IPC_CHANNELS.schedules.delete, id),
     runNow: (id) => invoke(IPC_CHANNELS.schedules.runNow, id),
     onChanged: (callback) => subscribe<ScheduleChangeEvent>(IPC_CHANNELS.schedules.onChanged, callback),
+  },
+  hostAuth: {
+    snapshot: (runtimeId) => invoke(IPC_CHANNELS.hostAuth.snapshot, runtimeId),
+    respond: (input) => invoke(IPC_CHANNELS.hostAuth.respond, input),
+    onChanged: (callback) => subscribe<HostAuthorizationSnapshot>(IPC_CHANNELS.hostAuth.onChanged, callback),
   },
 }
 

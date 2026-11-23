@@ -20,6 +20,7 @@ import type { ProjectScriptRunner } from './project-script-runner'
 import type { VoiceService } from './voice'
 import type { UpdateService } from './updates'
 import type { AgentBrowserService } from './browser/agent-service'
+import type { DesktopOpenUrlService } from './desktop-open-url'
 import { rejectUnknownKeys, requireBoolean, requireExistingPath, requireId, requireRecord, requireString, requireWebUrl } from './validation'
 import { deleteProjectSessions, resolveProjectRoots } from './project-sessions'
 
@@ -44,6 +45,7 @@ interface Services {
   schedules: AutomationService
   browser: AgentBrowserService
   voice: VoiceService
+  hostOpenUrl?: DesktopOpenUrlService
   /** Applies the persisted interface scale to every live app renderer. */
   applyInterfaceZoom?(scale: number): void
 }
@@ -322,18 +324,37 @@ export function registerIpc(services: Services, expectedRendererUrl: string): Ip
     await routed.service.setPinned(filePath, pinned)
   })
 
-  handle(IPC_CHANNELS.agent.start, (_event, rawOptions) => {
+  handle(IPC_CHANNELS.agent.start, (event, rawOptions) => {
     const options = requireRecord(rawOptions, 'options')
     requireHarness(options.harness)
     // The manager start schema rejects unknown keys; the routing field must
     // not reach it.
     const { harness: _harness, ...startOptions } = options
-    return services.agents.start(startOptions)
+    return services.agents.start(startOptions, event.sender.id)
   })
   handle(IPC_CHANNELS.agent.command, (_event, runtimeId, command) => services.agents.command(runtimeId, command))
   handle(IPC_CHANNELS.agent.refreshState, (_event, runtimeId) => services.agents.refreshState(requireString(runtimeId, 'runtimeId', { min: 1, max: 256, trim: true })))
   handle(IPC_CHANNELS.agent.stop, (_event, runtimeId) => services.agents.stop(runtimeId))
   handle(IPC_CHANNELS.agent.list, () => services.agents.list())
+
+  handle(IPC_CHANNELS.hostAuth.snapshot, (event, runtimeId) => {
+    const id = requireId(runtimeId, 'runtimeId')
+    return services.hostOpenUrl?.snapshot(id, event.sender.id) ?? { runtimeId: id, registrationGeneration: 0, pending: null }
+  })
+  handle(IPC_CHANNELS.hostAuth.respond, (event, rawInput) => {
+    const input = requireRecord(rawInput, 'host authorization response')
+    rejectUnknownKeys(input, ['runtimeId', 'registrationGeneration', 'requestId', 'decision'], 'host authorization response')
+    const runtimeId = requireId(input.runtimeId, 'runtimeId')
+    const requestId = requireString(input.requestId, 'requestId', { min: 1, max: 256 })
+    if (!Number.isSafeInteger(input.registrationGeneration)) throw new TypeError('registrationGeneration must be an integer')
+    if (input.decision !== 'approve' && input.decision !== 'deny') throw new TypeError('decision must be approve or deny')
+    return services.hostOpenUrl?.respond(event.sender.id, {
+      runtimeId,
+      registrationGeneration: Number(input.registrationGeneration),
+      requestId,
+      decision: input.decision,
+    }) ?? false
+  })
 
   const providerCatalog = async (force = false) => {
     const catalog = await services.catalog.catalog(force)
@@ -455,6 +476,16 @@ export function registerIpc(services: Services, expectedRendererUrl: string): Ip
     broadcast(IPC_CHANNELS.browser.onActivity, event)
   })
   const unsubscribeBrowserActivity = typeof activitySubscription === 'function' ? activitySubscription : () => undefined
+  const hostAuthSubscription = services.hostOpenUrl?.onAnyChanged((ownerId, snapshot) => {
+    if (closed) return
+    const target = authorized.get(ownerId)
+    if (!target || target.isDestroyed()) return
+    if (isTrustedRendererUrl(target.getURL(), expectedRendererUrl)
+      && isTrustedRendererUrl(target.mainFrame.url, expectedRendererUrl)) {
+      target.send(IPC_CHANNELS.hostAuth.onChanged, snapshot)
+    }
+  })
+  const unsubscribeHostAuth = typeof hostAuthSubscription === 'function' ? hostAuthSubscription : () => undefined
 
   const registration: IpcRegistration = {
     whenRendererReady,
@@ -462,6 +493,7 @@ export function registerIpc(services: Services, expectedRendererUrl: string): Ip
     revoke(webContentsId) {
       authorized.delete(webContentsId)
       void services.projectScripts.killOwner(webContentsId)
+      void services.hostOpenUrl?.revokeOwner(webContentsId)
     },
     dispose() {
       if (closed) return
@@ -473,6 +505,7 @@ export function registerIpc(services: Services, expectedRendererUrl: string): Ip
       if (typeof unsubscribeBrowserChanges === 'function') unsubscribeBrowserChanges()
       if (typeof unsubscribeBrowserPointer === 'function') unsubscribeBrowserPointer()
       if (typeof unsubscribeBrowserActivity === 'function') unsubscribeBrowserActivity()
+      unsubscribeHostAuth()
       for (const channel of invokeChannels) ipcMain.removeHandler(channel)
     },
   }
