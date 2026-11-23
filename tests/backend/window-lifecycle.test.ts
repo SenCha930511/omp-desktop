@@ -257,6 +257,14 @@ describe('renderer hardening', () => {
       handler(name)(...[trusted] as never[])
       expect(trusted.preventDefault, name).not.toHaveBeenCalled()
     }
+
+    const sameOriginBlob = { url: 'blob:omp-desktop://app/1234', preventDefault: vi.fn() }
+    handler('will-frame-navigate')(...[sameOriginBlob] as never[])
+    expect(sameOriginBlob.preventDefault).not.toHaveBeenCalled()
+
+    const foreignBlob = { url: 'blob:https://attacker.test/1234', preventDefault: vi.fn() }
+    handler('will-frame-navigate')(...[foreignBlob] as never[])
+    expect(foreignBlob.preventDefault).toHaveBeenCalledOnce()
   })
 })
 

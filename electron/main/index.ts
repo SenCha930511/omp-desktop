@@ -22,6 +22,7 @@ import { PluginService, beginPluginDiscoveryShutdown } from './plugins'
 import { OmpModelCatalogService } from './providers-omp'
 import { PACKAGED_RENDERER_URL, PACKAGED_SMOKE_READY_EVENT, packagedSmokeMarker, packagedSmokeMarkerPath, serializePackagedSmokeMarker } from './packaged-smoke'
 import { ProjectService } from './projects'
+import { FilePreviewService } from './file-preview'
 import { SettingsService } from './settings-schedules'
 import { ScheduledRunExecutor } from './schedules/executor'
 import { AutomationService } from './schedules/service'
@@ -92,7 +93,7 @@ function appIconPath(): string {
 
 // One policy for every surface that serves renderer content: the app protocol
 // response headers and the packaged browser-session header rewrite.
-const RENDERER_CONTENT_SECURITY_POLICY = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
+const RENDERER_CONTENT_SECURITY_POLICY = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; frame-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
 
 const rendererContentTypes: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
@@ -188,7 +189,20 @@ export function hardenRenderer(window: BrowserWindow, trustedUrl: () => string =
     if (!isTrustedRendererUrl(event.url, trustedUrl())) event.preventDefault()
   })
   window.webContents.on('will-frame-navigate', (event) => {
-    if (!isTrustedRendererUrl(event.url, trustedUrl())) event.preventDefault()
+    const trusted = trustedUrl()
+    if (isTrustedRendererUrl(event.url, trusted)) return
+    if (event.isMainFrame !== true) {
+      try {
+        const parsed = new URL(trusted)
+        const origin = parsed.origin !== 'null'
+          ? parsed.origin
+          : parsed.protocol === 'omp-desktop:' && parsed.host
+            ? `${parsed.protocol}//${parsed.host}`
+            : null
+        if ((origin && event.url.startsWith(`blob:${origin}/`)) || (parsed.protocol === 'file:' && event.url.startsWith('blob:null/'))) return
+      } catch { /* fall through to deny */ }
+    }
+    event.preventDefault()
   })
 }
 
@@ -613,6 +627,10 @@ async function bootstrap(): Promise<void> {
   // catalog is constructed with a null executable and JSONL-only metadata.
   const sessions = new SessionService(stateStore, null, undefined, ompSessionServiceOptions())
   const projects = new ProjectService(stateStore, () => mainWindow)
+  const files = new FilePreviewService({
+    authorizeProjectPath: (path) => projects.authorizePath(path),
+    windowProvider: () => mainWindow,
+  })
   const repositoryUseGate = new RepositoryUseGate()
   const checkouts = new CheckoutService(() => stateStore.getSettings().checkoutStrategy, projects, repositoryUseGate)
   // Git authorizes against the OMP project grants.
@@ -855,7 +873,7 @@ async function bootstrap(): Promise<void> {
   // the trusted document the cached exact URL pair skips both URL parses.
   const isTrustedForwardTarget = createTrustedRendererUrlCache(trustedRendererUrl)
   ipc = registerIpc({
-    meta, refreshHarnesses, projects, checkouts, sessions, agents: ompManager, projectScripts, git, plugins, catalog, settings, updates, harnessUpdates, cuaDriver, schedules, browser: browserService, voice,
+    meta, refreshHarnesses, projects, files, checkouts, sessions, agents: ompManager, projectScripts, git, plugins, catalog, settings, updates, harnessUpdates, cuaDriver, schedules, browser: browserService, voice,
     popupApplicationMenu, setTitleBarTheme,
     applyInterfaceZoom,
   }, trustedRendererUrl)

@@ -1,10 +1,10 @@
 import { createHmac } from 'node:crypto'
-import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { readSessionMetadata } from '../../electron/main/sessions/metadata'
-import { readTranscript } from '../../electron/main/sessions/transcript'
+import { createTranscriptReader, readTranscript } from '../../electron/main/sessions/transcript'
 import { MAX_PART_IMAGE_CHARS, MAX_UNSUPPORTED_DATA_CHARS } from '../../src/lib/events/message-content'
 import { configureGooeyPiAgentMessageSigning, encodeGooeyPiAgentMessage, loadOrCreateGooeyPiAgentMessageKey, parseGooeyPiAgentMessage } from '../../electron/main/collaboration/message-envelope'
 
@@ -369,6 +369,12 @@ function userMessage(id: string, parentId: string | null, text = `text-${id}`): 
   return JSON.stringify({ type: 'message', id, parentId, message: { role: 'user', content: text } })
 }
 
+async function readPage(file: string, isStreaming = false) {
+  const pageReader = readTranscript.readPage
+  if (!pageReader) throw new Error('Expected the primary reader to expose its page facade')
+  return pageReader(file, isStreaming)
+}
+
 describe('persisted compaction transcript entries', () => {
   it('shares the transcript text budget across repeated compaction summaries', async () => {
     const file = makeSessionFile()
@@ -429,6 +435,10 @@ describe('transcript graph bounds', () => {
     const file = sessionFile([userMessage('root', null), ...fillers, userMessage('leaf', 'root')])
     const transcript = await readTranscript(file, false)
     expect(transcript.map((message) => message.id)).toEqual(['leaf'])
+    // The legacy partial suffix is intentionally unchanged, but paging must
+    // not call it a complete history after a renderable root was evicted.
+    const page = await readPage(file)
+    expect(page).toMatchObject({ status: 'ok', older: { state: 'unavailable', reason: 'graph-budget' } })
   })
 
   it('refreshes recency when a record id is rewritten later in the file', async () => {
@@ -439,6 +449,7 @@ describe('transcript graph bounds', () => {
     const transcript = await readTranscript(file, false)
     expect(transcript.map((message) => message.id)).toEqual(['root', 'leaf'])
     expect(transcript[0].parts).toEqual([{ type: 'text', text: 'rewritten root' }])
+    expect(await readPage(file)).toMatchObject({ status: 'ok', older: { state: 'end' } })
   })
 
   it('evicts oldest records when the graph byte budget overflows', async () => {
@@ -462,6 +473,7 @@ describe('transcript graph bounds', () => {
     ])
     const transcript = await readTranscript(file, false)
     expect(transcript.map((message) => message.id)).toEqual(['leaf'])
+    expect(await readPage(file)).toMatchObject({ status: 'ok', older: { state: 'end' } })
   })
 
   it('terminates on a parent cycle instead of looping', async () => {
@@ -480,6 +492,143 @@ describe('transcript graph bounds', () => {
     ])
     const transcript = await readTranscript(file, false)
     expect(transcript.map((message) => message.id)).toEqual(['fresh-root'])
+  })
+})
+
+describe('paging graph-eviction classification', () => {
+  // `turn` fails, producing a synthetic `error-turn` row. The next genuine
+  // session entry deliberately owns that same valid id; both occurrences render
+  // in the legacy transcript, so the continuation anchor is genuinely ambiguous.
+  const failingAssistant = JSON.stringify({
+    type: 'message', id: 'turn', parentId: null,
+    message: { role: 'assistant', content: '', stopReason: 'error', errorMessage: 'synthetic failure' },
+  })
+  const collidingUser = JSON.stringify({
+    type: 'message', id: 'error-turn', parentId: 'turn',
+    message: { role: 'user', content: 'real entry sharing the synthetic row id' },
+  })
+
+  it('fails closed with missing-anchor for a real synthetic/real duplicate id', async () => {
+    const file = sessionFile([
+      failingAssistant,
+      collidingUser,
+      userMessage('after-collision', 'error-turn', 'not a clamped neighbor'),
+    ])
+    const legacy = await readTranscript(file, false)
+    expect(legacy.map((message) => message.id)).toEqual(['turn', 'error-turn', 'error-turn', 'after-collision'])
+
+    const page = await readTranscript.readPage?.(file, false, { endExclusiveMessageId: 'error-turn' })
+
+    expect(page).toEqual({ status: 'stale', reason: 'missing-anchor' })
+  })
+
+  it('distinguishes an ambiguous successor from graph budgets and never treats it as end', async () => {
+    const entries = [failingAssistant, collidingUser]
+    let parent = 'error-turn'
+    // 401 coalesced rows make the synthetic error id the first row in the
+    // newest 400-row page. Its real-id collision is immediately below it.
+    for (let index = 0; index < 398; index += 1) {
+      const id = `after-${index}`
+      entries.push(userMessage(id, parent))
+      parent = id
+    }
+    const file = sessionFile(entries)
+    const page = await readPage(file)
+
+    expect(page).toMatchObject({ status: 'ok', older: { state: 'unavailable', reason: 'anchor-ambiguity' } })
+    if (page.status === 'ok') {
+      expect(page.messages).toHaveLength(400)
+      expect(page.messages.map((message) => message.id)).toEqual((await readTranscript(file, false)).map((message) => message.id))
+    }
+  })
+
+  it('does not infer graph-budget from off-branch renderable evictions', async () => {
+    const offBranch = Array.from({ length: 10_100 }, (_, index) => userMessage(`off-${index}`, `off-${index}`))
+    const file = sessionFile([
+      ...offBranch,
+      userMessage('active-root', null),
+      userMessage('active-leaf', 'active-root'),
+      // The evidence set has overflowed by now. Reverse dialect recovery must
+      // classify this missing header as non-renderable, not guess graph-budget.
+      JSON.stringify({ type: 'title_change', id: 'active-title', parentId: 'active-leaf', title: 'Still the active branch' }),
+    ])
+
+    const page = await readPage(file)
+
+    expect(page).toMatchObject({ status: 'ok', older: { state: 'end' } })
+    if (page.status === 'ok') expect(page.messages.map((message) => message.id)).toEqual(['active-root', 'active-leaf'])
+  })
+
+  it('ignores trailing title, model, usage, and other non-renderable metadata', async () => {
+    const file = sessionFile([
+      userMessage('root', null),
+      userMessage('leaf', 'root'),
+      JSON.stringify({ type: 'title_change', id: 'title', parentId: 'leaf', title: 'Renamed session' }),
+      JSON.stringify({ type: 'model_change', id: 'model', parentId: 'title', model: 'provider/model' }),
+      JSON.stringify({ type: 'model_usage', id: 'usage', parentId: 'model', tokens: 42 }),
+      JSON.stringify({ type: 'custom', id: 'metadata', parentId: 'usage', data: { native: 'raw-string' } }),
+    ])
+
+    const page = await readPage(file)
+
+    expect(page).toMatchObject({ status: 'ok', older: { state: 'end' } })
+  })
+
+  it('fails closed for an evicted active toolResult contribution', async () => {
+    const fillers = Array.from({ length: 10_000 }, (_, index) => userMessage(`noise-${index}`, `noise-${index}`))
+    const file = sessionFile([
+      JSON.stringify({ type: 'message', id: 'assistant', parentId: null, message: { role: 'assistant', content: [{ type: 'toolCall', id: 'call', name: 'Read' }] } }),
+      JSON.stringify({ type: 'message', id: 'result', parentId: 'assistant', message: { role: 'toolResult', toolCallId: 'call', content: 'result' } }),
+      ...fillers,
+      userMessage('leaf', 'result'),
+    ])
+
+    const page = await readPage(file)
+
+    expect(page).toMatchObject({ status: 'ok', older: { state: 'unavailable', reason: 'graph-budget' } })
+    if (page.status === 'ok') expect(page.messages.map((message) => message.id)).toEqual(['leaf'])
+  })
+
+  it('fails closed for an evicted assistant continuation that would coalesce', async () => {
+    const fillers = Array.from({ length: 10_000 }, (_, index) => userMessage(`noise-${index}`, `noise-${index}`))
+    const file = sessionFile([
+      userMessage('root', null),
+      JSON.stringify({ type: 'message', id: 'continuation', parentId: 'root', message: { role: 'assistant', content: 'coalesced text' } }),
+      ...fillers,
+      JSON.stringify({ type: 'message', id: 'leaf', parentId: 'continuation', message: { role: 'assistant', content: 'latest text' } }),
+    ])
+
+    const page = await readPage(file)
+
+    expect(page).toMatchObject({ status: 'ok', older: { state: 'unavailable', reason: 'graph-budget' } })
+  })
+
+  it('returns legacy newest rows but no snapshot when the file changes during parsing', async () => {
+    const file = sessionFile([JSON.stringify({ type: 'fixture', id: 'root', parentId: null })])
+    let changed = false
+    const reader = createTranscriptReader({
+      isRenderable: (entry) => entry.type === 'fixture',
+      renderEntry: (entry) => {
+        if (!changed) {
+          changed = true
+          appendFileSync(file, `${JSON.stringify({ type: 'event', id: 'late', parentId: String(entry.id) })}\n`)
+        }
+        return { id: 'root', role: 'user', parts: [{ type: 'text', text: 'current legacy row' }] }
+      },
+    })
+
+    const page = await reader.readPage?.(file, false)
+    expect(page).toMatchObject({ status: 'ok', stamp: null, fileChanging: true, older: { state: 'unavailable', reason: 'file-changing' } })
+    if (page?.status === 'ok') expect(page.messages.map((message) => message.id)).toEqual(['root'])
+  })
+
+  it('keeps streaming continuation unavailable only when the 400-row cap actually truncates', async () => {
+    const short = sessionFile([userMessage('root', null), userMessage('leaf', 'root')])
+    expect(await readPage(short, true)).toMatchObject({ status: 'ok', stamp: null, older: { state: 'end' } })
+    const records = ['message-0']
+    for (let index = 1; index < 401; index += 1) records.push(`message-${index}`)
+    const long = sessionFile(records.map((id, index) => userMessage(id, index ? records[index - 1] : null)))
+    expect(await readPage(long, true)).toMatchObject({ status: 'ok', stamp: null, older: { state: 'unavailable', reason: 'streaming' } })
   })
 })
 

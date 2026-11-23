@@ -11,10 +11,11 @@ import type { HarnessUpdateService } from './harness-update'
 import type { ModelCatalogProvider } from './model-catalog'
 import type { PluginService } from './plugins'
 import type { ProjectService } from './projects'
+import type { FilePreviewService } from './file-preview'
 import type { CheckoutService } from './checkouts'
 import type { SettingsService } from './settings-schedules'
 import type { AutomationService } from './schedules/service'
-import type { SessionService } from './sessions'
+import { requireTranscriptPageRequest, type SessionService } from './sessions'
 import type { ProjectScriptRunner } from './project-script-runner'
 import type { VoiceService } from './voice'
 import type { UpdateService } from './updates'
@@ -28,6 +29,7 @@ interface Services {
   popupApplicationMenu(sender: WebContents, menuName: ApplicationMenuName, x: number, y: number): boolean
   setTitleBarTheme(sender: WebContents, theme: Exclude<ThemeMode, 'system'>): boolean
   projects: ProjectService
+  files: FilePreviewService
   checkouts: CheckoutService
   sessions: SessionService
   agents: AgentRpcManager
@@ -281,6 +283,9 @@ export function registerIpc(services: Services, expectedRendererUrl: string): Ip
   handle(IPC_CHANNELS.projects.markSetupStarted, (_event, id, setup) => services.projects.markSetupStarted(id, setup))
   handle(IPC_CHANNELS.projects.finishSetup, (_event, id, setup, exitCode) => services.projects.finishSetup(id, setup, exitCode))
 
+  handle(IPC_CHANNELS.files.read, (_event, filePath, baseDir) => services.files.readFile(filePath, baseDir))
+  handle(IPC_CHANNELS.files.pick, () => services.files.pickFile())
+
   handle(IPC_CHANNELS.sessions.list, (_event, projectPath, includeArchived, harness, force) => {
     requireHarness(harness)
     return services.sessions.list(projectPath, includeArchived, force)
@@ -290,6 +295,10 @@ export function registerIpc(services: Services, expectedRendererUrl: string): Ip
     return services.sessions.sync(revision)
   })
   handle(IPC_CHANNELS.sessions.read, async (_event, filePath) => (await sessionsForPath(filePath)).service.read(filePath))
+  handle(IPC_CHANNELS.sessions.readPage, async (_event, filePath, request) => {
+    const pageRequest = requireTranscriptPageRequest(request)
+    return (await sessionsForPath(filePath)).service.readPage(filePath, pageRequest)
+  })
   handle(IPC_CHANNELS.sessions.rename, async (_event, filePath, title) => (await sessionsForPath(filePath)).service.rename(filePath, title))
   handle(IPC_CHANNELS.sessions.delete, async (_event, filePath) => {
     const routed = await sessionsForPath(filePath)

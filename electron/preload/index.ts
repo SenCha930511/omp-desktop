@@ -72,10 +72,15 @@ const api: DesktopApi = {
     markSetupStarted: (id, setup, harness) => invoke(IPC_CHANNELS.projects.markSetupStarted, id, setup, harness),
     finishSetup: (id, setup, exitCode, harness) => invoke(IPC_CHANNELS.projects.finishSetup, id, setup, exitCode, harness),
   },
+  files: {
+    read: (filePath, baseDir) => invoke(IPC_CHANNELS.files.read, filePath, baseDir),
+    pick: () => invoke(IPC_CHANNELS.files.pick),
+  },
   sessions: {
     list: (projectPath, includeArchived, harness, force) => invoke(IPC_CHANNELS.sessions.list, projectPath, includeArchived, harness, force),
     sync: (revision, harness) => invoke(IPC_CHANNELS.sessions.sync, revision, harness),
     read: (filePath) => invoke(IPC_CHANNELS.sessions.read, filePath),
+    readPage: (filePath, request) => invoke(IPC_CHANNELS.sessions.readPage, filePath, request),
     rename: (filePath, title) => invoke(IPC_CHANNELS.sessions.rename, filePath, title),
     archive: (filePath, archived) => invoke(IPC_CHANNELS.sessions.archive, filePath, archived),
     branch: (filePath) => invoke(IPC_CHANNELS.sessions.branch, filePath),

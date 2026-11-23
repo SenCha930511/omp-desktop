@@ -47,10 +47,15 @@ export const IPC_CHANNELS = {
     markSetupStarted: 'projects:mark-setup-started',
     finishSetup: 'projects:finish-setup',
   },
+  files: {
+    read: 'files:read',
+    pick: 'files:pick',
+  },
   sessions: {
     list: 'sessions:list',
     sync: 'sessions:sync',
     read: 'sessions:read',
+    readPage: 'sessions:readPage',
     branch: 'sessions:branch',
     setPinned: 'sessions:setPinned',
     rename: 'sessions:rename',

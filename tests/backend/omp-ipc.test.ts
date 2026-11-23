@@ -28,8 +28,9 @@ function serviceStub(): Record<string, unknown> {
 interface TestServices {
   refreshHarnesses: Mock
   agents: { start: Mock; command: Mock; refreshState: Mock; stop: Mock; list: Mock }
-  sessions: { list: Mock; read: Mock; rename: Mock; archive: Mock; branch: Mock; setPinned: Mock }
+  sessions: { list: Mock; read: Mock; readPage: Mock; rename: Mock; archive: Mock; branch: Mock; setPinned: Mock }
   projects: { list: Mock; grantInferred: Mock }
+  files: { readFile: Mock; pickFile: Mock }
   checkouts: { list: Mock; execute: Mock }
   plugins: Record<string, Mock>
   catalog: { catalog: Mock }
@@ -72,6 +73,10 @@ function buildServices() {
     meta: { version: '0.0.0-test' },
     refreshHarnesses: vi.fn(async () => ({ meta: { version: '0.0.0-refreshed' }, settings: settingsState })),
     projects: { ...serviceStub(), list: vi.fn(async () => ['omp-projects']), grantInferred: vi.fn(async () => 'omp-grant') },
+    files: {
+      readFile: vi.fn(async () => ({ kind: 'text', path: '/repo/README.md', name: 'README.md', content: 'hi', truncated: false, sizeBytes: 2 })),
+      pickFile: vi.fn(async () => ({ path: '/repo/README.md', name: 'README.md' })),
+    },
     checkouts: {
       list: vi.fn(async () => 'omp-checkouts'),
       execute: vi.fn(async () => 'omp-checkout'),
@@ -82,6 +87,7 @@ function buildServices() {
       requireSessionPath: ompSessionGate,
       list: vi.fn(async () => ['omp-sessions']),
       read: vi.fn(async () => ['omp-transcript']),
+      readPage: vi.fn(async () => ({ status: 'ok', snapshotId: 'snapshot', messages: ['omp-page'], endExclusiveMessageId: null, older: { state: 'end' } })),
       rename: vi.fn(async () => false),
       archive: vi.fn(async () => true),
       branch: vi.fn(async () => ({ id: 'omp-branched' })),
@@ -202,6 +208,13 @@ describe('harness-aware IPC routing', () => {
     expect(harness.services.checkouts.execute).toHaveBeenCalledWith('project', { strategy: 'branch', operation: 'switch', branch: 'feature' })
   })
 
+  it('routes files:read and files:pick through the file preview service', async () => {
+    await expect(harness.invoke('files:read', '/repo/README.md', '/repo')).resolves.toMatchObject({ kind: 'text', name: 'README.md' })
+    expect(harness.services.files.readFile).toHaveBeenCalledWith('/repo/README.md', '/repo')
+    await expect(harness.invoke('files:pick')).resolves.toEqual({ path: '/repo/README.md', name: 'README.md' })
+    expect(harness.services.files.pickFile).toHaveBeenCalledOnce()
+  })
+
   it('routes plugin catalog, installation, and MCP configuration with the omp harness argument', async () => {
     await harness.invoke('plugins:list', '/repo', 'omp')
     expect(harness.services.plugins.list).toHaveBeenCalledWith('/repo')
@@ -223,9 +236,12 @@ describe('harness-aware IPC routing', () => {
   it('routes session file operations through the omp session root authorization', async () => {
     await expect(harness.invoke('sessions:read', OMP_SESSION)).resolves.toEqual(['omp-transcript'])
     expect(harness.services.sessions.read).toHaveBeenCalledWith(OMP_SESSION)
+    await expect(harness.invoke('sessions:readPage', OMP_SESSION, { cursor: 'opaque' })).resolves.toMatchObject({ status: 'ok', snapshotId: 'snapshot' })
+    expect(harness.services.sessions.readPage).toHaveBeenCalledWith(OMP_SESSION, { cursor: 'opaque' })
 
     // A path the root does not contain fails with the session service's own error.
     await expect(async () => harness.invoke('sessions:read', '/etc/passwd')).rejects.toThrow('outside the OMP session directory')
+    await expect(async () => harness.invoke('sessions:readPage', '/etc/passwd', {})).rejects.toThrow('outside the OMP session directory')
 
     await expect(harness.invoke('sessions:rename', OMP_SESSION, 'Title')).resolves.toBe(false)
     expect(harness.services.sessions.rename).toHaveBeenCalledWith(OMP_SESSION, 'Title')
@@ -239,6 +255,14 @@ describe('harness-aware IPC routing', () => {
     await expect(harness.invoke('sessions:archive', OMP_SESSION, false)).resolves.toBe(true)
     expect(harness.services.browser.closeForSession).not.toHaveBeenCalled()
     expect(harness.services.projectScripts.killForSession).not.toHaveBeenCalled()
+  })
+
+  it('rejects malformed or smuggled transcript page requests before path lookup or service work', async () => {
+    harness.services.sessions.readPage.mockClear()
+    for (const request of [null, [], 'opaque', { cursor: '' }, { cursor: 'x'.repeat(129) }, { cursor: 'valid', limit: 1 }, { cursor: 'valid', byteOffset: 12 }]) {
+      await expect(async () => harness.invoke('sessions:readPage', OMP_SESSION, request)).rejects.toThrow(TypeError)
+    }
+    expect(harness.services.sessions.readPage).not.toHaveBeenCalled()
   })
 
   it('does not register the removed follow-up, credential, or heartbeat channels', () => {
