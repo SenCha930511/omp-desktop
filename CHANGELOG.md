@@ -1,5 +1,39 @@
 # Changelog
 
+## 1.3.20 — 2026-11-23
+
+### Added
+
+- Native word prediction in the composer: ghost text, request/response fencing, cursor and session validation, feedback handling, and native fixture e2e coverage.
+- Paginated transcript history with bounded session reads, scroll restoration, and localized loading states.
+- Trusted `desktop_open_url` host authorization with owner-bound IPC, a review prompt, cancellation, and fail-closed runtime registration.
+- Inspector file previews for text, code, images, PDF, and HTML files, plus local workspace images and inline `data:image/*` images in model output. HEIC and TIFF images are decoded before preview.
+- Browser-style inspector tabs with multiple browser tabs, PDF/HTML preview, and keyboard navigation across browser and file tabs.
+- Backslash LaTeX delimiters (`\(...\)` and `\[...\]`) in model output.
+- A WebRTC audio-session abstraction for desktop dictation with cancellation, timeout, channel-error, reconnect, and teardown coverage.
+- An OMP v19 desktop parity support matrix documenting verified, partial, upstream-only, and security-blocked surfaces.
+
+### Changed
+
+- Busy slash commands now dispatch directly instead of being queued behind the active turn.
+- Toolbar, HUD, transcript, and skill-icon layout alignment was tightened.
+- The capability bridge uses `Promise.withResolvers`, and inspector layout behavior is covered by rerender tests.
+- The optional sessions bridge is guarded so older preload surfaces remain usable.
+
+### Fixed
+
+- The native file dialog is awaited before preview loading continues.
+- Memo and read lifecycle invariants are preserved while guarding optional bridge methods.
+- Word-prediction tests isolate `localStorage` and verify debounce-timer cleanup.
+- Sandboxed preload bridge groups match the current e2e smoke contract.
+- Host Open URL prompt tests no longer carry an unused parameter.
+
+### Not included in this release
+
+Interactive OMP live voice controls and real microphone/speaker audio verification remain outside this release. Desktop dictation cleanup is included. `omp ps`, session portability commands, `omp stats`, and terminal-only `/record` and `/pause` remain upstream-only.
+
+**Full Changelog**: https://github.com/SenCha930511/omp-desktop/compare/v1.3.19...v1.3.20
+
 ## 1.3.19 — 2026-11-23
 
 ### Added
