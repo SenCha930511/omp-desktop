@@ -30,6 +30,7 @@ export default defineConfig({
             // synchronous initialization and every existing startup lifecycle.
             if (id.endsWith('/electron/main/agent-rpc/word-prediction.ts') || id.endsWith('/src/lib/word-prediction.ts')) return 'word-prediction'
             if (id.endsWith('/electron/main/sessions/transcript.ts')) return 'session-transcript'
+            if (id.endsWith('/electron/main/projects.ts')) return 'projects-service'
             return undefined
           },
         },
