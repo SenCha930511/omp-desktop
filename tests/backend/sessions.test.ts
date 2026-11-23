@@ -690,6 +690,7 @@ describe('SessionService live changes', () => {
     })
     const file = join(root, 'known.jsonl')
     writeSession(file, project, 'known-v0')
+    utimesSync(file, new Date('2025-01-01T00:00:00.000Z'), new Date('2025-01-01T00:00:00.000Z'))
     expect(await service.list()).toMatchObject([{ id: 'known-v0' }])
     const enumerationCount = readDirectory.mock.calls.length
     const canonicalizationCount = canonicalize.mock.calls.length
@@ -698,6 +699,7 @@ describe('SessionService live changes', () => {
     const unsubscribe = service.onDidChange((event) => events.push(event))
     try {
       writeSession(file, project, 'known-v1', '2025-02-01T00:00:00.000Z')
+      utimesSync(file, new Date('2025-02-01T00:00:00.000Z'), new Date('2025-02-01T00:00:00.000Z'))
       const watcherHarness = service as unknown as { queueSessionChange(filename: string): void }
       watcherHarness.queueSessionChange('known.jsonl')
       await waitUntil(() => events.some((event) => event.filePath === realpathSync(file)), 4_000)

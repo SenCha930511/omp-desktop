@@ -68,7 +68,7 @@ async function markdownMetadata(path: string): Promise<{ name?: string; descript
 
 function normalizedPackageSlug(source: string): string {
   let value = source.trim().replace(/^(?:npm:|git:)/i, '').replace(/[?#].*$/, '').replace(/\.git$/i, '')
-  value = value.replace(/\/+$/, '').slice(value.lastIndexOf('/') + 1).replace(/@[^@/]+$/, '')
+  value = value.replace(/[\\/]+$/, '').split(/[\\/]/).at(-1)!.replace(/@[^@/]+$/, '')
   return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 120) || 'package'
 }
 

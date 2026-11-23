@@ -167,7 +167,7 @@ export class PluginService {
   authorizeReveal(pathValue: unknown): string {
     const requested = requireString(pathValue, 'plugin path', { min: 1, max: 4096 })
     let path: string
-    try { path = realpathSync(requested) } catch { throw new TypeError('plugin path does not exist') }
+    try { path = realpathSync.native(requested) } catch { throw new TypeError('plugin path does not exist') }
     if (![...this.knownPathsByOwner.values()].some((knownPaths) => knownPaths.has(path))) {
       throw new TypeError('plugin path was not discovered')
     }

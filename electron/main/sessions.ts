@@ -1,7 +1,7 @@
 import { watch, type Dirent, type Stats } from 'node:fs'
 import { readdir, realpath, unlink } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { join, resolve, sep } from 'node:path'
+import { isAbsolute, join, resolve, sep } from 'node:path'
 import type { HarnessId, SessionCatalogUpdate, SessionChangeEvent, SessionRecord, TranscriptMessage } from '../../src/types/api'
 import { SessionCatalogSync } from './sessions/sync'
 
@@ -245,7 +245,7 @@ export class SessionService {
 
   async projectPaths(): Promise<string[]> {
     const sessions = await this.list()
-    return [...new Set(sessions.map((session) => session.projectPath).filter((path) => path.startsWith('/')))]
+    return [...new Set(sessions.map((session) => session.projectPath).filter((path) => isAbsolute(path)))]
   }
 
   async read(filePath: unknown): Promise<TranscriptMessage[]> {

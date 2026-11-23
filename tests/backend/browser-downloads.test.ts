@@ -34,7 +34,8 @@ describe('BrowserDownloadGuard', () => {
   })
 
   it('saves to a unique safe default destination when prompting is disabled', () => {
-    const guard = new BrowserDownloadGuard(allowed, '/safe-downloads')
+    const downloadDirectory = resolve('safe-downloads')
+    const guard = new BrowserDownloadGuard(allowed, downloadDirectory)
     const item = new FakeDownload('https://example.test/a')
     const requested = event()
     guard.handle(requested, item as unknown as DownloadItem, owner, false)
@@ -43,9 +44,9 @@ describe('BrowserDownloadGuard', () => {
     expect(item.saveOptions).toBeUndefined()
     const savePath = item.savePath ?? ''
     expect(savePath).not.toBe('')
-    expect(dirname(savePath)).toBe(resolve('/safe-downloads'))
+    expect(dirname(savePath)).toBe(downloadDirectory)
     expect(basename(savePath)).toMatch(/^download-[0-9a-f-]+\.bin$/)
-    expect(automaticDownloadPath('/safe-downloads', '../../escape.txt', 'unique')).toBe(join(resolve('/safe-downloads'), 'escape-unique.txt'))
+    expect(automaticDownloadPath(downloadDirectory, '../../escape.txt', 'unique')).toBe(join(downloadDirectory, 'escape-unique.txt'))
   })
 
   it('caps concurrent downloads and cancels every item owned by a destroyed guest', () => {

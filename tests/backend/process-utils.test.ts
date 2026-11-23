@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, posix, toNamespacedPath } from 'node:path'
+import { join, parse, posix, relative } from 'node:path'
 import { PassThrough } from 'node:stream'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { probeHarnessExecutable } from '../../electron/main/harness-discovery'
@@ -22,8 +22,15 @@ vi.mock('node:child_process', async (importOriginal) => {
 const dirs: string[] = []
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }) })
 const temp = () => { const dir = mkdtempSync(join(realpathSync.native(tmpdir()), 'omp-desktop-process-')); dirs.push(dir); return dir }
-// POSIX discovery takes POSIX paths even when a Windows host supplies the filesystem.
-const tempPosix = () => process.platform === 'win32' ? toNamespacedPath(temp()).replaceAll('\\', '/') : temp()
+// POSIX nvm semantics need a POSIX-absolute home. On Windows, a slash-rooted
+// path names the current drive, so anchor a real fixture beside this process's
+// cwd and expose its drive-relative form; never fabricate a //?/ namespace.
+const tempPosix = () => {
+  if (process.platform !== 'win32') return temp()
+  const nativeHome = mkdtempSync(join(realpathSync.native(process.cwd()), 'omp-desktop-process-posix-'))
+  dirs.push(nativeHome)
+  return `/${relative(parse(nativeHome).root, nativeHome).replaceAll('\\', '/')}`
+}
 
 describe('login shell environment capture', () => {
   afterEach(() => setLoginShellEnvironmentSnapshot({}))
@@ -165,7 +172,7 @@ const update = (delta) => {
     state.active += delta
     state.max = Math.max(state.max, state.active)
     fs.writeFileSync(statePath, JSON.stringify(state))
-  } finally { fs.rmdirSync(lockPath) }
+  } finally { fs.rmSync(lockPath, { recursive: true, maxRetries: 100, retryDelay: 2 }) }
 }
 update(1)
 setTimeout(() => update(-1), 250)

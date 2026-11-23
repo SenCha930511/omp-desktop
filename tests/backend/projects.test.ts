@@ -1,7 +1,7 @@
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { lstat, realpath } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { join, parse, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { isBroadProjectRoot, ProjectService, resolveHomeSelection } from '../../electron/main/projects'
@@ -512,21 +512,20 @@ describe('broad project root authorization', () => {
     expect(resolveHomeSelection(path, options)).toBe(expected ?? tmpdir())
   })
 
-  it('redirects a home-directory picker result to /tmp like the CLI', async () => {
+  it('redirects a home-directory picker result to the OS temp directory like the CLI', async () => {
     const { service, store } = setup()
     electronMocks.dialog.showOpenDialog.mockResolvedValue({ canceled: false, filePaths: [homedir()] })
 
     const project = await service.add()
-    expect(project?.path).toBe(realpathSync('/tmp'))
+    const fallback = realpathSync.native(process.platform === 'win32' ? tmpdir() : '/tmp')
+    expect(project?.path).toBe(fallback)
     expect(store.snapshot().projects).toHaveLength(1)
-    expect(store.snapshot().projects[0]?.primaryFolder).toBe(realpathSync('/tmp'))
+    expect(store.snapshot().projects[0]?.primaryFolder).toBe(fallback)
   })
 
-  it.each([
-    ['filesystem root', realpathSync(resolve('/'))],
-    ['home directory', realpathSync(homedir())],
-  ])('keeps a persisted %s visible but quarantined from authorization', async (_label, path) => {
+  it.each(['filesystem root', 'home directory'] as const)('keeps a persisted %s visible but quarantined from authorization', async (label) => {
     const { root, service, store } = setup()
+    const path = label === 'filesystem root' ? realpathSync(parse(root).root) : realpathSync(homedir())
     const now = new Date().toISOString()
     await store.update((state) => { state.projects.push({
       id: 'broad-project', harness: 'omp', name: 'Broad project', path, folders: [path], primaryFolder: path,
@@ -534,12 +533,12 @@ describe('broad project root authorization', () => {
     }) })
 
     expect((await service.list()).map((project) => project.id)).toEqual(['broad-project'])
-    await expect(service.authorizeCwd(path === resolve('/') ? root : path)).rejects.toThrow(/unsafe broad.*remove it and add a narrower project folder/i)
+    await expect(service.authorizeCwd(label === 'filesystem root' ? root : path)).rejects.toThrow(/unsafe broad.*remove it and add a narrower project folder/i)
   })
 
   it('does not reauthorize a quarantined broad grant while rebuilding after removal', async () => {
     const { root, service, store } = setup()
-    const filesystemRoot = realpathSync(resolve('/'))
+    const filesystemRoot = realpathSync(parse(root).root)
     const now = new Date().toISOString()
     await store.update((state) => { state.projects.push(
       {
@@ -587,18 +586,31 @@ describe('ProjectService file listing', () => {
     const { root, service, store } = setup()
     mkdirSync(join(root, 'readable'))
     writeFileSync(join(root, 'readable', 'kept.txt'), 'kept')
-    mkdirSync(join(root, 'unreadable'))
-    writeFileSync(join(root, 'unreadable', 'hidden.txt'), 'hidden')
-    chmodSync(join(root, 'unreadable'), 0o000)
-    await store.update((state) => { state.projects.push({ id: 'project', harness: 'omp', name: 'Project', path: root, folders: [root], primaryFolder: root, pinned: false, createdAt: new Date().toISOString(), lastOpenedAt: new Date().toISOString(), folderIdentities: identities(root) }) })
-    await service.list()
+    const unreadable = join(root, 'unreadable')
+    mkdirSync(unreadable)
+    writeFileSync(join(unreadable, 'hidden.txt'), 'hidden')
+    const account = process.env.USERNAME ?? ''
+    if (process.platform === 'win32') {
+      expect(account).not.toBe('')
+      const denied = spawnSync('icacls.exe', [unreadable, '/deny', `${account}:(RD)`], { encoding: 'utf8' })
+      expect(denied.status, denied.stderr).toBe(0)
+    } else {
+      chmodSync(unreadable, 0o000)
+    }
     try {
+      await store.update((state) => { state.projects.push({ id: 'project', harness: 'omp', name: 'Project', path: root, folders: [root], primaryFolder: root, pinned: false, createdAt: new Date().toISOString(), lastOpenedAt: new Date().toISOString(), folderIdentities: identities(root) }) })
+      await service.list()
       const listing = await service.listFiles(root)
       expect(listing.entries).toContainEqual({ path: 'readable/kept.txt', type: 'file' })
       expect(listing.entries.some((entry) => entry.path === 'unreadable/hidden.txt')).toBe(false)
       expect(listing.skipped).toBe(1)
     } finally {
-      chmodSync(join(root, 'unreadable'), 0o700)
+      if (process.platform === 'win32') {
+        const restored = spawnSync('icacls.exe', [unreadable, '/remove:d', account], { encoding: 'utf8' })
+        expect(restored.status, restored.stderr).toBe(0)
+      } else {
+        chmodSync(unreadable, 0o700)
+      }
     }
   })
 

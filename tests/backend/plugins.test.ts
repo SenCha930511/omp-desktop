@@ -11,7 +11,7 @@ import { JsonStateStore } from '../../electron/main/store'
 
 const dirs: string[] = []
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }) })
-const temp = () => { const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-mcp-')); dirs.push(dir); return dir }
+const temp = () => { const dir = mkdtempSync(join(realpathSync.native(tmpdir()), 'omp-desktop-mcp-')); dirs.push(dir); return dir }
 
 describe('PluginService discovery', () => {
   it('reads dynamic bundled capability state on each refreshed catalog', async () => {
