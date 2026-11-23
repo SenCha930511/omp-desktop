@@ -119,6 +119,8 @@ function createBundleSizeFixture() {
 }
 
 const PINNED_NPM_INTEGRITY = 'sha512-uIXokLlBj6FpNUTQX1PmT5pz7BlIN9QlixX+zdaSNHsd0qUXsbDLr50xzY6Sw7cJVr0uzHKDOle0swmPW/p5Qw=='
+// Native Windows CI has needed 40-72s for real npm archive installation and verification; POSIX remains bounded at 30s.
+const NPM_BOOTSTRAP_TEST_TIMEOUT = process.platform === 'win32' ? 90_000 : 30_000
 
 function npmArtifactManifest(size: number, overrides: Record<string, unknown> = {}) {
   return JSON.stringify({
@@ -549,35 +551,39 @@ else if (JSON.stringify(args) === ${JSON.stringify(JSON.stringify(expectedInstal
     }
   })
 
-  test('installs the checked-in npm archive into a fresh prefix without network access', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'omp-desktop real npm bootstrap & '))
-    const prefix = join(directory, 'fresh global prefix')
-    const githubPath = join(directory, 'github-path')
-    const githubEnv = join(directory, 'github-env')
-    const cache = join(directory, 'npm cache')
-    const env = {
-      ...process.env,
-      GITHUB_PATH: githubPath,
-      GITHUB_ENV: githubEnv,
-      NPM_CONFIG_CACHE: join(directory, 'uppercase stale cache'),
-      npm_config_cache: cache,
-      NPM_CONFIG_PREFIX: join(directory, 'uppercase stale prefix'),
-      npm_config_prefix: prefix,
-    }
-    writeFileSync(githubPath, '')
-    writeFileSync(githubEnv, '')
-    try {
-      const result = bootstrapNpm({ env })
-      expect(result).toMatchObject({ installed: '12.0.2', prefix, githubPathUpdated: true, githubEnvUpdated: true })
-      expect(readFileSync(githubPath, 'utf8')).toBe(`${result.shimDirectory}\n`)
-      expect(readFileSync(githubEnv, 'utf8')).toBe(`npm_execpath=${result.cliPath}\n`)
-      expect(readNpmOutput(['--version'], { npmCliPath: result.cliPath })).toBe('12.0.2')
-      expect(readNpmOutput(['prefix', '--global'], { env })).toBe(prefix)
-      expect(readNpmOutput(['config', 'get', 'cache'], { env })).toBe(cache)
-    } finally {
-      rmSync(directory, { recursive: true, force: true })
-    }
-  }, 30_000)
+  test(
+    'installs the checked-in npm archive into a fresh prefix without network access',
+    () => {
+      const directory = mkdtempSync(join(tmpdir(), 'omp-desktop real npm bootstrap & '))
+      const prefix = join(directory, 'fresh global prefix')
+      const githubPath = join(directory, 'github-path')
+      const githubEnv = join(directory, 'github-env')
+      const cache = join(directory, 'npm cache')
+      const env = {
+        ...process.env,
+        GITHUB_PATH: githubPath,
+        GITHUB_ENV: githubEnv,
+        NPM_CONFIG_CACHE: join(directory, 'uppercase stale cache'),
+        npm_config_cache: cache,
+        NPM_CONFIG_PREFIX: join(directory, 'uppercase stale prefix'),
+        npm_config_prefix: prefix,
+      }
+      writeFileSync(githubPath, '')
+      writeFileSync(githubEnv, '')
+      try {
+        const result = bootstrapNpm({ env })
+        expect(result).toMatchObject({ installed: '12.0.2', prefix, githubPathUpdated: true, githubEnvUpdated: true })
+        expect(readFileSync(githubPath, 'utf8')).toBe(`${result.shimDirectory}\n`)
+        expect(readFileSync(githubEnv, 'utf8')).toBe(`npm_execpath=${result.cliPath}\n`)
+        expect(readNpmOutput(['--version'], { npmCliPath: result.cliPath })).toBe('12.0.2')
+        expect(readNpmOutput(['prefix', '--global'], { env })).toBe(prefix)
+        expect(readNpmOutput(['config', 'get', 'cache'], { env })).toBe(cache)
+      } finally {
+        rmSync(directory, { recursive: true, force: true })
+      }
+    },
+    NPM_BOOTSTRAP_TEST_TIMEOUT,
+  )
 
   test('persists only a validated npm shim directory for the next GitHub Actions step', () => {
     const directory = mkdtempSync(join(tmpdir(), 'omp-desktop-github-path-'))
