@@ -6,6 +6,8 @@ import { useI18n } from '@/lib/i18n'
 import type { GitStatus, ProjectFileEntry, ProjectRecord } from '@/types/api'
 import { EmptyState, IconButton } from '../ui'
 
+const FILE_NAME_COLLATOR = new Intl.Collator(undefined, { sensitivity: 'base', numeric: true })
+
 export interface FileTreeNode {
   id: string
   name: string
@@ -97,7 +99,7 @@ export function buildTreeFromEntries(entries: ProjectFileEntry[], root: string, 
   const sortNodes = (nodes: FileTreeNode[]) => {
     nodes.sort((a, b) => {
       if (a.type !== b.type) return a.type === 'directory' ? -1 : 1
-      return a.name.localeCompare(b.name, undefined, { sensitivity: 'base', numeric: true })
+      return FILE_NAME_COLLATOR.compare(a.name, b.name)
     })
     for (const node of nodes) {
       if (node.children.length > 0) {

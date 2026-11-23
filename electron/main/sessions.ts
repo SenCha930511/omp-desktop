@@ -251,7 +251,9 @@ export class SessionService {
       const { sessionName: _sessionName, previousSessionFiles: _previousSessionFiles, ...record } = metadata
       records.push({ ...record, harness: this.harness, archived: isArchived, pinned: isPinned })
     }
-    return records.sort((a, b) => Date.parse(b.lastUserMessageAt ?? b.createdAt) - Date.parse(a.lastUserMessageAt ?? a.createdAt) || comparePaths(a.filePath, b.filePath))
+    const ordered = records.map((record) => ({ record, sortKey: Date.parse(record.lastUserMessageAt ?? record.createdAt) }))
+    ordered.sort((left, right) => right.sortKey - left.sortKey || comparePaths(left.record.filePath, right.record.filePath))
+    return ordered.map((entry) => entry.record)
   }
 
   private snapshotRuntimeSessions(): Map<string, RuntimeSessionSnapshot> | null {
