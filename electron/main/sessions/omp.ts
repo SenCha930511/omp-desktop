@@ -1,22 +1,26 @@
-import { closeSync, openSync, readSync, writeSync } from 'node:fs'
+import { closeSync, openSync, readSync, writeSync, type Stats } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { isRecord } from '../validation'
 import type { SessionServiceOptions } from '../sessions'
 import type { SessionCatalogIo } from './catalog'
 import {
+  bucketedMetadataFromAccumulator,
   createBranchSummaryTranscriptReader,
   createBucketedCatalogIo,
   createBucketedMetadataParser,
+  idFromBucketedFileName,
   isBucketedSessionPath,
   timestampFromBucketedSessionName,
 } from './bucketed'
 import {
   createIncrementalMetadataReader,
   nodeMetadataReaderIo,
+  type SessionMetadata,
   type SessionMetadataReader,
   type SessionMetadataReaderIo,
 } from './metadata'
+import { ompWasmEnabled, scanOmpMetadataBytes } from './omp-wasm'
 import { compactText, type TranscriptFileReader } from './transcript'
 
 /**
@@ -32,6 +36,8 @@ import { compactText, type TranscriptFileReader } from './transcript'
  * record shapes lives in `./bucketed`.
  */
 export const OMP_TITLE_SLOT_BYTES = 256
+const MAX_WASM_FAST_BYTES = 64 * 1024 * 1024
+const MAX_FAST_CACHE_ENTRIES = 5_000
 
 export function ompSessionRoot(): string {
   return join(homedir(), '.omp', 'agent', 'sessions')
@@ -134,9 +140,57 @@ export function writeOmpTitleSlot(filePath: string, title: string): boolean {
  */
 export function createOmpSessionMetadataReader(io: SessionMetadataReaderIo = nodeMetadataReaderIo): SessionMetadataReader {
   const readTail = createIncrementalMetadataReader(ompMetadataParser, io, OMP_TITLE_SLOT_BYTES)
+  const fastCache = new Map<string, { size: number; mtimeMs: number; metadata: SessionMetadata }>()
+  const rememberFast = (filePath: string, fileStat: Stats, metadata: SessionMetadata): void => {
+    fastCache.delete(filePath)
+    fastCache.set(filePath, { size: fileStat.size, mtimeMs: fileStat.mtimeMs, metadata })
+    while (fastCache.size > MAX_FAST_CACHE_ENTRIES) {
+      const oldest = fastCache.keys().next().value
+      if (oldest === undefined) break
+      fastCache.delete(oldest)
+    }
+  }
+  const fastRead = async (filePath: string, fileStat: Stats): Promise<SessionMetadata | undefined> => {
+    if (!io.readAll || !ompWasmEnabled() || fileStat.size > MAX_WASM_FAST_BYTES) return undefined
+    let bytes: Buffer
+    try {
+      bytes = await io.readAll(filePath)
+    } catch {
+      return undefined
+    }
+    const nameTimestamp = timestampFromBucketedSessionName(filePath)
+    const result = await scanOmpMetadataBytes(bytes, {
+      id: idFromBucketedFileName(filePath),
+      createdAt: nameTimestamp !== undefined ? new Date(nameTimestamp).toISOString() : fileStat.birthtime.toISOString(),
+      updatedAt: fileStat.mtime.toISOString(),
+    }, OMP_TITLE_SLOT_BYTES)
+    if (result.status === 'error') {
+      if (result.reason === 'too-many-records') throw new Error('Session file has too many records')
+      if (result.reason === 'record-too-large') throw new Error('JSONL record exceeded the maximum frame size')
+      return undefined
+    }
+    if (result.status !== 'ok') return undefined
+    const metadata = bucketedMetadataFromAccumulator(result.accumulator, filePath, fileStat.mtime.toISOString())
+    rememberFast(filePath, fileStat, metadata)
+    return metadata
+  }
   return async (filePath, knownStat) => {
-    const [metadata, title] = await Promise.all([readTail(filePath, knownStat), readOmpTitleSlot(io, filePath)])
+    let fileStat: Stats
+    try {
+      fileStat = knownStat ?? await io.inspect(filePath)
+    } catch (error) {
+      fastCache.delete(filePath)
+      throw error
+    }
+    const cached = fastCache.get(filePath)
+    if (cached && cached.size === fileStat.size && cached.mtimeMs === fileStat.mtimeMs) return cached.metadata
+    if (!cached) {
+      const fast = await fastRead(filePath, fileStat)
+      if (fast) return fast
+    }
+    const [metadata, title] = await Promise.all([readTail(filePath, fileStat), readOmpTitleSlot(io, filePath)])
     if (title !== undefined) metadata.title = compactText(title, 100)
+    rememberFast(filePath, fileStat, metadata)
     return metadata
   }
 }
