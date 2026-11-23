@@ -582,6 +582,31 @@ describe('ProjectService file listing', () => {
     })
   })
 
+  it('keeps depth-first order after a concurrent directory scan', async () => {
+    const { root, service, store } = setup()
+    mkdirSync(join(root, 'src', 'components'), { recursive: true })
+    mkdirSync(join(root, 'docs'))
+    writeFileSync(join(root, 'src', 'components', 'button.ts'), 'export {}')
+    writeFileSync(join(root, 'src', 'index.ts'), 'export {}')
+    writeFileSync(join(root, 'docs', 'readme.md'), 'docs')
+    writeFileSync(join(root, 'root.txt'), 'root')
+    await store.update((state) => { state.projects.push({ id: 'project', harness: 'omp', name: 'Project', path: root, folders: [root], primaryFolder: root, pinned: false, createdAt: new Date().toISOString(), lastOpenedAt: new Date().toISOString(), folderIdentities: identities(root) }) })
+
+    await service.list()
+    expect(await service.listFiles(root)).toEqual({
+      entries: [
+        { path: 'docs', type: 'directory' },
+        { path: 'docs/readme.md', type: 'file' },
+        { path: 'src', type: 'directory' },
+        { path: 'src/components', type: 'directory' },
+        { path: 'src/components/button.ts', type: 'file' },
+        { path: 'src/index.ts', type: 'file' },
+        { path: 'root.txt', type: 'file' },
+      ],
+      skipped: 0,
+    })
+  })
+
   it('skips unreadable directories and reports how many were skipped', async () => {
     const { root, service, store } = setup()
     mkdirSync(join(root, 'readable'))
