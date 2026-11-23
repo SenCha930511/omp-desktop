@@ -22,7 +22,7 @@ function runGit(cwd: string, ...args: string[]): string {
 }
 
 async function setup() {
-  const dir = mkdtempSync(join(tmpdir(), 'gooeypi-checkouts-'))
+  const dir = mkdtempSync(join(realpathSync.native(tmpdir()), 'gooeypi-checkouts-'))
   dirs.push(dir)
   const root = join(dir, 'project')
   mkdirSync(root)

@@ -147,7 +147,13 @@ describe('HarnessDiscoveryService', () => {
 
       const nonExecutableFailures: Array<{ path: string; reason: string }> = []
       await findHarnessExecutable(HARNESSES.omp, nonExecutable, async () => false, (failure) => nonExecutableFailures.push(failure))
-      expect(nonExecutableFailures.find((failure) => failure.path === nonExecutable)).toEqual({ path: nonExecutable, reason: 'not executable', kind: 'rejected' })
+      expect(nonExecutableFailures.find((failure) => failure.path === nonExecutable)).toEqual({
+        path: nonExecutable,
+        // Windows cannot express the POSIX execute bit, so the actual spawn
+        // rejection—not a fabricated permission result—is authoritative there.
+        reason: process.platform === 'win32' ? 'probe failed' : 'not executable',
+        kind: 'rejected',
+      })
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -205,8 +211,8 @@ describe('HarnessDiscoveryService', () => {
 
   it('keeps the meaningful last stderr line in a probe failure', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'gooeypi-probe-'))
-    const executable = join(dir, 'omp')
-    writeFileSync(executable, '#!/bin/sh\nprintf "warning noise\\n(node:123) ExperimentalWarning: noisy\\nTypeError: webidl.util.markAsUncloneable is not a function\\n" >&2\nexit 1\n')
+    const executable = join(dir, 'omp.cjs')
+    writeFileSync(executable, "#!/usr/bin/env node\nprocess.stderr.write('warning noise\\n(node:123) ExperimentalWarning: noisy\\nTypeError: webidl.util.markAsUncloneable is not a function\\n')\nprocess.exit(1)\n")
     chmodSync(executable, 0o755)
     try {
       await expect(probeHarnessExecutable(executable)).resolves.toMatchObject({

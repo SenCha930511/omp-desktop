@@ -1,17 +1,19 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve, sep } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { canonicalSessionPath } from '../../electron/main/session-paths'
 
 const realpathCalls = vi.hoisted(() => ({ count: 0 }))
+const virtualRoot = resolve('/virtual')
+const virtualPath = (name: string): string => join(virtualRoot, name)
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>()
   return {
     ...actual,
     realpathSync: (path: string): string => {
       realpathCalls.count += 1
-      return path.startsWith('/virtual/') ? path : actual.realpathSync(path)
+      return path === virtualRoot || path.startsWith(`${virtualRoot}${sep}`) ? path : actual.realpathSync(path)
     },
   }
 })
@@ -55,27 +57,27 @@ describe('canonicalSessionPath cache', () => {
     const target = join(dir, 'target')
     mkdirSync(target)
     canonicalSessionPath(target)
-    for (let index = 0; index < 1_024; index += 1) canonicalSessionPath(`/virtual/fill-${index}`)
+    for (let index = 0; index < 1_024; index += 1) canonicalSessionPath(virtualPath(`fill-${index}`))
     // The 1,025th insert evicts the target (the oldest entry) only: recent
     // entries survive, so the map never restarts from empty.
-    canonicalSessionPath('/virtual/overflow')
+    canonicalSessionPath(virtualPath('overflow'))
     const afterFill = realpathCalls.count
-    canonicalSessionPath('/virtual/fill-1000')
+    canonicalSessionPath(virtualPath('fill-1000'))
     expect(realpathCalls.count).toBe(afterFill)
     canonicalSessionPath(target)
     expect(realpathCalls.count).toBe(afterFill + 1)
   })
 
   it('keeps a re-read entry hot across a burst of distinct paths', () => {
-    canonicalSessionPath('/virtual/hot')
-    for (let index = 0; index < 1_023; index += 1) canonicalSessionPath(`/virtual/burst-${index}`)
-    // Re-reading refreshes recency, so the next insert evicts `/virtual/burst-0`.
-    canonicalSessionPath('/virtual/hot')
-    canonicalSessionPath('/virtual/late')
+    canonicalSessionPath(virtualPath('hot'))
+    for (let index = 0; index < 1_023; index += 1) canonicalSessionPath(virtualPath(`burst-${index}`))
+    // Re-reading refreshes recency, so the next insert evicts the first burst entry.
+    canonicalSessionPath(virtualPath('hot'))
+    canonicalSessionPath(virtualPath('late'))
     const before = realpathCalls.count
-    canonicalSessionPath('/virtual/hot')
+    canonicalSessionPath(virtualPath('hot'))
     expect(realpathCalls.count).toBe(before)
-    canonicalSessionPath('/virtual/burst-0')
+    canonicalSessionPath(virtualPath('burst-0'))
     expect(realpathCalls.count).toBe(before + 1)
   })
 })

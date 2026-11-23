@@ -73,7 +73,7 @@ function rewriteTitleSlot(file: string, title: string): void {
 }
 
 function setup(maxSessionFiles?: number): { root: string; project: string; service: SessionService; store: JsonStateStore } {
-  const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-omp-sessions-')); dirs.push(dir)
+  const dir = mkdtempSync(join(realpathSync.native(tmpdir()), 'omp-desktop-omp-sessions-')); dirs.push(dir)
   const root = join(dir, 'sessions'); mkdirSync(root)
   const project = join(dir, 'project'); mkdirSync(project)
   const store = new JsonStateStore(join(dir, 'state.json')); stores.push(store)
@@ -175,7 +175,7 @@ describe('OMP metadata reader', () => {
   })
 
   it('picks up an in-place title-slot rewrite without losing incremental tail state', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-omp-title-')); dirs.push(dir)
+    const dir = mkdtempSync(join(realpathSync.native(tmpdir()), 'omp-desktop-omp-title-')); dirs.push(dir)
     const file = join(dir, NAME_A)
     const bulk = Array.from({ length: 8 }, (_, index) => ompEntry('message', `aa11bb2${index}`, index ? `aa11bb2${index - 1}` : null, {
       message: { role: 'user', content: `filler ${'x'.repeat(600)}` },
@@ -705,7 +705,7 @@ describe('OMP file-level rename fallback', () => {
   })
 
   it('leaves a file whose first line is the session header untouched', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-omp-no-slot-')); dirs.push(dir)
+    const dir = mkdtempSync(join(realpathSync.native(tmpdir()), 'omp-desktop-omp-no-slot-')); dirs.push(dir)
     const file = join(dir, NAME_A)
     const body = `${JSON.stringify({ type: 'session', version: 3, id: 'no-slot', timestamp: '2026-08-08T02:12:49.414Z', cwd: '/tmp' })}\n`
     writeFileSync(file, body)
@@ -780,7 +780,7 @@ describe('OMP session branching and pinning', () => {
   })
 
   it('persists session pins in the app store and reflects them in list()', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-omp-pins-')); dirs.push(dir)
+    const dir = mkdtempSync(join(realpathSync.native(tmpdir()), 'omp-desktop-omp-pins-')); dirs.push(dir)
     const root = join(dir, 'sessions'); mkdirSync(root)
     const project = join(dir, 'project'); mkdirSync(project)
     const statePath = join(dir, 'state.json')
@@ -841,9 +841,9 @@ describe('session lineage references', () => {
     writeOmpSession(join(root, '-bucket', NAME_A), { id: 'source-session', cwd: project })
     // Siblings naming one source can be deliberate branches the user kept:
     // every conversation stays listed.
-    writeOmpSession(join(root, '-bucket', `2026-08-09T10:00:00.000Z_${'0'.repeat(8)}-0000-7000-8000-0000000000b1.jsonl`), { id: 'branch-one', cwd: project, timestamp: '2026-08-09T10:00:00.000Z', header: { parentSession: 'source-session' } })
-    writeOmpSession(join(root, '-bucket', `2026-08-09T11:00:00.000Z_${'0'.repeat(8)}-0000-7000-8000-0000000000b2.jsonl`), { id: 'branch-two', cwd: project, timestamp: '2026-08-09T11:00:00.000Z', header: { parentSession: 'source-session' } })
-    writeOmpSession(join(root, '-bucket', `2026-08-09T12:00:00.000Z_${'0'.repeat(8)}-0000-7000-8000-0000000000b3.jsonl`), { id: 'branch-three', cwd: project, timestamp: '2026-08-09T12:00:00.000Z', header: { parentSession: 'source-session' } })
+    writeOmpSession(join(root, '-bucket', `2026-08-09T10-00-00-000Z_${'0'.repeat(8)}-0000-7000-8000-0000000000b1.jsonl`), { id: 'branch-one', cwd: project, timestamp: '2026-08-09T10:00:00.000Z', header: { parentSession: 'source-session' } })
+    writeOmpSession(join(root, '-bucket', `2026-08-09T11-00-00-000Z_${'0'.repeat(8)}-0000-7000-8000-0000000000b2.jsonl`), { id: 'branch-two', cwd: project, timestamp: '2026-08-09T11:00:00.000Z', header: { parentSession: 'source-session' } })
+    writeOmpSession(join(root, '-bucket', `2026-08-09T12-00-00-000Z_${'0'.repeat(8)}-0000-7000-8000-0000000000b3.jsonl`), { id: 'branch-three', cwd: project, timestamp: '2026-08-09T12:00:00.000Z', header: { parentSession: 'source-session' } })
 
     const records = await service.list()
     expect(records.map((record) => record.id).sort()).toEqual(['branch-one', 'branch-three', 'branch-two', 'source-session'])
@@ -921,7 +921,7 @@ describe('session lineage references', () => {
 
 describe('OMP image blob references', () => {
   it('resolves blob:sha256 image data from the blob store into inline parts', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-omp-blobs-')); dirs.push(dir)
+    const dir = mkdtempSync(join(realpathSync.native(tmpdir()), 'omp-desktop-omp-blobs-')); dirs.push(dir)
     const root = join(dir, 'sessions'); mkdirSync(root)
     const project = join(dir, 'project'); mkdirSync(project)
     const blobs = join(dir, 'blobs'); mkdirSync(blobs)
@@ -950,7 +950,7 @@ describe('OMP image blob references', () => {
   })
 
   it('marks a missing blob as unavailable instead of failing the transcript read', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-omp-blobs-missing-')); dirs.push(dir)
+    const dir = mkdtempSync(join(realpathSync.native(tmpdir()), 'omp-desktop-omp-blobs-missing-')); dirs.push(dir)
     const root = join(dir, 'sessions'); mkdirSync(join(root, '-bucket'), { recursive: true })
     const blobs = join(dir, 'blobs'); mkdirSync(blobs)
     const file = join(root, '-bucket', NAME_A)
@@ -968,7 +968,7 @@ describe('OMP image blob references', () => {
   })
 
   it('reads only the prefix of an oversized blob instead of buffering the whole file', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-omp-blobs-large-')); dirs.push(dir)
+    const dir = mkdtempSync(join(realpathSync.native(tmpdir()), 'omp-desktop-omp-blobs-large-')); dirs.push(dir)
     const root = join(dir, 'sessions'); mkdirSync(join(root, '-bucket'), { recursive: true })
     const project = join(dir, 'project'); mkdirSync(project)
     const blobs = join(dir, 'blobs'); mkdirSync(blobs)

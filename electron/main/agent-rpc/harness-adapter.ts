@@ -1,4 +1,4 @@
-import type { HarnessId, PrimeContextUsage, SessionActionSnapshot, SessionUsage, SessionUsageTokens, UsageLimitState } from '../../../src/types/api'
+import type { HarnessId, PrimeContextUsage, SessionActionSnapshot, SessionUsage, SessionUsageTokens, SlowModeScope, UsageLimitState } from '../../../src/types/api'
 import { MAX_QUEUED_ACTIONS, parseSessionActionSnapshot } from '../../../src/lib/session-actions'
 import { extensionInjections } from '../extension-manifest'
 import { HARNESSES } from '../harness'
@@ -16,12 +16,16 @@ export interface HarnessStartArgsInput {
   thinking?: string
   /** OMP-only approval override; ignored by harnesses without the flag. */
   approvalMode?: string
+  /** Desktop runtimes answer extension/tool UI; unattended children set false to run plain RPC with --no-ui. */
+  interactive?: boolean
   environment: NodeJS.ProcessEnv
 }
 
 /** Harness-specific fields read from get_state data, normalized to Prime vocabulary. */
 export interface HarnessStateReading {
   serviceTier?: 'default' | 'priority'
+  /** Actual provider state; absence is unknown, not inactive. */
+  serviceTierActive?: boolean
   /** 回報表示帳號進入限流;state dump 缺席該欄代表未限流(讀取方清除)。 */
   usageLimit?: UsageLimitState
   contextUsage?: PrimeContextUsage
@@ -30,6 +34,8 @@ export interface HarnessStateReading {
   /** `/slow` 是否適用於目前模型;缺席代表上游未回報,讀取方保留既有值。 */
   slowModeSupported?: boolean
   slowModeEnabled?: boolean
+  /** Absent means unknown; never infer a write scope from the model or support flag. */
+  slowModeScope?: SlowModeScope
   sessionActions?: SessionActionSnapshot
 }
 
@@ -127,7 +133,7 @@ const OMP_UNSUPPORTED_COMMANDS = new Set([
   'agent_messages_clear',
 ])
 
-const OMP_APPROVAL_MODES = new Set(['always-ask', 'write', 'yolo'])
+const OMP_APPROVAL_MODES = new Set(['always-ask', 'always-ask-cached', 'write', 'yolo'])
 
 // 上游 LivePhase(v18.12.6 packages/tui/src/apps/live-visualizer.ts:15)。
 const LIVE_PHASES: ReadonlySet<string> = new Set(['connecting', 'listening', 'working', 'speaking', 'muted', 'error'])
@@ -140,7 +146,10 @@ export const OMP_RPC_ADAPTER: HarnessRpcAdapter = {
   negotiateProtocolVersion: 2,
   chunkedFrames: true,
   buildStartArgs: (input) => {
-    const args = ['--mode', 'rpc', '--cwd', input.cwd]
+    // Manager.start is the established interactive Desktop path; omission keeps
+    // direct adapter callers on that default. startUnattended explicitly opts
+    // out so ordinary RPC cannot leave a scheduled child awaiting host UI.
+    const args = ['--mode', input.interactive === false ? 'rpc' : 'rpc-ui', '--cwd', input.cwd]
     if (input.sessionPath) args.push('--resume', input.sessionPath)
     if (input.modelId !== undefined) {
       // OMP takes a single provider/id selector; a raw model string with no
@@ -163,6 +172,7 @@ export const OMP_RPC_ADAPTER: HarnessRpcAdapter = {
       const extensionPath = input.environment[injection.environmentVariable]
       if (extensionPath && !unsafeArgValue(extensionPath)) args.push('--extension', extensionPath)
     }
+    if (input.interactive === false) args.push('--no-ui')
     return args
   },
   translateCommand: (command) => {
@@ -266,8 +276,10 @@ export const OMP_RPC_ADAPTER: HarnessRpcAdapter = {
   readState: (data) => {
     const reading: HarnessStateReading = {}
     if (typeof data.fastModeEnabled === 'boolean') reading.serviceTier = data.fastModeEnabled ? 'priority' : 'default'
+    if (typeof data.fastModeActive === 'boolean') reading.serviceTierActive = data.fastModeActive
     if (typeof data.slowModeSupported === 'boolean') reading.slowModeSupported = data.slowModeSupported
     if (typeof data.slowModeEnabled === 'boolean') reading.slowModeEnabled = data.slowModeEnabled
+    if (data.slowModeScope === 'global' || data.slowModeScope === 'session') reading.slowModeScope = data.slowModeScope
     // state dump 以欄位缺席表達「未限流」;讀取方據此清除。
     const usageLimit = parseUsageLimitState(data.usageLimit)
     if (usageLimit) reading.usageLimit = usageLimit

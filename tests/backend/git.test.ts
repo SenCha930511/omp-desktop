@@ -1,6 +1,6 @@
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createAndSwitchGitBranch, createGitWorktree, GIT_DIFF_LINE_LIMIT, GIT_STATUS_ENTRY_LIMIT, GitService, inspectGitWorktreeClean, listGitWorktrees, listLocalGitBranches, switchGitBranch } from '../../electron/main/git'
@@ -13,7 +13,7 @@ const git = (cwd: string, ...args: string[]) => {
   if (result.status !== 0) throw new Error(result.stderr)
 }
 const repository = (prefix = 'omp-desktop-git-') => {
-  const cwd = mkdtempSync(join(tmpdir(), prefix)); dirs.push(cwd)
+  const cwd = mkdtempSync(join(realpathSync.native(tmpdir()), prefix)); dirs.push(cwd)
   git(cwd, 'init', '-q'); git(cwd, 'config', 'user.name', 'Prime Work Test'); git(cwd, 'config', 'user.email', 'test@example.com')
   writeFileSync(join(cwd, 'file.txt'), 'base\n'); git(cwd, 'add', 'file.txt'); git(cwd, 'commit', '-qm', 'base')
   return cwd
@@ -227,8 +227,10 @@ describe('GitService', () => {
     mkdirSync(join(cwd, '.idea'))
     writeFileSync(join(cwd, '.idea', 'misc.xml'), '<misc/>\n')
     const oldHome = process.env.HOME
+    const oldUserProfile = process.env.USERPROFILE
     const oldXdg = process.env.XDG_CONFIG_HOME
     process.env.HOME = home
+    process.env.USERPROFILE = home
     delete process.env.XDG_CONFIG_HOME
     try {
       const service = new GitService(async () => cwd)
@@ -237,6 +239,8 @@ describe('GitService', () => {
     } finally {
       if (oldHome === undefined) delete process.env.HOME
       else process.env.HOME = oldHome
+      if (oldUserProfile === undefined) delete process.env.USERPROFILE
+      else process.env.USERPROFILE = oldUserProfile
       if (oldXdg === undefined) delete process.env.XDG_CONFIG_HOME
       else process.env.XDG_CONFIG_HOME = oldXdg
     }
@@ -492,7 +496,7 @@ printf 'mutated by filter\n'
 
     expect(worktrees).toEqual(expect.arrayContaining([
       expect.objectContaining({ path: realpathSync(cwd), current: true, detached: false }),
-      expect.objectContaining({ path: realpathSync(target), name: target.split('/').at(-1), branch: 'feature/test', current: false, detached: false }),
+      expect.objectContaining({ path: realpathSync(target), name: basename(target), branch: 'feature/test', current: false, detached: false }),
     ]))
     await expect(createGitWorktree(cwd, `${cwd}-invalid`, '../unsafe')).rejects.toThrow(/branch validation/i)
   })

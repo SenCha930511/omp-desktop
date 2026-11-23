@@ -11,7 +11,7 @@ const identities = (...paths: string[]) => Object.fromEntries(paths.map((path) =
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }) })
 
 function fixture() {
-  const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-project-removal-'))
+  const dir = mkdtempSync(join(realpathSync.native(tmpdir()), 'omp-desktop-project-removal-'))
   dirs.push(dir)
   const folder = join(dir, 'project')
   mkdirSync(folder)

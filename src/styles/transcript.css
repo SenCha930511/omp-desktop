@@ -113,12 +113,10 @@
 .markdown-link-unsupported { color: var(--text-secondary); text-decoration: underline dotted; text-underline-offset: 2px; cursor: help; }
 .work-disclosure { margin: 8px 0 3px; }
 .work-disclosure.is-running { margin-top: 0; padding: 0 0 4px; }
-/* A work section taller than the viewport pins its status row — elapsed time
-   and tool count stay readable while the reader scrolls through a long live
-   session. Sticky offsets sit inside the scroller's top padding (48px, 96px
-   once the todo hud reserves its zone), so -40px docks the row at the
-   viewport edge without the hud and just under it when one is present. */
-.work-disclosure__button { width: 100%; min-height: 26px; display: flex; align-items: center; gap: 8px; padding: 3px 0; color: var(--text-tertiary); background: var(--canvas); text-align: left; font-size: 12px; font-weight: 500; position: sticky; top: -40px; z-index: 3; }
+/* A work section taller than the viewport pins its status row. The offset
+   cancels the scroller's 48px baseline padding and keeps the opaque header
+   below the hud's reserved zone instead of leaving an uncovered strip above it. */
+.work-disclosure__button { width: 100%; min-height: 26px; display: flex; align-items: center; gap: 8px; padding: 3px 0; color: var(--text-tertiary); background: var(--canvas); text-align: left; font-size: 12px; font-weight: 500; position: sticky; top: -48px; z-index: 3; }
 /* The status header rides above its rows: a hairline rule separates it from
    the timeline and marks the pinned row's edge while content scrolls
    beneath the sticky header. Collapsed sections keep a plain summary. */
@@ -162,10 +160,13 @@
 .activity-line--tool:hover, .activity-line--agent:hover { color: var(--text); }
 .activity-line--tool:hover .activity-line__kind, .activity-line--agent:hover .activity-line__kind { color: var(--text); }
 .activity-line--tool:hover .activity-line__icon, .activity-line--agent:hover .activity-line__icon { color: var(--text-secondary); }
-/* Top-docked transcript HUD: the todo plan floats at the top of the pane,
-   above the scrolling conversation, spanning the full column width. */
-.transcript-hud { position: absolute; top: 12px; left: 14px; right: 14px; z-index: 8; display: flex; flex-direction: column; gap: 6px; }
-.conversation-pane:has(.transcript-hud) .transcript { padding-top: 96px; scroll-padding-top: 80px; }
+/* Top-docked transcript HUD: the container paints the same reserved band the
+   scroller adds in flow, above ordinary rows but below the sticky header. The
+   interactive todo card remains topmost without a parent stacking context. */
+.conversation-pane:has(.transcript-hud) { --transcript-hud-reserve: 96px; }
+.conversation-pane:has(.transcript-hud) .transcript { padding-top: var(--transcript-hud-reserve); scroll-padding-top: 80px; }
+.transcript-hud { position: absolute; top: 12px; left: 14px; right: 14px; display: flex; flex-direction: column; gap: 6px; }
+.transcript-hud::before { content: ''; position: absolute; top: -12px; left: -14px; right: -14px; z-index: 1; height: var(--transcript-hud-reserve); background: var(--canvas); }
 /* Compaction renders Claude-Code style: one quiet centered divider line in
    the conversation flow. Solid colors only. */
 .compaction-divider { display: flex; align-items: center; gap: 10px; margin: 10px 0; color: var(--text-tertiary); font-size: 10.5px; line-height: 1.4; }
@@ -184,7 +185,7 @@
 .compaction-sync-retry__button:disabled { opacity: 0.6; cursor: default; }
 .compaction-sync-retry__error { color: var(--danger); }
 .compaction-sync-retry__note { color: var(--success); }
-.todo-hud { min-width: 0; border: 1px solid var(--border); border-radius: 10px; background: var(--canvas); overflow: hidden; }
+.todo-hud { position: relative; z-index: 8; min-width: 0; border: 1px solid var(--border); border-radius: 10px; background: var(--canvas); overflow: hidden; }
 .todo-hud__bar { width: 100%; display: flex; align-items: center; gap: 7px; min-height: 30px; padding: 4px 48px 4px 10px; border: 0; background: transparent; color: var(--text); font-size: 11.5px; cursor: pointer; }
 .todo-hud__bar:hover { background: var(--surface-subtle); }
 .todo-hud__title { flex: 0 0 auto; font-weight: 600; }
@@ -224,6 +225,21 @@
 .activity-tool__details-toolbar { display: flex; justify-content: flex-end; padding: 3px 4px 0; }
 .activity-tool__copy { min-height: 22px; display: inline-flex; align-items: center; gap: 4px; padding: 0 6px; border-radius: 5px; color: var(--text-tertiary); background: transparent; font-size: 10.5px; }
 .activity-tool__copy:hover { color: var(--text-secondary); background: var(--surface-hover); }
+.activity-tool__native-metadata { min-width: 0; padding: 4px 9px 7px; color: var(--text-secondary); overflow-wrap: anywhere; }
+.activity-tool__bash-metadata { display: flex; flex-wrap: wrap; gap: 3px 14px; margin: 0; }
+.activity-tool__bash-metadata > div { display: flex; min-width: 0; gap: 4px; }
+.activity-tool__bash-metadata dt { color: var(--text-tertiary); }
+.activity-tool__bash-metadata dd { min-width: 0; margin: 0; color: var(--text-secondary); }
+.activity-tool__wait-jobs > div:first-child { color: var(--text-tertiary); }
+.activity-tool__wait-jobs ol { display: grid; gap: 6px; margin: 5px 0 0; padding: 0; list-style: none; }
+.activity-tool__wait-jobs li { min-width: 0; overflow-wrap: anywhere; }
+.activity-tool__wait-jobs li > div:first-child { display: flex; flex-wrap: wrap; align-items: baseline; gap: 3px 8px; }
+.activity-tool__wait-jobs code, .activity-tool__engine-elapsed { color: var(--text-tertiary); font-size: 10.5px; }
+.activity-tool__engine-elapsed { margin-left: auto; white-space: nowrap; }
+.activity-tool__job-result, .activity-tool__job-error { margin-top: 2px; white-space: pre-wrap; }
+.activity-tool__job-error { color: var(--danger); }
+.activity-tool__test-report { display: grid; gap: 2px; font-variant-numeric: tabular-nums; }
+.activity-tool__test-report-line { color: var(--text-secondary); }
 .activity-tool__contents { margin: 0; padding: 4px 9px 7px; white-space: pre-wrap; word-break: break-word; }
 .activity-line--result { display: flex; align-items: flex-start; gap: 5px; padding: 2px 5px; color: var(--text-tertiary); }
 .activity-line--result.is-error { color: var(--danger); }

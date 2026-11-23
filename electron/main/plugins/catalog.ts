@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto'
-import type { Dir } from 'node:fs'
-import { lstat, opendir, readdir, realpath } from 'node:fs/promises'
+import { realpath as nativeRealpath, type Dir } from 'node:fs'
+import { lstat, opendir, readdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path'
+import { promisify } from 'node:util'
 import type { HarnessId, PluginCatalog, PluginWarning, SkillRecord } from '../../../src/types/api'
 import {
   collectMcpSecretExpansionFields,
@@ -15,6 +16,11 @@ import { HARNESSES } from '../harness'
 import { mapLimit } from '../lib/async'
 import { isPathWithin, isRecord } from '../validation'
 import { errorCode, readAtMost } from './file-io'
+
+// Reveal authorization uses realpathSync.native. Use the same physical path
+// identity for discovered records and every containment root, including on
+// Windows where the portable realpath can preserve a supplied 8.3 alias.
+const realpath = promisify(nativeRealpath.native)
 
 type Kind = SkillRecord['kind']
 type Location = SkillRecord['location']
@@ -68,7 +74,7 @@ async function markdownMetadata(path: string): Promise<{ name?: string; descript
 
 function normalizedPackageSlug(source: string): string {
   let value = source.trim().replace(/^(?:npm:|git:)/i, '').replace(/[?#].*$/, '').replace(/\.git$/i, '')
-  value = value.replace(/\/+$/, '').slice(value.lastIndexOf('/') + 1).replace(/@[^@/]+$/, '')
+  value = value.replace(/[\\/]+$/, '').split(/[\\/]/).at(-1)!.replace(/@[^@/]+$/, '')
   return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 120) || 'package'
 }
 
@@ -129,10 +135,6 @@ async function readSettings(path: string, scope: PluginWarning['scope']): Promis
   return { settings: value }
 }
 
-async function pathExists(path: string): Promise<boolean> {
-  try { await lstat(path); return true } catch { return false }
-}
-
 async function canonicalPath(path: string): Promise<string> {
   try { return await realpath(path) } catch { return resolve(path) }
 }
@@ -142,9 +144,9 @@ async function samePath(left: string, right: string): Promise<boolean> {
   return canonicalLeft === canonicalRight
 }
 
-function resolveConfiguredPath(value: string, base: string): string | null {
+function resolveConfiguredPath(value: string, base: string, homeDir: string): string | null {
   if (!value || /^[!+*-]/.test(value) || value.includes('*') || value.includes('?')) return null
-  const expanded = value === '~' ? homedir() : value.startsWith('~/') ? join(homedir(), value.slice(2)) : value
+  const expanded = value === '~' ? homeDir : value.startsWith('~/') ? join(homeDir, value.slice(2)) : value
   return resolve(base, expanded)
 }
 
@@ -181,7 +183,7 @@ async function collectDirectory(
 ): Promise<void> {
   if (discoveryExhausted(budget)) return
   const depth = options.depth ?? 0
-  if (depth === 0 && options.containmentRoots?.length) {
+  if (depth === 0 && options.containmentRoots) {
     try {
       const canonicalRoot = await realpath(root)
       if (!isPathWithinAny(options.containmentRoots, canonicalRoot)) return
@@ -220,18 +222,19 @@ async function collectConfigured(
   output: Candidate[],
   budget: DiscoveryBudget,
   containmentRoots?: readonly string[],
+  homeDir: string = homedir(),
 ): Promise<void> {
   if (!Array.isArray(value)) return
   for (const raw of value) {
     if (discoveryExhausted(budget)) break
     if (typeof raw !== 'string') continue
-    const path = resolveConfiguredPath(raw, base)
+    const path = resolveConfiguredPath(raw, base, homeDir)
     if (!path) continue
     try {
       const stat = await lstat(path)
       if (stat.isSymbolicLink()) continue
       const canonicalPath = await realpath(path)
-      if (containmentRoots?.length && !isPathWithinAny(containmentRoots, canonicalPath)) continue
+      if (containmentRoots && !isPathWithinAny(containmentRoots, canonicalPath)) continue
       if (stat.isFile()) addCandidate({ path: canonicalPath, kind, location }, output, budget)
       else if (stat.isDirectory()) await collectDirectory(canonicalPath, kind, location, output, budget, { skillRoot: kind === 'skill', containmentRoots })
     } catch { /* stale configured path */ }
@@ -475,7 +478,11 @@ async function collectOmpPluginPackages(
   }
 }
 
-export async function discoverPlugins(agentDir: string, safeProjectPath: string | undefined, _agentPath: string | null, harness: HarnessId = 'omp'): Promise<PluginCatalog> {
+export async function discoverPlugins(agentDir: string, requestedProjectPath: string | undefined, _agentPath: string | null, harness: HarnessId = 'omp', homeDir = homedir()): Promise<PluginCatalog> {
+  let safeProjectPath: string | undefined
+  if (requestedProjectPath && isAbsolute(requestedProjectPath)) {
+    try { safeProjectPath = await realpath(requestedProjectPath) } catch { /* unresolved projects own no discovery scope */ }
+  }
   const candidates: Candidate[] = []
   const warnings: PluginWarning[] = []
   const budget: DiscoveryBudget = { candidates: 0, directories: 0, entries: 0, seenCandidates: new Set() }
@@ -484,28 +491,30 @@ export async function discoverPlugins(agentDir: string, safeProjectPath: string 
   const globalSettings = globalRead.settings
 
   await collectDirectory(resolve(agentDir, '..', 'skills'), 'skill', 'user', candidates, budget, { skillRoot: true })
-  await collectDirectory(join(homedir(), '.agents', 'skills'), 'skill', 'user', candidates, budget)
+  await collectDirectory(join(homeDir, '.agents', 'skills'), 'skill', 'user', candidates, budget)
   await collectDirectory(join(agentDir, 'extensions'), 'extension', 'user', candidates, budget)
   await collectDirectory(join(agentDir, 'prompts'), 'prompt', 'user', candidates, budget)
-  const userConfiguredRoots = await Promise.all([agentDir, homedir()].map(async (root) => {
-    try { return await realpath(root) } catch { return root }
-  }))
-  await collectConfigured(globalSettings.skills, agentDir, 'skill', 'user', candidates, budget, userConfiguredRoots)
-  await collectConfigured(globalSettings.extensions, agentDir, 'extension', 'user', candidates, budget, userConfiguredRoots)
-  await collectConfigured(globalSettings.prompts, agentDir, 'prompt', 'user', candidates, budget, userConfiguredRoots)
+  // An unresolved root grants no lexical scope. Existing candidates still use
+  // their native physical path before the exact owned-root containment check.
+  const userConfiguredRoots = (await Promise.all([agentDir, homeDir].map(async (root): Promise<string | null> => {
+    try { return await realpath(root) } catch { return null }
+  }))).filter((root): root is string => root !== null)
+  await collectConfigured(globalSettings.skills, agentDir, 'skill', 'user', candidates, budget, userConfiguredRoots, homeDir)
+  await collectConfigured(globalSettings.extensions, agentDir, 'extension', 'user', candidates, budget, userConfiguredRoots, homeDir)
+  await collectConfigured(globalSettings.prompts, agentDir, 'prompt', 'user', candidates, budget, userConfiguredRoots, homeDir)
 
   const ompPackageRecords: SkillRecord[] = []
   await collectOmpPluginPackages(resolve(agentDir, '..', 'plugins'), 'user', safeProjectPath, candidates, ompPackageRecords, budget)
 
   let projectSettings: Record<string, unknown> = {}
-  if (safeProjectPath && isAbsolute(safeProjectPath) && await pathExists(safeProjectPath)) {
+  if (safeProjectPath) {
     const projectAgentDir = join(safeProjectPath, ...PROJECT_AGENT_SEGMENTS)
     const projectSettingsPath = join(projectAgentDir, 'settings.json')
     const projectSkillsDir = join(safeProjectPath, '.agents', 'skills')
     const [sameAgentDir, sameSettingsFile, sameProjectSkillsDir] = await Promise.all([
       samePath(agentDir, projectAgentDir),
       samePath(join(agentDir, 'settings.json'), projectSettingsPath),
-      samePath(join(homedir(), '.agents', 'skills'), projectSkillsDir),
+      samePath(join(homeDir, '.agents', 'skills'), projectSkillsDir),
     ])
     const projectRoots = [safeProjectPath]
     // A project can point back at the same agent settings and shared skills
@@ -521,9 +530,9 @@ export async function discoverPlugins(agentDir: string, safeProjectPath: string 
       await collectDirectory(join(projectAgentDir, 'extensions'), 'extension', 'project', candidates, budget, { containmentRoots: projectRoots })
       await collectDirectory(join(projectAgentDir, 'prompts'), 'prompt', 'project', candidates, budget, { containmentRoots: projectRoots })
       if (!sameSettingsFile) {
-        await collectConfigured(projectSettings.skills, projectAgentDir, 'skill', 'project', candidates, budget, projectRoots)
-        await collectConfigured(projectSettings.extensions, projectAgentDir, 'extension', 'project', candidates, budget, projectRoots)
-        await collectConfigured(projectSettings.prompts, projectAgentDir, 'prompt', 'project', candidates, budget, projectRoots)
+        await collectConfigured(projectSettings.skills, projectAgentDir, 'skill', 'project', candidates, budget, projectRoots, homeDir)
+        await collectConfigured(projectSettings.extensions, projectAgentDir, 'extension', 'project', candidates, budget, projectRoots, homeDir)
+        await collectConfigured(projectSettings.prompts, projectAgentDir, 'prompt', 'project', candidates, budget, projectRoots, homeDir)
       }
     }
     if (!sameProjectSkillsDir) {

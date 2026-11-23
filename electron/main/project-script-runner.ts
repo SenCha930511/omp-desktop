@@ -1,5 +1,5 @@
-import { spawn, type ChildProcess } from 'node:child_process'
-import { basename, isAbsolute } from 'node:path'
+import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
+import { isAbsolute, win32 } from 'node:path'
 import type { WebContents } from 'electron'
 import { IPC_CHANNELS } from '../../src/types/ipc'
 import type { ProjectScriptExitEvent, ProjectScriptKind, ProjectScriptOutputEvent, ProjectScriptStartOptions } from '../../src/types/api'
@@ -52,15 +52,27 @@ interface OwnedScriptRun {
  * GUI-launched apps see the user's PATH; PowerShell needs explicit exit-code
  * tracking because `-Command` otherwise reports the last statement's success.
  */
-function shellArguments(shell: string, command: string): string[] {
-  if (process.platform !== 'win32') return ['-lc', command]
-  const name = basename(shell).toLowerCase()
-  if (name === 'cmd.exe') return ['/D', '/S', '/C', command]
+function shellArguments(shell: string, command: string, platform: NodeJS.Platform): string[] {
+  if (platform !== 'win32') return ['-lc', command]
+  const name = win32.basename(shell).toLowerCase()
+  if (name === 'cmd.exe') return ['/D', '/S', '/C', `"${command}"`]
   if (name === 'powershell.exe' || name === 'pwsh.exe') {
     const trackedCommand = `${command}\n$gooeyPiSuccess = $?\n$gooeyPiExitCode = $LASTEXITCODE\nif (-not $gooeyPiSuccess) {\n  if ($null -ne $gooeyPiExitCode -and $gooeyPiExitCode -ne 0) { exit $gooeyPiExitCode }\n  exit 1\n}\nexit 0`
     return ['-NoLogo', '-Command', trackedCommand]
   }
   return [command]
+}
+
+export function projectScriptSpawnOptions(shell: string, platform: NodeJS.Platform = process.platform): SpawnOptions {
+  return {
+    windowsHide: true,
+    // Node's normal argument escaping is aimed at MSVCRT, not cmd.exe. Keep
+    // the existing '/D /S /C' tokens and quoted command intact only for cmd.
+    windowsVerbatimArguments: platform === 'win32' && win32.basename(shell).toLowerCase() === 'cmd.exe',
+    // Its own process group, so the kill ladder reaches dev servers the
+    // shell spawned instead of only the shell itself.
+    detached: platform !== 'win32',
+  }
 }
 
 function scriptEnvironment(): Record<string, string> {
@@ -93,6 +105,8 @@ export class ProjectScriptRunner {
     private readonly configuredShell: () => string,
     private readonly authorizeSessionPath: (path: string) => Promise<string> = async (path) => canonicalSessionPath(path),
     private readonly beginWorkspaceUse: (cwd: string, owner: WorkspaceUseOwner) => Promise<WorkspaceUseLease> = async () => ({ release: () => undefined }),
+    private readonly platform: NodeJS.Platform = process.platform,
+    private readonly spawnProcess: (shell: string, args: string[], options: SpawnOptions) => ChildProcess = spawn,
   ) {}
 
   async start(owner: WebContents, options: ProjectScriptStartOptions): Promise<{ runId: string }> {
@@ -111,14 +125,11 @@ export class ProjectScriptRunner {
       if (owner.isDestroyed()) throw new Error('Project script owner was closed')
       lease = await this.beginWorkspaceUse(cwd, { kind: 'script', scriptId: options.runId })
       const shell = this.configuredShell()
-      const child = spawn(shell, shellArguments(shell, options.command), {
+      const child = this.spawnProcess(shell, shellArguments(shell, options.command, this.platform), {
         cwd,
         env: scriptEnvironment(),
         stdio: ['ignore', 'pipe', 'pipe'],
-        windowsHide: true,
-        // Its own process group, so the kill ladder reaches dev servers the
-        // shell spawned instead of only the shell itself.
-        detached: process.platform !== 'win32',
+        ...projectScriptSpawnOptions(shell, this.platform),
       })
       const run: OwnedScriptRun = {
         id: options.runId,

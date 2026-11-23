@@ -50,8 +50,22 @@ interface FakeOmpOptions {
   catalogModels?: unknown[]
   /** get_state 回報的 usageLimit 初值;可被 promptScript 改寫。 */
   usageLimit?: 'low_priority' | 'wrap_up'
+  /** Selected fast preference and independently computed actual state. */
+  fastModeEnabled?: boolean
+  fastModeActive?: boolean
+  /** Reject this many native fast-mode requests to exercise the real runtime error path. */
+  fastModeRejections?: number
+  /** Native slow preference and its explicitly reported write scope. */
+  slowModeEnabled?: boolean
+  slowModeSupported?: boolean
+  slowModeScope?: 'global' | 'session'
   /** When false the ready frame omits supportsBashExcludeFromContext. */
   bashExcludeFromContext?: boolean
+  holdPredictions?: boolean
+  holdFeedback?: boolean
+  predictionResponses?: Array<Record<string, unknown>>
+  rolledSessionId?: string
+  rolledSessionFile?: string
 }
 
 function fakeOmpAgent(options: FakeOmpOptions = {}): { cwd: string; executable: string } {
@@ -73,7 +87,12 @@ let negotiated = false
 let streaming = false
 let askDialogEnabled = false
 let usageLimitVar = ${JSON.stringify(fakeUsageLimit)}
+let remainingFastModeRejections = ${options.fastModeRejections ?? 0}
+let slowModeEnabledVar = ${JSON.stringify(options.slowModeEnabled ?? false)}
 let sessionFileVar = ${JSON.stringify(options.initialSessionFile ?? null)}
+let sessionIdVar = 'omp-session'
+let predictionCount = 0
+const predictionResponses = ${JSON.stringify(options.predictionResponses ?? [])}
 send({ type: 'ready', protocolVersion: 1, supportedProtocolVersions: [1, 2]${options.bashExcludeFromContext === false ? '' : ', supportsBashExcludeFromContext: true'} })
 send({ type: 'available_commands_update', commands: [{ name: 'help' }] })
 send({ type: 'fake_argv', argv: process.argv.slice(2) })
@@ -93,13 +112,19 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     return
   }
   if (command.type === 'get_state') {
+    if (require('node:fs').existsSync('roll-identity')) {
+      sessionIdVar = ${JSON.stringify(options.rolledSessionId ?? 'omp-session')}
+      sessionFileVar = ${JSON.stringify(options.rolledSessionFile ?? null)}
+    }
     if (${options.failStateAfterFork === true} && sessionFileVar === ${JSON.stringify(options.forkSessionFile)}) {
       send({ id: command.id, type: 'response', command: 'get_state', success: false, error: 'Injected state failure after fork' })
       return
     }
     send({ id: command.id, type: 'response', command: 'get_state', success: true, data: {
-      sessionId: 'omp-session', isStreaming: streaming, isCompacting: false, thinkingLevel: 'medium',
-      fastModeEnabled: true, slowModeSupported: true, slowModeEnabled: false, model: { provider: 'openai-codex', id: 'gpt-5.6-luna', name: 'Luna GPT-5.6' },
+      sessionId: sessionIdVar, isStreaming: streaming, isCompacting: false, thinkingLevel: 'medium',
+      fastModeEnabled: ${JSON.stringify(options.fastModeEnabled ?? true)}, slowModeSupported: ${JSON.stringify(options.slowModeSupported ?? true)}, slowModeEnabled: slowModeEnabledVar, model: { provider: 'openai-codex', id: 'gpt-5.6-luna', name: 'Luna GPT-5.6' },
+      ${options.slowModeScope === undefined ? '' : `slowModeScope: ${JSON.stringify(options.slowModeScope)},`}
+      ${options.fastModeActive === undefined ? '' : `fastModeActive: ${options.fastModeActive},`}
       queuedMessageCount: ${options.queuedMessageCount ?? 0},
       fakeAskDialogEnabled: askDialogEnabled,
       ...(sessionFileVar ? { sessionFile: sessionFileVar } : {}),
@@ -140,13 +165,44 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   } else if (command.type === 'side_question' || command.type === 'side_question_cancel' || command.type === 'side_question_history') {
     send({ id: command.id, type: 'response', command: command.type, success: false, error: 'Unknown command ' + command.type })
   } else if (command.type === 'set_fast_mode') {
-    send({ type: 'fake_received', command: 'set_fast_mode', enabled: command.enabled })
-    send({ id: command.id, type: 'response', command: 'set_fast_mode', success: true })
+    if (remainingFastModeRejections > 0) {
+      remainingFastModeRejections -= 1
+      send({ id: command.id, type: 'response', command: 'set_fast_mode', success: false, error: 'Injected fast mode rejection' })
+    } else {
+      send({ type: 'fake_received', command: 'set_fast_mode', enabled: command.enabled })
+      send({ id: command.id, type: 'response', command: 'set_fast_mode', success: true })
+    }
   } else if (command.type === 'set_service_tier') {
     send({ id: command.id, type: 'response', command: 'set_service_tier', success: false, error: 'Unknown command set_service_tier' })
+  } else if (command.type === 'set_slow_mode') {
+    slowModeEnabledVar = command.enabled
+    send({ type: 'fake_received', command: 'set_slow_mode', enabled: command.enabled })
+    send({ id: command.id, type: 'response', command: command.type, success: true, data: { enabled: command.enabled } })
   } else if (command.type === 'new_session') {
     sessionFileVar = ${JSON.stringify(options.newSessionFile ?? null)}
     send({ id: command.id, type: 'response', command: command.type, success: true, data: { cancelled: false } })
+  } else if (command.type === 'predict_word') {
+    predictionCount += 1
+    const predictionNumber = predictionCount
+    const respondPrediction = () => {
+      const result = predictionResponses[predictionNumber - 1] ?? { success: true, data: { suffix: ' native-' + predictionNumber } }
+      send({ id: command.id, type: 'response', command: 'predict_word', ...result })
+    }
+    if (${options.holdPredictions === true}) {
+      const fs = require('node:fs')
+      const watcher = fs.watch(process.cwd(), (_event, filename) => {
+        if (String(filename) !== 'release-prediction-' + predictionNumber || !fs.existsSync('release-prediction-' + predictionNumber)) return
+        watcher.close()
+        respondPrediction()
+      })
+      send({ type: 'fake_prediction_received', id: command.id, text: command.text, cursor: command.cursor, keys: Object.keys(command).sort(), predictionNumber })
+    } else {
+      send({ type: 'fake_prediction_received', id: command.id, text: command.text, cursor: command.cursor, keys: Object.keys(command).sort(), predictionNumber })
+      respondPrediction()
+    }
+  } else if (command.type === 'predict_word_feedback') {
+    send({ type: 'fake_prediction_feedback_received', id: command.id, text: command.text, cursor: command.cursor, suggestion: command.suggestion, accepted: command.accepted, keys: Object.keys(command).sort() })
+    if (!${options.holdFeedback === true}) send({ id: command.id, type: 'response', command: 'predict_word_feedback', success: true })
   } else if (command.type === 'prompt') {
     send({ id: command.id, type: 'response', command: 'prompt', success: true, data: { agentInvoked: true } })
     ${options.promptScript ?? ''}
@@ -185,6 +241,10 @@ function ompManager(executable: string, options: { providers?: ProviderCatalog; 
   )
   managers.push(manager)
   return manager
+}
+
+interface ManagerPredictionLifecycleView {
+  retiringRuntimes: Set<string>
 }
 
 interface ChunkRuntimeView {
@@ -277,9 +337,34 @@ function chunkFrame(chunkId: string, index: number, count: number, data: Buffer)
 describe('OMP RPC adapter argv', () => {
   const baseInput = { cwd: '/work/project', environment: {} as NodeJS.ProcessEnv }
 
+  it('defaults and explicitly routes interactive starts to rpc-ui, but preserves plain rpc plus --no-ui when unattended', () => {
+    expect(OMP_RPC_ADAPTER.buildStartArgs(baseInput)).toEqual(['--mode', 'rpc-ui', '--cwd', '/work/project'])
+    const input = {
+      ...baseInput,
+      interactive: true,
+      sessionPath: '/work/session.jsonl',
+      providerId: 'openai-codex',
+      modelId: 'gpt-5.6-luna',
+      thinking: 'high',
+      approvalMode: 'write',
+      environment: { GOOEYPI_COLLABORATION_EXTENSION_PATH: '/extensions/collaboration.ts' },
+    }
+    const existingFlags = [
+      '--cwd', '/work/project',
+      '--resume', '/work/session.jsonl',
+      '--model', 'openai-codex/gpt-5.6-luna',
+      '--thinking', 'high',
+      '--approval-mode', 'write',
+      '--extension', '/extensions/collaboration.ts',
+    ]
+    expect(OMP_RPC_ADAPTER.buildStartArgs(input)).toEqual(['--mode', 'rpc-ui', ...existingFlags])
+    expect(OMP_RPC_ADAPTER.buildStartArgs({ ...input, interactive: false }))
+      .toEqual(['--mode', 'rpc', ...existingFlags, '--no-ui'])
+  })
+
   it('passes the model as a single provider/id selector without --provider', () => {
     const args = OMP_RPC_ADAPTER.buildStartArgs({ ...baseInput, providerId: 'openai-codex', modelId: 'gpt-5.6-luna' })
-    expect(args).toEqual(['--mode', 'rpc', '--cwd', '/work/project', '--model', 'openai-codex/gpt-5.6-luna'])
+    expect(args).toEqual(['--mode', 'rpc-ui', '--cwd', '/work/project', '--model', 'openai-codex/gpt-5.6-luna'])
   })
 
   it('passes an unresolved model string as-is and rejects unsafe values', () => {
@@ -289,11 +374,17 @@ describe('OMP RPC adapter argv', () => {
     expect(() => OMP_RPC_ADAPTER.buildStartArgs({ ...baseInput, providerId: 'p', modelId: 'model\nid' })).toThrow('Invalid model')
   })
 
-  it('includes --approval-mode only for validated overrides', () => {
-    expect(OMP_RPC_ADAPTER.buildStartArgs(baseInput)).not.toContain('--approval-mode')
-    const args = OMP_RPC_ADAPTER.buildStartArgs({ ...baseInput, approvalMode: 'yolo' })
-    expect(args.slice(-2)).toEqual(['--approval-mode', 'yolo'])
-    expect(() => OMP_RPC_ADAPTER.buildStartArgs({ ...baseInput, approvalMode: 'sometimes' })).toThrow('Invalid approval mode')
+  it.each(['always-ask', 'always-ask-cached', 'write', 'yolo'])('passes exactly one native --approval-mode %s override in the existing position', (approvalMode) => {
+    const args = OMP_RPC_ADAPTER.buildStartArgs({ ...baseInput, approvalMode })
+    expect(args).toEqual(['--mode', 'rpc-ui', '--cwd', '/work/project', '--approval-mode', approvalMode])
+    expect(args.filter((value) => value === '--approval-mode')).toHaveLength(1)
+  })
+
+  it('omits --approval-mode for inherit and rejects aliases, malformed values, and localized labels without downgrading', () => {
+    expect(OMP_RPC_ADAPTER.buildStartArgs(baseInput)).toEqual(['--mode', 'rpc-ui', '--cwd', '/work/project'])
+    for (const approvalMode of ['inherit', 'cached', 'sometimes', 'always-ask-cached ', '', '快取', '快取核准']) {
+      expect(() => OMP_RPC_ADAPTER.buildStartArgs({ ...baseInput, approvalMode })).toThrow('Invalid approval mode')
+    }
   })
 
   it('appends the enabled computer-use skill and forwards the scoped app extensions', () => {
@@ -381,8 +472,11 @@ describe('OMP RPC handshake', () => {
     expect(runtime.model).toEqual({ provider: 'openai-codex', id: 'gpt-5.6-luna', name: 'Luna GPT-5.6' })
     // fastModeEnabled: true in get_state maps to the priority service tier.
     expect(runtime.serviceTier).toBe('priority')
+    // Older runtimes omitting fastModeActive leave actual state unknown.
+    expect(runtime.serviceTierActive).toBeUndefined()
     expect(runtime.slowModeSupported).toBe(true)
     expect(runtime.slowModeEnabled).toBe(false)
+    expect(runtime.slowModeScope).toBeUndefined()
     expect(runtime.fastModeAvailable).toBe(true)
     expect(runtime.fastModeSupported).toBe(true)
     expect(runtime.bashExcludeFromContext).toBe(true)
@@ -393,6 +487,67 @@ describe('OMP RPC handshake', () => {
     // Unsolicited pre-request frames are tolerated and forwarded for the renderer to ignore.
     await waitUntil(() => events.some((event) => event.type === 'ready'))
     expect(events.some((event) => event.type === 'available_commands_update')).toBe(true)
+  })
+
+  it.each(['global', 'session'] as const)('reads native slow scope=%s and adopts only a follow-up authoritative state', async (slowModeScope) => {
+    const fake = fakeOmpAgent({ slowModeScope, slowModeEnabled: false })
+    const manager = ompManager(fake.executable, { providers: ompCatalog })
+    const runtime = await manager.start({ cwd: fake.cwd })
+    expect(runtime).toMatchObject({ slowModeSupported: true, slowModeEnabled: false, slowModeScope })
+
+    const acknowledged = await manager.command(runtime.runtimeId, { type: 'set_slow_mode', enabled: true })
+    expect(acknowledged).toMatchObject({ success: true, data: { enabled: true } })
+    // The native acknowledgment echoed the request; it is not state evidence.
+    expect(manager.list()[0]).toMatchObject({ slowModeEnabled: false, slowModeScope })
+
+    const refreshed = await manager.refreshState(runtime.runtimeId)
+    expect(refreshed).toMatchObject({ slowModeSupported: true, slowModeEnabled: true, slowModeScope })
+  })
+
+  it('keeps unsupported slow scope unknown and accepts only recognized adapter values', async () => {
+    const fake = fakeOmpAgent({ slowModeSupported: false })
+    const manager = ompManager(fake.executable, { providers: ompCatalog })
+    const runtime = await manager.start({ cwd: fake.cwd })
+    expect(runtime).toMatchObject({ slowModeSupported: false, slowModeEnabled: false })
+    expect(runtime.slowModeScope).toBeUndefined()
+    expect(OMP_RPC_ADAPTER.readState({ slowModeScope: 'provider' }).slowModeScope).toBeUndefined()
+    expect(OMP_RPC_ADAPTER.readState({ slowModeScope: 'global' }).slowModeScope).toBe('global')
+    expect(OMP_RPC_ADAPTER.readState({ slowModeScope: 'session' }).slowModeScope).toBe('session')
+  })
+
+  it.each([false, true])('reads fastModeActive=%s independently from the selected preference', async (fastModeActive) => {
+    const fake = fakeOmpAgent({ fastModeEnabled: true, fastModeActive })
+    const manager = ompManager(fake.executable, { providers: ompCatalog })
+
+    const runtime = await manager.start({ cwd: fake.cwd })
+
+    expect(runtime.serviceTier).toBe('priority')
+    expect(runtime.serviceTierActive).toBe(fastModeActive)
+  })
+
+  it('does not infer actual fast state when set_fast_mode is acknowledged', async () => {
+    const fake = fakeOmpAgent({ fastModeEnabled: true, fastModeActive: false })
+    const manager = ompManager(fake.executable, { providers: ompCatalog })
+    const runtime = await manager.start({ cwd: fake.cwd })
+
+    await manager.command(runtime.runtimeId, { type: 'set_service_tier', serviceTier: 'priority' })
+
+    expect(manager.list()[0]).toMatchObject({ serviceTier: 'priority', serviceTierActive: false })
+    const refreshed = await manager.refreshState(runtime.runtimeId)
+    expect(refreshed).toMatchObject({ serviceTier: 'priority', serviceTierActive: false })
+  })
+
+  it('retains the last confirmed fast preference after wire request rejection', async () => {
+    const fake = fakeOmpAgent({ fastModeEnabled: true, fastModeActive: false, fastModeRejections: 2 })
+    const manager = ompManager(fake.executable, { providers: ompCatalog })
+    const runtime = await manager.start({ cwd: fake.cwd })
+    expect(runtime).toMatchObject({ serviceTier: 'priority', serviceTierActive: false })
+
+    await expect(manager.command(runtime.runtimeId, { type: 'set_service_tier', serviceTier: 'priority' })).rejects.toThrow('Injected fast mode rejection')
+    await expect(manager.command(runtime.runtimeId, { type: 'set_service_tier', serviceTier: 'default' })).rejects.toThrow('Injected fast mode rejection')
+    expect(manager.list()[0]).toMatchObject({ serviceTier: 'priority', serviceTierActive: false, fastModeAvailable: false })
+
+    await expect(manager.refreshState(runtime.runtimeId)).resolves.toMatchObject({ serviceTier: 'priority', serviceTierActive: false, fastModeAvailable: true })
   })
 
   it('rejects excluded bash when the ready frame did not advertise it', async () => {
@@ -431,13 +586,27 @@ describe('OMP RPC handshake', () => {
 
     await waitUntil(() => events.some((event) => event.type === 'fake_argv'))
     const argv = (events.find((event) => event.type === 'fake_argv') as { argv: string[] }).argv
-    expect(argv).toContain('--approval-mode')
+    expect(argv.filter((value) => value === '--approval-mode')).toHaveLength(1)
     expect(argv[argv.indexOf('--approval-mode') + 1]).toBe('yolo')
     expect(argv[argv.indexOf('--model') + 1]).toBe('openai-codex/gpt-5.6-luna')
     expect(argv).not.toContain('--provider')
     expect(argv).not.toContain('--skill')
     const extensionPaths = argv.flatMap((value, index) => value === '--extension' ? [argv[index + 1]] : [])
     expect(extensionPaths).toEqual(['/extensions/schedules.ts', '/extensions/browser.ts', '/extensions/ask-user.ts', '/extensions/collaboration.ts'])
+  })
+
+  it('spawns the fake native CLI with exactly the cached approval argv and no extra options', async () => {
+    const fake = fakeOmpAgent()
+    const manager = ompManager(fake.executable, { approvalMode: () => 'always-ask-cached' })
+    const events: Array<Record<string, unknown>> = []
+    manager.setEventSink(({ event }) => events.push(event))
+
+    await manager.start({ cwd: fake.cwd })
+
+    await waitUntil(() => events.some((event) => event.type === 'fake_argv'))
+    const argv = (events.find((event) => event.type === 'fake_argv') as { argv: string[] }).argv
+    expect(argv).toEqual(['--mode', 'rpc-ui', '--cwd', fake.cwd, '--approval-mode', 'always-ask-cached'])
+    expect(argv.filter((value) => value === '--approval-mode')).toHaveLength(1)
   })
 
   it('omits --approval-mode when no override is configured', async () => {
@@ -450,6 +619,7 @@ describe('OMP RPC handshake', () => {
 
     await waitUntil(() => events.some((event) => event.type === 'fake_argv'))
     const argv = (events.find((event) => event.type === 'fake_argv') as { argv: string[] }).argv
+    expect(argv).toEqual(['--mode', 'rpc-ui', '--cwd', fake.cwd])
     expect(argv).not.toContain('--approval-mode')
   })
 
@@ -798,6 +968,275 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   chmodSync(executable, 0o755)
   return { cwd, executable, fileA, fileB }
 }
+
+describe('native word prediction', () => {
+  it('matches native response ids and keeps feedback and ordinary commands available', async () => {
+    const fake = fakeOmpAgent({ holdPredictions: true })
+    const manager = ompManager(fake.executable)
+    const events: Array<Record<string, unknown>> = []
+    const received = Promise.withResolvers<void>()
+    const feedbackReceived = Promise.withResolvers<void>()
+    manager.setEventSink(({ event }) => {
+      events.push(event)
+      if (event.type === 'fake_prediction_received') received.resolve()
+      if (event.type === 'fake_prediction_feedback_received') feedbackReceived.resolve()
+    })
+    const runtime = await manager.start({ cwd: fake.cwd })
+
+    const prediction = manager.command(runtime.runtimeId, { type: 'predict_word', text: 'hello', cursor: 5 })
+    await received.promise
+    await expect(manager.command(runtime.runtimeId, { type: 'get_state' })).resolves.toMatchObject({ success: true, command: 'get_state' })
+    await expect(manager.command(runtime.runtimeId, {
+      type: 'predict_word_feedback', text: 'hello', cursor: 5, suggestion: ' world', accepted: true,
+    })).resolves.toEqual(expect.objectContaining({ success: true, command: 'predict_word_feedback' }))
+    await feedbackReceived.promise
+    expect(events.filter((event) => event.type === 'fake_prediction_received')).toHaveLength(1)
+
+    writeFileSync(join(fake.cwd, 'release-prediction-1'), '')
+    const nativeRequest = events.find((event) => event.type === 'fake_prediction_received')
+    await expect(prediction).resolves.toEqual({ id: nativeRequest?.id, type: 'response', command: 'predict_word', success: true, data: { suffix: ' native-1' } })
+    expect(nativeRequest).toMatchObject({ text: 'hello', cursor: 5, keys: ['cursor', 'id', 'text', 'type'] })
+    expect(events.find((event) => event.type === 'fake_prediction_feedback_received')).toMatchObject({
+      text: 'hello', cursor: 5, suggestion: ' world', accepted: true,
+      keys: ['accepted', 'cursor', 'id', 'suggestion', 'text', 'type'],
+    })
+  })
+
+  it('keeps one native request in flight and resolves only a replaced queued caller with null', async () => {
+    const fake = fakeOmpAgent({ holdPredictions: true })
+    const manager = ompManager(fake.executable)
+    const events: Array<Record<string, unknown>> = []
+    const firstReceived = Promise.withResolvers<void>()
+    const secondReceived = Promise.withResolvers<void>()
+    manager.setEventSink(({ event }) => {
+      events.push(event)
+      if (event.type === 'fake_prediction_received' && event.predictionNumber === 1) firstReceived.resolve()
+      if (event.type === 'fake_prediction_received' && event.predictionNumber === 2) secondReceived.resolve()
+    })
+    const runtime = await manager.start({ cwd: fake.cwd })
+
+    const first = manager.command(runtime.runtimeId, { type: 'predict_word', text: 'first', cursor: 5 })
+    const firstOutcome = Promise.allSettled([first])
+    await firstReceived.promise
+    const second = manager.command(runtime.runtimeId, { type: 'predict_word', text: 'superseded', cursor: 10 })
+    const third = manager.command(runtime.runtimeId, { type: 'predict_word', text: 'latest', cursor: 6 })
+    const allOutcomes = Promise.allSettled([first, second, third])
+    void firstOutcome
+    await expect(second).resolves.toEqual({ type: 'response', command: 'predict_word', success: true, data: { suffix: null } })
+    expect(events.filter((event) => event.type === 'fake_prediction_received')).toHaveLength(1)
+
+    writeFileSync(join(fake.cwd, 'release-prediction-1'), '')
+    await expect(first).resolves.toMatchObject({ success: true, data: { suffix: ' native-1' } })
+    await secondReceived.promise
+    const nativeRequests = events.filter((event) => event.type === 'fake_prediction_received')
+    expect(nativeRequests).toHaveLength(2)
+    expect(nativeRequests[1]).toMatchObject({ text: 'latest', cursor: 6, predictionNumber: 2 })
+
+    writeFileSync(join(fake.cwd, 'release-prediction-2'), '')
+    await expect(third).resolves.toMatchObject({ success: true, data: { suffix: ' native-2' } })
+    await allOutcomes
+  })
+
+  it('rejects native errors and malformed suffixes without retrying or logging passive requests', async () => {
+    const fake = fakeOmpAgent({
+      holdPredictions: true,
+      predictionResponses: [
+        { success: false, error: 'prediction daemon unavailable' },
+        { success: true, data: { suffix: 42 } },
+        { success: true, data: { suffix: 'x'.repeat(4097) } },
+      ],
+    })
+    const manager = ompManager(fake.executable)
+    const events: Array<Record<string, unknown>> = []
+    const firstReceived = Promise.withResolvers<void>()
+    const secondReceived = Promise.withResolvers<void>()
+    const thirdReceived = Promise.withResolvers<void>()
+    manager.setEventSink(({ event }) => {
+      events.push(event)
+      if (event.type === 'fake_prediction_received' && event.predictionNumber === 1) firstReceived.resolve()
+      if (event.type === 'fake_prediction_received' && event.predictionNumber === 2) secondReceived.resolve()
+      if (event.type === 'fake_prediction_received' && event.predictionNumber === 3) thirdReceived.resolve()
+    })
+    const runtime = await manager.start({ cwd: fake.cwd })
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    const first = manager.command(runtime.runtimeId, { type: 'predict_word', text: 'first', cursor: 5 })
+    await firstReceived.promise
+    const second = manager.command(runtime.runtimeId, { type: 'predict_word', text: 'second', cursor: 6 })
+    const allOutcomes = Promise.allSettled([first, second])
+    writeFileSync(join(fake.cwd, 'release-prediction-1'), '')
+    await expect(first).rejects.toThrow('prediction daemon unavailable')
+    await secondReceived.promise
+    writeFileSync(join(fake.cwd, 'release-prediction-2'), '')
+    await expect(second).rejects.toThrow('suffix must be a string or null')
+
+    const third = manager.command(runtime.runtimeId, { type: 'predict_word', text: 'third', cursor: 5 })
+    await thirdReceived.promise
+    writeFileSync(join(fake.cwd, 'release-prediction-3'), '')
+    await expect(third).rejects.toThrow('suffix is too long')
+    await allOutcomes
+    expect(events.filter((event) => event.type === 'fake_prediction_received')).toHaveLength(3)
+    expect(errors.mock.calls.filter((call) => String(call[0]).includes('predict_word'))).toEqual([])
+  })
+
+  it('uses 150 seconds only for prediction cold start and the ordinary 60 seconds for feedback', async () => {
+    const fake = fakeOmpAgent({ holdPredictions: true, holdFeedback: true })
+    const manager = ompManager(fake.executable)
+    const events: Array<Record<string, unknown>> = []
+    const predictionReceived = Promise.withResolvers<void>()
+    const feedbackReceived = Promise.withResolvers<void>()
+    manager.setEventSink(({ event }) => {
+      events.push(event)
+      if (event.type === 'fake_prediction_received') predictionReceived.resolve()
+      if (event.type === 'fake_prediction_feedback_received') feedbackReceived.resolve()
+    })
+    const runtime = await manager.start({ cwd: fake.cwd })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+
+    const prediction = manager.command(runtime.runtimeId, { type: 'predict_word', text: 'cold start', cursor: 10 })
+    let predictionSettled = false
+    void prediction.then(() => { predictionSettled = true }, () => { predictionSettled = true })
+    await predictionReceived.promise
+    await vi.advanceTimersByTimeAsync(149_999)
+    expect(predictionSettled).toBe(false)
+    await vi.advanceTimersByTimeAsync(1)
+    await expect(prediction).rejects.toThrow('RPC command predict_word timed out after delivery')
+
+    const feedback = manager.command(runtime.runtimeId, {
+      type: 'predict_word_feedback', text: 'cold start', cursor: 10, suggestion: ' next', accepted: false,
+    })
+    let feedbackSettled = false
+    void feedback.then(() => { feedbackSettled = true }, () => { feedbackSettled = true })
+    await feedbackReceived.promise
+    await vi.advanceTimersByTimeAsync(59_999)
+    expect(feedbackSettled).toBe(false)
+    await vi.advanceTimersByTimeAsync(1)
+    await expect(feedback).rejects.toThrow('RPC command predict_word_feedback timed out after delivery')
+    expect(events.filter((event) => event.type === 'fake_prediction_received')).toHaveLength(1)
+    expect(events.filter((event) => event.type === 'fake_prediction_feedback_received')).toHaveLength(1)
+  })
+
+  it('rejects active and queued callers on stop without a post-stop native write', async () => {
+    const fake = fakeOmpAgent({ holdPredictions: true })
+    const manager = ompManager(fake.executable)
+    const events: Array<Record<string, unknown>> = []
+    const received = Promise.withResolvers<void>()
+    manager.setEventSink(({ event }) => {
+      events.push(event)
+      if (event.type === 'fake_prediction_received') received.resolve()
+    })
+    const runtime = await manager.start({ cwd: fake.cwd })
+    const first = manager.command(runtime.runtimeId, { type: 'predict_word', text: 'first', cursor: 5 })
+    const firstOutcome = Promise.allSettled([first])
+    await received.promise
+    const second = manager.command(runtime.runtimeId, { type: 'predict_word', text: 'queued', cursor: 6 })
+    const allOutcomes = Promise.allSettled([first, second])
+    void firstOutcome
+    await Promise.resolve()
+    await Promise.resolve()
+
+    await manager.stop(runtime.runtimeId)
+    await expect(first).rejects.toThrow()
+    await expect(second).rejects.toThrow()
+    await allOutcomes
+    expect(events.filter((event) => event.type === 'fake_prediction_received')).toHaveLength(1)
+  })
+
+  it('invalidates the old prediction lane before new_session can reopen its fence', async () => {
+    const fake = fakeOmpAgent({ holdPredictions: true, newSessionFile: '/tmp/new-session.jsonl' })
+    const manager = ompManager(fake.executable)
+    const events: Array<Record<string, unknown>> = []
+    const received = Promise.withResolvers<void>()
+    const nextGenerationReceived = Promise.withResolvers<void>()
+    manager.setEventSink(({ event }) => {
+      events.push(event)
+      if (event.type === 'fake_prediction_received' && event.predictionNumber === 1) received.resolve()
+      if (event.type === 'fake_prediction_received' && event.predictionNumber === 2) nextGenerationReceived.resolve()
+    })
+    const runtime = await manager.start({ cwd: fake.cwd })
+    const first = manager.command(runtime.runtimeId, { type: 'predict_word', text: 'old session', cursor: 10 })
+    const firstOutcome = Promise.allSettled([first])
+    await received.promise
+    const second = manager.command(runtime.runtimeId, { type: 'predict_word', text: 'old queued', cursor: 9 })
+    const allOutcomes = Promise.allSettled([first, second])
+    void firstOutcome
+
+    await expect(manager.command(runtime.runtimeId, { type: 'new_session' })).resolves.toMatchObject({ success: true })
+    await expect(first).rejects.toThrow()
+    await expect(second).rejects.toThrow()
+    await allOutcomes
+    expect(events.filter((event) => event.type === 'fake_prediction_received')).toHaveLength(1)
+
+    const nextGeneration = manager.command(runtime.runtimeId, { type: 'predict_word', text: 'new session', cursor: 10 })
+    await nextGenerationReceived.promise
+    writeFileSync(join(fake.cwd, 'release-prediction-1'), '')
+    writeFileSync(join(fake.cwd, 'release-prediction-2'), '')
+    await expect(nextGeneration).resolves.toMatchObject({ success: true, data: { suffix: ' native-2' } })
+    expect(events.filter((event) => event.type === 'fake_prediction_received')).toHaveLength(2)
+  })
+
+  it('rechecks the manager retirement fence before draining a queued native write', async () => {
+    const fake = fakeOmpAgent({ holdPredictions: true })
+    const manager = ompManager(fake.executable)
+    const lifecycle = manager as unknown as ManagerPredictionLifecycleView
+    const events: Array<Record<string, unknown>> = []
+    const received = Promise.withResolvers<void>()
+    manager.setEventSink(({ event }) => {
+      events.push(event)
+      if (event.type === 'fake_prediction_received') received.resolve()
+    })
+    const runtime = await manager.start({ cwd: fake.cwd })
+    const first = manager.command(runtime.runtimeId, { type: 'predict_word', text: 'active', cursor: 6 })
+    const firstOutcome = Promise.allSettled([first])
+    await received.promise
+    const second = manager.command(runtime.runtimeId, { type: 'predict_word', text: 'queued before retire', cursor: 18 })
+    const allOutcomes = Promise.allSettled([first, second])
+    void firstOutcome
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(events.filter((event) => event.type === 'fake_prediction_received')).toHaveLength(1)
+
+    lifecycle.retiringRuntimes.add(runtime.runtimeId)
+    writeFileSync(join(fake.cwd, 'release-prediction-1'), '')
+    await expect(first).resolves.toMatchObject({ success: true, data: { suffix: ' native-1' } })
+    await expect(second).rejects.toThrow('Runtime is being retired')
+    await allOutcomes
+    expect(events.filter((event) => event.type === 'fake_prediction_received')).toHaveLength(1)
+  })
+
+  it('rejects queued work when an authoritative identity change quarantines the runtime', async () => {
+    const source = '/tmp/original-session.jsonl'
+    const target = '/tmp/quarantined-session.jsonl'
+    const fake = fakeOmpAgent({
+      holdPredictions: true,
+      initialSessionFile: source,
+      rolledSessionId: 'new-identity',
+      rolledSessionFile: target,
+    })
+    const manager = ompManager(fake.executable)
+    const events: Array<Record<string, unknown>> = []
+    const received = Promise.withResolvers<void>()
+    manager.setEventSink(({ event }) => {
+      events.push(event)
+      if (event.type === 'fake_prediction_received') received.resolve()
+    })
+    const runtime = await manager.start({ cwd: fake.cwd, sessionPath: source })
+    const first = manager.command(runtime.runtimeId, { type: 'predict_word', text: 'old identity', cursor: 11 })
+    const firstOutcome = Promise.allSettled([first])
+    await received.promise
+    const second = manager.command(runtime.runtimeId, { type: 'predict_word', text: 'queued identity', cursor: 14 })
+    const allOutcomes = Promise.allSettled([first, second])
+    void firstOutcome
+
+    writeFileSync(join(fake.cwd, 'roll-identity'), '')
+    await expect(manager.command(runtime.runtimeId, { type: 'get_state' })).resolves.toMatchObject({ success: true })
+    await expect(first).rejects.toThrow(/quarantin|session identity/i)
+    await expect(second).rejects.toThrow(/quarantin|session identity/i)
+    await allOutcomes
+    expect(events.filter((event) => event.type === 'fake_prediction_received')).toHaveLength(1)
+    await expect(manager.command(runtime.runtimeId, { type: 'predict_word', text: 'blocked', cursor: 7 })).rejects.toThrow(/quarantin|not found|retir/i)
+  })
+})
 
 // 1.2 前置安全回歸(test-first):pin active session 的 browser/collab/schedule
 // capability claim 在 sessionFile / sessionId 改變後的應有行為。目前 manager 的

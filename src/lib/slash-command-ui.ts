@@ -1,4 +1,4 @@
-import type { MessageKey, useI18n } from './i18n'
+import type { MessageKey, Translate } from './i18n'
 import type { RuntimeInfo } from '@/types/api'
 import { formatSessionCost, formatSessionTokens } from '@/lib/format-cost'
 import type { SlashCommand } from './slash-commands'
@@ -19,14 +19,28 @@ const KNOWN_BUILTIN_COMMANDS = new Set([
 ])
 
 // 有本地化描述的內建命令;其餘內建命令直接採用上游 catalog 的描述。
-const LOCALIZED_DESCRIPTION_COMMANDS = new Set([
-  'model', 'switch', 'effort', 'fast', 'modelpreset', 'btw', 'context', 'tools',
-  'usage', 'jobs', 'compact', 'handoff', 'fresh', 'shake', 'retry', 'todo', 'memory',
-  'advisor', 'skillful', 'extended-context', 'force', 'security',
-  'ssh', 'marketplace', 'reload-plugins', 'export', 'dump', 'changelog', 'dirs', 'add-dir', 'remove-dir',
+const SLASH_DESCRIPTION_KEYS = {
+  model: 'slash.command.model', switch: 'slash.command.switch', effort: 'slash.command.effort', fast: 'slash.command.fast',
+  modelpreset: 'slash.command.modelpreset', btw: 'slash.command.btw', context: 'slash.command.context', tools: 'slash.command.tools',
+  goal: 'slash.command.goal', pause: 'slash.command.pause', status: 'slash.command.status', session: 'slash.command.session', rename: 'slash.command.rename',
+  mcp: 'slash.command.mcp', plugins: 'slash.command.plugins',
+  usage: 'slash.command.usage', jobs: 'slash.command.jobs', compact: 'slash.command.compact', handoff: 'slash.command.handoff',
+  fresh: 'slash.command.fresh', shake: 'slash.command.shake', retry: 'slash.command.retry', todo: 'slash.command.todo', memory: 'slash.command.memory',
+  advisor: 'slash.command.advisor', skillful: 'slash.command.skillful', 'extended-context': 'slash.command.extended-context',
+  force: 'slash.command.force', security: 'slash.command.security', ssh: 'slash.command.ssh', marketplace: 'slash.command.marketplace',
+  'reload-plugins': 'slash.command.reload-plugins', export: 'slash.command.export', dump: 'slash.command.dump', changelog: 'slash.command.changelog',
+  dirs: 'slash.command.dirs', 'add-dir': 'slash.command.add-dir', 'remove-dir': 'slash.command.remove-dir',
   // GUI 入口接出的命令:live catalog 與 /help 清單同樣以本地化描述呈現。
-  'tree', 'branch', 'fork', 'new', 'clear', 'resume', 'help',
-])
+  tree: 'slash.command.tree', branch: 'slash.command.branch', fork: 'slash.command.fork', new: 'slash.command.new',
+  clear: 'slash.command.clear', resume: 'slash.command.resume', help: 'slash.command.help',
+} as const satisfies Record<string, MessageKey>
+
+type LocalizedSlashName = keyof typeof SLASH_DESCRIPTION_KEYS
+const localizedSlashName = (name: string): name is LocalizedSlashName => Object.hasOwn(SLASH_DESCRIPTION_KEYS, name)
+const slashDescription = (command: SlashCommand, t: Translate, offlineGoal = false) => {
+  if (!localizedSlashName(command.name)) return command.description
+  return t(offlineGoal && command.name === 'goal' ? 'slash.command.goalUsage' : SLASH_DESCRIPTION_KEYS[command.name])
+}
 
 /**
  * 選單目錄:以上游 live catalog(get_available_commands / available_commands_update)
@@ -36,7 +50,7 @@ const LOCALIZED_DESCRIPTION_COMMANDS = new Set([
  * - TUI-only 命令(DEFERRED_*):送出去只會被 deferredSlashCommand 拒絕。
  * 無 bridge / 離線時由 Composer 以 INITIAL_SLASH_COMMANDS 降級,走同一個過濾器。
  */
-export function desktopSlashCommands(commands: SlashCommand[], t: ReturnType<typeof useI18n>['t']): SlashCommand[] {
+export function desktopSlashCommands(commands: SlashCommand[], t: Translate): SlashCommand[] {
   const builtin = (command: SlashCommand) => command.source === 'builtin' || (!command.source && KNOWN_BUILTIN_COMMANDS.has(command.name))
   return commands.filter((command) => {
     if (!builtin(command)) return true
@@ -46,14 +60,10 @@ export function desktopSlashCommands(commands: SlashCommand[], t: ReturnType<typ
     return true
   }).map((command) => {
     if (!builtin(command)) return command
-    const description = LOCALIZED_DESCRIPTION_COMMANDS.has(command.name)
-      ? t(`slash.command.${command.name}` as MessageKey)
-      : command.description
+    const description = slashDescription(command, t, commands === INITIAL_SLASH_COMMANDS)
     return { ...command, description, subcommands: command.subcommands?.filter((sub) => !tuiOnlySubcommand(command.name, sub.name)) }
   })
 }
-
-type Translate = (key: MessageKey, values?: Record<string, string | number>) => string
 
 /**
  * 唯讀 slash 的本地回應(busySlashDisposition 的 respond-local 類)。
@@ -96,9 +106,9 @@ export function localSlashResponse(
   // 與 composer 選單不同,desktop-owned 的命令在此一併列出,因為手動
   // 輸入仍然有效)。
   if (name === 'help') {
-    const guiEntries: SlashCommand[] = ['tree', 'branch', 'fork', 'new', 'clear', 'resume', 'help'].map((entryName) => ({ name: entryName, source: 'builtin' }))
+    const guiEntries: SlashCommand[] = ['tree', 'branch', 'fork', 'new', 'clear', 'resume', 'status', 'help'].map((entryName) => ({ name: entryName, source: 'builtin' }))
     const lines = [...INITIAL_SLASH_COMMANDS, ...guiEntries].map((command) => {
-      const description = LOCALIZED_DESCRIPTION_COMMANDS.has(command.name) ? t(`slash.command.${command.name}` as MessageKey) : command.description
+      const description = slashDescription(command, t, true)
       return description ? `/${command.name} — ${description}` : `/${command.name}`
     })
     return [t('slash.help.heading'), ...lines].join('\n')

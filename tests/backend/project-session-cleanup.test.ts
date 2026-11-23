@@ -63,7 +63,7 @@ describe('resolveProjectRoots', () => {
   afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true, maxRetries: 5 }) })
 
   it('canonicalizes existing folders and keeps stale folders lexical', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'omp-desktop-project-roots-')); dirs.push(root)
+    const root = mkdtempSync(join(realpathSync.native(tmpdir()), 'omp-desktop-project-roots-')); dirs.push(root)
     const existing = join(root, 'existing')
     mkdirSync(existing)
     writeFileSync(join(existing, 'marker.txt'), 'present')

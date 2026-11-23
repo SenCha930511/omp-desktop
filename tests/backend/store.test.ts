@@ -41,21 +41,54 @@ const realFileSystem: JsonStateStoreFileSystem = {
   unlink,
 }
 
+/**
+ * Uses real files on every host and real POSIX directory fsync where supported.
+ * On Windows, only the directory handle is substituted so explicit `linux`
+ * protocol tests can exercise ordering without pretending Windows fsync works.
+ */
+function posixFileSystem(): JsonStateStoreFileSystem {
+  if (process.platform !== 'win32') return realFileSystem
+  return {
+    ...realFileSystem,
+    open: async (path, flags, mode) => {
+      if (flags !== 'r') return realFileSystem.open(path, flags, mode)
+      return {
+        writeFile: async () => { throw new Error('unexpected directory write') },
+        sync: async () => undefined,
+        close: async () => undefined,
+      }
+    },
+  }
+}
+
+async function openPosixStateStore(directory: string): Promise<JsonStateStore> {
+  if (process.platform !== 'win32') return openDesktopStateStore(directory)
+  const store = new JsonStateStore(
+    join(directory, CURRENT_DESKTOP_STATE_FILENAME),
+    posixFileSystem(),
+    join(directory, LEGACY_DESKTOP_STATE_FILENAME),
+    'linux',
+  )
+  await store.ready()
+  return store
+}
+
 /** Records every durable-write operation the store performs through its fs seam. */
 function recordingFileSystem(events: string[]): JsonStateStoreFileSystem {
+  const fileSystem = posixFileSystem()
   return {
     open: async (path, flags, mode) => {
       const kind = flags === 'w' ? 'file' : 'directory'
       events.push(`${kind}-open`)
-      const handle = await realFileSystem.open(path, flags, mode)
+      const handle = await fileSystem.open(path, flags, mode)
       return {
         writeFile: (data, options) => { events.push(`${kind}-write`); return handle.writeFile(data, options) },
         sync: () => { events.push(`${kind}-sync`); return handle.sync() },
         close: () => { events.push(`${kind}-close`); return handle.close() },
       }
     },
-    rename: async (oldPath, newPath) => { events.push('rename'); await realFileSystem.rename(oldPath, newPath) },
-    unlink: async (path) => { events.push('unlink'); await realFileSystem.unlink(path) },
+    rename: async (oldPath, newPath) => { events.push('rename'); await fileSystem.rename(oldPath, newPath) },
+    unlink: async (path) => { events.push('unlink'); await fileSystem.unlink(path) },
   }
 }
 
@@ -281,7 +314,7 @@ describe('JsonStateStore', () => {
       rename: async () => { events.push('rename') },
       unlink: async () => { events.push('unlink') },
     }
-    const store = new JsonStateStore(path, fileSystem)
+    const store = new JsonStateStore(path, fileSystem, undefined, 'linux')
 
     const operation = store.update((state) => {
       state.archivedSessions.push('durable')
@@ -415,7 +448,7 @@ describe('JsonStateStore', () => {
     await new JsonStateStore(path).update((state) => { state.archivedSessions.push('/sessions/one.jsonl') })
 
     const events: string[] = []
-    const store = new JsonStateStore(path, recordingFileSystem(events))
+    const store = new JsonStateStore(path, recordingFileSystem(events), undefined, 'linux')
     await store.update((state) => { state.archivedSessions.push('/sessions/two.jsonl') })
 
     expect(events).toEqual([
@@ -468,7 +501,18 @@ describe('JsonStateStore', () => {
     expect(JSON.parse(readFileSync(path, 'utf8')).archivedSessions).toEqual(['/sessions/one.jsonl', '/sessions/two.jsonl'])
   })
 
-  it('creates private state files and directories', async () => {
+  it('creates state files and directories', async () => {
+    const dir = makeDirectory()
+    const stateDirectory = join(dir, 'nested')
+    const path = join(stateDirectory, 'state.json')
+    const store = new JsonStateStore(path)
+    await store.update((state) => { state.archivedSessions.push('saved') })
+
+    expect(statSync(stateDirectory).isDirectory()).toBe(true)
+    expect(JSON.parse(readFileSync(path, 'utf8')).archivedSessions).toEqual(['saved'])
+  })
+
+  it.runIf(process.platform !== 'win32')('creates private POSIX state files and directories', async () => {
     const dir = makeDirectory()
     const stateDirectory = join(dir, 'nested')
     const path = join(stateDirectory, 'state.json')
@@ -598,6 +642,49 @@ describe('JsonStateStore', () => {
     expect(reset.settings.ompApprovalMode).toBe('inherit')
   })
 
+  it('persists the exact native cached approval choice without rewriting valid state on load', async () => {
+    const dir = makeDirectory()
+    const path = join(dir, 'state.json')
+    writeFileSync(path, JSON.stringify({
+      version: 4,
+      projects: [],
+      settings: { ...defaultSettings(), ompApprovalMode: 'always-ask-cached' },
+      archivedSessions: [],
+      dismissedProjectPaths: [],
+      schedules: [],
+    }))
+    const source = readFileSync(path, 'utf8')
+
+    const store = new JsonStateStore(path)
+    expect(store.getSettings().ompApprovalMode).toBe('always-ask-cached')
+    expect(readFileSync(path, 'utf8')).toBe(source)
+
+    await store.update((state) => { state.settings.ompApprovalMode = 'inherit' })
+    expect(store.getSettings().ompApprovalMode).toBe('inherit')
+    await store.update((state) => { state.settings.ompApprovalMode = 'always-ask-cached' })
+    expect(new JsonStateStore(path).getSettings().ompApprovalMode).toBe('always-ask-cached')
+  })
+
+  it('falls back to inherit for approval aliases, malformed values, and localized strings without mutating state', () => {
+    const dir = makeDirectory()
+    const path = join(dir, 'state.json')
+    const invalidModes: unknown[] = ['cached', 'Always ask (cached)', 'always-ask-cached ', '', '一律詢問（快取）', '总是询问（缓存）', null, 1, true, ['always-ask-cached'], { mode: 'always-ask-cached' }, undefined]
+
+    for (const ompApprovalMode of invalidModes) {
+      writeFileSync(path, JSON.stringify({
+        version: 4,
+        projects: [],
+        settings: { ...defaultSettings(), ompApprovalMode },
+        archivedSessions: [],
+        dismissedProjectPaths: [],
+        schedules: [],
+      }))
+      const source = readFileSync(path, 'utf8')
+      expect(new JsonStateStore(path).getSettings().ompApprovalMode).toBe('inherit')
+      expect(readFileSync(path, 'utf8')).toBe(source)
+    }
+  })
+
   it('migrates the legacy pi harness for projects and the active workspace to omp', () => {
     const dir = makeDirectory()
     const path = join(dir, 'state.json')
@@ -649,7 +736,7 @@ describe('JsonStateStore', () => {
     const legacyRaw = JSON.stringify({ version: 2, projects: [], settings: defaultSettings(), archivedSessions: [], dismissedProjectPaths: [], schedules: [] })
     writeFileSync(path, raw)
     writeFileSync(legacyPath, legacyRaw)
-    const store = new JsonStateStore(path, realFileSystem, legacyPath, 'linux')
+    const store = new JsonStateStore(path, posixFileSystem(), legacyPath, 'linux')
     const mutator = vi.fn()
 
     expect(() => store.snapshot()).toThrow(UnsupportedStateVersionError)
@@ -723,7 +810,7 @@ describe('JsonStateStore', () => {
     }, null, 2)
     writeFileSync(legacyPath, legacyRaw)
 
-    const migrated = await openDesktopStateStore(dir)
+    const migrated = await openPosixStateStore(dir)
     expect(migrated.snapshot().projects.map(({ id, harness }) => ({ id, harness }))).toEqual([{ id: 'omp-project', harness: 'omp' }])
     await migrated.beginShutdown()
     expect(JSON.parse(readFileSync(currentPath, 'utf8'))).toMatchObject({ version: 4, projects: [{ id: 'omp-project', harness: 'omp' }] })
@@ -743,7 +830,7 @@ describe('JsonStateStore', () => {
     })
     writeFileSync(legacyPath, downgradedRaw)
 
-    const reopened = await openDesktopStateStore(dir)
+    const reopened = await openPosixStateStore(dir)
     expect(reopened.snapshot().projects.map(({ id, harness }) => ({ id, harness }))).toEqual([{ id: 'omp-project', harness: 'omp' }])
     expect(readFileSync(currentPath, 'utf8')).toBe(currentRaw)
     expect(existsSync(legacyPath)).toBe(false)
@@ -771,7 +858,7 @@ describe('JsonStateStore', () => {
         if (oldPath === legacyPath) throw retirementError
         await rename(oldPath, newPath)
       },
-    }, legacyPath)
+    }, legacyPath, 'linux')
 
     const readiness = store.ready()
     await expect(readiness).rejects.toBeInstanceOf(StateMigrationError)
@@ -808,7 +895,7 @@ describe('JsonStateStore', () => {
         await rename(oldPath, newPath)
       },
       unlink,
-    }, legacyPath)
+    }, legacyPath, 'linux')
 
     await store.ready()
     expect(events).toEqual(['legacy-rename', 'directory-open', 'directory-sync', 'directory-close'])
@@ -828,7 +915,7 @@ describe('JsonStateStore', () => {
           close: async () => undefined,
         }
       },
-    }, legacyPath)
+    }, legacyPath, 'linux')
 
     await store.ready()
     expect(JSON.parse(readFileSync(currentPath, 'utf8'))).toMatchObject({ version: 4, projects: [] })
@@ -852,7 +939,7 @@ describe('JsonStateStore', () => {
           close: async () => undefined,
         }
       },
-    }, legacyPath)
+    }, legacyPath, 'linux')
 
     await expect(store.ready()).rejects.toThrow(/directory could not be synchronized.*I\/O failure/i)
     await expect(store.update((state) => { state.archivedSessions.push('/must-not-write') })).rejects.toThrow(/directory could not be synchronized/i)
@@ -882,7 +969,7 @@ describe('JsonStateStore', () => {
           close: async () => undefined,
         }
       },
-    }, legacyPath)
+    }, legacyPath, 'linux')
 
     await expect(store.ready()).rejects.toThrow(/retirement was not durable.*legacy filename was restored/i)
     await expect(store.update((state) => { state.archivedSessions.push('/must-not-write') })).rejects.toThrow(/retirement was not durable/i)
@@ -890,7 +977,7 @@ describe('JsonStateStore', () => {
     expect(readFileSync(legacyPath, 'utf8')).toBe(legacyRaw)
     expect(readdirSync(dir).filter((name) => name.startsWith(`${LEGACY_DESKTOP_STATE_FILENAME}.migrated-v4-`))).toEqual([])
 
-    const retried = await openDesktopStateStore(dir)
+    const retried = await openPosixStateStore(dir)
     expect(existsSync(legacyPath)).toBe(false)
     await retried.beginShutdown()
   })
@@ -922,7 +1009,7 @@ describe('JsonStateStore', () => {
         }
         throw Object.assign(new Error('injected rollback rename failure'), { code: 'EACCES' })
       },
-    }, legacyPath)
+    }, legacyPath, 'linux')
 
     const readiness = store.ready()
     await expect(readiness).rejects.toBeInstanceOf(StateMigrationError)
@@ -954,7 +1041,7 @@ describe('JsonStateStore', () => {
           close: async () => undefined,
         }
       },
-    }, legacyPath)
+    }, legacyPath, 'linux')
 
     const readiness = store.ready()
     await expect(readiness).rejects.toBeInstanceOf(StateMigrationError)
@@ -990,7 +1077,7 @@ describe('JsonStateStore', () => {
     const legacyRaw = JSON.stringify({ version: 2, projects: [], settings: defaultSettings(), archivedSessions: [], dismissedProjectPaths: [], schedules: [] })
     writeFileSync(path, raw)
     writeFileSync(legacyPath, legacyRaw)
-    const store = new JsonStateStore(path, realFileSystem, legacyPath, 'linux')
+    const store = new JsonStateStore(path, posixFileSystem(), legacyPath, 'linux')
     const mutator = vi.fn()
 
     expect(() => store.snapshot()).toThrow(StateCompatibilityError)
@@ -1044,18 +1131,36 @@ describe('JsonStateStore', () => {
     const { mkdirSync } = await import('node:fs')
     mkdirSync(sessionRoot)
     const transcript = join(sessionRoot, 'session.jsonl')
-    writeFileSync(transcript, '{"type":"session"}\n')
+    const projectPath = join(dir, 'project')
+    const transcriptSource = `${JSON.stringify({ type: 'session', id: 'visibility-session', cwd: projectPath, timestamp: '2026-01-02T03:04:05.000Z' })}\n${JSON.stringify({ type: 'session_info', name: 'Visibility sentinel', timestamp: '2026-01-02T03:04:06.000Z' })}\n`
+    writeFileSync(transcript, transcriptSource)
+    const canonicalTranscript = realpathSync.native(transcript)
     const store = new JsonStateStore(join(dir, 'state.json'))
     const sessions = new SessionService(store, null)
     Object.defineProperty(sessions, 'sessionRoot', { value: sessionRoot })
+    const beforeRecord = (await sessions.list(undefined, false, true))[0]!
+    expect(beforeRecord).toMatchObject({
+      id: 'visibility-session',
+      filePath: canonicalTranscript,
+      projectPath,
+      title: 'Visibility sentinel',
+      createdAt: '2026-01-02T03:04:05.000Z',
+      updatedAt: '2026-01-02T03:04:06.000Z',
+      archived: false,
+    })
+
     await sessions.archive(transcript, true)
-    expect(store.snapshot().archivedSessions).toContain(realpathSync(transcript))
+    // Keep the exact native physical identity: portable realpath and native
+    // realpath may preserve different supplied aliases on Windows.
+    expect(store.snapshot().archivedSessions).toEqual([canonicalTranscript])
     expect(await sessions.list()).toHaveLength(0)
-    expect((await sessions.list(undefined, true))[0]?.archived).toBe(true)
+    expect((await sessions.list(undefined, true))[0]).toEqual({ ...beforeRecord, archived: true })
+    expect(readFileSync(transcript, 'utf8')).toBe(transcriptSource)
+
     await sessions.archive(transcript, false)
-    expect(store.snapshot().archivedSessions).not.toContain(realpathSync(transcript))
-    expect((await sessions.list())[0]?.archived).toBe(false)
-    expect(readFileSync(transcript, 'utf8')).toBe('{"type":"session"}\n')
+    expect(store.snapshot().archivedSessions).toEqual([])
+    expect((await sessions.list())[0]).toEqual(beforeRecord)
+    expect(readFileSync(transcript, 'utf8')).toBe(transcriptSource)
   })
 
 })

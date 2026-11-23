@@ -71,9 +71,8 @@ export interface SidebarProps {
 
 export const SIDEBAR_SESSION_LIMIT = 7
 
-// "Show all sessions" choices persist across sidebar remounts: the sidebar
-// remounts on every view switch, and losing the choice reset long project
-// lists to the 7-row preview — reading exactly like sessions going missing.
+// "Show all sessions" choices persist across sidebar remounts. Losing the choice
+// resets long lists to the 7-row preview, reading like sessions going missing.
 const expandedProjectChoices = new Set<string>()
 /** Test-only: clears persisted expansion choices between cases. */
 export function resetSidebarExpansionForTests(): void {
@@ -298,11 +297,7 @@ function SidebarView({
   const [archiveTarget, setArchiveTarget] = useState<SessionRecord | null>(null)
   const [removeTarget, setRemoveTarget] = useState<ProjectRecord | null>(null)
   const [confirmUpdate, setConfirmUpdate] = useState(false)
-  // Projects can hold far more sessions than the collapsed preview shows;
-  // expansion is per project and must survive remounts (the sidebar remounts
-  // on view switches — resetting it made long project lists read as "sessions
-  // are missing"). Search bypasses the cap entirely so any matching row stays
-  // reachable.
+  // Search bypasses the preview cap so every matching session remains reachable.
   const [expandedProjects, setExpandedProjects] = useState<ReadonlySet<string>>(() => new Set(expandedProjectChoices))
   const [updateErrorOpen, setUpdateErrorOpen] = useState(false)
   // activeSessionId is deliberately absent from the memo inputs: clicking a
@@ -550,7 +545,6 @@ function SidebarView({
             (session) => !normalized || `${session.title} ${session.preview ?? ''}`.toLowerCase().includes(normalized) || project.name.toLowerCase().includes(normalized),
           )
           const isCollapsed = collapsed[project.id] ?? false
-          const running = projectSessions.some((session) => session.status === 'running')
           const sessionRows = normalized || expandedProjects.has(project.id) ? projectSessions : boundedSidebarSessions(projectSessions)
           return (
             <div className="project-group" key={project.id}>
@@ -589,11 +583,7 @@ function SidebarView({
                   <span>{project.name}</span>
                   {project.pinned ? <Pin className="project-row__pin" size={11} fill="currentColor" /> : null}
                 </button>
-                {running && isCollapsed ? (
-                  <span className="project-working" title={t('sidebar.agentWorking')}>
-                    <LoaderCircle className="spin" size={13} />
-                  </span>
-                ) : null}
+
               </div>
               {!isCollapsed ? (
                 <div className="session-list">

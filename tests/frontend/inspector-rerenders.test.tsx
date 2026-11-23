@@ -10,6 +10,7 @@ import { WorkspaceInspector } from '../../src/components/WorkspaceInspector'
 import { INSPECTOR_ACTIVE_TAB_KEY, INSPECTOR_OPEN_TABS_KEY, readInitialActiveTab, readInitialInspectorTabs } from '../../src/hooks/useAppSettings'
 import { useBrowserAnnotations, type BrowserAnnotationsApi } from '../../src/hooks/useBrowserAnnotations'
 import type { InspectorProps } from '../../src/components/Inspector'
+import { I18nProvider } from '../../src/lib/i18n'
 import type { InspectorTab } from '../../src/types/api'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
@@ -210,12 +211,96 @@ describe('inspector tabs', () => {
     expect(container.querySelector('#inspector-panel-files')).toBeNull()
   })
 
+  it('keeps consecutive arrow keys on the newly selected tab before the next animation frame', async () => {
+    const deferredFrames: FrameRequestCallback[] = []
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      deferredFrames.push(callback)
+      return deferredFrames.length
+    })
+    function RovingHarness() {
+      const [activeTab, setActiveTab] = useState<InspectorTab>('changes')
+      return (
+        <WorkspaceInspector
+          openTabs={['changes', 'files', 'agents']}
+          activeTab={activeTab}
+          onTabChange={setActiveTab}
+          onClose={() => undefined}
+          git={{ isRepo: false, files: [] }}
+          browserHome="about:blank"
+          browserAnnotations={useBrowserAnnotations()}
+          agentBrowserTabs={[]}
+          activeAgentTabId={null}
+          agentPreviewSelected={false}
+          onSelectAgentTab={() => undefined}
+          onCloseAgentTab={() => undefined}
+          onShowBrowserPreview={() => undefined}
+          onAgentSlotRect={() => undefined}
+          onPreviewContext={() => undefined}
+          previewPointerEvent={null}
+          onNavigateAgentTab={() => undefined}
+          onRefreshGit={() => undefined}
+          onOpenExternal={() => undefined}
+          onRevealPath={() => undefined}
+          onGrantProject={() => undefined}
+        />
+      )
+    }
+    await act(async () => { root.render(<RovingHarness />) })
+    const pressArrowOnFocusedTab = async () => act(async () => {
+      document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }))
+    })
+    const changes = container.querySelector<HTMLButtonElement>('#inspector-tab-changes')!
+    const files = container.querySelector<HTMLButtonElement>('#inspector-tab-files')!
+    const agents = container.querySelector<HTMLButtonElement>('#inspector-tab-agents')!
+    changes.focus()
+    await pressArrowOnFocusedTab()
+    expect(files.getAttribute('aria-selected')).toBe('true')
+
+    // The selection can render before a deferred focus callback. A real second
+    // key event still goes to document.activeElement during that interval.
+    await pressArrowOnFocusedTab()
+    expect(agents.getAttribute('aria-selected')).toBe('true')
+    expect(document.activeElement).toBe(agents)
+  })
+
   it('renders the Agents tab roster and selected transcript inside the inspector body', async () => {
     const state = { agents: [{ id: 'a', agent: 'Explore', status: 'running', messages: [] }], selectedId: 'a', select: () => undefined }
     await act(async () => { root.render(<Harness initialTab="agents" subagents={{ state, connected: true }} />) })
     expect([...container.querySelectorAll('.inspector__tabs button')].some((button) => button.textContent?.includes('Agents'))).toBe(true)
     expect(container.querySelector('#inspector-panel-agents .subagents__roster')).not.toBeNull()
     expect(container.querySelector('#inspector-panel-agents .subagents__transcript h2')?.textContent).toBe('Explore')
+  })
+
+  it('localizes known New tab subagent statuses and marks unknown upstream states unavailable in every locale', async () => {
+    const state = {
+      agents: [
+        { id: 'running', agent: 'Explore', status: 'running', messages: [] },
+        { id: 'completed', agent: 'Reviewer', status: 'completed', messages: [] },
+        { id: 'unknown', agent: 'Custom', status: 'queued_upstream', messages: [] },
+      ],
+      selectedId: undefined,
+      select: () => undefined,
+    }
+    const cases = [
+      ['en', ['Running', 'Completed', 'Status unavailable']],
+      ['zh-TW', ['執行中', '已完成', '狀態不明']],
+      ['zh-CN', ['运行中', '已完成', '状态不明']],
+    ] as const
+
+    for (const [preference, statuses] of cases) {
+      await act(async () => {
+        root.render(<I18nProvider preference={preference}><Harness subagents={{ state, connected: true }} /></I18nProvider>)
+      })
+      if (!container.querySelector('.inspector-new-tab')) {
+        await act(async () => { container.querySelector<HTMLButtonElement>('.inspector__tab-actions button')?.click() })
+      }
+
+      expect([...container.querySelectorAll('.inspector-new-tab__subitem .inspector-new-tab__detail')].map((status) => status.textContent)).toEqual([...statuses])
+      expect(container.querySelector('.inspector-new-tab')?.textContent).not.toContain('queued_upstream')
+      expect([...container.querySelectorAll('.inspector-new-tab__subitem')].map((item) => item.textContent)).toEqual([
+        `Explore${statuses[0]}`, `Reviewer${statuses[1]}`, `Custom${statuses[2]}`,
+      ])
+    }
   })
 
   it('renders active OMP session background jobs on the Background Tasks tab and triggers cancel', async () => {

@@ -376,6 +376,26 @@ describe('extension UI request lifecycle', () => {
     expect(cancelCommands()).toEqual([{ type: 'extension_ui_response', id: 'g1', value: JSON.stringify({ answer: 'B1', answerSource: 'option' }) }])
   })
 
+  it('preserves the original questionnaire deadline after a native partial cancel', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    vi.setSystemTime(0)
+    try {
+      renderHarness()
+      show('runtime-a', selectEvent('g0', 'First?', ['__prime_ask_user__group-1:0:2', 'A1', 'A2']))
+      show('runtime-a', selectEvent('g1', 'Second?', ['__prime_ask_user__group-1:1:2', 'B1', 'B2']))
+      act(() => { vi.advanceTimersByTime(60_000) })
+      show('runtime-a', cancelEvent('g0'))
+      expect(api.extensionUi?.request).toMatchObject({ method: 'questionnaire', questions: [{ id: 'g1' }] })
+      act(() => { vi.advanceTimersByTime(59_999) })
+      expect(cancelCommands()).toEqual([])
+      act(() => { vi.advanceTimersByTime(1) })
+      expect(cancelCommands()).toEqual([{ type: 'extension_ui_response', id: 'g1', cancelled: true }])
+      expect(api.extensionUi).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('queues concurrent questions instead of overwriting them', async () => {
     renderHarness()
     show('runtime-a', selectEvent('q1', 'First question', ['One', 'Two']))

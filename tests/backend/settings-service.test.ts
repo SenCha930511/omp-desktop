@@ -92,6 +92,20 @@ describe('SettingsService.update', () => {
     await expect(service.update({ locale: 'system' })).resolves.toMatchObject({ locale: 'system' })
   })
 
+  it('updates and reloads the exact native cached approval setting', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-settings-approval-'))
+    dirs.push(dir)
+    const statePath = join(dir, 'state.json')
+    const service = new SettingsService(new JsonStateStore(statePath), undefined)
+
+    await expect(service.update({ ompApprovalMode: 'always-ask-cached' })).resolves.toMatchObject({ ompApprovalMode: 'always-ask-cached' })
+    const reloaded = new SettingsService(new JsonStateStore(statePath), undefined)
+    expect(reloaded.get().ompApprovalMode).toBe('always-ask-cached')
+
+    await expect(service.update({ ompApprovalMode: 'cached' } as never)).rejects.toThrow('Invalid OMP approval mode')
+    expect(service.get().ompApprovalMode).toBe('always-ask-cached')
+  })
+
   it('rejects unknown keys, invalid enums, and malformed values without persisting', async () => {
     const service = makeService()
     const before = service.get()

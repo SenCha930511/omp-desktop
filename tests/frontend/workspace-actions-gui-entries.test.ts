@@ -41,9 +41,10 @@ interface FixtureOptions {
   attachedRuntime?: RuntimeInfo | null
   /** 覆寫 bridge(例如 /new 的 durable 邊界回應)。 */
   bridgeOverride?: DesktopApi
+  catalogSessions?: SessionRecord[]
 }
 
-function fixture({ attachedRuntime = null, bridgeOverride }: FixtureOptions = {}) {
+function fixture({ attachedRuntime = null, bridgeOverride, catalogSessions = [currentSession, olderSession] }: FixtureOptions = {}) {
   let currentRuntime = attachedRuntime
   const submissionAdmission = createSingleFlightAdmission()
   let messages: TranscriptMessage[] = []
@@ -63,7 +64,7 @@ function fixture({ attachedRuntime = null, bridgeOverride }: FixtureOptions = {}
   })
   const start = vi.fn(async () => ({ runtimeId: 'durable-runtime', harness: 'omp' as const, cwd: project.primaryFolder, isStreaming: false }))
   const sessionsBranch = vi.fn(async () => branchedSession)
-  const sessionsList = vi.fn(async () => [currentSession, olderSession])
+  const sessionsList = vi.fn(async () => catalogSessions)
   const bridge =
     bridgeOverride ??
     ({
@@ -121,7 +122,7 @@ function fixture({ attachedRuntime = null, bridgeOverride }: FixtureOptions = {}
       ({
         bridge,
         projects: [project],
-        sessions: [currentSession, olderSession],
+        sessions: catalogSessions,
         activeProject: project,
         workspace,
         settingsState: { settings: { activeHarness: 'omp', locale: 'en' }, setSidebarOpen },
@@ -247,6 +248,38 @@ describe('slash GUI entries', () => {
     await waitUntil(() => state.reconcileRuntime.mock.calls.length > 0)
     expect(state.activateWorkspace).toHaveBeenCalledWith(project, expect.objectContaining({ id: olderSession.id }))
     expect(state.command).not.toHaveBeenCalled()
+  })
+
+  it('/resume uses a case-insensitive title substring after exact matching fails', async () => {
+    const state = fixture()
+
+    await state.actions.sendPrompt('/resume older')
+
+    await waitUntil(() => state.reconcileRuntime.mock.calls.length > 0)
+    expect(state.activateWorkspace).toHaveBeenCalledWith(project, expect.objectContaining({ id: olderSession.id }))
+    expect(state.reportError).not.toHaveBeenCalled()
+  })
+
+  it('/resume picks the first of multiple title substring matches in catalog order', async () => {
+    const first = { ...currentSession, id: 'first-match', filePath: '/gui-project/first.jsonl', title: 'Deploy Alpha API' }
+    const second = { ...currentSession, id: 'second-match', filePath: '/gui-project/second.jsonl', title: 'deploy alpha worker' }
+    const state = fixture({ catalogSessions: [first, second] })
+
+    await state.actions.sendPrompt('/resume ALPHA')
+
+    await waitUntil(() => state.reconcileRuntime.mock.calls.length > 0)
+    expect(state.activateWorkspace).toHaveBeenCalledExactlyOnceWith(project, expect.objectContaining({ id: first.id }))
+  })
+
+  it('/resume preserves exact-title precedence over an earlier substring match', async () => {
+    const first = { ...currentSession, id: 'long-title', filePath: '/gui-project/long.jsonl', title: 'Deploy Alpha API' }
+    const exact = { ...currentSession, id: 'exact-title', filePath: '/gui-project/exact.jsonl', title: 'Deploy Alpha' }
+    const state = fixture({ catalogSessions: [first, exact] })
+
+    await state.actions.sendPrompt('/resume deploy alpha')
+
+    await waitUntil(() => state.reconcileRuntime.mock.calls.length > 0)
+    expect(state.activateWorkspace).toHaveBeenCalledExactlyOnceWith(project, expect.objectContaining({ id: exact.id }))
   })
 
   it('/resume with an unknown identifier reports the miss in place', async () => {

@@ -161,7 +161,7 @@ function createHermeticFixture(): { userData: string; home: string; project: str
       JSON.stringify({ type: 'message', id: 'primary-message', parentId: null, timestamp: '2026-03-15T00:00:01.000Z', message: { role: 'user', content: 'Primary workspace fixture', timestamp: 1773835201000 } }),
     ],
   )
-  const todoSessionPath = writeOmpSession(
+  writeOmpSession(
     '2026-03-10T00-00-00-000Z_019fdf24-eeee-7000-8000-000000000005.jsonl',
     'Todo plan fixture',
     '2026-03-10T00:00:00.000Z',
@@ -258,7 +258,7 @@ if (args[0] === 'models' && args.includes('--json')) {
   ] }) + '\\n')
   process.exit(0)
 }
-if (!args.includes('--mode') || args[args.indexOf('--mode') + 1] !== 'rpc') process.exit(2)
+if (!args.includes('--mode') || args[args.indexOf('--mode') + 1] !== 'rpc-ui') process.exit(2)
 fs.writeFileSync(marker('omp-runtime.pid'), String(process.pid))
 fs.writeFileSync(marker('omp-runtime-args.json'), JSON.stringify(args))
 const resumeIndex = args.indexOf('--resume')
@@ -1085,14 +1085,21 @@ test.describe('OMP Desktop desktop smoke', () => {
     await pill.click()
     const menu = page.locator('.approval-mode__menu')
     await expect(menu).toBeVisible()
-    await expect(menu.getByRole('menuitemradio')).toHaveCount(4)
-    await menu.getByRole('menuitemradio', { name: /^Ask/ }).click()
+    await expect(menu.getByRole('menuitemradio')).toHaveCount(5)
+    await menu.getByRole('menuitemradio', { name: 'Ask', exact: true }).click()
     await expect(page.locator('.approval-mode-toggle__label')).toHaveText('Ask')
     await expect.poll(() => page.evaluate(async () => (await window.desktop.settings.get()).ompApprovalMode)).toBe('always-ask')
     await pill.click()
-    await expect(page.locator('.approval-mode__menu').getByRole('menuitemradio', { name: /^Ask/ })).toHaveAttribute('aria-checked', 'true')
+    await expect(page.locator('.approval-mode__menu').getByRole('menuitemradio', { name: 'Ask', exact: true })).toHaveAttribute('aria-checked', 'true')
     await page.keyboard.press('Escape')
     await expect(page.locator('.approval-mode__menu')).toHaveCount(0)
+    await pill.click()
+    await page.locator('.approval-mode__menu').getByRole('menuitemradio', { name: 'Ask (cached)', exact: true }).click()
+    await expect(page.locator('.approval-mode-toggle__label')).toHaveText('Ask (cached)')
+    await expect.poll(() => page.evaluate(async () => (await window.desktop.settings.get()).ompApprovalMode)).toBe('always-ask-cached')
+    await pill.click()
+    await expect(page.locator('.approval-mode__menu').getByRole('menuitemradio', { name: 'Ask (cached)', exact: true })).toHaveAttribute('aria-checked', 'true')
+    await expect(pill).toBeFocused()
   })
 
   test('adapts terminal command output, notifications, empty results and failures to the desktop panel', async () => {
@@ -2835,9 +2842,51 @@ test.describe('OMP Desktop desktop smoke', () => {
 
   test('uses overlay panels at the compact desktop breakpoint', async () => {
     await page.getByRole('button', { name: /^New session/ }).first().click()
+    const localeDraft = page.locator('.composer-input textarea')
+    await expect(localeDraft).toHaveValue('')
+    await localeDraft.fill('root locale continuity fixture')
+    await expect(localeDraft).toHaveValue('root locale continuity fixture')
+    expect(await page.evaluate(async () => (await window.desktop.settings.get()).locale)).toBe('en')
+    await page.locator('.app-shell').evaluate((node) => node.setAttribute('data-root-locale-continuity', 'mounted'))
+    await expect(page.getByRole('separator', { name: 'Resize sidebar', exact: true })).toBeVisible()
+    await expect(page.locator('.panel-scrim--sidebar')).toHaveAttribute('aria-label', 'Close sidebar')
+    const localeCopy = {
+      en: { settings: 'Settings', appearance: 'Appearance', back: 'Back to session', scrim: 'Close sidebar', resize: 'Resize sidebar', show: 'Show sidebar' },
+      'zh-TW': { settings: '設定', appearance: '外觀', back: '返回工作階段', scrim: '關閉側欄', resize: '調整側欄大小', show: '顯示側邊欄' },
+      'zh-CN': { settings: '设置', appearance: '外观', back: '返回会话', scrim: '关闭侧栏', resize: '调整侧栏大小', show: '显示侧边栏' },
+    } as const
+    let currentLocale: keyof typeof localeCopy = 'en'
+    const chooseLocale = async (locale: keyof typeof localeCopy, resizeVisible: boolean) => {
+      const current = localeCopy[currentLocale]
+      const next = localeCopy[locale]
+      await page.locator('.sidebar').getByTitle(current.settings, { exact: true }).click()
+      await page.getByRole('button', { name: current.appearance, exact: true }).click()
+      await page.locator('select:has(option[value="en"]):has(option[value="zh-TW"]):has(option[value="zh-CN"])').selectOption(locale)
+      // Optimistic settings state must repaint root-owned labels immediately;
+      // persistence is verified separately and is not the render trigger.
+      if (resizeVisible) {
+        await expect(page.locator('.panel-scrim--sidebar')).toHaveAttribute('aria-label', next.scrim)
+        await expect(page.getByRole('separator', { name: next.resize, exact: true })).toBeVisible()
+      }
+      await expect(page.locator('html')).toHaveAttribute('lang', locale)
+      await expect.poll(() => page.evaluate(async () => (await window.desktop.settings.get()).locale)).toBe(locale)
+      await page.getByRole('button', { name: next.back, exact: true }).click()
+      if (!resizeVisible && await page.locator('.sidebar').count() === 0) {
+        await page.getByRole('button', { name: new RegExp(`^${next.show}`), exact: false }).click()
+      }
+      await expect(page.locator('.panel-scrim--sidebar')).toHaveAttribute('aria-label', next.scrim)
+      await expect(localeDraft).toHaveValue('root locale continuity fixture')
+      await expect(page.locator('.app-shell')).toHaveAttribute('data-root-locale-continuity', 'mounted')
+      currentLocale = locale
+    }
+    await chooseLocale('zh-TW', true)
+    await chooseLocale('zh-CN', true)
     await page.setViewportSize({ width: 960, height: 700 })
     await expect.poll(() => page.locator('.sidebar').evaluate((node) => getComputedStyle(node).position)).toBe('fixed')
     await expect(page.locator('.inspector')).toHaveCount(0)
+    await expect(page.locator('.panel-scrim--sidebar')).toBeVisible()
+    await expect(page.locator('.panel-scrim--sidebar')).toHaveAttribute('aria-label', '关闭侧栏')
+    await chooseLocale('en', false)
     const sidebarScrim = page.getByRole('button', { name: 'Close sidebar' })
     await expect(page.locator('.panel-scrim--sidebar')).toBeVisible()
     await expect(sidebarScrim).toBeVisible()

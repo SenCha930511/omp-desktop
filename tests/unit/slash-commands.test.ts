@@ -94,6 +94,63 @@ describe('slash command catalog', () => {
     expect(commands[1].subcommands).toEqual(subcommands)
     expect(slashSuggestions([{ name: 'effort', subcommands: [{ name: 'high' }] }], '/effort:h')[0].command).toBe('/effort high')
   })
+  it('preserves all seven English descriptions and the distinct offline goal usage', () => {
+    const t = (key: Parameters<typeof translate>[1]) => translate('en', key)
+    const help = localSlashResponse('/help', undefined, t)
+    for (const line of [
+      '/goal — Goal mode: show | set | pause | resume | drop',
+      '/pause — Pause the session goal',
+      '/status — Show the current session status',
+      '/session — Show session information',
+      '/rename — Rename session',
+      '/mcp — Manage MCP servers',
+      '/plugins — Manage plugins',
+    ]) expect(help).toContain(line)
+    expect(help).not.toContain('/goal — Create or manage the session goal')
+
+    const injected = desktopSlashCommands([
+      { name: 'goal', source: 'builtin', description: 'Create or manage the session goal' },
+      { name: 'pause', source: 'builtin', description: 'Pause the session goal' },
+      { name: 'status', source: 'builtin', description: 'Show the current session status' },
+    ], t)
+    expect(injected.map(({ name, description }) => [name, description])).toEqual([
+      ['goal', 'Create or manage the session goal'],
+      ['pause', 'Pause the session goal'],
+      ['status', 'Show the current session status'],
+    ])
+    expect(desktopSlashCommands(INITIAL_SLASH_COMMANDS, t).find(({ name }) => name === 'goal')?.description).toBe('Goal mode: show | set | pause | resume | drop')
+  })
+
+  it('localizes the complete help lookup while keeping unknown upstream descriptions opaque', () => {
+    const expectations = {
+      'zh-TW': {
+        goal: '建立或管理工作階段目標', goalUsage: '目標模式：show | set | pause | resume | drop', pause: '暫停工作階段目標',
+        status: '顯示目前工作階段狀態', session: '顯示工作階段資訊', rename: '重新命名工作階段', mcp: '管理 MCP 伺服器', plugins: '管理外掛',
+      },
+      'zh-CN': {
+        goal: '创建或管理会话目标', goalUsage: '目标模式：show | set | pause | resume | drop', pause: '暂停会话目标',
+        status: '显示当前会话状态', session: '显示会话信息', rename: '重命名会话', mcp: '管理 MCP 服务器', plugins: '管理插件',
+      },
+    } as const
+    for (const locale of ['zh-TW', 'zh-CN'] as const) {
+      const t = (key: Parameters<typeof translate>[1], values?: Record<string, string | number>) => translate(locale, key, values)
+      const help = localSlashResponse('/help', undefined, t)
+      const expected = expectations[locale]
+      for (const line of [
+        `/goal — ${expected.goalUsage}`, `/pause — ${expected.pause}`, `/status — ${expected.status}`,
+        `/session — ${expected.session}`, `/rename — ${expected.rename}`, `/mcp — ${expected.mcp}`, `/plugins — ${expected.plugins}`,
+      ]) expect(help).toContain(line)
+      const injected = desktopSlashCommands([
+        { name: 'goal', source: 'builtin', description: 'Create or manage the session goal' },
+        { name: 'pause', source: 'builtin' }, { name: 'status', source: 'builtin' },
+        { name: 'upstream-new', source: 'builtin', description: 'Untranslated upstream text' },
+        { name: 'goal', source: 'extension', description: 'Custom extension goal' },
+      ], t)
+      expect(injected.slice(0, 3).map(({ description }) => description)).toEqual([expected.goal, expected.pause, expected.status])
+      expect(injected[3].description).toBe('Untranslated upstream text')
+      expect(injected[4].description).toBe('Custom extension goal')
+    }
+  })
 })
 
 describe('busy slash dispatch', () => {

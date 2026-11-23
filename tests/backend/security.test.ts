@@ -12,7 +12,7 @@ import { waitUntil } from '../helpers/wait'
 
 const dirs: string[] = []
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }) })
-const temp = (prefix: string) => { const dir = mkdtempSync(join(tmpdir(), prefix)); dirs.push(dir); return dir }
+const temp = (prefix: string) => { const dir = mkdtempSync(join(realpathSync.native(tmpdir()), prefix)); dirs.push(dir); return dir }
 const identities = (...paths: string[]) => Object.fromEntries(paths.map((path) => { const info = lstatSync(path, { bigint: true }); return [realpathSync(path), { dev: info.dev.toString(), ino: info.ino.toString() }] }))
 describe('security boundaries', () => {
   it('does not expose project-configured files outside the project root', async () => {
@@ -79,13 +79,22 @@ const readline=require('node:readline');const fs=require('node:fs');fs.writeFile
     chmodSync(executable, 0o755)
     process.env.OMP_DESKTOP_TEST_PID_FILE = pidFile
     const manager = new AgentRpcManager(executable, async (cwd) => cwd, async (path) => path)
-    const runtime = await manager.start({ cwd: dir })
-    const pid = Number(readFileSync(pidFile, 'utf8'))
-    const started = Date.now()
-    expect(await manager.stop(runtime.runtimeId)).toBe(true)
-    expect(Date.now() - started).toBeGreaterThanOrEqual(2_500)
-    expect(() => process.kill(pid, 0)).toThrow()
-    delete process.env.OMP_DESKTOP_TEST_PID_FILE
+    try {
+      const runtime = await manager.start({ cwd: dir })
+      const pid = Number(readFileSync(pidFile, 'utf8'))
+      const started = Date.now()
+      expect(await manager.stop(runtime.runtimeId)).toBe(true)
+      // POSIX delivers a catchable SIGTERM, so this child must survive the
+      // 750ms drain plus 2s SIGTERM rung and require SIGKILL. Windows does not
+      // deliver those signals as catchable events: taskkill terminates the
+      // process immediately after the same drain, so wall time cannot observe
+      // a graceful-refusal rung there. Both paths must await actual death.
+      if (process.platform !== 'win32') expect(Date.now() - started).toBeGreaterThanOrEqual(2_500)
+      expect(() => process.kill(pid, 0)).toThrow()
+    } finally {
+      delete process.env.OMP_DESKTOP_TEST_PID_FILE
+      await manager.stopAll()
+    }
   }, 10_000)
 
   it('bounds each outbound agent envelope and aggregate bytes while preserving normal events', () => {

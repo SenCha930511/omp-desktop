@@ -1,9 +1,11 @@
-import { type KeyboardEvent, useEffect, useRef, useState } from 'react'
+import { type KeyboardEvent, useEffect, useId, useRef, useState } from 'react'
 import type { ExtensionUiAskAnswer, ExtensionUiAskQuestion, ExtensionUiQuestion, ExtensionUiRequest } from '@/lib/extension-ui'
+import type { ExtensionFormData } from '@/lib/extension-form'
 import { useI18n } from '@/lib/i18n'
 import { shortcutLabel } from '@/lib/platform-shortcuts'
 import { commandOutputText } from '@/lib/command-output'
 import { Modal } from './ui'
+import { ExtensionFormControls } from './ExtensionFormControls'
 
 const OTHER_OPTION = 'Other (type your own answer)'
 
@@ -31,7 +33,7 @@ function LongContent({ text }: { text: string }) {
   )
 }
 
-export type ExtensionUiResponse = { cancelled: true } | { value: string } | { confirmed: boolean } | { values: Record<string, string> } | { answers: ExtensionUiAskAnswer[] }
+export type ExtensionUiResponse = { cancelled: true } | { value: string } | { confirmed: boolean } | { values: Record<string, string> } | { answers: ExtensionUiAskAnswer[] } | { data: unknown }
 
 interface ExtensionUiModalProps {
   request: ExtensionUiRequest
@@ -58,6 +60,9 @@ function questionnaireAnswer(question: ExtensionUiQuestion, selectedIndex: numbe
 
 export function ExtensionUiModal({ request, onRespond, platform = 'darwin' }: ExtensionUiModalProps) {
   const { t } = useI18n()
+  const formId = useId()
+  const formViewRef = useRef<{ request: ExtensionUiRequest | null; version: number }>({ request: null, version: 0 })
+  if (formViewRef.current.request !== request) formViewRef.current = { request, version: formViewRef.current.version + 1 }
   const prefill = request.method === 'editor' ? request.prefill : undefined
   const questionnaireTimeout = request.method === 'questionnaire' ? request.timeout : undefined
   const [value, setValue] = useState(prefill ?? '')
@@ -263,7 +268,7 @@ export function ExtensionUiModal({ request, onRespond, platform = 'darwin' }: Ex
     // native key handling and typing context happens in the context field.
   }
 
-  const plainTitle = commandOutputText(request.title)
+  const plainTitle = request.method === 'form' ? t('extensionForm.title') : commandOutputText(request.title)
   const titleIsLong = isLongContent(plainTitle)
   const plainMessage = request.method === 'confirm' ? commandOutputText(request.message) : ''
   const activeQuestionTitle = activeQuestion ? commandOutputText(activeQuestion.title) : ''
@@ -297,10 +302,23 @@ export function ExtensionUiModal({ request, onRespond, platform = 'darwin' }: Ex
               {t('extensionUi.submitAnswers')}
             </button>
           ) : null}
+          {request.method === 'form' ? (
+            <button type="submit" form={formId} className="button button--primary">
+              {t('extensionForm.submit')}
+            </button>
+          ) : null}
         </>
       }
     >
       {titleIsLong ? <LongContent text={plainTitle} /> : null}
+      {request.method === 'form' ? (
+        <ExtensionFormControls
+          key={formViewRef.current.version}
+          formId={formId}
+          definition={request.definition}
+          onSubmit={(data: ExtensionFormData) => onRespond({ data })}
+        />
+      ) : null}
       {request.method === 'questionnaire' ? (
         <div ref={questionnaireRef} className="extension-questionnaire" onKeyDown={handleQuestionnaireKeyDown}>
           {!request.complete ? <p className="modal-intro">{t('extensionUi.preparing')}</p> : null}
@@ -476,6 +494,8 @@ export function ExtensionUiModal({ request, onRespond, platform = 'darwin' }: Ex
           <span>{t('extensionUi.response')}</span>
           <input
             autoFocus
+            type={request.secret === true ? 'password' : 'text'}
+            autoComplete={request.secret === true ? 'off' : undefined}
             value={value}
             placeholder={request.placeholder}
             onChange={(event) => setValue(event.target.value)}

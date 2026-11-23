@@ -4,6 +4,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TranscriptImage } from '../../src/components/transcript/TranscriptImage'
+import { I18nProvider } from '../../src/lib/i18n'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
@@ -64,5 +65,39 @@ describe('transcript image lightbox', () => {
     act(() => backdrop.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })))
     expect(document.querySelector('[role="dialog"]')).toBeNull()
     expect(document.activeElement).toBe(preview)
+  })
+
+  it.each([
+    { locale: 'en', resetZoom: 'Reset zoom' },
+    { locale: 'zh-TW', resetZoom: '重設縮放' },
+    { locale: 'zh-CN', resetZoom: '重置缩放' },
+  ] as const)('localizes zoom reset for $locale and preserves raw image data', ({ locale, resetZoom }) => {
+    act(() => {
+      root.render(
+        <I18nProvider preference={locale}>
+          <TranscriptImage source={source} alt="User attachment 原始圖片" />
+        </I18nProvider>,
+      )
+    })
+    const preview = container.querySelector<HTMLButtonElement>('.image-part__preview')!
+    const thumbnail = preview.querySelector<HTMLImageElement>('img')!
+    act(() => { preview.click() })
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!
+    const expanded = dialog.querySelector<HTMLImageElement>('.image-lightbox__image')!
+    expect(thumbnail.getAttribute('src')).toBe(source)
+    expect(expanded.getAttribute('src')).toBe(source)
+    expect(thumbnail.alt).toBe('User attachment 原始圖片')
+    expect(expanded.alt).toBe('User attachment 原始圖片')
+
+    act(() => {
+      dialog.parentElement!.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true, cancelable: true }))
+    })
+    const reset = dialog.querySelector<HTMLButtonElement>('.image-lightbox__zoom-badge')!
+    expect(reset.title).toBe(resetZoom)
+    expect(reset.textContent).toBe('130%')
+    act(() => { reset.click() })
+    expect(dialog.querySelector('.image-lightbox__zoom-badge')).toBeNull()
+    expect(expanded.getAttribute('src')).toBe(source)
+    expect(expanded.alt).toBe('User attachment 原始圖片')
   })
 })

@@ -17,7 +17,7 @@ This document is OMP Desktop's integration spec for its single agent harness: OM
   - resume: `--resume <sessionPath>` (also accepts id prefixes; we always pass validated absolute paths)
   - model: `--model <provider>/<modelId>` (single flag)
   - thinking: `--thinking <off|minimal|low|medium|high|xhigh|max>`
-  - approvals: `--approval-mode <always-ask|always-ask-cached|write|yolo>` — only passed when the user overrides the default in settings; the desktop UI exposes Inherit, Always ask, Write, and YOLO. OMP's own `~/.omp/agent/config.yml` governs otherwise.
+  - approvals: `--approval-mode <always-ask|always-ask-cached|write|yolo>` — only passed when the user overrides the default in settings; the desktop UI exposes Inherit, Always ask, Always ask (cached), Write, and YOLO. Desktop only supplies this native mode when starting a runtime; OMP owns its approval prompts and any remembered choices. OMP's own `~/.omp/agent/config.yml` governs otherwise.
   - extensions: `-e <path>` for each injected capability extension. OMP Desktop injects scheduled-task, browser, and session-collaboration extensions, plus the ask-user extension when the universal **Ask user** capability is enabled. OMP has no per-skill `--skill <path>` flag; `--skills <globs>` filters discovered skills and `--no-skills` disables discovery. The browser *skill* is not injected because the OMP browser *extension* carries the tool surface. The bundled computer-use skill is delivered through the computer-use capability's own env contract (`GOOEYPI_CUA_DRIVER_PATH`, `GOOEYPI_COMPUTER_USE_SKILL_PATH`).
 - Paths: agent dir `~/.omp/agent/`; sessions `~/.omp/agent/sessions/<bucket>/<ISO-timestamp>_<uuid>.jsonl` (bucket = scope-basename-hash of cwd); settings `~/.omp/agent/config.yml`; extensions `~/.omp/agent/extensions/`; auth in `~/.omp/agent/agent.db` (SQLite — never read by OMP Desktop).
 - Plugins: `omp plugin install <target> --json` installs user-scoped packages under `~/.omp/plugins` by default; project packages live under `<project>/.omp/plugins`. Native skills are discovered from `~/.omp/skills`, `~/.agents/skills`, project `.omp/skills`, project `.agents/skills`, and plugin package `skills/` trees. Native MCP files are `~/.omp/agent/mcp.json` and project `.omp/mcp.json`.
@@ -93,7 +93,7 @@ Discovery lives in `process-utils.ts` (`harnessExecutableCandidates`/`findHarnes
 ### Renderer
 
 - `App.tsx` scopes workspaces, sessions, projects, and the model catalog to the single harness. Title strings and the settings harness card follow it.
-- Settings: the Agent section shows the OMP status card and an "Approval mode" select (Inherit config / Always ask / Write / YOLO → argv flag only when not Inherit). The Providers section lists OMP providers with desktop-owned visibility toggles that never touch OMP's own configuration; authentication remains owned by the omp CLI.
+- Settings: the Agent section shows the OMP status card and an "Approval mode" select (Inherit config, Always ask, Always ask (cached), Write, or YOLO). The adapter adds an argv flag only for explicit overrides. The Providers section lists OMP providers with desktop-owned visibility toggles that never touch OMP's own configuration; authentication remains owned by the omp CLI.
 
 ## Security invariants
 

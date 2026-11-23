@@ -21,10 +21,9 @@ import {
 } from 'lucide-react'
 import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { EmptyState, Modal, Segmented } from '@/components/ui'
-import { formatRelative } from '@/lib/data'
 import { errorMessage } from '@/lib/errors'
 import { HARNESS_SHORT_NAMES } from '@/lib/harness'
-import { type MessageKey, useI18n } from '@/lib/i18n'
+import { type MessageKey, type ResolvedLocale, useI18n } from '@/lib/i18n'
 import type {
   AutomationScheduleRecord,
   HarnessId,
@@ -106,6 +105,53 @@ const FREQUENCIES: Array<{ value: Frequency; label: MessageKey }> = [
   { value: 'monthly', label: 'scheduled.frequency.monthly' },
   { value: 'advanced', label: 'scheduled.frequency.advanced' },
 ]
+const SCHEDULE_STATUS_LABELS = {
+  active: 'scheduled.status.active',
+  paused: 'scheduled.status.paused',
+  completed: 'agents.status.completed',
+  blocked: 'scheduled.status.blocked',
+} as const satisfies Record<AutomationScheduleRecord['status'], MessageKey>
+const RUN_STATUS_LABELS = {
+  queued: 'scheduled.runStatus.queued',
+  running: 'agents.status.running',
+  succeeded: 'scheduled.runStatus.succeeded',
+  failed: 'agents.status.failed',
+  skipped: 'scheduled.runStatus.skipped',
+  interrupted: 'scheduled.runStatus.interrupted',
+  cancelled: 'transcript.compaction.state.cancelled',
+} as const satisfies Record<ScheduleRunRecord['status'], MessageKey>
+const RUN_TRIGGER_LABELS = {
+  scheduled: 'app.view.scheduled',
+  manual: 'scheduled.trigger.manual',
+} as const satisfies Record<ScheduleRunRecord['trigger'], MessageKey>
+const CREATED_BY_LABELS = {
+  user: 'scheduled.createdBy.user',
+  agent: 'scheduled.createdBy.agent',
+} as const satisfies Record<AutomationScheduleRecord['createdBy'], MessageKey>
+const THINKING_LABELS = {
+  auto: 'scheduled.thinking.auto',
+  off: 'scheduled.thinking.off',
+  minimal: 'scheduled.thinking.minimal',
+  low: 'scheduled.thinking.low',
+  medium: 'scheduled.thinking.medium',
+  high: 'scheduled.thinking.high',
+  xhigh: 'scheduled.thinking.xhigh',
+  max: 'scheduled.thinking.max',
+} as const satisfies Record<ScheduleExecution['thinking'], MessageKey>
+const REASONING_LABELS = {
+  auto: 'composer.reasoning.auto',
+  off: 'composer.reasoning.off',
+  minimal: 'composer.reasoning.minimal',
+  low: 'composer.reasoning.low',
+  medium: 'scheduled.reasoning.medium',
+  high: 'composer.reasoning.high',
+  xhigh: 'scheduled.extraHigh',
+  max: 'composer.reasoning.max',
+} as const satisfies Record<ScheduleExecution['thinking'], MessageKey>
+const SPEED_LABELS = {
+  normal: 'scheduled.speed.normal',
+  fast: 'scheduled.speed.fast',
+} as const satisfies Record<ScheduleExecution['speed'], MessageKey>
 
 const pad = (value: number) => String(value).padStart(2, '0')
 
@@ -250,11 +296,11 @@ function executionFromForm(form: ScheduleForm): ScheduleExecution {
   return { model: form.model, thinking: form.thinking, speed: form.fast ? 'fast' : 'normal' }
 }
 
-function formatDateTime(t: Translator, value?: string) {
+function formatDateTime(t: Translator, locale: ResolvedLocale, value?: string) {
   if (!value) return t('scheduled.notScheduled')
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
-  return new Intl.DateTimeFormat(undefined, {
+  return new Intl.DateTimeFormat(locale, {
     month: 'short',
     day: 'numeric',
     year: date.getFullYear() === new Date().getFullYear() ? undefined : 'numeric',
@@ -263,15 +309,28 @@ function formatDateTime(t: Translator, value?: string) {
   }).format(date)
 }
 
-function formatRunDate(t: Translator, value?: string) {
+function formatRunDate(t: Translator, locale: ResolvedLocale, value?: string) {
   if (!value) return t('scheduled.pending')
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
-  return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit' }).format(date)
+  return new Intl.DateTimeFormat(locale, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit' }).format(date)
 }
 
-function timingLabel(t: Translator, timing: ScheduleTiming) {
-  if (timing.kind === 'once') return t('scheduled.timingOnce', { time: formatDateTime(t, timing.at) })
+function formatScheduleRelative(locale: ResolvedLocale, value?: string | number): string {
+  if (!value) return ''
+  const timestamp = typeof value === 'number' ? value : new Date(value).getTime()
+  const seconds = Math.round((timestamp - Date.now()) / 1000)
+  const abs = Math.abs(seconds)
+  const formatter = new Intl.RelativeTimeFormat(locale, { numeric: 'auto' })
+  if (abs < 60) return formatter.format(0, 'second')
+  if (abs < 3600) return formatter.format(Math.round(seconds / 60), 'minute')
+  if (abs < 86400) return formatter.format(Math.round(seconds / 3600), 'hour')
+  if (abs < 604800) return formatter.format(Math.round(seconds / 86400), 'day')
+  return formatter.format(Math.round(seconds / 604800), 'week')
+}
+
+function timingLabel(t: Translator, locale: ResolvedLocale, timing: ScheduleTiming) {
+  if (timing.kind === 'once') return t('scheduled.timingOnce', { time: formatDateTime(t, locale, timing.at) })
   const parts = rruleParts(timing.rrule)
   const frequency = parts.get('FREQ')?.toLowerCase()
   const interval = Number(parts.get('INTERVAL') ?? '1')
@@ -298,7 +357,7 @@ function needsAttention(item: AutomationScheduleRecord) {
 }
 
 function statusLabel(t: Translator, item: AutomationScheduleRecord) {
-  return needsAttention(item) ? t('scheduled.needsAttention') : item.status
+  return needsAttention(item) ? t('scheduled.needsAttention') : t(SCHEDULE_STATUS_LABELS[item.status])
 }
 
 function statusIcon(item: AutomationScheduleRecord, size = 16) {
@@ -336,7 +395,7 @@ export function ScheduledPage({
   onPreview,
   onOpenSession,
 }: ScheduledPageProps) {
-  const { t } = useI18n()
+  const { locale, t } = useI18n()
   const [filter, setFilter] = useState<ScheduleFilter>('active')
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [editor, setEditor] = useState<{ mode: EditorMode; scheduleId?: string } | null>(null)
@@ -758,10 +817,10 @@ export function ScheduledPage({
             <label className="field">
               <span>{t('scheduled.fieldReasoning')}</span>
               <select value={form.thinking} onChange={(event) => setForm((current) => ({ ...current, thinking: event.target.value as ScheduleForm['thinking'] }))}>
-                <option value="auto">{t('scheduled.auto')}</option>
+                <option value="auto">{t('composer.reasoning.auto')}</option>
                 {THINKING_LEVELS.filter((level) => !selectedModel || selectedModel.availableThinkingLevels.includes(level) || level === form.thinking).map((level) => (
                   <option key={level} value={level}>
-                    {level === 'xhigh' ? t('scheduled.extraHigh') : level[0].toUpperCase() + level.slice(1)}
+                    {t(REASONING_LABELS[level])}
                   </option>
                 ))}
               </select>
@@ -796,8 +855,8 @@ export function ScheduledPage({
               {preview.occurrences.slice(0, 5).map((occurrence) => (
                 <li key={occurrence}>
                   <i />
-                  <span>{formatDateTime(t, occurrence)}</span>
-                  <small>{formatRelative(occurrence)}</small>
+                  <span>{formatDateTime(t, locale, occurrence)}</span>
+                  <small>{formatScheduleRelative(locale, occurrence)}</small>
                 </li>
               ))}
             </ol>
@@ -838,7 +897,7 @@ export function ScheduledPage({
             <div>
               <span className={`schedule-state schedule-state--${needsAttention(selected) ? 'attention' : selected.status}`}>{statusLabel(t, selected)}</span>
               <h1>{selected.title}</h1>
-              <p>{t('scheduled.revisionUpdated', { revision: selected.revision, time: formatRelative(selected.updatedAt) })}</p>
+              <p>{t('scheduled.revisionUpdated', { revision: selected.revision, time: formatScheduleRelative(locale, selected.updatedAt) })}</p>
             </div>
           </header>
           <div className="schedule-detail__actions" aria-label={t('scheduled.actionsLabel')}>
@@ -913,7 +972,7 @@ export function ScheduledPage({
                 </div>
                 <div>
                   <dt>{t('scheduled.createdBy')}</dt>
-                  <dd>{selected.createdBy}</dd>
+                  <dd>{t(CREATED_BY_LABELS[selected.createdBy])}</dd>
                 </div>
               </dl>
             </section>
@@ -922,11 +981,11 @@ export function ScheduledPage({
               <dl>
                 <div>
                   <dt>{t('scheduled.timing')}</dt>
-                  <dd>{timingLabel(t, selected.timing)}</dd>
+                  <dd>{timingLabel(t, locale, selected.timing)}</dd>
                 </div>
                 <div>
                   <dt>{t('scheduled.nextRun')}</dt>
-                  <dd>{selected.nextRunAt ? `${formatDateTime(t, selected.nextRunAt)} · ${formatRelative(selected.nextRunAt)}` : t('scheduled.noneScheduled')}</dd>
+                  <dd>{selected.nextRunAt ? `${formatDateTime(t, locale, selected.nextRunAt)} · ${formatScheduleRelative(locale, selected.nextRunAt)}` : t('scheduled.noneScheduled')}</dd>
                 </div>
                 {selected.timing.kind === 'rrule' ? (
                   <div>
@@ -947,11 +1006,11 @@ export function ScheduledPage({
                 </div>
                 <div>
                   <dt>{t('scheduled.fieldReasoning')}</dt>
-                  <dd>{selected.execution.thinking}</dd>
+                  <dd>{t(THINKING_LABELS[selected.execution.thinking])}</dd>
                 </div>
                 <div>
                   <dt>{t('scheduled.speed')}</dt>
-                  <dd>{selected.execution.speed}</dd>
+                  <dd>{t(SPEED_LABELS[selected.execution.speed])}</dd>
                 </div>
               </dl>
             </section>
@@ -974,12 +1033,12 @@ export function ScheduledPage({
                       <div className="schedule-run__icon">{runIcon(run.status)}</div>
                       <div className="schedule-run__main">
                         <div>
-                          <strong>{run.status}</strong>
-                          <span>{run.trigger}</span>
+                          <strong>{t(RUN_STATUS_LABELS[run.status])}</strong>
+                          <span>{t(RUN_TRIGGER_LABELS[run.trigger])}</span>
                         </div>
-                        <p>{run.error ?? t('scheduled.scheduledFor', { time: formatRunDate(t, run.scheduledFor) })}</p>
+                        <p>{run.error ?? t('scheduled.scheduledFor', { time: formatRunDate(t, locale, run.scheduledFor) })}</p>
                       </div>
-                      <time dateTime={run.queuedAt}>{formatRunDate(t, run.finishedAt ?? run.startedAt ?? run.queuedAt)}</time>
+                      <time dateTime={run.queuedAt}>{formatRunDate(t, locale, run.finishedAt ?? run.startedAt ?? run.queuedAt)}</time>
                       {run.sessionFile ? (
                         <button type="button" className="schedule-session-link" onClick={() => onOpenSession(run.sessionFile!)}>
                           {runSession ? t('scheduled.openSession', { name: runSession.title }) : t('scheduled.openSessionFallback')} <ChevronRight size={13} />
@@ -1085,7 +1144,7 @@ export function ScheduledPage({
                       </span>
                       <span>
                         <Repeat2 size={11} />
-                        {timingLabel(t, item.timing)}
+                        {timingLabel(t, locale, item.timing)}
                       </span>
                       <span>
                         <Gauge size={11} />
@@ -1095,8 +1154,8 @@ export function ScheduledPage({
                   </span>
                   <span className="schedule-row__next">
                     <small>{t('scheduled.next')}</small>
-                    <strong>{item.nextRunAt ? formatDateTime(t, item.nextRunAt) : '—'}</strong>
-                    <span>{item.nextRunAt ? formatRelative(item.nextRunAt) : t('scheduled.noFutureRun')}</span>
+                    <strong>{item.nextRunAt ? formatDateTime(t, locale, item.nextRunAt) : '—'}</strong>
+                    <span>{item.nextRunAt ? formatScheduleRelative(locale, item.nextRunAt) : t('scheduled.noFutureRun')}</span>
                   </span>
                   <ChevronRight className="schedule-row__chevron" size={16} />
                 </button>

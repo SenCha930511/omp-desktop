@@ -1,0 +1,25 @@
+result: PASS
+change:
+  workflow: .github/workflows/ci.yml
+  job: local-qa-package
+  step: Install pacman packaging dependency
+  linux_condition: "matrix.runner == 'ubuntu-22.04'"
+  package: libarchive-tools
+  install_flags: "--yes --no-install-recommends"
+  ordering: after release:preflight:toolchain and before matrix.package
+sources:
+  electron_builder_multi_platform: https://www.electron.build/docs/features/multi-platform-build/
+  ubuntu_jammy_libarchive_tools_filelist: https://packages.ubuntu.com/jammy/all/libarchive-tools/filelist
+checks:
+  - command: npx vitest run tests/release-scripts.test.ts
+    outcome: "PASS: 1 test file, 90 tests"
+  - command: node js-yaml parse and structural step-order assertion
+    outcome: "PASS: CI YAML parsed; prerequisite is Linux-only and precedes local QA packaging"
+  - command: git diff --check
+    outcome: PASS
+not_verified_locally:
+  - "Ubuntu apt-get installation, bsdtar execution, and pacman package creation were not run on this macOS host."
+  - "The workflow_dispatch local-qa-package job must verify these in CI; no CI run was triggered."
+preserved:
+  - "CI triggers, packaging matrices, build targets, artifact declarations, permissions, and release gates are unchanged."
+  - "The prerequisite uses matrix.runner because local-qa-package has no matrix.target key and its matrix is out of scope."

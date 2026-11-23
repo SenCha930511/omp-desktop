@@ -10,6 +10,10 @@ export type WorkspaceView = 'session' | 'projects' | 'activity' | 'scheduled' | 
 export type InspectorTab = 'changes' | 'browser' | 'files' | 'sidechat' | 'agents' | 'tasks'
 export type SessionStatus = 'idle' | 'running' | 'waiting' | 'complete' | 'failed' | 'unknown'
 
+// Shared renderer/main wire limits; transport frame-size checks remain separate.
+export const MAX_EXTENSION_FORM_TEXT_CHARS = 1_048_576
+export const MAX_EXTENSION_FORM_CHOICE_CHARS = 65_536
+
 export const HARNESS_IDS = ['omp'] as const
 export type HarnessId = (typeof HARNESS_IDS)[number]
 
@@ -18,7 +22,7 @@ export type HarnessId = (typeof HARNESS_IDS)[number]
  * `~/.omp/agent/config.yml`; the other values are passed to the omp CLI as
  * `--approval-mode` when starting an OMP runtime.
  */
-export const OMP_APPROVAL_MODES = ['inherit', 'always-ask', 'write', 'yolo'] as const
+export const OMP_APPROVAL_MODES = ['inherit', 'always-ask', 'always-ask-cached', 'write', 'yolo'] as const
 export type OmpApprovalMode = (typeof OMP_APPROVAL_MODES)[number]
 
 export interface HarnessStatus {
@@ -97,6 +101,8 @@ export interface ProjectRecord {
   pinned: boolean
   createdAt: string
   lastOpenedAt: string
+  /** Derived from owned sessions; never advanced by opening or selecting this project. */
+  lastUserActivityAt?: string
   sessionCount: number
   gitBranch?: string
   inferred?: boolean
@@ -189,11 +195,61 @@ export type PrimeCompactionReason = 'manual' | 'threshold' | 'overflow' | 'reque
 export type PrimeCompactionStatus = 'running' | 'sync_pending' | 'done' | 'failed' | 'cancelled'
 export type PrimeCompactionOutcome = 'failed' | 'cancelled' | 'skipped'
 
+/** Bounded renderer projection of the native wait tool's latest job snapshot. */
+export interface ToolWaitJobDetails {
+  readonly id?: string
+  readonly type?: string
+  readonly status?: string
+  readonly intent?: string
+  readonly label?: string
+  readonly stage?: string
+  readonly durationMs?: number
+  readonly resultText?: string
+  readonly errorText?: string
+}
+
+export interface ToolWaitExecutionDetails {
+  readonly kind: 'wait'
+  readonly jobs: readonly ToolWaitJobDetails[]
+  readonly truncated?: boolean
+}
+
+export interface ToolBashAsyncDetails {
+  readonly jobId: string
+  readonly state: 'running' | 'completed' | 'failed' | 'cancelled'
+}
+
+export interface ToolBashExecutionDetails {
+  readonly kind: 'bash'
+  readonly wallTimeMs?: number
+  readonly exitCode?: number
+  readonly timedOut?: boolean
+  readonly async?: ToolBashAsyncDetails
+  readonly terminalId?: string
+}
+
+export type ToolExecutionDetails = ToolWaitExecutionDetails | ToolBashExecutionDetails
+
+export interface VitestCountSummary {
+  readonly failed: number
+  readonly passed: number
+  readonly expectedFailed: number
+  readonly skipped: number
+  readonly todo: number
+  readonly total: number
+}
+
+/** CLI-observed totals, not a lifecycle assertion or a progress percentage. */
+export interface VitestReportSummary {
+  readonly files: VitestCountSummary
+  readonly tests: VitestCountSummary
+}
+
 export type MessagePart =
   | { type: 'text'; partId?: string; text: string }
   | { type: 'thinking'; partId?: string; text: string }
   | { type: 'toolCall'; partId?: string; id?: string; name: string; args?: unknown }
-  | { type: 'toolResult'; partId?: string; name?: string; text: string; isError?: boolean; streaming?: boolean }
+  | { type: 'toolResult'; partId?: string; name?: string; text: string; isError?: boolean; streaming?: boolean; details?: ToolExecutionDetails; testReport?: VitestReportSummary }
   | { type: 'agentMessage'; partId?: string; text: string; agentName?: string }
   | { type: 'image'; partId?: string; mimeType?: string; data?: string; dataTruncated?: boolean }
   /**
@@ -278,6 +334,8 @@ export interface SessionUsage {
   tokens?: SessionUsageTokens
 }
 
+export type SlowModeScope = 'global' | 'session'
+
 export interface RuntimeInfo {
   configuredThinkingLevel?: PrimeEffortSelector
   /** Became true once the engine resolved the auto thinking level mid-turn in this session. */
@@ -301,10 +359,15 @@ export interface RuntimeInfo {
   fastModeSupported?: boolean
   imageInputSupported?: boolean
   fastModeAvailable?: boolean
+  /** Selected fast-mode preference; independent of whether the provider is actually using it. */
   serviceTier?: PrimeServiceTier
+  /** Actual fast-mode state from get_state; absent when the runtime has not reported it. */
+  serviceTierActive?: boolean
   /** 上游 get_state 的 slowModeSupported / slowModeEnabled(`/slow` 只適用部分模型)。 */
   slowModeSupported?: boolean
   slowModeEnabled?: boolean
+  /** Native write consequence; absent when unsupported or not authoritatively reported. */
+  slowModeScope?: SlowModeScope
   /**
    * 上游 SessionState.usageLimit:帳號已進 wrap-up 或 low-priority 期限流時
    * 才回報。顯示之,避免使用者把限流降速誤判為 app bug。

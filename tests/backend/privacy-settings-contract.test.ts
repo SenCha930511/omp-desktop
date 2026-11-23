@@ -1,6 +1,6 @@
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { extname, join, relative } from 'node:path'
+import { extname, join, relative, sep } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('electron', () => ({ session: { fromPartition: vi.fn(), defaultSession: {} } }))
@@ -71,7 +71,7 @@ describe('legacy telemetry compatibility contract', () => {
       .flatMap(sourceFiles)
       .flatMap((file) => readFileSync(file, 'utf8').split('\n').flatMap((line) => (
         /\btelemetry\b/i.test(line)
-          ? [{ file: relative(process.cwd(), file), source: line.trim() }]
+          ? [{ file: relative(process.cwd(), file).split(sep).join('/'), source: line.trim() }]
           : []
       )))
       .sort((left, right) => left.file.localeCompare(right.file) || left.source.localeCompare(right.source))

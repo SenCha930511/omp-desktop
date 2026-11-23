@@ -21,6 +21,7 @@ export const sidechatFragment = defineCatalogFragment({
     'sidechat.status.cancelled': 'Cancelled',
     'sidechat.status.error': 'Failed',
     'sidechat.status.interrupted': 'Interrupted',
+    'sidechat.error.unavailable': 'Side questions are unavailable for this session',
   },
   'zh-TW': {
     'sidechat.aria': '側邊提問',
@@ -41,6 +42,7 @@ export const sidechatFragment = defineCatalogFragment({
     'sidechat.status.cancelled': '已取消',
     'sidechat.status.error': '失敗',
     'sidechat.status.interrupted': '已中斷',
+    'sidechat.error.unavailable': '此工作階段無法使用側邊提問',
   },
   'zh-CN': {
     'sidechat.aria': '侧边提问',
@@ -61,5 +63,6 @@ export const sidechatFragment = defineCatalogFragment({
     'sidechat.status.cancelled': '已取消',
     'sidechat.status.error': '失败',
     'sidechat.status.interrupted': '已中断',
+    'sidechat.error.unavailable': '当前会话无法使用侧边提问',
   },
 })

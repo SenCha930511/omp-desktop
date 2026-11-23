@@ -1,8 +1,8 @@
 import { spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, parse, posix, relative } from 'node:path'
 import { PassThrough } from 'node:stream'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { probeHarnessExecutable } from '../../electron/main/harness-discovery'
@@ -21,7 +21,16 @@ vi.mock('node:child_process', async (importOriginal) => {
 
 const dirs: string[] = []
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }) })
-const temp = () => { const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-process-')); dirs.push(dir); return dir }
+const temp = () => { const dir = mkdtempSync(join(realpathSync.native(tmpdir()), 'omp-desktop-process-')); dirs.push(dir); return dir }
+// POSIX nvm semantics need a POSIX-absolute home. On Windows, a slash-rooted
+// path names the current drive, so anchor a real fixture beside this process's
+// cwd and expose its drive-relative form; never fabricate a //?/ namespace.
+const tempPosix = () => {
+  if (process.platform !== 'win32') return temp()
+  const nativeHome = mkdtempSync(join(realpathSync.native(process.cwd()), 'omp-desktop-process-posix-'))
+  dirs.push(nativeHome)
+  return `/${relative(parse(nativeHome).root, nativeHome).replaceAll('\\', '/')}`
+}
 
 describe('login shell environment capture', () => {
   afterEach(() => setLoginShellEnvironmentSnapshot({}))
@@ -88,7 +97,7 @@ describe('runProcess resource bounds', () => {
     const runtimeDirectory = join(home, '.nvm', 'versions', 'node', 'v25.2.1', 'bin')
     mkdirSync(shimDirectory, { recursive: true })
     mkdirSync(runtimeDirectory, { recursive: true })
-    const executable = join(shimDirectory, 'omp')
+    const executable = join(shimDirectory, 'omp.cjs')
     symlinkSync(process.execPath, join(runtimeDirectory, 'node'))
     writeFileSync(executable, '#!/usr/bin/env node\nprocess.stdout.write("0.84.1\\n")\n')
     chmodSync(executable, 0o755)
@@ -99,12 +108,14 @@ describe('runProcess resource bounds', () => {
 
     expect(result.code).toBe(0)
     expect(result.stdout).toBe('0.84.1\n')
-    expect(executableChildEnvironment(executable, { HOME: home, PATH: '/usr/bin' }).PATH?.split(':').slice(0, 2)).toEqual([
-      shimDirectory,
-      runtimeDirectory,
-    ])
+    const childPath = executableChildEnvironment(executable, { HOME: home, PATH: '/usr/bin' }).PATH ?? ''
+    if (process.platform === 'win32') {
+      expect(childPath.split(';')[0]).toBe(shimDirectory)
+    } else {
+      expect(childPath.split(':').slice(0, 2)).toEqual([shimDirectory, runtimeDirectory])
+    }
 
-    const ompExecutable = join(runtimeDirectory, 'omp')
+    const ompExecutable = join(runtimeDirectory, 'omp.cjs')
     writeFileSync(ompExecutable, '#!/usr/bin/env node\nprocess.stderr.write("0.7.2\\n")\n')
     chmodSync(ompExecutable, 0o755)
     await expect(probeHarnessExecutable(ompExecutable)).resolves.toEqual({ runnable: true, version: '0.7.2' })
@@ -114,7 +125,7 @@ describe('runProcess resource bounds', () => {
     const home = temp()
     const bunDirectory = join(home, '.bun', 'bin')
     mkdirSync(bunDirectory, { recursive: true })
-    const executable = join(bunDirectory, 'omp')
+    const executable = join(bunDirectory, 'omp.cjs')
     symlinkSync(process.execPath, join(bunDirectory, 'bun'))
     writeFileSync(executable, '#!/usr/bin/env bun\nprocess.stdout.write("17.3.4\\n")\n')
     chmodSync(executable, 0o755)
@@ -161,7 +172,7 @@ const update = (delta) => {
     state.active += delta
     state.max = Math.max(state.max, state.active)
     fs.writeFileSync(statePath, JSON.stringify(state))
-  } finally { fs.rmdirSync(lockPath) }
+  } finally { fs.rmSync(lockPath, { recursive: true, maxRetries: 100, retryDelay: 2 }) }
 }
 update(1)
 setTimeout(() => update(-1), 250)
@@ -193,7 +204,9 @@ setInterval(() => {}, 1000)
     await cleanup
     const completed = await Promise.all(active)
 
-    expect(completed.every((result) => result.signal === 'SIGKILL' || result.signal === 'SIGTERM')).toBe(true)
+    expect(completed.every((result) => process.platform === 'win32'
+      ? result.signal === null && result.code !== 0
+      : result.signal === 'SIGKILL' || result.signal === 'SIGTERM')).toBe(true)
     expect(readdirSync(dir)).not.toContain('queued-ran')
   }, 15_000)
 })
@@ -296,7 +309,13 @@ describe('killProcessTree', () => {
     })
 
     expect(result).toBe(true)
-    expect(child.signalCode).toBe('SIGKILL')
+    if (process.platform === 'win32') {
+      // taskkill terminates externally, so Node reports an exit code rather than a signal.
+      expect(child.exitCode).not.toBeNull()
+      expect(child.exitCode).not.toBe(0)
+    } else {
+      expect(child.signalCode).toBe('SIGKILL')
+    }
   }, 10_000)
 })
 
@@ -321,8 +340,6 @@ describe('OMP discovery candidates', () => {
     expect(isAbsolutePathForPlatform('C:\\Tools\\omp.exe', 'win32')).toBe(true)
     expect(isAbsolutePathForPlatform('omp.exe', 'win32')).toBe(false)
   })
-
-
 
   it('honors only absolute OMP_BINARY overrides and scans absolute PATH entries', () => {
     const relative = harnessExecutableCandidates(HARNESSES.omp, { OMP_BINARY: 'bin/omp', PATH: '/usr/bin:relative/bin' }, 'linux')
@@ -379,6 +396,55 @@ describe('OMP discovery candidates', () => {
     expect(invocation.env).not.toBe(env)
   })
 
+  it('runs only explicit JavaScript shims through Node on Windows without changing argument order', () => {
+    for (const extension of ['.js', '.cjs', '.mjs', '.CJS']) {
+      const script = `C:\\Program Files\\OMP Desktop\\fixtures\\trusted shim${extension}`
+      const args = ['--mode', 'rpc', '--label', 'spaces and "quotes" stay literal']
+      const invocation = prepareExecutableSpawn(script, args, { PATH: 'C:\\Windows\\System32' }, 'win32')
+      expect(invocation.file).toBe(process.execPath)
+      expect(invocation.args).toEqual([script, ...args])
+      expect(invocation.args).not.toBe(args)
+      expect(invocation.env.PATH?.split(';')[0]).toBe('C:\\Program Files\\OMP Desktop\\fixtures')
+    }
+  })
+
+  it('never guesses that native executables, extensionless shims, or POSIX scripts are JavaScript', () => {
+    for (const file of ['C:\\Tools\\omp.exe', 'C:\\Tools\\omp.cmd', 'C:\\Tools\\omp', 'C:\\Tools\\omp.cjs.backup']) {
+      const invocation = prepareExecutableSpawn(file, ['--version'], { PATH: 'C:\\Windows\\System32' }, 'win32')
+      expect(invocation).toMatchObject({ file, args: ['--version'] })
+      expect(invocation.file).not.toBe(process.execPath)
+    }
+    expect(prepareExecutableSpawn('/opt/fixtures/omp.cjs', ['--version'], { HOME: '/home/ada', PATH: '/usr/bin' }, 'linux')).toMatchObject({
+      file: '/opt/fixtures/omp.cjs',
+      args: ['--version'],
+    })
+  })
+
+  it('keeps JavaScript fixture paths native in an Electron host instead of launching the app as Node', () => {
+    const electronDescriptor = Object.getOwnPropertyDescriptor(process.versions, 'electron')
+    const nodeOptions = process.env.NODE_OPTIONS
+    const runAsNode = process.env.ELECTRON_RUN_AS_NODE
+    Object.defineProperty(process.versions, 'electron', { value: '43.4.0', configurable: true, enumerable: true, writable: true })
+    process.env.NODE_OPTIONS = '--inspect=127.0.0.1:9333'
+    process.env.ELECTRON_RUN_AS_NODE = '1'
+    try {
+      const script = 'C:\\fixture\\omp.cjs'
+      const invocation = prepareExecutableSpawn(script, ['--mode', 'rpc', '--literal', 'C:\\work tree'], undefined, 'win32')
+      expect(invocation.file).toBe(script)
+      expect(invocation.file).not.toBe(process.execPath)
+      expect(invocation.args).toEqual(['--mode', 'rpc', '--literal', 'C:\\work tree'])
+      expect(invocation.env.NODE_OPTIONS).toBeUndefined()
+      expect(invocation.env.ELECTRON_RUN_AS_NODE).toBeUndefined()
+      expect(invocation.env.PATH?.split(';')[0]).toBe('C:\\fixture')
+    } finally {
+      if (electronDescriptor) Object.defineProperty(process.versions, 'electron', electronDescriptor)
+      else Reflect.deleteProperty(process.versions, 'electron')
+      if (nodeOptions === undefined) delete process.env.NODE_OPTIONS
+      else process.env.NODE_OPTIONS = nodeOptions
+      if (runAsNode === undefined) delete process.env.ELECTRON_RUN_AS_NODE
+      else process.env.ELECTRON_RUN_AS_NODE = runAsNode
+    }
+  })
 
   it('keeps E2E discovery hermetic when a fixture executable disappears', async () => {
     const env = { OMP_DESKTOP_E2E_HIDE_WINDOWS: '1', PATH: '/fixture/bin' }
@@ -392,15 +458,15 @@ describe('OMP discovery candidates', () => {
   })
 
   it('boundedly discovers nvm installs without evaluating shell startup files', async () => {
-    const home = temp()
-    const versions = join(home, '.nvm', 'versions', 'node')
+    const home = tempPosix()
+    const versions = posix.join(home, '.nvm', 'versions', 'node')
     for (const version of ['v20.1.0', 'v22.12.0', 'v23.0.0']) {
-      mkdirSync(join(versions, version), { recursive: true })
+      mkdirSync(posix.join(versions, version), { recursive: true })
     }
     await expect(nvmHarnessExecutableCandidates(HARNESSES.omp, {}, 'linux', home)).resolves.toEqual([
-      join(versions, 'v23.0.0', 'bin', 'omp'),
-      join(versions, 'v22.12.0', 'bin', 'omp'),
-      join(versions, 'v20.1.0', 'bin', 'omp'),
+      posix.join(versions, 'v23.0.0', 'bin', 'omp'),
+      posix.join(versions, 'v22.12.0', 'bin', 'omp'),
+      posix.join(versions, 'v20.1.0', 'bin', 'omp'),
     ])
   })
 })
@@ -409,54 +475,54 @@ describe('version manager runtime directories', () => {
   const fixedMtime = new Date('2026-01-01T00:00:00Z')
   const runtimePath = (home: string): string => executableChildEnvironment(
     '/opt/tool/omp',
-    { PATH: '/usr/bin', NVM_DIR: join(home, '.nvm') },
+    { HOME: home, PATH: '/usr/bin', NVM_DIR: posix.join(home, '.nvm') },
     'linux',
   ).PATH ?? ''
 
   it('serves the cached scan while the versions directory is unchanged', () => {
-    const home = temp()
-    const versionsRoot = join(home, '.nvm', 'versions', 'node')
-    mkdirSync(join(versionsRoot, 'v20.1.0'), { recursive: true })
+    const home = tempPosix()
+    const versionsRoot = posix.join(home, '.nvm', 'versions', 'node')
+    mkdirSync(posix.join(versionsRoot, 'v20.1.0'), { recursive: true })
     utimesSync(versionsRoot, fixedMtime, fixedMtime)
-    expect(runtimePath(home)).toContain(join(versionsRoot, 'v20.1.0', 'bin'))
+    expect(runtimePath(home)).toContain(posix.join(versionsRoot, 'v20.1.0', 'bin'))
     // A new version behind a restored mtime stays invisible: the cached scan
     // answers, so a spawn does not re-enumerate the directory.
-    mkdirSync(join(versionsRoot, 'v22.12.0'))
+    mkdirSync(posix.join(versionsRoot, 'v22.12.0'))
     utimesSync(versionsRoot, fixedMtime, fixedMtime)
     const cached = runtimePath(home)
-    expect(cached).toContain(join(versionsRoot, 'v20.1.0', 'bin'))
-    expect(cached).not.toContain(join(versionsRoot, 'v22.12.0', 'bin'))
+    expect(cached).toContain(posix.join(versionsRoot, 'v20.1.0', 'bin'))
+    expect(cached).not.toContain(posix.join(versionsRoot, 'v22.12.0', 'bin'))
   })
 
   it('rescans once the versions directory mtime changes', () => {
-    const home = temp()
-    const versionsRoot = join(home, '.nvm', 'versions', 'node')
-    mkdirSync(join(versionsRoot, 'v20.1.0'), { recursive: true })
+    const home = tempPosix()
+    const versionsRoot = posix.join(home, '.nvm', 'versions', 'node')
+    mkdirSync(posix.join(versionsRoot, 'v20.1.0'), { recursive: true })
     utimesSync(versionsRoot, fixedMtime, fixedMtime)
-    expect(runtimePath(home)).toContain(join(versionsRoot, 'v20.1.0', 'bin'))
-    mkdirSync(join(versionsRoot, 'v22.12.0'))
-    expect(runtimePath(home)).toContain(join(versionsRoot, 'v22.12.0', 'bin'))
+    expect(runtimePath(home)).toContain(posix.join(versionsRoot, 'v20.1.0', 'bin'))
+    mkdirSync(posix.join(versionsRoot, 'v22.12.0'))
+    expect(runtimePath(home)).toContain(posix.join(versionsRoot, 'v22.12.0', 'bin'))
   })
 
   it('does not cache a missing versions directory', () => {
-    const home = temp()
-    const versionsRoot = join(home, '.nvm', 'versions', 'node')
-    expect(runtimePath(home)).not.toContain(join(versionsRoot, 'v20.1.0', 'bin'))
-    mkdirSync(join(versionsRoot, 'v20.1.0'), { recursive: true })
-    expect(runtimePath(home)).toContain(join(versionsRoot, 'v20.1.0', 'bin'))
+    const home = tempPosix()
+    const versionsRoot = posix.join(home, '.nvm', 'versions', 'node')
+    expect(runtimePath(home)).not.toContain(posix.join(versionsRoot, 'v20.1.0', 'bin'))
+    mkdirSync(posix.join(versionsRoot, 'v20.1.0'), { recursive: true })
+    expect(runtimePath(home)).toContain(posix.join(versionsRoot, 'v20.1.0', 'bin'))
   })
 
   it('keeps one entry per nvm root', () => {
-    const firstHome = temp()
-    const secondHome = temp()
-    const firstRoot = join(firstHome, '.nvm', 'versions', 'node')
-    const secondRoot = join(secondHome, '.nvm', 'versions', 'node')
-    mkdirSync(join(firstRoot, 'v20.1.0'), { recursive: true })
-    mkdirSync(join(secondRoot, 'v22.12.0'), { recursive: true })
-    expect(runtimePath(firstHome)).toContain(join(firstRoot, 'v20.1.0', 'bin'))
-    expect(runtimePath(secondHome)).toContain(join(secondRoot, 'v22.12.0', 'bin'))
-    expect(runtimePath(firstHome)).toContain(join(firstRoot, 'v20.1.0', 'bin'))
-    expect(runtimePath(firstHome)).not.toContain(join(secondRoot, 'v22.12.0', 'bin'))
+    const firstHome = tempPosix()
+    const secondHome = tempPosix()
+    const firstRoot = posix.join(firstHome, '.nvm', 'versions', 'node')
+    const secondRoot = posix.join(secondHome, '.nvm', 'versions', 'node')
+    mkdirSync(posix.join(firstRoot, 'v20.1.0'), { recursive: true })
+    mkdirSync(posix.join(secondRoot, 'v22.12.0'), { recursive: true })
+    expect(runtimePath(firstHome)).toContain(posix.join(firstRoot, 'v20.1.0', 'bin'))
+    expect(runtimePath(secondHome)).toContain(posix.join(secondRoot, 'v22.12.0', 'bin'))
+    expect(runtimePath(firstHome)).toContain(posix.join(firstRoot, 'v20.1.0', 'bin'))
+    expect(runtimePath(firstHome)).not.toContain(posix.join(secondRoot, 'v22.12.0', 'bin'))
   })
 })
 

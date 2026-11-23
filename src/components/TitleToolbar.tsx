@@ -1,11 +1,13 @@
 import { Check, CircleDot, FileText, GitBranch, LoaderCircle, PanelLeft, PanelRight, PanelRightClose, Users } from 'lucide-react'
-import { memo, useCallback, useEffect, useId, useRef, useState, useSyncExternalStore, type MouseEvent, type RefObject } from 'react'
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent, type RefObject } from 'react'
 import { EMPTY_TRANSCRIPT_SUMMARY, type TranscriptStore } from '@/app/transcript-store'
 import type { SubagentView } from '@/hooks/useSubagents'
 import { formatSessionCost, formatSessionTokens } from '@/lib/format-cost'
 import { type MessageKey, useI18n } from '@/lib/i18n'
 import { shortcutLabel } from '@/lib/platform-shortcuts'
+import { subagentExecution } from '@/lib/subagent-activity'
 import type { ApplicationMenuName, GitStatus, InspectorTab, ProjectRecord, RuntimeInfo, WorkspaceView } from '@/types/api'
+import { EXECUTION_LABELS } from './ExecutionStatus'
 import { MarkdownText } from './MarkdownText'
 import type { ProjectScriptKind } from './ProjectRunControl'
 import { IconButton } from './ui'
@@ -122,6 +124,10 @@ function ToolbarOverviewContent({
   onClose(): void
 }) {
   const { t } = useI18n()
+  const subagentPreview = useMemo(
+    () => subagents.slice(0, 3).map((agent) => ({ agent, phase: subagentExecution(agent).phase })),
+    [subagents],
+  )
   const subscribeSummary = useCallback(
     (listener: () => void) => (transcript ? transcript.subscribeSummary(listener) : NOOP_SUBSCRIBE()),
     [transcript],
@@ -215,7 +221,7 @@ function ToolbarOverviewContent({
             </button>
           ) : null}
         </div>
-        {subagents.slice(0, 3).map((agent) => (
+        {subagentPreview.map(({ agent, phase }) => (
           <button
             key={agent.id}
             type="button"
@@ -228,7 +234,7 @@ function ToolbarOverviewContent({
           >
             <Users size={13} />
             <span>{agent.agent}</span>
-            <span className="toolbar-overview__status">{agent.status}</span>
+            <span className="toolbar-overview__status">{t(EXECUTION_LABELS[phase])}</span>
           </button>
         ))}
       </section>

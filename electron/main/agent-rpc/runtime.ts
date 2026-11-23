@@ -108,7 +108,7 @@ const SESSION_HELD_ELSEWHERE_MESSAGE = 'This session is open in another OMP proc
 // Extension UI methods whose requests block until an extension_ui_response
 // (or OMP's own cancel frame) settles them. Presentation methods are
 // fire-and-forget and never tracked.
-const DIALOG_REQUEST_METHODS: ReadonlySet<string> = new Set(['select', 'confirm', 'input', 'editor', 'ask'])
+const DIALOG_REQUEST_METHODS: ReadonlySet<string> = new Set(['select', 'confirm', 'input', 'editor', 'ask', 'form'])
 // Commands that can start or redirect agent work: admitting one means the
 // session is no longer settled even before the next authoritative state.
 const WORK_INITIATING_COMMANDS: ReadonlySet<string> = new Set(['prompt', 'steer', 'follow_up', 'compact', 'abort', 'abort_retry', 'new_session', 'switch_session', 'clone', 'fork', 'branch'])
@@ -357,14 +357,20 @@ export class RpcRuntime {
       return false
     }
     try {
-      await this.request(buildServiceTierCommand(serviceTier), 10_000)
-      this.requestedServiceTier = serviceTier
-      this.info.serviceTier = serviceTier
+      const response = await this.request(buildServiceTierCommand(serviceTier), 10_000)
+      const data = isRecord(response.data) ? response.data : undefined
+      // New OMP builds return the resulting preference and actual tier. Older
+      // builds omit them, so only an absent/invalid enabled field uses the request.
+      const confirmedTier = typeof data?.enabled === 'boolean' ? data.enabled ? 'priority' : 'default' : serviceTier
+      this.requestedServiceTier = confirmedTier
+      this.info.serviceTier = confirmedTier
+      if (typeof data?.active === 'boolean') this.info.serviceTierActive = data.active
       this.info.fastModeAvailable = true
       return true
     } catch (error) {
       this.info.fastModeAvailable = false
-      this.info.serviceTier = 'default'
+      // A rejected/lost request does not prove that OMP's preference changed.
+      // Keep the last confirmed tier until get_state supplies an authoritative update.
       if (!probe) throw error
       return false
     }
@@ -395,7 +401,7 @@ export class RpcRuntime {
     // timeoutMs 是 600_000(rpc.md);用戶端逾時必須蓋過整個流程,否則
     // 「已送達、可能仍在執行」的錯誤會誤導面板狀態。取消入口是
     // extension_ui input dialog 的 cancel(上游中止 flow)。
-    const timeout = command.type === 'compact' || command.type === 'bash' || command.type === 'login' ? 10 * 60_000 : 60_000
+    const timeout = command.type === 'predict_word' ? 150_000 : command.type === 'compact' || command.type === 'bash' || command.type === 'login' ? 10 * 60_000 : 60_000
     const response = await this.request(command, timeout)
     if (command.type === 'set_thinking_level' && response.success === true) {
       this.info.configuredThinkingLevel = command.level as RuntimeInfo['configuredThinkingLevel']
@@ -1242,8 +1248,16 @@ export class RpcRuntime {
       this.info.fastModeAvailable = true
       this.requestedServiceTier = reading.serviceTier
     }
+    // fastModeEnabled is the requested setting, never proof of actual state.
+    // Older runtimes omit fastModeActive: preserve unknown rather than inventing false.
+    if (reading.serviceTierActive !== undefined) this.info.serviceTierActive = reading.serviceTierActive
     if (reading.slowModeSupported !== undefined) this.info.slowModeSupported = reading.slowModeSupported
     if (reading.slowModeEnabled !== undefined) this.info.slowModeEnabled = reading.slowModeEnabled
+    // Scope is a fact about the current model's write target. An omitted or
+    // unrecognized value invalidates the previous target instead of leaving
+    // a stale global/session consequence visible in the UI.
+    if (reading.slowModeScope !== undefined) this.info.slowModeScope = reading.slowModeScope
+    else delete this.info.slowModeScope
     // state dump 以欄位缺席表達「未限流」;據此清除。
     if (reading.usageLimit !== undefined) this.info.usageLimit = reading.usageLimit
     else delete this.info.usageLimit

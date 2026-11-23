@@ -13,6 +13,7 @@ function project(id: string, overrides: Partial<ProjectRecord> = {}): ProjectRec
     pinned: false,
     createdAt: '2026-01-01T00:00:00.000Z',
     lastOpenedAt: '2026-01-01T00:00:00.000Z',
+    lastUserActivityAt: overrides.lastOpenedAt ?? '2026-01-01T00:00:00.000Z',
     sessionCount: 0,
     ...overrides,
   }
@@ -54,10 +55,10 @@ describe('sortProjects', () => {
     expect(sortProjects(alphabetical, 'alphabetical').map(({ id }) => id)).toEqual(['a', 'z'])
   })
 
-  it('puts unparseable recent dates last and does not mutate the input', () => {
+  it('falls back to creation time for invalid activity timestamps without mutating the input', () => {
     const projects = [
-      project('invalid', { lastOpenedAt: 'not-a-date' }),
-      project('valid', { lastOpenedAt: '2026-01-01T00:00:00.000Z' }),
+      project('invalid', { lastUserActivityAt: 'not-a-date', createdAt: '2022-01-01T00:00:00.000Z' }),
+      project('valid', { lastUserActivityAt: '2026-01-01T00:00:00.000Z' }),
     ]
     const original = [...projects]
 

@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useMemo } from 'react'
 import { contextUsageFromEvent, sessionUsageFromEvent } from '@/app/agent-events'
 import { applySessionLifecycleEvent, sessionLifecycleChange } from '@/app/session-attention'
 import { shouldNotifyCompletion, showCompletionNotification } from '@/lib/completion-notify'
@@ -7,14 +7,15 @@ import { contentText } from '@/lib/events/message-content'
 import { agentNoticeBody, agentNoticeFromEvent, isConfigWarningsChangedEvent } from '@/lib/events/reduce'
 import { fallbackModelFromRecord } from '@/lib/events/model-fallback'
 import { observeTurnEvent, resetTurnMetrics } from '@/lib/events/turn-metrics'
-import { useI18n } from '@/lib/i18n'
+import { resolveLocale, translate, useI18n, type Translate } from '@/lib/i18n'
 import { parseSessionActionSnapshot } from '@/lib/session-actions'
 import { parseSlashCommands } from '@/lib/slash-commands'
 import type { WorkspaceSnapshot } from '@/app/workspace'
-import type { DesktopApi, RuntimeInfo, SessionActionSnapshot, SessionRecord } from '@/types/api'
+import type { DesktopApi, LocalePreference, RuntimeInfo, SessionActionSnapshot, SessionRecord } from '@/types/api'
 
 interface UseAgentEventsOptions {
   bridge: DesktopApi | null
+  localePreference?: LocalePreference
   runtimeIdRef: React.RefObject<string | null>
   runtimeSessionsRef: React.RefObject<Map<string, string>>
   runtimeOwnerRef: React.RefObject<{ runtimeId: string; generation: number } | null>
@@ -41,6 +42,7 @@ interface UseAgentEventsOptions {
 
 export function useAgentEvents({
   bridge,
+  localePreference,
   runtimeIdRef,
   runtimeSessionsRef,
   runtimeOwnerRef,
@@ -62,7 +64,12 @@ export function useAgentEvents({
   refreshGitOnTerminalEvent,
   activeSessionVisible,
 }: UseAgentEventsOptions) {
-  const { t } = useI18n()
+  const { t: providerT } = useI18n()
+  const overrideLocale = localePreference === undefined ? undefined : resolveLocale(localePreference)
+  const t = useMemo<Translate>(
+    () => overrideLocale === undefined ? providerT : (key, values) => translate(overrideLocale, key, values),
+    [overrideLocale, providerT],
+  )
   useEffect(() => {
     if (!bridge) return
     let gitRefreshTimer: number | null = null

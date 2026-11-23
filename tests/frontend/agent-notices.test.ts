@@ -6,7 +6,7 @@ import { createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAgentEvents } from '../../src/hooks/useAgentEvents'
-import type { DesktopApi, RuntimeInfo, SessionRecord } from '../../src/types/api'
+import type { DesktopApi, LocalePreference, RuntimeInfo, SessionRecord } from '../../src/types/api'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
@@ -32,6 +32,8 @@ interface MountOptions {
   activeSessionVisible?: boolean
   runtimeId?: string | null
   refreshGitOnTerminalEvent?: boolean
+  localePreference?: LocalePreference
+  ownedSessionTitle?: string
 }
 
 let container: HTMLDivElement
@@ -53,12 +55,20 @@ afterEach(async () => {
   await act(async () => root.unmount())
   container.remove()
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
 })
 
-function mountAgentEvents({ activeSessionVisible = true, runtimeId = 'runtime', refreshGitOnTerminalEvent = false }: MountOptions = {}) {
+function mountAgentEvents({ activeSessionVisible = true, runtimeId = 'runtime', refreshGitOnTerminalEvent = false, localePreference, ownedSessionTitle }: MountOptions = {}) {
+  let currentLocalePreference = localePreference
   let handler!: AgentEventHandler
+  const unsubscribes: ReturnType<typeof vi.fn>[] = []
   const bridge = {
-    agent: { onEvent: (callback: AgentEventHandler) => { handler = callback; return vi.fn() } },
+    agent: { onEvent: (callback: AgentEventHandler) => {
+      handler = callback
+      const unsubscribe = vi.fn()
+      unsubscribes.push(unsubscribe)
+      return unsubscribe
+    } },
   } as unknown as DesktopApi
   const calls = {
     onNotice: vi.fn(),
@@ -72,10 +82,11 @@ function mountAgentEvents({ activeSessionVisible = true, runtimeId = 'runtime', 
   function AgentEventsProbe() {
     useAgentEvents({
       bridge,
+      localePreference: currentLocalePreference,
       runtimeIdRef: { current: runtimeId },
       runtimeSessionsRef: { current: new Map([['runtime', session.filePath]]) },
-      runtimeOwnerRef: { current: null },
-      workspaceRef: { current: { generation: 0, sessionFile: session.filePath, cwd: '/project' } },
+      runtimeOwnerRef: { current: ownedSessionTitle ? { runtimeId: 'runtime', generation: 1 } : null },
+      workspaceRef: { current: { generation: 0, sessionFile: session.filePath, cwd: '/project', session: ownedSessionTitle ? { ...session, title: ownedSessionTitle } : undefined } },
       setSessions: calls.setSessions,
       setRuntime: calls.setRuntime,
       queueAgentEvent: calls.queueAgentEvent,
@@ -92,8 +103,12 @@ function mountAgentEvents({ activeSessionVisible = true, runtimeId = 'runtime', 
   }
   return {
     calls,
+    unsubscribes,
     emit: (event: Record<string, unknown>, eventRuntimeId = 'runtime') => handler({ runtimeId: eventRuntimeId, event }),
-    render: async () => { await act(async () => { root.render(createElement(AgentEventsProbe)) }) },
+    render: async (nextLocalePreference?: LocalePreference) => {
+      if (nextLocalePreference !== undefined) currentLocalePreference = nextLocalePreference
+      await act(async () => { root.render(createElement(AgentEventsProbe)) })
+    },
   }
 }
 
@@ -140,6 +155,51 @@ describe('agent notice routing', () => {
 
     expect(harness.calls.onNotice).toHaveBeenNthCalledWith(1, 'Notice: Cache warmed.', 'info')
     expect(harness.calls.onNotice).toHaveBeenNthCalledWith(2, compactionSyncText, 'warning')
+  })
+
+  it('uses the locale override for wrappers and notification chrome, preserving raw upstream text', async () => {
+    const notification = vi.fn()
+    vi.stubGlobal('Notification', notification)
+    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    const harness = mountAgentEvents({ localePreference: 'en', ownedSessionTitle: 'Raw session title 保留原文' })
+    await harness.render()
+    const body = 'Provider said: failed to synchronize 原文'
+
+    act(() => { harness.emit({ type: 'notice', level: 'warning', message: body, source: 'provider-source' }, 'background-runtime') })
+    expect(harness.calls.onNotice).toHaveBeenCalledWith(`Warning: provider-source: ${body}`, 'warning')
+    expect(harness.unsubscribes).toHaveLength(1)
+
+    await harness.render('zh-TW')
+    expect(harness.unsubscribes).toHaveLength(2)
+    expect(harness.unsubscribes[0]).toHaveBeenCalledTimes(1)
+    act(() => {
+      harness.emit({ type: 'notice', level: 'warning', message: body, source: 'provider-source' }, 'background-runtime')
+      harness.emit({ type: 'agent_end' }, 'runtime')
+    })
+    expect(harness.calls.onNotice).toHaveBeenLastCalledWith(`警告：provider-source: ${body}`, 'warning')
+    expect(notification).toHaveBeenCalledWith('任務完成', { body: 'Raw session title 保留原文', silent: false })
+    expect(harness.calls.queueAgentEvent).toHaveBeenCalledTimes(1)
+    expect(harness.calls.queueAgentEvent).toHaveBeenCalledWith({ type: 'agent_end' })
+
+    await harness.render('en')
+    expect(harness.unsubscribes).toHaveLength(3)
+    expect(harness.unsubscribes[1]).toHaveBeenCalledTimes(1)
+    act(() => { harness.emit({ type: 'notice', level: 'warning', message: body, source: 'provider-source' }, 'background-runtime') })
+    expect(harness.calls.onNotice).toHaveBeenLastCalledWith(`Warning: provider-source: ${body}`, 'warning')
+  })
+
+  it('localizes the native completion fallback without changing upstream payload routing', async () => {
+    const notification = vi.fn()
+    vi.stubGlobal('Notification', notification)
+    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    const harness = mountAgentEvents({ localePreference: 'zh-TW' })
+    await harness.render()
+
+    act(() => { harness.emit({ type: 'agent_end' }) })
+
+    expect(notification).toHaveBeenCalledWith('任務完成', { body: 'OMP 已完成工作階段。', silent: false })
+    expect(harness.calls.queueAgentEvent).toHaveBeenCalledWith({ type: 'agent_end' })
+    expect(harness.calls.reconcileTranscriptForEvent).toHaveBeenCalledWith('runtime', { type: 'agent_end' })
   })
 
   it('toasts active-runtime notices when the session view is hidden, keeping the transcript row', async () => {

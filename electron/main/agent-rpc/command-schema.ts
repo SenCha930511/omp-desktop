@@ -1,10 +1,11 @@
-import { PRIME_THINKING_LEVELS, type PrimeEffortSelector } from '../../../src/types/api'
+import { MAX_EXTENSION_FORM_CHOICE_CHARS, MAX_EXTENSION_FORM_TEXT_CHARS, PRIME_THINKING_LEVELS, type PrimeEffortSelector } from '../../../src/types/api'
+import { parsePredictWordFeedbackRequest, parsePredictWordRequest } from '../../../src/lib/word-prediction'
 import { rejectUnknownKeys, requireBoolean, requireId, requireRecord, requireString } from '../validation'
 import { MAX_RPC_WRITE_FRAME_BYTES, rpcRequestFrameBytes } from './limits'
 import type { RpcObject } from './types'
 
 const SIMPLE_COMMANDS = new Set([
-  'abort', 'abort_and_restore_queue', 'new_session', 'get_state', 'cycle_model', 'get_available_models', 'cycle_thinking_level',
+  'abort', 'abort_and_restore_queue', 'abort_and_deliver_queue', 'resume', 'new_session', 'get_state', 'cycle_model', 'get_available_models', 'cycle_thinking_level',
   'abort_retry', 'get_session_stats', 'get_branch_messages', 'get_tree', 'get_last_assistant_text',
   'get_messages', 'get_available_commands', 'get_subagents',
   // abort_bash takes no parameters (upstream wire/commands.ts); it cancels the
@@ -18,8 +19,12 @@ const SIMPLE_COMMANDS = new Set([
 // `!` 捷徑指令上限:direct bash 是使用者主動送出(對應 TUI `!`),64 KiB 足以
 // 涵蓋合理的單行/多行腳本,同時擋掉貼錯整份檔案或惡意撐大 frame 的輸入。
 const MAX_BASH_COMMAND_CHARS = 64 * 1024
+const MAX_EXTENSION_FORM_FIELDS = 512
+const MAX_EXTENSION_FORM_FIELD_NAME_CHARS = 1024
+const MAX_EXTENSION_FORM_CHOICES = 1024
 const THINKING_LEVELS: ReadonlySet<string> = new Set(['auto', ...PRIME_THINKING_LEVELS])
 // 上游 live voice 名冊(v18.12.6 packages/coding-agent/src/live/voices.ts
+
 
 function validateImageData(data: string, mimeType: string): void {
   if (data.length % 4 !== 0 || !/^[a-z\d+/]*={0,2}$/i.test(data)) throw new TypeError('Image data must be canonical base64')
@@ -59,6 +64,37 @@ function validateImages(value: unknown): Array<{ type: 'image'; data: string; mi
   })
 }
 
+type ExtensionFormWireData = Record<string, string | number | string[]>
+
+function validateExtensionFormChoices(value: unknown[], label: string): string[] {
+  if (value.length > MAX_EXTENSION_FORM_CHOICES) throw new TypeError(`${label} has too many choices`)
+  return Array.from(value, (choice, index) => requireString(choice, `${label}[${index}]`, { max: MAX_EXTENSION_FORM_CHOICE_CHARS }))
+}
+
+function validateExtensionFormData(raw: unknown): ExtensionFormWireData {
+  const data = requireRecord(raw, 'data')
+  const entries = Object.entries(data)
+  if (entries.length > MAX_EXTENSION_FORM_FIELDS) throw new TypeError('data has too many fields')
+  const validated: Array<[string, string | number | string[]]> = []
+  for (const [index, [name, value]] of entries.entries()) {
+    const label = `data[${index}]`
+    requireString(name, `${label}.name`, { min: 1, max: MAX_EXTENSION_FORM_FIELD_NAME_CHARS })
+    if (typeof value === 'string') {
+      validated.push([name, requireString(value, `${label}.value`, { max: MAX_EXTENSION_FORM_TEXT_CHARS })])
+    } else if (typeof value === 'number') {
+      if (!Number.isFinite(value)) throw new TypeError(`${label}.value must be finite`)
+      validated.push([name, value])
+    } else if (Array.isArray(value)) {
+      validated.push([name, validateExtensionFormChoices(value, `${label}.value`)])
+    } else {
+      throw new TypeError(`${label}.value must be a string, finite number, or string array`)
+    }
+  }
+  // fromEntries defines own properties, so HTML names such as "__proto__"
+  // cannot mutate the result prototype or disappear during serialization.
+  return Object.fromEntries(validated)
+}
+
 export async function validateRpcCommand(raw: unknown, validateSessionPath: (path: string) => Promise<string>): Promise<RpcObject> {
   const command = requireRecord(raw, 'command')
   if (rpcRequestFrameBytes(command) > MAX_RPC_WRITE_FRAME_BYTES) throw new TypeError('command is too large for the RPC transport')
@@ -70,6 +106,8 @@ export async function validateRpcCommand(raw: unknown, validateSessionPath: (pat
     }
     return { type }
   }
+  if (type === 'predict_word') return parsePredictWordRequest(command)
+  if (type === 'predict_word_feedback') return parsePredictWordFeedbackRequest(command)
   if (type === 'prompt' || type === 'steer' || type === 'follow_up') {
     rejectUnknownKeys(command, ['type', 'message', 'images', 'streamingBehavior'], 'command')
     const result: RpcObject = { type, message: requireString(command.message, 'message', { min: 1, max: 1024 * 1024 }) }
@@ -244,6 +282,12 @@ export async function validateRpcCommand(raw: unknown, validateSessionPath: (pat
           return validated
         }),
       }
+    }
+    if (command.data !== undefined) {
+      // Native forms submit named scalar or string-list values. HTML parsing
+      // and control constraints belong to the renderer/upstream, not main.
+      rejectUnknownKeys(command, ['type', 'id', 'data'], 'command')
+      return { type, id, data: validateExtensionFormData(command.data) }
     }
     if (typeof command.confirmed === 'boolean') { rejectUnknownKeys(command, ['type', 'id', 'confirmed'], 'command'); return { type, id, confirmed: command.confirmed } }
     rejectUnknownKeys(command, ['type', 'id', 'value'], 'command')

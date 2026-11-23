@@ -1,0 +1,32 @@
+.modal:has(.extension-form) { width: min(100%, 680px); max-height: min(90vh, 820px); display: flex; flex-direction: column; }
+.modal:has(.extension-form) .modal__body { min-height: 0; overflow-y: auto; }
+.modal:has(.extension-form) .modal__footer { flex: 0 0 auto; }
+.extension-form { color: var(--text-primary); font-size: 12px; line-height: 1.5; }
+.extension-form__section + .extension-form__section { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border); }
+.extension-form__section-title { margin: 0 0 12px; font-size: 13px; font-weight: 620; }
+.extension-form__heading { margin: 14px 0 7px; font-size: 12.5px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+.extension-form__text { margin: 8px 0; color: var(--text-secondary); white-space: pre-wrap; overflow-wrap: anywhere; }
+.extension-form__list { margin: 8px 0; padding-left: 22px; color: var(--text-secondary); white-space: pre-wrap; }
+.extension-form__pre { max-width: 100%; margin: 10px 0; padding: 10px; overflow: auto; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-subtle); color: var(--text-secondary); font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.extension-form__table-wrap { max-width: 100%; margin: 10px 0; overflow-x: auto; }
+.extension-form__table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.extension-form__table th, .extension-form__table td { padding: 6px 8px; border: 1px solid var(--border); text-align: left; vertical-align: top; white-space: pre-wrap; overflow-wrap: anywhere; }
+.extension-form__table th { background: var(--surface-subtle); font-weight: 600; }
+.extension-form__field { margin: 12px 0; min-width: 0; }
+.extension-form__field > label { display: block; margin-bottom: 5px; color: var(--text-primary); font-weight: 540; white-space: pre-wrap; overflow-wrap: anywhere; }
+.extension-form__field input:not([type="range"]), .extension-form__field textarea, .extension-form__field select { width: 100%; min-width: 0; }
+.extension-form__field textarea { height: auto; min-height: 64px; padding: 7px 8px; resize: vertical; line-height: 1.45; }
+.extension-form__field input[type="range"] { width: 100%; }
+.extension-form__field select[multiple] { min-height: 92px; height: auto; padding: 4px; }
+.extension-form__choice { min-width: 0; margin: 12px 0; padding: 0; border: 0; }
+.extension-form__choice legend { max-width: 100%; margin-bottom: 7px; padding: 0; color: var(--text-primary); font-weight: 540; white-space: pre-wrap; overflow-wrap: anywhere; }
+.extension-form__option { display: flex; align-items: flex-start; gap: 8px; margin: 6px 0; color: var(--text-secondary); cursor: pointer; }
+.extension-form__option input { flex: 0 0 auto; margin: 3px 0 0; }
+.extension-form__option span { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.extension-form__option:has(input:disabled) { opacity: .5; cursor: default; }
+.extension-form__other { margin: 7px 0 0 23px; }
+.extension-form__other-input { display: block; width: calc(100% - 23px); height: 32px; min-width: 0; margin: 2px 0 7px 23px; padding: 0 8px; border: 1px solid var(--border-strong); border-radius: 7px; outline: 0; background: var(--surface-raised); font-size: 11.5px; }
+.extension-form__other > span { display: block; margin-bottom: 5px; color: var(--text-secondary); }
+.extension-form__other input { width: 100%; min-width: 0; }
+.extension-form__error { margin: 5px 0 0; color: var(--danger, #c43d3d); font-size: 11px; line-height: 1.45; }
+.extension-form [aria-invalid="true"] { border-color: var(--danger, #c43d3d); }

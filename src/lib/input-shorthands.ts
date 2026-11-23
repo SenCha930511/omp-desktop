@@ -2,17 +2,6 @@
 // (packages/tui/src/prompt/queue-input.ts 與 input/controller onSubmit)的語意,
 // 讓 GUI composer 與 TUI 對相同文字得到相同的命令意義。
 
-// TUI 的合成「繼續」提示:`packages/coding-agent/src/prompts/system/manual-continue.md` 原文。
-// 輸入剛好是 `.` 或 `c` 時,TUI 不送字面文字,而是送這段合成提示
-// (synthetic + userInitiated),承接被中斷的回合繼續未完成的工作。
-export const MANUAL_CONTINUE_PROMPT = `<system-notice>
-Continue.
-
-MUST resume most recent intent; complete unfinished work.
-If interrupted mid-step: resume where stopped.
-NEVER pause to summarize progress, re-confirm plan, or ask whether to proceed; continue.
-</system-notice>`
-
 /** 輸入剛好是 `.` 或 `c` 時視為「繼續」速寫(TUI 無圖片限制的 main session 語意)。 */
 export function isContinueShorthand(trimmed: string): boolean {
   return trimmed === '.' || trimmed === 'c'

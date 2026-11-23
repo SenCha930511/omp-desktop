@@ -5,6 +5,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createTranscriptStore } from '../../src/app/transcript-store'
 import { TitleToolbar } from '../../src/components/TitleToolbar'
+import { I18nProvider } from '../../src/lib/i18n'
 import type { ProjectRecord, RuntimeInfo } from '../../src/types/api'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
@@ -164,6 +165,40 @@ describe('title toolbar session actions', () => {
     await click(seeAllBtn)
     expect(onSelectInspectorTab).toHaveBeenCalledWith('agents')
     expect(container.querySelector('[role="dialog"]')).toBeNull()
+  })
+
+  it('localizes known subagent statuses and marks unknown upstream states unavailable in every locale', async () => {
+    const subagents = [
+      { id: 'running', agent: 'Explore', status: 'running', messages: [] },
+      { id: 'completed', agent: 'Reviewer', status: 'completed', messages: [] },
+      { id: 'unknown', agent: 'Custom', status: 'queued_upstream', messages: [] },
+    ]
+    const cases = [
+      ['en', 'Workspace overview', ['Running', 'Completed', 'Status unavailable']],
+      ['zh-TW', '工作區總覽', ['執行中', '已完成', '狀態不明']],
+      ['zh-CN', '工作区概览', ['运行中', '已完成', '状态不明']],
+    ] as const
+
+    for (const [preference, dialogLabel, statuses] of cases) {
+      await act(async () => {
+        root.render(
+          <I18nProvider preference={preference}>
+            <TitleToolbar
+              project={project} view="session" sidebarOpen inspectorOpen
+              onToggleSidebar={noop} onToggleInspector={noop} subagents={subagents}
+            />
+          </I18nProvider>,
+        )
+      })
+      if (!container.querySelector('[role="dialog"]')) await click(container.querySelector('.title-toolbar__overview button'))
+
+      expect(container.querySelector('[role="dialog"]')?.getAttribute('aria-label')).toBe(dialogLabel)
+      expect([...container.querySelectorAll('.toolbar-overview__subitem .toolbar-overview__status')].map((status) => status.textContent)).toEqual([...statuses])
+      expect(container.querySelector('.toolbar-overview')?.textContent).not.toContain('queued_upstream')
+      expect([...container.querySelectorAll('.toolbar-overview__subitem')].map((item) => item.textContent)).toEqual([
+        `Explore${statuses[0]}`, `Reviewer${statuses[1]}`, `Custom${statuses[2]}`,
+      ])
+    }
   })
 
   it('closes the Overview popover on Escape and on an outside pointer down', async () => {

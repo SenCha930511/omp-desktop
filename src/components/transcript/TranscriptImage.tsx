@@ -96,7 +96,7 @@ export function TranscriptImage({ source, alt }: TranscriptImageProps) {
                     type="button"
                     className="image-lightbox__zoom-badge"
                     onClick={() => setTransform({ zoom: 1, panX: 0, panY: 0 })}
-                    title="Reset zoom"
+                    title={t('transcript.image.resetZoom')}
                   >
                     {Math.round(transform.zoom * 100)}%
                   </button>

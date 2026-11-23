@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
+import { MAX_EXTENSION_FORM_CHOICE_CHARS, MAX_EXTENSION_FORM_TEXT_CHARS } from '../../src/types/api'
 import { isThinkingLevel, validateRpcCommand } from '../../electron/main/agent-rpc/command-schema'
+import { MAX_RPC_WRITE_FRAME_BYTES, rpcRequestFrameBytes } from '../../electron/main/agent-rpc/limits'
+import { MAX_PREDICTION_SUFFIX_CHARS, MAX_PREDICTION_TEXT_CHARS, parsePredictWordResponse } from '../../src/lib/word-prediction'
 
 const passthrough = async (path: string) => path
 
@@ -61,6 +64,9 @@ describe('isThinkingLevel', () => {
 describe('validateRpcCommand simple commands', () => {
   it('passes through argument-free commands and rejects extra keys', async () => {
     await expect(validate({ type: 'abort' })).resolves.toEqual({ type: 'abort' })
+    await expect(validate({ type: 'abort_and_deliver_queue' })).resolves.toEqual({ type: 'abort_and_deliver_queue' })
+    await expect(validate({ type: 'resume' })).resolves.toEqual({ type: 'resume' })
+    await expect(validate({ type: 'resume', force: true })).rejects.toThrow('command.force is not supported')
     await expect(validate({ type: 'get_available_commands' })).resolves.toEqual({ type: 'get_available_commands' })
     await expect(validate({ type: 'get_commands' })).rejects.toThrow('not exposed to the renderer')
     await expect(validate({ type: 'abort', force: true })).rejects.toThrow('command.force is not supported')
@@ -294,6 +300,83 @@ describe('validateRpcCommand extension UI responses', () => {
     await expect(validate({ type: 'extension_ui_response', id: 'ui-1', answers: [], value: 'x' })).rejects.toThrow('command.value is not supported')
   })
 
+  it('accepts native form data without coercing values or rejecting HTML-style names', async () => {
+    const data = {
+      'user[name]': '',
+      'preferences[]': ['one', '', 'two'],
+      emptyChoices: [],
+      zero: 0,
+      negative: -12.5,
+      positive: Number.MAX_VALUE,
+      numericText: '001.50',
+      ['__proto__']: 'prototype-safe',
+      constructor: 'constructor-safe',
+    }
+    const validated = await validate({ type: 'extension_ui_response', id: 'ui-form', data })
+    expect(validated).toEqual({ type: 'extension_ui_response', id: 'ui-form', data })
+    expect(JSON.parse(JSON.stringify(validated))).toEqual({ type: 'extension_ui_response', id: 'ui-form', data })
+
+    const validatedData = validated.data
+    if (typeof validatedData !== 'object' || validatedData === null || Array.isArray(validatedData)) throw new TypeError('expected form data object')
+    expect(Object.hasOwn(validatedData, '__proto__')).toBe(true)
+    expect(Object.hasOwn(validatedData, 'constructor')).toBe(true)
+    expect(Reflect.get(validatedData, '__proto__')).toBe('prototype-safe')
+    expect(Object.getPrototypeOf(validatedData)).toBe(Object.prototype)
+    await expect(validate({ type: 'extension_ui_response', id: 'ui-form', data: {} })).resolves.toEqual({ type: 'extension_ui_response', id: 'ui-form', data: {} })
+  })
+
+  it('rejects malformed form data and mixed response branches', async () => {
+    const invalidData: unknown[] = [
+      null,
+      [],
+      'text',
+      { field: true },
+      { field: null },
+      { field: undefined },
+      { field: {} },
+      { field: ['valid', 1] },
+      { field: [false] },
+      { field: [['nested']] },
+      { field: Array<string>(1) },
+    ]
+    for (const data of invalidData) {
+      await expect(validate({ type: 'extension_ui_response', id: 'ui-form', data })).rejects.toThrow()
+    }
+    for (const value of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      await expect(validate({ type: 'extension_ui_response', id: 'ui-form', data: { field: value } })).rejects.toThrow('data[0].value must be finite')
+    }
+    for (const sibling of [{ value: 'x' }, { confirmed: true }, { answers: [] }, { cancelled: true }, { cancelled: false }, { timedOut: true }, { extra: true }]) {
+      await expect(validate({ type: 'extension_ui_response', id: 'ui-form', data: {}, ...sibling })).rejects.toThrow()
+    }
+  })
+
+  it('bounds form fields, names, text, and choice arrays', async () => {
+    const fields = Object.fromEntries(Array.from({ length: 513 }, (_, index) => [`field-${index}`, '']))
+    await expect(validate({ type: 'extension_ui_response', id: 'ui-form', data: fields })).rejects.toThrow('data has too many fields')
+    await expect(validate({ type: 'extension_ui_response', id: 'ui-form', data: { '': 'empty name' } })).rejects.toThrow('data[0].name is too short')
+    await expect(validate({ type: 'extension_ui_response', id: 'ui-form', data: { ['x'.repeat(1025)]: 'value' } })).rejects.toThrow('data[0].name is too long')
+    await expect(validate({ type: 'extension_ui_response', id: 'ui-form', data: { field: 'x'.repeat(MAX_EXTENSION_FORM_TEXT_CHARS + 1) } })).rejects.toThrow('data[0].value is too long')
+    await expect(validate({ type: 'extension_ui_response', id: 'ui-form', data: { field: Array.from({ length: 1025 }, () => 'choice') } })).rejects.toThrow('data[0].value has too many choices')
+    await expect(validate({ type: 'extension_ui_response', id: 'ui-form', data: { field: ['x'.repeat(MAX_EXTENSION_FORM_CHOICE_CHARS + 1)] } })).rejects.toThrow('data[0].value[0] is too long')
+    const exactChoices = 'x'.repeat(MAX_EXTENSION_FORM_CHOICE_CHARS)
+    const exactScalar = 'x'.repeat(MAX_EXTENSION_FORM_TEXT_CHARS)
+    await expect(validate({ type: 'extension_ui_response', id: 'ui-form', data: { field: [exactChoices], scalar: exactScalar } })).resolves.toEqual({
+      type: 'extension_ui_response', id: 'ui-form', data: { field: [exactChoices], scalar: exactScalar },
+    })
+  })
+
+  it('does not include form answer values in validation errors', async () => {
+    const secret = 'private-form-answer-that-must-not-leak'
+    let message = ''
+    try {
+      await validate({ type: 'extension_ui_response', id: 'ui-form', data: { field: { secret } } })
+    } catch (error) {
+      if (error instanceof Error) message = error.message
+    }
+    expect(message).not.toBe('')
+    expect(message).not.toContain(secret)
+  })
+
   it('accepts timedOut only as a boolean alongside cancelled', async () => {
     await expect(validate({ type: 'extension_ui_response', id: 'ui-1', cancelled: true, timedOut: true })).resolves.toEqual({ type: 'extension_ui_response', id: 'ui-1', cancelled: true, timedOut: true })
     await expect(validate({ type: 'extension_ui_response', id: 'ui-1', cancelled: true, timedOut: false })).resolves.toEqual({ type: 'extension_ui_response', id: 'ui-1', cancelled: true, timedOut: false })
@@ -338,6 +421,86 @@ describe('validateRpcCommand goal', () => {
     await expect(validate({ type: 'goal', op: 'create', objective: 'x', token_budget: 1.5 })).rejects.toThrow('token_budget must be a positive integer')
     await expect(validate({ type: 'goal', op: 'create', objective: 'x', token_budget: '50000' })).rejects.toThrow('token_budget must be a positive integer')
     await expect(validate({ type: 'goal', op: 'create', objective: 'x', token_budget: Number.MAX_SAFE_INTEGER + 1 })).rejects.toThrow('token_budget must be a positive integer')
+  })
+})
+
+describe('validateRpcCommand word prediction', () => {
+  it('accepts only the exact native predict_word and feedback shapes', async () => {
+    await expect(validate({ type: 'predict_word', text: 'hello', cursor: 5 })).resolves.toEqual({ type: 'predict_word', text: 'hello', cursor: 5 })
+    await expect(validate({ type: 'predict_word', text: '', cursor: 0 })).resolves.toEqual({ type: 'predict_word', text: '', cursor: 0 })
+    await expect(validate({ type: 'predict_word_feedback', text: 'hello', cursor: 5, suggestion: ' world', accepted: true })).resolves.toEqual({ type: 'predict_word_feedback', text: 'hello', cursor: 5, suggestion: ' world', accepted: true })
+    await expect(validate({ type: 'predict_word_feedback', text: 'hello', cursor: 5, suggestion: ' world', accepted: false })).resolves.toEqual({ type: 'predict_word_feedback', text: 'hello', cursor: 5, suggestion: ' world', accepted: false })
+    await expect(validate({ type: 'predict_word', text: 'hello', cursor: 5, provider: 'openai' })).rejects.toThrow('command.provider is not supported')
+    await expect(validate({ type: 'predict_word_feedback', text: 'hello', cursor: 5, suggestion: ' world', accepted: true, modelId: 'gpt' })).rejects.toThrow('command.modelId is not supported')
+  })
+
+  it('uses native integer UTF-16 cursor bounds, including astral characters', async () => {
+    const text = 'a😀b'
+    expect(text.length).toBe(4)
+    for (const cursor of [0, 1, 2, 3, 4]) {
+      await expect(validate({ type: 'predict_word', text, cursor })).resolves.toEqual({ type: 'predict_word', text, cursor })
+    }
+    for (const cursor of [-1, 1.5, NaN, Infinity, -Infinity, '0', null, undefined, 5]) {
+      await expect(validate({ type: 'predict_word', text, cursor })).rejects.toThrow('cursor must be an integer UTF-16 offset within text')
+    }
+    await expect(validate({ type: 'predict_word', text: 42, cursor: 0 })).rejects.toThrow('text must be a string')
+  })
+
+  it('bounds draft text and exact feedback suggestions without truncation', async () => {
+    const text = 'x'.repeat(MAX_PREDICTION_TEXT_CHARS)
+    const suggestion = 'y'.repeat(MAX_PREDICTION_SUFFIX_CHARS)
+    await expect(validate({ type: 'predict_word', text, cursor: text.length })).resolves.toEqual({ type: 'predict_word', text, cursor: text.length })
+    await expect(validate({ type: 'predict_word', text: `${text}x`, cursor: 0 })).rejects.toThrow('text is too long')
+    await expect(validate({ type: 'predict_word_feedback', text, cursor: text.length, suggestion, accepted: true })).resolves.toEqual({ type: 'predict_word_feedback', text, cursor: text.length, suggestion, accepted: true })
+    await expect(validate({ type: 'predict_word_feedback', text: '', cursor: 0, suggestion: '', accepted: true })).rejects.toThrow('suggestion is too short')
+    await expect(validate({ type: 'predict_word_feedback', text: '', cursor: 0, suggestion: `${suggestion}y`, accepted: true })).rejects.toThrow('suggestion is too long')
+    for (const accepted of [undefined, null, 0, 1, 'true']) {
+      await expect(validate({ type: 'predict_word_feedback', text: '', cursor: 0, suggestion: 'x', accepted })).rejects.toThrow('accepted must be a boolean')
+    }
+  })
+
+  it('accounts for a UUID and UTF-8 bytes at the existing write-frame boundary', async () => {
+    const base = { type: 'predict_word', text: 'x', cursor: 1, extra: '字"\n' }
+    const padding = MAX_RPC_WRITE_FRAME_BYTES - rpcRequestFrameBytes(base)
+    expect(padding).toBeGreaterThan(0)
+    const atBoundary = { ...base, extra: `${base.extra}${'x'.repeat(padding)}` }
+    expect(rpcRequestFrameBytes(atBoundary)).toBe(MAX_RPC_WRITE_FRAME_BYTES)
+    await expect(validate(atBoundary)).rejects.toThrow('command.extra is not supported')
+    await expect(validate({ ...atBoundary, extra: `${atBoundary.extra}x` })).rejects.toThrow('command is too large for the RPC transport')
+  })
+})
+
+describe('parsePredictWordResponse', () => {
+  it('returns an exact bounded suffix payload and preserves response correlation', () => {
+    expect(parsePredictWordResponse({ id: 'request-1', type: 'response', command: 'predict_word', success: true, data: { suffix: ' continuation' } })).toEqual({
+      id: 'request-1', type: 'response', command: 'predict_word', success: true, data: { suffix: ' continuation' },
+    })
+    for (const suffix of [null, '', '😀'.repeat(MAX_PREDICTION_SUFFIX_CHARS / 2)]) {
+      const response = parsePredictWordResponse({ type: 'response', command: 'predict_word', success: true, data: { suffix } })
+      expect(response.data.suffix).toBe(suffix || null)
+    }
+  })
+
+  it('rejects malformed envelopes, unknown fields, missing data, and invalid suffixes', () => {
+    const valid = { id: 'request-1', type: 'response', command: 'predict_word', success: true, data: { suffix: 'x' } }
+    for (const response of [
+      null,
+      [],
+      { ...valid, success: false },
+      { ...valid, type: 'event' },
+      { ...valid, command: 'predict_word_feedback' },
+      { ...valid, extra: true },
+      { ...valid, id: 42 },
+      { ...valid, data: null },
+      { ...valid, data: [] },
+      { ...valid, data: {} },
+      { ...valid, data: { suffix: undefined } },
+      { ...valid, data: { suffix: 42 } },
+      { ...valid, data: { suffix: 'x', extra: true } },
+      { ...valid, data: { suffix: 'x'.repeat(MAX_PREDICTION_SUFFIX_CHARS + 1) } },
+    ]) {
+      expect(() => parsePredictWordResponse(response)).toThrow()
+    }
   })
 })
 

@@ -12,6 +12,7 @@ import { SettingsToggle } from './SettingsToggle'
 const APPROVAL_MODE_LABELS: Record<OmpApprovalMode, MessageKey> = {
   inherit: 'agent.approval.inherit',
   'always-ask': 'agent.approval.alwaysAsk',
+  'always-ask-cached': 'agent.approval.alwaysAskCached',
   write: 'agent.approval.write',
   yolo: 'agent.approval.yolo',
 }
@@ -84,7 +85,7 @@ export function AgentSettings({ settings, meta, onUpdate, onRefreshHarnesses }: 
         <label className="settings-row">
           <span>
             <strong>{t('agent.approval.label')}</strong>
-            <small>{t('agent.approval.description')}</small>
+            <small>{t(settings.ompApprovalMode === 'always-ask-cached' ? 'agent.approval.alwaysAskCachedDescription' : 'agent.approval.description')}</small>
           </span>
           <select
             value={settings.ompApprovalMode}
@@ -93,7 +94,7 @@ export function AgentSettings({ settings, meta, onUpdate, onRefreshHarnesses }: 
             }}
           >
             {OMP_APPROVAL_MODES.map((mode) => (
-              <option key={mode} value={mode}>
+              <option key={mode} value={mode} title={mode === 'always-ask-cached' ? t('agent.approval.alwaysAskCachedDescription') : undefined}>
                 {t(APPROVAL_MODE_LABELS[mode])}
               </option>
             ))}

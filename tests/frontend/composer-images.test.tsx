@@ -5,6 +5,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Composer } from '../../src/components/Composer'
 import { groupModelsByProvider } from '../../src/hooks/useProviderCatalog'
+import { I18nProvider, type ResolvedLocale } from '../../src/lib/i18n'
 import type { PrimeContextUsage, PrimeModelDescriptor, PrimeProviderDescriptor, RuntimeInfo, SkillRecord } from '../../src/types/api'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
@@ -41,17 +42,47 @@ afterEach(async () => {
   vi.unstubAllGlobals()
 })
 
-function renderComposer(onSend = vi.fn(), imageInputSupported = true, busy = false, messageEnterAction: 'queue' | 'steer' = 'queue', contextUsage?: PrimeContextUsage, executingModel?: RuntimeInfo['executingModel'], harnessTokensPerSecond?: number, availableCommands?: RuntimeInfo['availableCommands']) {
-  act(() => root.render(<Composer
+function renderComposer(
+  onSend = vi.fn(),
+  imageInputSupported = true,
+  busy = false,
+  messageEnterAction: 'queue' | 'steer' = 'queue',
+  contextUsage?: PrimeContextUsage,
+  executingModel?: RuntimeInfo['executingModel'],
+  harnessTokensPerSecond?: number,
+  availableCommands?: RuntimeInfo['availableCommands'],
+  callbacks: {
+    onContinue?(deliverQueued: boolean): Promise<boolean>
+    onStop?(): Promise<void> | void
+    onOpenSessionTree?(): void
+  } = {},
+  fastOptions: {
+    fast?: boolean
+    fastSupported?: boolean
+    fastActive?: boolean
+    onFastChange?(value: boolean): void
+    onFastRetry?(): void
+    slow?: boolean
+    slowSupported?: boolean
+    slowScope?: RuntimeInfo['slowModeScope']
+    onSlowChange?(value: boolean): void
+    locale?: ResolvedLocale
+  } = {},
+) {
+  const composer = <Composer
     busy={busy}
     model="provider/vision"
     effort="medium"
     modelsByProvider={modelsByProvider}
     providers={providers}
     reasoningLevels={['medium']}
-    fast={false}
-    fastSupported={false}
+    fast={fastOptions.fast ?? false}
+    fastSupported={fastOptions.fastSupported ?? false}
     fastAvailable
+    fastActive={fastOptions.fastActive}
+    slow={fastOptions.slow}
+    slowSupported={fastOptions.slowSupported}
+    slowScope={fastOptions.slowScope}
     imageInputSupported={imageInputSupported}
     messageEnterAction={messageEnterAction}
     contextUsage={contextUsage}
@@ -61,12 +92,139 @@ function renderComposer(onSend = vi.fn(), imageInputSupported = true, busy = fal
     availableCommands={availableCommands}
     onModelChange={vi.fn()}
     onEffortChange={vi.fn()}
-    onFastChange={vi.fn()}
+    onFastChange={fastOptions.onFastChange ?? vi.fn()}
+    onFastRetry={fastOptions.onFastRetry}
+    onSlowChange={fastOptions.onSlowChange}
     onSend={onSend}
-    onStop={vi.fn()}
-  />))
+    onContinue={callbacks.onContinue}
+    onStop={callbacks.onStop ?? vi.fn()}
+    onOpenSessionTree={callbacks.onOpenSessionTree}
+  />
+  act(() => root.render(fastOptions.locale
+    ? <I18nProvider preference={fastOptions.locale}>{composer}</I18nProvider>
+    : composer))
   return onSend
 }
+
+describe('Composer Fast retry', () => {
+  const retryLabel = 'Retry Fast'
+
+  it('retries the actual service tier without changing the enabled Fast preference', () => {
+    const changeFast = vi.fn()
+    const retryFast = vi.fn()
+    renderComposer(vi.fn(), true, false, 'queue', undefined, undefined, undefined, undefined, {}, {
+      fast: true, fastSupported: true, fastActive: false, onFastChange: changeFast, onFastRetry: retryFast,
+    })
+
+    const retry = container.querySelector<HTMLButtonElement>(`button[aria-label="${retryLabel}"]`)
+    expect(retry).not.toBeNull()
+    expect(retry?.title).toBe('Fast mode is enabled, but OMP is not using its priority service. Retry without changing your Fast preference.')
+    expect(retry?.hasAttribute('aria-pressed')).toBe(false)
+    act(() => retry!.click())
+    expect(retryFast).toHaveBeenCalledTimes(1)
+    expect(changeFast).not.toHaveBeenCalled()
+  })
+
+  it('keeps the Fast toggle independent from the retry command', () => {
+    const changeFast = vi.fn()
+    const retryFast = vi.fn()
+    renderComposer(vi.fn(), true, false, 'queue', undefined, undefined, undefined, undefined, {}, {
+      fast: true, fastSupported: true, fastActive: false, onFastChange: changeFast, onFastRetry: retryFast,
+    })
+
+    const toggle = container.querySelector<HTMLButtonElement>('.fast-mode-toggle[aria-pressed="true"]')!
+    act(() => toggle.click())
+    expect(changeFast).toHaveBeenCalledTimes(1)
+    expect(changeFast).toHaveBeenCalledWith(false)
+    expect(retryFast).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { label: 'active', fast: true, fastSupported: true, fastActive: true, retryAvailable: true },
+    { label: 'unknown', fast: true, fastSupported: true, fastActive: undefined, retryAvailable: true },
+    { label: 'preference off', fast: false, fastSupported: true, fastActive: false, retryAvailable: true },
+    { label: 'unsupported', fast: true, fastSupported: false, fastActive: false, retryAvailable: true },
+    { label: 'retry callback absent', fast: true, fastSupported: true, fastActive: false, retryAvailable: false },
+  ] as const)('does not offer Retry when Fast is $label', ({ fast, fastSupported, fastActive, retryAvailable }) => {
+    renderComposer(vi.fn(), true, false, 'queue', undefined, undefined, undefined, undefined, {}, {
+      fast, fastSupported, fastActive, onFastRetry: retryAvailable ? vi.fn() : undefined,
+    })
+
+    expect(container.querySelector(`button[aria-label="${retryLabel}"]`)).toBeNull()
+  })
+
+  it.each([
+    ['en', 'Retry Fast', 'Fast mode is enabled, but OMP is not using its priority service. Retry without changing your Fast preference.'],
+    ['zh-TW', '重試快速模式', '已啟用快速模式，但 OMP 目前未使用優先服務。重試時不會變更快速模式偏好設定。'],
+    ['zh-CN', '重试快速模式', '已启用快速模式，但 OMP 当前未使用优先服务。重试不会更改快速模式偏好设置。'],
+  ] as const)('renders localized Retry text for %s', (locale, label, title) => {
+    renderComposer(vi.fn(), true, false, 'queue', undefined, undefined, undefined, undefined, {}, {
+      fast: true, fastSupported: true, fastActive: false, onFastRetry: vi.fn(), locale,
+    })
+
+    const retry = container.querySelector<HTMLButtonElement>('.fast-mode-retry')
+    expect(retry?.getAttribute('aria-label')).toBe(label)
+    expect(retry?.textContent).toContain(label)
+    expect(retry?.getAttribute('title')).toBe(title)
+  })
+})
+
+describe('Composer Slow controls', () => {
+  it.each([
+    ['en', 'Slow', 'global', 'Use OMP slow mode. This global preference persists across model switches and applies to every session and terminal using this provider.'],
+    ['en', 'Slow', 'session', 'Use OMP slow mode for the current model family in this session only. Each model family has its own preference.'],
+    ['zh-TW', '慢速', 'global', '使用 OMP 慢速模式。此全域偏好設定會跨模型切換保留，並套用於使用此提供者的所有工作階段與終端機。'],
+    ['zh-TW', '慢速', 'session', '僅在此工作階段對目前模型系列使用 OMP 慢速模式；每個模型系列各有獨立偏好設定。'],
+    ['zh-CN', '慢速', 'global', '使用 OMP 慢速模式。此全局偏好设置会跨模型切换保留，并应用于使用此提供商的所有会话和终端。'],
+    ['zh-CN', '慢速', 'session', '仅在此会话中对当前模型系列使用 OMP 慢速模式；每个模型系列都有独立的偏好设置。'],
+  ] as const)('renders localized %s Slow text and %s scope title', (locale, label, slowScope, title) => {
+    const changeSlow = vi.fn()
+    renderComposer(vi.fn(), true, false, 'queue', undefined, undefined, undefined, undefined, {}, {
+      locale, slow: false, slowSupported: true, slowScope, onSlowChange: changeSlow,
+    })
+
+    const toggle = container.querySelector<HTMLButtonElement>('.slow-mode-toggle')
+    expect(toggle?.textContent).toContain(label)
+    expect(toggle?.getAttribute('aria-label')).toBe(label)
+    expect(toggle?.getAttribute('title')).toBe(title)
+    expect(toggle?.getAttribute('aria-pressed')).toBe('false')
+    act(() => toggle!.click())
+    expect(changeSlow).toHaveBeenCalledExactlyOnceWith(true)
+  })
+
+  it('uses only authoritative enabled state for pressed styling and toggling off', () => {
+    const changeSlow = vi.fn()
+    renderComposer(vi.fn(), true, false, 'queue', undefined, undefined, undefined, undefined, {}, {
+      slow: true, slowSupported: true, slowScope: 'global', onSlowChange: changeSlow,
+    })
+    const toggle = container.querySelector<HTMLButtonElement>('.slow-mode-toggle')!
+    expect(toggle.getAttribute('aria-pressed')).toBe('true')
+    expect(toggle.classList.contains('is-active')).toBe(true)
+    act(() => toggle.click())
+    expect(changeSlow).toHaveBeenCalledExactlyOnceWith(false)
+  })
+
+  it.each([
+    ['unsupported', { slow: false, slowSupported: false, slowScope: 'global' }],
+    ['unknown support', { slow: false, slowScope: 'session' }],
+    ['unknown enabled preference', { slowSupported: true, slowScope: 'global' }],
+    ['unknown scope', { slow: false, slowSupported: true }],
+  ] as const)('hides Slow when state is %s instead of inferring it from the model', (_label, slowOptions) => {
+    const changeSlow = vi.fn()
+    renderComposer(vi.fn(), true, false, 'queue', undefined, undefined, undefined, undefined, {}, {
+      ...slowOptions, onSlowChange: changeSlow,
+    })
+    expect(container.querySelector('.slow-mode-toggle')).toBeNull()
+    expect(changeSlow).not.toHaveBeenCalled()
+  })
+
+  it('hides Slow when its mutation callback is unavailable', () => {
+    renderComposer(vi.fn(), true, false, 'queue', undefined, undefined, undefined, undefined, {}, {
+      slow: false, slowSupported: true, slowScope: 'session',
+    })
+    expect(container.querySelector('.slow-mode-toggle')).toBeNull()
+  })
+})
 
 function pngFile(name: string, read?: () => Promise<ArrayBuffer>): File {
   const bytes = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10])
@@ -78,6 +236,19 @@ function pngFile(name: string, read?: () => Promise<ArrayBuffer>): File {
 function withTimeStamp<T extends Event>(event: T, timeStamp: number): T {
   Object.defineProperty(event, 'timeStamp', { configurable: true, value: timeStamp })
   return event
+}
+
+async function enterDraft(value: string, init: KeyboardEventInit = {}) {
+  const textarea = container.querySelector('textarea') as HTMLTextAreaElement
+  await act(async () => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+    setter?.call(textarea, value)
+    textarea.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+  await act(async () => {
+    textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, ...init }))
+    await Promise.resolve()
+  })
 }
 
 it('does not accept commands or close the command menu during IME composition', async () => {
@@ -270,7 +441,6 @@ describe('Composer image ingestion', () => {
     expect(container.querySelector('[role="alert"]')?.textContent).toContain('up to 8 files')
   })
 
-
   it('restores the text and image draft when prompt admission fails', async () => {
     const onSend = renderComposer(vi.fn(async () => { throw new Error('rejected') }))
     await pasteFiles([pastedPng()], 'Keep this draft')
@@ -326,7 +496,6 @@ describe('Composer image ingestion', () => {
     expect(container.querySelector('[role="alert"]')?.textContent).toContain('1 submitted image could not be restored because the attachment limits are full')
     expect(container.querySelector('[role="status"]')?.textContent).toContain('8 files attached')
   })
-
 
   it('opens a general file picker from the add menu and attaches its selection', async () => {
     renderComposer()
@@ -454,19 +623,6 @@ describe('Composer image ingestion', () => {
 
 
 describe('Composer message delivery shortcuts', () => {
-  const enterDraft = async (value: string, init: KeyboardEventInit = {}) => {
-    const textarea = container.querySelector('textarea') as HTMLTextAreaElement
-    await act(async () => {
-      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
-      setter?.call(textarea, value)
-      textarea.dispatchEvent(new Event('input', { bubbles: true }))
-    })
-    await act(async () => {
-      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, ...init }))
-      await Promise.resolve()
-    })
-  }
-
   it('queues with Enter and steers with Ctrl+Enter while OMP is working', async () => {
     const onSend = renderComposer(vi.fn(async () => undefined), true, true)
     await enterDraft('Queue this')
@@ -498,6 +654,114 @@ describe('Composer message delivery shortcuts', () => {
     expect(onSend).toHaveBeenNthCalledWith(1, 'Steer this', [], 'steer')
     expect(onSend).toHaveBeenNthCalledWith(2, 'Queue this', [], 'queue')
     expect(onSend).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('Composer native continue and tree shortcuts', () => {
+  it('uses queue delivery for busy empty Enter instead of stop or a prompt', async () => {
+    const onContinue = vi.fn(async () => true)
+    const onStop = vi.fn()
+    const onSend = renderComposer(vi.fn(), true, true, 'queue', undefined, undefined, undefined, undefined, { onContinue, onStop })
+
+    await act(async () => {
+      container.querySelector('textarea')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    })
+
+    expect(onContinue).toHaveBeenCalledExactlyOnceWith(true)
+    expect(onStop).not.toHaveBeenCalled()
+    expect(onSend).not.toHaveBeenCalled()
+  })
+
+  it('routes dot and c through idle resume and busy queue delivery without prompt text', async () => {
+    const onContinue = vi.fn(async () => true)
+    const onSend = renderComposer(vi.fn(), true, false, 'queue', undefined, undefined, undefined, undefined, { onContinue })
+    await enterDraft('.')
+    expect(onContinue).toHaveBeenLastCalledWith(false)
+
+    renderComposer(onSend, true, true, 'queue', undefined, undefined, undefined, undefined, { onContinue })
+    await enterDraft('c')
+    expect(onContinue).toHaveBeenLastCalledWith(true)
+    expect(onContinue).toHaveBeenCalledTimes(2)
+    expect(onSend).not.toHaveBeenCalled()
+  })
+
+  it('keeps Ctrl+Enter as a literal follow-up rather than a continue command', async () => {
+    const onContinue = vi.fn(async () => true)
+    const onSend = renderComposer(vi.fn(async () => undefined), true, true, 'queue', undefined, undefined, undefined, undefined, { onContinue })
+
+    await enterDraft('.', { ctrlKey: true })
+
+    expect(onSend).toHaveBeenCalledExactlyOnceWith('.', [], 'steer')
+    expect(onContinue).not.toHaveBeenCalled()
+  })
+
+  it('restores the shorthand draft when the runtime does not accept continue', async () => {
+    const onContinue = vi.fn(async () => false)
+    const onSend = renderComposer(vi.fn(), true, false, 'queue', undefined, undefined, undefined, undefined, { onContinue })
+
+    await enterDraft('.')
+
+    expect(onContinue).toHaveBeenCalledExactlyOnceWith(false)
+    expect(container.querySelector('textarea')).toHaveProperty('value', '.')
+    expect(onSend).not.toHaveBeenCalled()
+  })
+
+  it('keeps busy Escape on stop and never routes it through continue or the tree', () => {
+    const onContinue = vi.fn(async () => true)
+    const onStop = vi.fn()
+    const onOpenSessionTree = vi.fn()
+    renderComposer(vi.fn(), true, true, 'queue', undefined, undefined, undefined, undefined, { onContinue, onStop, onOpenSessionTree })
+    const textarea = container.querySelector('textarea')!
+
+    act(() => textarea.dispatchEvent(withTimeStamp(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }), 1000)))
+    act(() => textarea.dispatchEvent(withTimeStamp(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }), 1100)))
+
+    expect(onStop).toHaveBeenCalledTimes(2)
+    expect(onContinue).not.toHaveBeenCalled()
+    expect(onOpenSessionTree).not.toHaveBeenCalled()
+  })
+
+  it('opens the existing tree for consecutive idle empty Escape presses within and at 500ms only', () => {
+    const onStop = vi.fn()
+    const onOpenSessionTree = vi.fn()
+    renderComposer(vi.fn(), true, false, 'queue', undefined, undefined, undefined, undefined, { onStop, onOpenSessionTree })
+    const textarea = container.querySelector('textarea')!
+    const escapeAt = (timeStamp: number) => {
+      act(() => textarea.dispatchEvent(withTimeStamp(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }), timeStamp)))
+    }
+
+    escapeAt(1000)
+    expect(onOpenSessionTree).not.toHaveBeenCalled()
+    escapeAt(1499)
+    expect(onOpenSessionTree).toHaveBeenCalledTimes(1)
+    escapeAt(2000)
+    escapeAt(2500)
+    expect(onOpenSessionTree).toHaveBeenCalledTimes(2)
+    escapeAt(3000)
+    escapeAt(3501)
+    expect(onOpenSessionTree).toHaveBeenCalledTimes(2)
+    expect(onStop).not.toHaveBeenCalled()
+  })
+
+  it('does not open the tree for modified escapes or a nonempty draft', () => {
+    const onOpenSessionTree = vi.fn()
+    const onSend = renderComposer(vi.fn(), true, false, 'queue', undefined, undefined, undefined, undefined, { onOpenSessionTree })
+    const textarea = container.querySelector('textarea')!
+    const escapeAt = (timeStamp: number, altKey = false) => {
+      act(() => textarea.dispatchEvent(withTimeStamp(new KeyboardEvent('keydown', { key: 'Escape', altKey, bubbles: true, cancelable: true }), timeStamp)))
+    }
+
+    escapeAt(1000, true)
+    escapeAt(1100)
+    expect(onOpenSessionTree).not.toHaveBeenCalled()
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, 'keep editing')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    escapeAt(1200)
+    escapeAt(1300)
+    expect(onOpenSessionTree).not.toHaveBeenCalled()
+    expect(onSend).not.toHaveBeenCalled()
   })
 })
 

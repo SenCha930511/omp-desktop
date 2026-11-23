@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { appendFileSync, existsSync, lstatSync, readFileSync } from 'node:fs'
 import { posix, resolve, win32 } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { assertSupportedNode, assertSupportedNpm, readNpmOutput, readRepositoryToolchain, runCommand, validateAbsoluteSingleLinePath } from './lib.mjs'
+import { assertSupportedNode, assertSupportedNpm, normalizedNpmEnvironment, readNpmOutput, readRepositoryToolchain, runCommand, validateAbsoluteSingleLinePath } from './lib.mjs'
 
 const repositoryRootPath = fileURLToPath(new URL('../../', import.meta.url))
 const dependencyPinsPath = fileURLToPath(new URL('./dependency-pins.json', import.meta.url))
@@ -124,8 +124,8 @@ export function persistNpmCliPath(cliPath, githubEnv = process.env.GITHUB_ENV, p
 }
 
 export function bootstrapNpm(options = {}) {
-  const env = options.env ?? process.env
   const platform = options.platform ?? process.platform
+  const env = normalizedNpmEnvironment(options.env ?? process.env, platform)
   const nodeVersion = options.nodeVersion ?? process.version
   const toolchain = options.toolchain ?? readRepositoryToolchain()
   const readOutput = options.readOutput ?? readNpmOutput
@@ -156,8 +156,8 @@ export function bootstrapNpm(options = {}) {
   assertSupportedNpm(installed, toolchain)
   if (installed !== toolchain.npm) throw new Error(`Expected pinned npm ${toolchain.npm} after bootstrap, found ${installed}`)
 
-  const githubPathUpdated = persist(layout.shimDirectory, env.GITHUB_PATH, platform)
-  const githubEnvUpdated = persistNpmCliPath(layout.cliPath, env.GITHUB_ENV, platform)
+  const githubPathUpdated = persist(layout.shimDirectory, env.GITHUB_PATH ?? null, platform)
+  const githubEnvUpdated = persistNpmCliPath(layout.cliPath, env.GITHUB_ENV ?? null, platform)
   console.log(`Repository toolchain bootstrap passed: Node ${nodeVersion} and npm ${installed}.`)
   return { current, installed, artifactPath: artifact.path, artifactIntegrity: artifact.integrity, ...layout, githubPathUpdated, githubEnvUpdated }
 }

@@ -32,7 +32,8 @@
 .side-chat__status--cancelled, .side-chat__status--interrupted { color: var(--text-tertiary); }
 
 /* The mini composer reuses .composer capsule, input, and footer tokens. */
-.side-chat__composer { flex: 0 0 auto; min-height: 76px; margin: 10px 12px 12px; }
+.side-chat__composer { flex: 0 0 auto; min-height: 76px; margin: 10px 12px 0; }
+.side-chat > .composer-note { flex: 0 0 auto; margin: 0 12px 10px; background: transparent; box-shadow: none; overflow-wrap: anywhere; }
 .side-chat__composer .composer-input { min-height: 32px; max-height: 110px; }
 .side-chat__composer .side-chat__input { min-height: 32px; max-height: 110px; padding: 4px 6px 6px; }
 .side-chat__input:disabled { opacity: 0.5; }

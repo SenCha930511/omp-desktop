@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { resolveLocale, translate, useI18n, type Translate } from '@/lib/i18n'
 import { PRIME_THINKING_LEVELS } from '@/types/api'
-import type { HarnessId, PrimeModelCatalog, PrimeModelDescriptor, PrimeThinkingLevel, PrimeEffortSelector, DesktopApi, RuntimeInfo, SessionRecord, UsageLimitState } from '@/types/api'
+import type { HarnessId, LocalePreference, PrimeModelCatalog, PrimeModelDescriptor, PrimeThinkingLevel, PrimeEffortSelector, DesktopApi, RuntimeInfo, SessionRecord, SlowModeScope, UsageLimitState } from '@/types/api'
 
 /** Stable fallback identities so consumers can memoize on prop equality. */
 const DEFAULT_REASONING_LEVELS: PrimeThinkingLevel[] = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
@@ -48,13 +49,22 @@ interface UseProviderCatalogOptions {
   rememberModel?(modelKey: string): void
   syncRuntime(runtimeId: string): Promise<void>
   reportError(error: unknown): void
+  /** App-level locale override; this hook is called above I18nProvider. */
+  localePreference?: LocalePreference
 }
 
 /** The composer's provider-catalog view and runtime mutation surface. */
 export interface ProviderCatalog {
   model: string
   effort: PrimeEffortSelector
+  /** Requested fast setting. */
   fast: boolean
+  /** Actual provider state; absent until OMP explicitly reports it. */
+  fastActive?: boolean
+  /** Authoritative slow preference and native write target; no optimistic mirror. */
+  slow: boolean | undefined
+  slowSupported: boolean | undefined
+  slowScope: SlowModeScope | undefined
   /** 帳號限流狀態(low_priority/wrap_up);顯示之避免誤判為 app bug。 */
   usageLimit: UsageLimitState | undefined
   catalog: PrimeModelCatalog | null
@@ -68,9 +78,19 @@ export interface ProviderCatalog {
   changeModel(modelKey: string): void
   changeEffort(value: PrimeEffortSelector): void
   changeFast(enabled: boolean): void
+  /** Request native slow mode, then adopt only the refreshed get_state result. */
+  changeSlow(enabled: boolean): void
+  /** Re-arm the selected fast setting only after OMP explicitly reports it inactive. */
+  retryFast(): void
 }
 
-export function useProviderCatalog({ bridge, ready = true, harness = 'omp', runtime, activeSession, lastSelectedModel = '', defaultEffort = 'medium', rememberModel, syncRuntime, reportError }: UseProviderCatalogOptions): ProviderCatalog {
+export function useProviderCatalog({ bridge, ready = true, harness = 'omp', localePreference, runtime, activeSession, lastSelectedModel = '', defaultEffort = 'medium', rememberModel, syncRuntime, reportError }: UseProviderCatalogOptions): ProviderCatalog {
+  const { t: providerT } = useI18n()
+  const overrideLocale = localePreference === undefined ? undefined : resolveLocale(localePreference)
+  const t = useMemo<Translate>(
+    () => overrideLocale === undefined ? providerT : (key, values) => translate(overrideLocale, key, values),
+    [overrideLocale, providerT],
+  )
   const [model, setModel] = useState('')
   const [effort, setEffort] = useState<PrimeEffortSelector>(defaultEffort)
   const [fast, setFast] = useState(false)
@@ -87,7 +107,11 @@ export function useProviderCatalog({ bridge, ready = true, harness = 'omp', runt
   const mutationRevisionRef = useRef(0)
   const mutationQueueRef = useRef<Promise<void>>(Promise.resolve())
   const runtimeIdRef = useRef(runtime?.runtimeId)
-  useLayoutEffect(() => { runtimeIdRef.current = runtime?.runtimeId })
+  const latestRuntimeRef = useRef(runtime)
+  useLayoutEffect(() => {
+    runtimeIdRef.current = runtime?.runtimeId
+    latestRuntimeRef.current = runtime
+  })
 
   const updateModel = useCallback((value: string) => { modelRef.current = value; setModel(value) }, [])
   const updateEffort = useCallback((value: PrimeEffortSelector) => { effortRef.current = value; setEffort(value) }, [])
@@ -119,6 +143,7 @@ export function useProviderCatalog({ bridge, ready = true, harness = 'omp', runt
   useEffect(() => () => {
     mutationRevisionRef.current += 1
     runtimeIdRef.current = undefined
+    latestRuntimeRef.current = null
   }, [])
 
   const refresh = useCallback(async (force = false) => {
@@ -295,12 +320,90 @@ export function useProviderCatalog({ bridge, ready = true, harness = 'omp', runt
     const previous = fastRef.current
     updateFast(enabled)
     if (!bridge || !runtime) return
+    const authorizedRuntimeId = runtime.runtimeId
+    const authorizedServiceTier = runtime.serviceTier
+    const authorizedProvider = runtime.model?.provider
+    const authorizedModelId = runtime.model?.id
     queueRuntimeMutation(
-      runtime.runtimeId,
-      async () => { await bridge.agent.command(runtime.runtimeId, { type: 'set_service_tier', serviceTier: enabled ? 'priority' : 'default' }) },
+      authorizedRuntimeId,
+      async () => {
+        // Fast is session-scoped. Reauthorize against the latest model and
+        // preference when this queued click actually executes; a preceding
+        // model/session mutation may have replaced its original target.
+        const current = latestRuntimeRef.current
+        if (
+          !current
+          || current.runtimeId !== authorizedRuntimeId
+          || current.serviceTier !== authorizedServiceTier
+          || current.model?.provider !== authorizedProvider
+          || current.model?.id !== authorizedModelId
+        ) {
+          reportError(new Error(t('composer.fastReviewRetry')))
+          return
+        }
+        await bridge.agent.command(authorizedRuntimeId, { type: 'set_service_tier', serviceTier: enabled ? 'priority' : 'default' })
+        // The response and syncRuntime's published snapshot are not a state
+        // refresh. Fetch the actual active tier once before reattaching the UI.
+        await bridge.agent.refreshState(authorizedRuntimeId)
+      },
       () => updateFast(previous),
     )
-  }, [bridge, queueRuntimeMutation, runtime, updateFast])
+  }, [bridge, queueRuntimeMutation, reportError, runtime, t, updateFast])
+
+  const changeSlow = useCallback((enabled: boolean) => {
+    if (!bridge || !runtime) return
+    // Both the current preference and its native consequence must be known.
+    // In particular, never offer an enable that might unexpectedly write
+    // provider-wide persisted config. Unsupported enabling is guarded here;
+    // the validated pure RPC command retains OMP's documented disable no-op.
+    if (runtime.slowModeSupported !== true || typeof runtime.slowModeEnabled !== 'boolean') return
+    if (runtime.slowModeScope !== 'global' && runtime.slowModeScope !== 'session') return
+    const authorizedRuntimeId = runtime.runtimeId
+    const authorizedEnabled = runtime.slowModeEnabled
+    const authorizedScope = runtime.slowModeScope
+    const authorizedProvider = runtime.model?.provider
+    const authorizedModelId = runtime.model?.id
+    queueRuntimeMutation(
+      authorizedRuntimeId,
+      async () => {
+        // A preceding model mutation in this same primary queue may have
+        // changed a session-scoped click into a provider-wide write. The
+        // latest authoritative props, not the captured tooltip, remain the
+        // authorization boundary at actual execution time.
+        const current = latestRuntimeRef.current
+        if (
+          !current
+          || current.runtimeId !== authorizedRuntimeId
+          || current.slowModeSupported !== true
+          || current.slowModeEnabled !== authorizedEnabled
+          || current.slowModeScope !== authorizedScope
+          || current.model?.provider !== authorizedProvider
+          || current.model?.id !== authorizedModelId
+        ) {
+          reportError(new Error(t('composer.slowReviewRetry')))
+          return
+        }
+        await bridge.agent.command(authorizedRuntimeId, { type: 'set_slow_mode', enabled })
+        // An acknowledgement says nothing about the resulting preference.
+        // This is the sole extra get_state: queueRuntimeMutation's sync only
+        // reattaches the already-published snapshot, it does not refresh it.
+        await bridge.agent.refreshState(authorizedRuntimeId)
+      },
+      // No optimistic preference exists to roll back. Errors keep the last
+      // authoritative flags; queueRuntimeMutation also reports refresh errors.
+      () => undefined,
+    )
+  }, [bridge, queueRuntimeMutation, reportError, runtime, t])
+
+  const retryFast = useCallback(() => {
+    if (!bridge || !runtime || !fastRef.current || runtime.serviceTierActive !== false) return
+    queueRuntimeMutation(
+      runtime.runtimeId,
+      async () => { await bridge.agent.command(runtime.runtimeId, { type: 'set_service_tier', serviceTier: 'priority' }) },
+      // Retrying does not change the preference or optimistic actual state.
+      () => undefined,
+    )
+  }, [bridge, queueRuntimeMutation, runtime])
 
   const resolvedAutoEffort = effort !== 'auto' || runtime?.autoThinkingResolved !== true ? undefined : PRIME_THINKING_LEVELS.find((level) => level === runtime.thinkingLevel)
 
@@ -319,8 +422,12 @@ export function useProviderCatalog({ bridge, ready = true, harness = 'omp', runt
 
   return {
     model, effort, fast,
+    fastActive: runtime?.serviceTierActive,
+    slow: runtime?.slowModeEnabled,
+    slowSupported: runtime?.slowModeSupported,
+    slowScope: runtime?.slowModeScope,
     usageLimit: runtime?.usageLimit,
     catalog, selectedModel, reasoningLevels, resolvedAutoEffort, modelsByProvider,
-    refresh, resolveSelection, changeModel, changeEffort, changeFast,
+    refresh, resolveSelection, changeModel, changeEffort, changeFast, changeSlow, retryFast,
   }
 }

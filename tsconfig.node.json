@@ -1,5 +1,6 @@
 {
   "compilerOptions": {
+    "lib": ["ES2024"],
     "target": "ES2022",
     "useDefineForClassFields": true,
     "strict": true,

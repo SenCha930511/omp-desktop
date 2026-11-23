@@ -4,7 +4,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { type ProviderCatalog, useProviderCatalog } from '../../src/hooks/useProviderCatalog'
 import { ProviderSettings } from '../../src/pages/settings/ProviderSettings'
-import type { PrimeModelCatalog, DesktopApi, RuntimeInfo } from '../../src/types/api'
+import type { LocalePreference, PrimeModelCatalog, DesktopApi, RuntimeInfo } from '../../src/types/api'
 
 const model = {
   key: 'openai-codex/gpt-5.6', provider: 'openai-codex', id: 'gpt-5.6', name: 'GPT-5.6', reasoning: true,
@@ -145,24 +145,36 @@ describe('provider runtime mutations', () => {
 
   function mountCatalogHook(options: {
     command: DesktopApi['agent']['command']
+    runtime?: RuntimeInfo | null
     syncRuntime?: (runtimeId: string) => Promise<void>
+    refreshState?: DesktopApi['agent']['refreshState']
     reportError?: (error: unknown) => void
+    localePreference?: LocalePreference
   }) {
     let value: ProviderCatalog | undefined
+    const initialRuntime = options.runtime === undefined ? runtime : options.runtime
     const catalogMock = vi.fn().mockResolvedValue(catalog)
+    const refreshState = options.refreshState ?? vi.fn().mockResolvedValue(initialRuntime)
     const bridge = {
-      agent: { command: options.command },
+      agent: { command: options.command, refreshState },
       providers: {
         catalog: catalogMock,
       },
     } as unknown as DesktopApi
     const syncRuntime = options.syncRuntime ?? vi.fn().mockResolvedValue(undefined)
     const reportError = options.reportError ?? vi.fn()
-    function Harness() {
-      value = useProviderCatalog({ bridge, runtime, syncRuntime, reportError })
+    function Harness({ currentRuntime = initialRuntime }: { currentRuntime?: RuntimeInfo | null }) {
+      value = useProviderCatalog({ bridge, runtime: currentRuntime, syncRuntime, reportError, localePreference: options.localePreference })
       return null
     }
-    return render(<Harness />).then(() => ({ get value() { return value! }, catalogMock, syncRuntime, reportError }))
+    return render(<Harness />).then(() => ({
+      get value() { return value! },
+      catalogMock,
+      refreshState,
+      syncRuntime,
+      reportError,
+      updateRuntime: (nextRuntime: RuntimeInfo | null) => render(<Harness currentRuntime={nextRuntime} />),
+    }))
   }
 
   it('serializes rapid reasoning changes and rolls back/synchronizes the latest rejection', async () => {
@@ -215,5 +227,367 @@ describe('provider runtime mutations', () => {
     await act(async () => { await hook.value.refresh(true) })
 
     expect(hook.value.fast).toBe(true)
+  })
+
+  it('refreshes authoritative Fast state exactly once before reattaching the UI', async () => {
+    const acknowledged = deferred<Record<string, unknown>>()
+    const refreshed = deferred<RuntimeInfo>()
+    const order: string[] = []
+    const command = vi.fn().mockImplementation(() => { order.push('command'); return acknowledged.promise })
+    const refreshState = vi.fn().mockImplementation(() => { order.push('refresh'); return refreshed.promise })
+    const syncRuntime = vi.fn().mockImplementation(async () => { order.push('sync') })
+    const hook = await mountCatalogHook({ command, refreshState, syncRuntime })
+
+    act(() => hook.value.changeFast(true))
+    await act(async () => { await Promise.resolve() })
+    expect(command).toHaveBeenCalledExactlyOnceWith('runtime-1', { type: 'set_service_tier', serviceTier: 'priority' })
+    expect(hook.value.fast).toBe(true)
+    expect(hook.refreshState).not.toHaveBeenCalled()
+
+    await act(async () => { acknowledged.resolve({ success: true }); await acknowledged.promise; await Promise.resolve() })
+    expect(hook.refreshState).toHaveBeenCalledExactlyOnceWith('runtime-1')
+    expect(hook.syncRuntime).not.toHaveBeenCalled()
+    expect(hook.value.fastActive).toBeUndefined()
+
+    await act(async () => {
+      refreshed.resolve({ ...runtime, serviceTier: 'priority', serviceTierActive: false })
+      await refreshed.promise
+      await Promise.resolve()
+    })
+    await hook.updateRuntime({ ...runtime, serviceTier: 'priority', serviceTierActive: false })
+    expect(hook.value.fast).toBe(true)
+    expect(hook.value.fastActive).toBe(false)
+    expect(order).toEqual(['command', 'refresh', 'sync'])
+    expect(hook.syncRuntime).toHaveBeenCalledExactlyOnceWith('runtime-1')
+  })
+
+  it('rolls an optimistic Fast toggle back and reports an authoritative refresh failure', async () => {
+    const acknowledged = deferred<Record<string, unknown>>()
+    const refreshRejected = deferred<RuntimeInfo>()
+    const hook = await mountCatalogHook({
+      command: vi.fn().mockReturnValueOnce(acknowledged.promise),
+      refreshState: vi.fn().mockReturnValueOnce(refreshRejected.promise),
+    })
+
+    act(() => hook.value.changeFast(true))
+    await act(async () => { acknowledged.resolve({ success: true }); await acknowledged.promise; await Promise.resolve() })
+    expect(hook.refreshState).toHaveBeenCalledExactlyOnceWith('runtime-1')
+    await act(async () => {
+      refreshRejected.reject(new Error('fast state refresh rejected'))
+      try { await refreshRejected.promise } catch { /* expected */ }
+      await Promise.resolve()
+    })
+
+    expect(hook.value.fast).toBe(false)
+    expect(hook.syncRuntime).toHaveBeenCalledExactlyOnceWith('runtime-1')
+    expect(hook.reportError).toHaveBeenCalledWith(expect.objectContaining({ message: 'fast state refresh rejected' }))
+  })
+
+  it.each([
+    ['runtime generation', { runtimeId: 'runtime-2' }, undefined],
+    ['model identity', { model: { provider: 'anthropic', id: 'claude-sonnet', name: 'Claude Sonnet' } }, undefined],
+    ['Fast preference', { serviceTier: 'priority' }, undefined],
+    ['Fast preference in zh-TW', { serviceTier: 'priority' }, 'zh-TW'],
+  ] as const)('does not issue a queued Fast command after the authorized %s changes', async (_label, patch, localePreference) => {
+    const thinkingChanged = deferred<Record<string, unknown>>()
+    const command = vi.fn().mockReturnValueOnce(thinkingChanged.promise)
+    const hook = await mountCatalogHook({ command, localePreference })
+    act(() => {
+      hook.value.changeEffort('low')
+      hook.value.changeFast(true)
+    })
+    await act(async () => { await Promise.resolve() })
+    expect(command).toHaveBeenCalledExactlyOnceWith('runtime-1', { type: 'set_thinking_level', level: 'low' })
+
+    await hook.updateRuntime({ ...runtime, ...patch })
+    await act(async () => {
+      thinkingChanged.resolve({ success: true })
+      await thinkingChanged.promise
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(command).toHaveBeenCalledTimes(1)
+    expect(hook.refreshState).not.toHaveBeenCalled()
+    expect(hook.reportError).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      message: localePreference === 'zh-TW'
+        ? '要求執行前，模型或快速偏好設定已變更。請檢查目前的快速狀態後再試一次。'
+        : 'The model or Fast preference changed before the request ran. Review the current Fast state and try again.',
+    }))
+  })
+
+  it('rolls the fast preference back when its request is rejected', async () => {
+    const rejected = deferred<Record<string, unknown>>()
+    const command = vi.fn().mockReturnValueOnce(rejected.promise)
+    const hook = await mountCatalogHook({ command })
+    await act(async () => { await Promise.resolve() })
+
+    act(() => hook.value.changeFast(true))
+    expect(hook.value.fast).toBe(true)
+    await act(async () => {
+      rejected.reject(new Error('fast rejected'))
+      try { await rejected.promise } catch { /* expected */ }
+      await Promise.resolve()
+    })
+
+    expect(command).toHaveBeenCalledExactlyOnceWith('runtime-1', { type: 'set_service_tier', serviceTier: 'priority' })
+    expect(hook.value.fast).toBe(false)
+    expect(hook.value.fastActive).toBeUndefined()
+    expect(hook.syncRuntime).toHaveBeenCalledExactlyOnceWith('runtime-1')
+    expect(hook.reportError).toHaveBeenCalledWith(expect.objectContaining({ message: 'fast rejected' }))
+  })
+
+  it('retries an explicitly inactive fast selection once without inventing active state', async () => {
+    const requested = deferred<Record<string, unknown>>()
+    const command = vi.fn().mockReturnValueOnce(requested.promise)
+    const hook = await mountCatalogHook({
+      command,
+      runtime: { ...runtime, serviceTier: 'priority', serviceTierActive: false },
+    })
+
+    expect(hook.value.fast).toBe(true)
+    expect(hook.value.fastActive).toBe(false)
+    act(() => hook.value.retryFast())
+    await act(async () => { await Promise.resolve() })
+
+    expect(command).toHaveBeenCalledExactlyOnceWith('runtime-1', { type: 'set_service_tier', serviceTier: 'priority' })
+    expect(hook.value.fast).toBe(true)
+    expect(hook.value.fastActive).toBe(false)
+    expect(hook.syncRuntime).not.toHaveBeenCalled()
+
+    await act(async () => { requested.resolve({}); await requested.promise; await Promise.resolve() })
+    expect(command).toHaveBeenCalledTimes(1)
+    expect(hook.value.fastActive).toBe(false)
+    expect(hook.syncRuntime).toHaveBeenCalledExactlyOnceWith('runtime-1')
+  })
+
+  it('keeps the fast preference after a retry request fails', async () => {
+    const rejected = deferred<Record<string, unknown>>()
+    const command = vi.fn().mockReturnValueOnce(rejected.promise)
+    const hook = await mountCatalogHook({
+      command,
+      runtime: { ...runtime, serviceTier: 'priority', serviceTierActive: false },
+    })
+
+    act(() => hook.value.retryFast())
+    await act(async () => {
+      await Promise.resolve()
+      rejected.reject(new Error('retry rejected'))
+      try { await rejected.promise } catch { /* expected */ }
+      await Promise.resolve()
+    })
+
+    expect(command).toHaveBeenCalledExactlyOnceWith('runtime-1', { type: 'set_service_tier', serviceTier: 'priority' })
+    expect(hook.value.fast).toBe(true)
+    expect(hook.value.fastActive).toBe(false)
+    expect(hook.syncRuntime).toHaveBeenCalledExactlyOnceWith('runtime-1')
+    expect(hook.reportError).toHaveBeenCalledWith(expect.objectContaining({ message: 'retry rejected' }))
+  })
+
+  it('does not retry when actual fast state is unknown, already active, or preference is off', async () => {
+    const command = vi.fn().mockResolvedValue({})
+    const unknown = await mountCatalogHook({ command, runtime: { ...runtime, serviceTier: 'priority' } })
+    expect(unknown.value.fastActive).toBeUndefined()
+
+    act(() => unknown.value.retryFast())
+    await act(async () => { await Promise.resolve() })
+    expect(command).not.toHaveBeenCalled()
+    expect(unknown.syncRuntime).not.toHaveBeenCalled()
+
+    const active = await mountCatalogHook({ command, runtime: { ...runtime, serviceTier: 'priority', serviceTierActive: true } })
+    act(() => active.value.retryFast())
+    await act(async () => { await Promise.resolve() })
+    expect(command).not.toHaveBeenCalled()
+    expect(active.value.fastActive).toBe(true)
+
+    const disabled = await mountCatalogHook({ command, runtime: { ...runtime, serviceTier: 'default', serviceTierActive: false } })
+    act(() => disabled.value.retryFast())
+    await act(async () => { await Promise.resolve() })
+    expect(command).not.toHaveBeenCalled()
+    expect(disabled.value.fast).toBe(false)
+  })
+
+  it('sends one exact slow command and refreshes authoritative state once before reattaching the UI', async () => {
+    const acknowledged = deferred<Record<string, unknown>>()
+    const refreshed = deferred<RuntimeInfo>()
+    const slowRuntime: RuntimeInfo = { ...runtime, slowModeSupported: true, slowModeEnabled: false, slowModeScope: 'session' }
+    const order: string[] = []
+    const command = vi.fn().mockImplementation(() => { order.push('command'); return acknowledged.promise })
+    const refreshState = vi.fn().mockImplementation(() => { order.push('refresh'); return refreshed.promise })
+    const syncRuntime = vi.fn().mockImplementation(async () => { order.push('sync') })
+    const hook = await mountCatalogHook({ command, refreshState, syncRuntime, runtime: slowRuntime })
+
+    act(() => hook.value.changeSlow(true))
+    await act(async () => { await Promise.resolve() })
+    expect(hook.value.slow).toBe(false)
+    expect(command).toHaveBeenCalledExactlyOnceWith('runtime-1', { type: 'set_slow_mode', enabled: true })
+    expect(hook.refreshState).not.toHaveBeenCalled()
+
+    await act(async () => { acknowledged.resolve({ success: true, data: { enabled: true } }); await acknowledged.promise; await Promise.resolve() })
+    expect(hook.value.slow).toBe(false)
+    expect(hook.refreshState).toHaveBeenCalledExactlyOnceWith('runtime-1')
+    expect(hook.syncRuntime).not.toHaveBeenCalled()
+
+    await act(async () => {
+      refreshed.resolve({ ...slowRuntime, slowModeEnabled: true })
+      await refreshed.promise
+      await Promise.resolve()
+    })
+    expect(order).toEqual(['command', 'refresh', 'sync'])
+    expect(hook.syncRuntime).toHaveBeenCalledExactlyOnceWith('runtime-1')
+  })
+
+  it('aborts a queued session Slow enable when a preceding model change produces global scope', async () => {
+    const modelChanged = deferred<Record<string, unknown>>()
+    const command = vi.fn()
+      .mockReturnValueOnce(modelChanged.promise)
+      .mockResolvedValue({})
+    const slowRuntime: RuntimeInfo = { ...runtime, slowModeSupported: true, slowModeEnabled: false, slowModeScope: 'session' }
+    const hook = await mountCatalogHook({ command, runtime: slowRuntime, localePreference: 'zh-TW' })
+
+    act(() => {
+      hook.value.changeModel('openai-codex/gpt-5.5')
+      hook.value.changeSlow(true)
+    })
+    await act(async () => { await Promise.resolve() })
+    expect(command).toHaveBeenCalledExactlyOnceWith('runtime-1', {
+      type: 'set_model', provider: 'openai-codex', modelId: 'gpt-5.5',
+    })
+
+    // The authoritative props move to a different model and write target
+    // before the primary queue reaches the click-time session-scoped request.
+    const changedRuntime: RuntimeInfo = {
+      ...slowRuntime,
+      model: { provider: 'anthropic', id: 'claude-sonnet', name: 'Claude Sonnet' },
+      slowModeScope: 'global',
+    }
+    await hook.updateRuntime(changedRuntime)
+    await act(async () => {
+      modelChanged.resolve({ success: true })
+      await modelChanged.promise
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(command.mock.calls.map(([, request]) => request)).toEqual([
+      { type: 'set_model', provider: 'openai-codex', modelId: 'gpt-5.5' },
+      { type: 'set_thinking_level', level: 'low' },
+    ])
+    expect(hook.refreshState).not.toHaveBeenCalled()
+    expect(hook.value.slow).toBe(false)
+    expect(hook.reportError).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      message: '要求執行前，模型、慢速偏好設定或慢速範圍已變更。請檢查目前的慢速狀態後再試一次。',
+    }))
+  })
+
+  it.each([
+    ['reported enabled preference', { slowModeEnabled: true }],
+    ['absent enabled preference', { slowModeEnabled: undefined }],
+    ['absent scope', { slowModeScope: undefined }],
+    ['changed scope', { slowModeScope: 'global' }],
+    ['absent support', { slowModeSupported: undefined }],
+    ['model identity', { model: { provider: 'openai-codex', id: 'gpt-5.5', name: 'GPT-5.5' } }],
+  ] as const)('does not let changed %s bypass queued Slow authorization', async (_label, patch) => {
+    const thinkingChanged = deferred<Record<string, unknown>>()
+    const command = vi.fn().mockReturnValueOnce(thinkingChanged.promise)
+    const slowRuntime: RuntimeInfo = { ...runtime, slowModeSupported: true, slowModeEnabled: false, slowModeScope: 'session' }
+    const hook = await mountCatalogHook({ command, runtime: slowRuntime })
+    act(() => {
+      hook.value.changeEffort('low')
+      hook.value.changeSlow(true)
+    })
+    await act(async () => { await Promise.resolve() })
+    expect(command).toHaveBeenCalledExactlyOnceWith('runtime-1', { type: 'set_thinking_level', level: 'low' })
+
+    await hook.updateRuntime({ ...slowRuntime, ...patch })
+    await act(async () => {
+      thinkingChanged.resolve({ success: true })
+      await thinkingChanged.promise
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(command).toHaveBeenCalledTimes(1)
+    expect(hook.refreshState).not.toHaveBeenCalled()
+    expect(hook.reportError).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      message: 'The model, Slow preference, or Slow scope changed before the request ran. Review the current Slow state and try again.',
+    }))
+  })
+
+  it('does not optimistically change slow preference when its command or authoritative refresh fails', async () => {
+    const slowRuntime: RuntimeInfo = { ...runtime, slowModeSupported: true, slowModeEnabled: false, slowModeScope: 'global' }
+    const rejected = deferred<Record<string, unknown>>()
+    const hook = await mountCatalogHook({ command: vi.fn().mockReturnValueOnce(rejected.promise), runtime: slowRuntime })
+    act(() => hook.value.changeSlow(true))
+    expect(hook.value.slow).toBe(false)
+    await act(async () => {
+      rejected.reject(new Error('slow rejected'))
+      try { await rejected.promise } catch { /* expected */ }
+      await Promise.resolve()
+    })
+    expect(hook.value.slow).toBe(false)
+    expect(hook.refreshState).not.toHaveBeenCalled()
+    expect(hook.syncRuntime).toHaveBeenCalledExactlyOnceWith('runtime-1')
+    expect(hook.reportError).toHaveBeenCalledWith(expect.objectContaining({ message: 'slow rejected' }))
+
+    const acknowledged = deferred<Record<string, unknown>>()
+    const refreshRejected = deferred<RuntimeInfo>()
+    const refreshFailure = await mountCatalogHook({
+      command: vi.fn().mockReturnValueOnce(acknowledged.promise),
+      refreshState: vi.fn().mockReturnValueOnce(refreshRejected.promise),
+      runtime: slowRuntime,
+    })
+    act(() => refreshFailure.value.changeSlow(true))
+    await act(async () => { acknowledged.resolve({ success: true }); await acknowledged.promise; await Promise.resolve() })
+    await act(async () => {
+      refreshRejected.reject(new Error('slow state refresh rejected'))
+      try { await refreshRejected.promise } catch { /* expected */ }
+      await Promise.resolve()
+    })
+    expect(refreshFailure.value.slow).toBe(false)
+    expect(refreshFailure.refreshState).toHaveBeenCalledExactlyOnceWith('runtime-1')
+    expect(refreshFailure.reportError).toHaveBeenCalledWith(expect.objectContaining({ message: 'slow state refresh rejected' }))
+  })
+
+  it.each([
+    ['unsupported', { slowModeSupported: false, slowModeEnabled: false, slowModeScope: 'session' }],
+    ['unknown support', { slowModeEnabled: false, slowModeScope: 'session' }],
+    ['unknown enabled preference', { slowModeSupported: true, slowModeScope: 'global' }],
+    ['unknown scope', { slowModeSupported: true, slowModeEnabled: false }],
+  ] as const)('does not mutate slow mode when native facts are %s', async (_label, fields) => {
+    const command = vi.fn().mockResolvedValue({})
+    const hook = await mountCatalogHook({ command, runtime: { ...runtime, ...fields } })
+    act(() => hook.value.changeSlow(true))
+    await act(async () => { await Promise.resolve() })
+    expect(command).not.toHaveBeenCalled()
+    expect(hook.refreshState).not.toHaveBeenCalled()
+  })
+
+  it('does not reattach or synthesize slow state after the runtime generation changes', async () => {
+    const acknowledged = deferred<Record<string, unknown>>()
+    const slowRuntime: RuntimeInfo = { ...runtime, slowModeSupported: true, slowModeEnabled: false, slowModeScope: 'session' }
+    const hook = await mountCatalogHook({ command: vi.fn().mockReturnValueOnce(acknowledged.promise), runtime: slowRuntime })
+    act(() => hook.value.changeSlow(true))
+    await hook.updateRuntime({ ...slowRuntime, runtimeId: 'runtime-2' })
+    await act(async () => { acknowledged.resolve({ success: true }); await acknowledged.promise; await Promise.resolve() })
+
+    expect(hook.value.slow).toBe(false)
+    expect(hook.refreshState).toHaveBeenCalledExactlyOnceWith('runtime-1')
+    expect(hook.syncRuntime).not.toHaveBeenCalled()
+  })
+
+  it('keeps local fast selection inert for retry without an active runtime', async () => {
+    const command = vi.fn().mockResolvedValue({})
+    const hook = await mountCatalogHook({ command, runtime: null })
+    await act(async () => { await Promise.resolve() })
+
+    act(() => hook.value.changeFast(true))
+    expect(hook.value.fast).toBe(true)
+    expect(hook.value.fastActive).toBeUndefined()
+    act(() => hook.value.retryFast())
+    await act(async () => { await Promise.resolve() })
+
+    expect(command).not.toHaveBeenCalled()
+    expect(hook.syncRuntime).not.toHaveBeenCalled()
   })
 })

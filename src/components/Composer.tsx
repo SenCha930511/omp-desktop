@@ -1,4 +1,4 @@
-import { ArrowUp, AtSign, Check, ChevronDown, Clock3, Command, Edit3, Hourglass, ImageIcon, LoaderCircle, MessageCirclePlus, Mic, Paperclip, Plus, RotateCcw, Shield, ShieldAlert, ShieldCheck, ShieldQuestionMark, Square, Trash2, WandSparkles, X, Zap } from 'lucide-react'
+import { ArrowUp, AtSign, Check, ChevronDown, Clock3, Command, Edit3, Hourglass, ImageIcon, LoaderCircle, MessageCirclePlus, Mic, Paperclip, Plus, RotateCcw, Shield, ShieldAlert, ShieldCheck, ShieldQuestionMark, Square, Trash2, Turtle, WandSparkles, X, Zap } from 'lucide-react'
 import type { CSSProperties } from 'react'
 import { Fragment, memo, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useComposerImages } from '@/hooks/useComposerImages'
@@ -9,7 +9,7 @@ import { readComposerDraft, saveComposerDraft, takeComposerDraft } from '@/lib/c
 import { getTurnMetrics, subscribeTurnMetrics } from '@/lib/events/turn-metrics'
 import { contextDialLabel, formatSessionCost, PRICING_UNAVAILABLE } from '@/lib/format-cost'
 import { type MessageKey, useI18n } from '@/lib/i18n'
-import { formatQueuedItemsForRestore, isContinueShorthand, MANUAL_CONTINUE_PROMPT, parseQueueShorthandInput } from '@/lib/input-shorthands'
+import { formatQueuedItemsForRestore, isContinueShorthand, parseQueueShorthandInput } from '@/lib/input-shorthands'
 import { isImeComposing, isImeComposingOrGuarded, messageActionForKey, splitAttachmentFileName } from '@/lib/message-shortcuts'
 import { appendSessionRouting, findSessionMentions } from '@/lib/session-mentions'
 import { INITIAL_SLASH_COMMANDS, slashCommandAcceptsImages, slashSuggestions, type SlashCommand } from '@/lib/slash-commands'
@@ -34,6 +34,7 @@ import type {
   SessionRecord,
   SessionUsage,
   SkillRecord,
+  SlowModeScope,
   ProjectRecord,
   VoiceTranscriptionProvider,
 } from '@/types/api'
@@ -81,6 +82,12 @@ interface ComposerProps {
   fast: boolean
   fastSupported: boolean
   fastAvailable: boolean
+  /** Actual service tier reported by the runtime, independent of the saved preference. */
+  fastActive?: boolean
+  /** Slow preference and scope are shown only when both native facts are known. */
+  slow?: boolean
+  slowSupported?: boolean
+  slowScope?: SlowModeScope
   /** 帳號限流狀態(low_priority/wrap_up);顯示之避免誤把降速當 app bug。 */
   usageLimit?: UsageLimitState
   /** App-level OMP approval mode shown as a compact pill with an inline mode menu. */
@@ -129,6 +136,8 @@ interface ComposerProps {
   onModelChange(value: string): void
   onEffortChange(value: PrimeEffortSelector): void
   onFastChange(value: boolean): void
+  onFastRetry?(): void
+  onSlowChange?(value: boolean): void
   checkoutCatalog?: CheckoutCatalog
   /** Branch/worktree name shown before or without the linked-worktree catalog. */
   checkoutLabel?: string
@@ -142,7 +151,11 @@ interface ComposerProps {
   /** Opens the native folder picker and activates the granted folder. */
   onAddProjectFolder?(): void
   onSend(prompt: string, images: PromptImage[], intent: PromptDeliveryIntent): Promise<void> | void
+  /** Continue through queued input while busy, or resume the session while idle. */
+  onContinue?(deliverQueued: boolean): Promise<boolean>
   onStop(): Promise<void> | void
+  /** Opens the existing session tree dialog after two idle, empty-draft Escape presses. */
+  onOpenSessionTree?(): void
   /** True right after the user stopped the turn: the send button becomes a retry affordance until the draft has content. */
   retryStoppedTurn?: boolean
   onRetryStoppedTurn?(): void
@@ -161,9 +174,10 @@ interface ComposerProps {
 const approvalModeMeta = {
   inherit: { icon: Shield, labelKey: 'composer.approval.inherit', settingsKey: 'agent.approval.inherit', yolo: false },
   'always-ask': { icon: ShieldQuestionMark, labelKey: 'composer.approval.alwaysAsk', settingsKey: 'agent.approval.alwaysAsk', yolo: false },
+  'always-ask-cached': { icon: ShieldQuestionMark, labelKey: 'composer.approval.alwaysAskCached', settingsKey: 'agent.approval.alwaysAskCached', tooltipKey: 'agent.approval.alwaysAskCachedDescription', yolo: false },
   write: { icon: ShieldCheck, labelKey: 'composer.approval.write', settingsKey: 'agent.approval.write', yolo: false },
   yolo: { icon: ShieldAlert, labelKey: 'composer.approval.yolo', settingsKey: 'agent.approval.yolo', yolo: true },
-} as const satisfies Record<OmpApprovalMode, { icon: typeof Shield; labelKey: MessageKey; settingsKey: MessageKey; yolo: boolean }>
+} as const satisfies Record<OmpApprovalMode, { icon: typeof Shield; labelKey: MessageKey; settingsKey: MessageKey; tooltipKey?: MessageKey; yolo: boolean }>
 
 const EMPTY_ANNOTATIONS: BrowserAnnotation[] = []
 const noop = () => undefined
@@ -199,6 +213,10 @@ export const Composer = memo(function Composer({
   fast,
   fastSupported,
   fastAvailable,
+  fastActive,
+  slow,
+  slowSupported,
+  slowScope,
   usageLimit,
   approvalMode = 'inherit',
   onApprovalModeChange,
@@ -233,6 +251,8 @@ export const Composer = memo(function Composer({
   onModelChange,
   onEffortChange,
   onFastChange,
+  onFastRetry,
+  onSlowChange,
   checkoutCatalog,
   checkoutLabel,
   checkoutsLoading = false,
@@ -242,7 +262,9 @@ export const Composer = memo(function Composer({
   onAddProjectFolder,
   onExecuteCheckout,
   onSend,
+  onContinue,
   onStop,
+  onOpenSessionTree,
   retryStoppedTurn,
   onRetryStoppedTurn,
   onRemoveAnnotation = noop,
@@ -314,6 +336,7 @@ export const Composer = memo(function Composer({
   const composingRef = useRef(false)
   const lastCompositionEndAtRef = useRef<number | null>(null)
   const acceptedMentionRef = useRef<{ start: number; text: string } | null>(null)
+  const lastIdleEmptyEscapeAtRef = useRef<number | null>(null)
   const submittingRef = useRef(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const imageStatusId = useId()
@@ -386,6 +409,7 @@ export const Composer = memo(function Composer({
 
   const [approvalMenuOpen, setApprovalMenuOpen] = useState(false)
   const approvalMenuRef = useRef<HTMLDivElement>(null)
+  const approvalTriggerRef = useRef<HTMLButtonElement>(null)
   useEffect(() => {
     if (!approvalMenuOpen) return
     const close = (event: MouseEvent) => {
@@ -420,17 +444,15 @@ export const Composer = memo(function Composer({
     const draftValue = valueOverride ?? value
     const trimmedDraft = draftValue.trim()
 
-    // 2.7 繼續速寫:TUI 把剛好是 `.` 或 `c` 的輸入視為合成「繼續」指令
-    // (manual-continue prompt),不送字面文字;附件保持暫留,只清掉指令本身。
-    // 只適用主要 Enter 動作:TUI 的 Ctrl+Enter(follow-up)路徑不特殊處理 `.`,
-    // trigger 由 intent === messageEnterAction 區分(Ctrl/Cmd+Enter 永遠是反向動作)。
+    // TUI 的 `.`/`c` 不送字面文字或合成提示:忙碌時中斷並交付既有佇列,
+    // 閒置時走上游 resume。附件保持暫留,只清掉指令本身。
     if (intent === messageEnterAction && isContinueShorthand(trimmedDraft)) {
-      if (loading || disabled) return
+      if (loading || disabled || !onContinue) return
       setValue('')
       if (draftKey) saveComposerDraft(draftKey, { text: '', model, effort, fast })
       setMenu(null)
       try {
-        await onSend(MANUAL_CONTINUE_PROMPT, [], intent)
+        if (!await onContinue(busy)) throw new Error('Continue was not accepted')
       } catch {
         if (draftKey) saveComposerDraft(draftKey, { text: draftValue, model, effort, fast })
         if (mountedRef.current) setValue(draftValue)
@@ -1078,6 +1100,8 @@ export const Composer = memo(function Composer({
                 if (event.key === 'Enter' && !isImeComposing(event.nativeEvent, composingRef.current)) event.preventDefault()
                 return
               }
+              if (event.key !== 'Escape') lastIdleEmptyEscapeAtRef.current = null
+              const hasDraftContent = Boolean(value.trim()) || images.length > 0 || unsupportedFiles.length > 0 || annotations.length > 0
               // TUI 預設鍵對齊(2.6/2.7):
               // - tui.input.newLine:shift+enter(textarea 原生)與 ctrl+j(此處補上)。
               if (event.ctrlKey && event.key.toLowerCase() === 'j') {
@@ -1143,31 +1167,43 @@ export const Composer = memo(function Composer({
               )
               if (intent) {
                 event.preventDefault()
-                // 空白 Enter(2.7):TUI 在執行中以「使用者中斷」abort 並排空待處理輸入;
-                // GUI 由 onStop 承接 abort_and_restore_queue。閒置時不送出,preventDefault
-                // 也避免 textarea 插入空白換行,看起來像「按 Enter 沒反應」。
-                const hasDraftContent = Boolean(value.trim()) || images.length > 0 || unsupportedFiles.length > 0 || annotations.length > 0
+                // 空白 Enter 對齊 TUI 的 abort_and_deliver_queue,保留佇列交付,
+                // 不經 Stop 的 abort_and_restore_queue;閒置時不送出。
                 if (!hasDraftContent) {
-                  if (busy && !loading && !disabled) void onStop()
+                  if (busy && !loading && !disabled && onContinue) void onContinue(true).catch(() => undefined)
                   return
                 }
                 void submit(intent)
               }
               if (event.key === 'Escape') {
                 if (menu) {
+                  lastIdleEmptyEscapeAtRef.current = null
                   event.preventDefault()
                   setMenu(null)
                   return
                 }
-                // Esc(2.7):忙碌時對齊 TUI「中止並取回佇列」,由 onStop 執行
-                // abort_and_restore_queue;其他浮層(approval/context popover)開啟時
-                // Esc 歸它們的事件監聽器處理,不重複觸發 stop。
-                // TUI 的「雙 Esc」(閒置且輸入框為空、500ms 內按兩次)會開啟 rewind/tree
-                // 選擇器;GUI 尚無 rewind 介面(階段一),雙 Esc 先不接功能,單次 Esc
-                // 在閒置時保持 no-op(不清草稿,與 TUI 一致)。
+                // 忙碌 Esc 仍由 onStop 執行 abort_and_restore_queue;其他浮層
+                // 開啟時交由它們處理。閒置空草稿的連續雙 Esc 才開啟現有 tree。
                 if (busy && !loading && !disabled && !approvalMenuOpen && !contextMenuOpen) {
+                  lastIdleEmptyEscapeAtRef.current = null
                   event.preventDefault()
                   void onStop()
+                  return
+                }
+                const doubleEscapeEligible = !busy && !loading && !disabled && !approvalMenuOpen && !contextMenuOpen
+                  && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && !hasDraftContent
+                if (!doubleEscapeEligible || !onOpenSessionTree) {
+                  lastIdleEmptyEscapeAtRef.current = null
+                  return
+                }
+                const previousEscapeAt = lastIdleEmptyEscapeAtRef.current
+                const elapsed = previousEscapeAt === null ? Infinity : event.timeStamp - previousEscapeAt
+                if (elapsed >= 0 && elapsed <= 500) {
+                  lastIdleEmptyEscapeAtRef.current = null
+                  event.preventDefault()
+                  onOpenSessionTree()
+                } else {
+                  lastIdleEmptyEscapeAtRef.current = event.timeStamp
                 }
               }
             }}
@@ -1381,6 +1417,29 @@ export const Composer = memo(function Composer({
                 <Zap size={12} fill={fast ? 'currentColor' : 'none'} /> <span className="fast-mode-toggle__label">{t('composer.fast')}</span>
               </button>
             ) : null}
+            {slowSupported === true && typeof slow === 'boolean' && onSlowChange && (slowScope === 'global' || slowScope === 'session') ? (
+              <button
+                type="button"
+                className={`fast-mode-toggle slow-mode-toggle ${slow ? 'is-active' : ''}`}
+                aria-label={t('composer.slow')}
+                aria-pressed={slow}
+                title={t(slowScope === 'global' ? 'composer.slowTitleGlobal' : 'composer.slowTitleSession', { name: agentName })}
+                onClick={() => onSlowChange(!slow)}
+              >
+                <Turtle size={12} /> <span className="fast-mode-toggle__label">{t('composer.slow')}</span>
+              </button>
+            ) : null}
+            {fastSupported && fast && fastActive === false && onFastRetry ? (
+              <button
+                type="button"
+                className="fast-mode-toggle fast-mode-retry"
+                aria-label={t('composer.fastRetry')}
+                title={t('composer.fastRetryTitle', { name: agentName })}
+                onClick={onFastRetry}
+              >
+                <RotateCcw size={12} /> <span className="fast-mode-toggle__label">{t('composer.fastRetry')}</span>
+              </button>
+            ) : null}
             {usageLimit && usageLimitTitle ? (
               <span className="usage-limit-badge" title={usageLimitTitle} role="status">
                 <Hourglass size={11} /> {t(usageLimit.stage === 'low_priority' ? 'composer.usageLowPriority' : 'composer.usageWrapUp')}
@@ -1394,6 +1453,7 @@ export const Composer = memo(function Composer({
             ) : null}
             <div className="approval-mode" ref={approvalMenuRef}>
               <button
+                ref={approvalTriggerRef}
                 type="button"
                 className={`approval-mode-toggle ${approvalMeta.yolo ? 'is-yolo' : ''}`}
                 aria-label={approvalTitle}
@@ -1416,7 +1476,9 @@ export const Composer = memo(function Composer({
                         role="menuitemradio"
                         aria-checked={mode === approvalMode}
                         className={`approval-mode__option ${mode === approvalMode ? 'is-active' : ''}`}
+                        title={'tooltipKey' in meta ? t(meta.tooltipKey) : undefined}
                         onClick={() => {
+                          approvalTriggerRef.current?.focus()
                           setApprovalMenuOpen(false)
                           onApprovalModeChange?.(mode)
                         }}

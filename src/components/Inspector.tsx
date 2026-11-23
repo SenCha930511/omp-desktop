@@ -6,8 +6,10 @@ import type { BrowserAnnotationsApi } from '@/hooks/useBrowserAnnotations'
 import type { CommandResult } from '@/hooks/useCommandOutput'
 import { useI18n } from '@/lib/i18n'
 import { deriveOmpBackgroundTasks, type ActiveProjectScriptSummary, type OmpBackgroundTask } from '@/lib/omp-background-tasks'
+import { subagentExecution } from '@/lib/subagent-activity'
 import type { AgentBrowserTabRecord, GitStatus, InspectorTab, ProjectRecord, TranscriptMessage } from '@/types/api'
 import type { AgentSlotRect } from './AgentBrowserLayer'
+import { EXECUTION_LABELS } from './ExecutionStatus'
 import type { SideChatPanelProps } from './SideChatPanel'
 import { SideChatPanel } from './SideChatPanel'
 import type { SubagentsTabPanelProps } from './inspector/SubagentsTabPanel'
@@ -227,6 +229,10 @@ export const Inspector = memo(function Inspector({
     { additions: 0, deletions: 0 },
   )
   const agentItems = subagents?.state.agents ?? []
+  const agentPreview = useMemo(
+    () => agentItems.slice(0, 3).map((agent) => ({ agent, phase: subagentExecution(agent).phase })),
+    [agentItems],
+  )
   const runningTaskItems = useMemo(() => taskItems.filter((task) => task.status === 'running'), [taskItems])
   const tabCount = (tab: InspectorTab): number | undefined => {
     if (tab === 'changes' || tab === 'files') return git.files.length || undefined
@@ -317,7 +323,9 @@ export const Inspector = memo(function Inspector({
     const tab = openTabs[next]
     if (!tab) return
     activate(tab)
-    requestAnimationFrame(() => document.getElementById(`inspector-tab-${tab}`)?.focus())
+    // Keep consecutive key events on the newly selected tab. Deferring focus
+    // lets the next arrow arrive before the frame and repeat the same move.
+    document.getElementById(`inspector-tab-${tab}`)?.focus()
   }
 
   const renderPanel = (tab: InspectorTab) => {
@@ -534,7 +542,7 @@ export const Inspector = memo(function Inspector({
                       <span>{label('agents')}</span>
                       <span className="inspector-new-tab__badge">{agentItems.length}</span>
                     </div>
-                    {agentItems.slice(0, 3).map((agent) => (
+                    {agentPreview.map(({ agent, phase }) => (
                       <button
                         type="button"
                         key={agent.id}
@@ -546,7 +554,7 @@ export const Inspector = memo(function Inspector({
                       >
                         <Users size={14} />
                         <span>{agent.agent}</span>
-                        <span className="inspector-new-tab__detail">{agent.status}</span>
+                        <span className="inspector-new-tab__detail">{t(EXECUTION_LABELS[phase])}</span>
                       </button>
                     ))}
                     <button type="button" className="inspector-new-tab__see-all" onClick={() => activate('agents')}>

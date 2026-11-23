@@ -8,6 +8,7 @@ import { isPathWithin, isRecord, rejectUnknownKeys, requireId, requireRecord, re
 import { isThinkingLevel, validateRpcCommand } from './command-schema'
 import { OMP_RPC_ADAPTER, type HarnessRpcAdapter } from './harness-adapter'
 import { RpcRuntime } from './runtime'
+import { NativeWordPredictionLane } from './word-prediction'
 import type { RpcObject } from './types'
 import type { WorkspaceUseLease, WorkspaceUseOwner } from '../repository-use-gate'
 import { recordSessionDiagnostic } from './session-diagnostics'
@@ -53,6 +54,7 @@ export class AgentRpcManager {
   private closed = false
   private readonly commandsInFlight = new Map<string, number>()
   private readonly sessionMutations = new Set<string>()
+  private readonly wordPredictionLanes = new Map<string, NativeWordPredictionLane>()
   private readonly idleSince = new Map<string, number>()
   private idleTimer: NodeJS.Timeout | null = null
 
@@ -105,6 +107,7 @@ export class AgentRpcManager {
 
   beginShutdown(): void {
     this.closed = true
+    this.disposeWordPredictions(new Error(`${this.adapter.agentName} manager is shutting down`))
     if (this.idleTimer) clearTimeout(this.idleTimer)
     this.idleTimer = null
     this.idleSince.clear()
@@ -184,6 +187,7 @@ export class AgentRpcManager {
         modelId,
         thinking,
         approvalMode: this.approvalMode(),
+        interactive,
         environment: runtimeEnvironment,
       })
       runtime = await this.admitRuntime(() => {
@@ -201,6 +205,7 @@ export class AgentRpcManager {
             if (RETENTION_EVENTS.has(String(event.event.type))) this.scheduleIdleRetirement()
           },
           (closed) => {
+            this.disposeWordPrediction(closed.runtimeId, new Error('Runtime exited before prediction completed'))
             this.startingRuntimes.delete(closed.runtimeId)
             this.runtimes.delete(closed.runtimeId)
             this.retiringRuntimes.delete(closed.runtimeId)
@@ -249,7 +254,7 @@ export class AgentRpcManager {
         this.startSessionPathById.delete(runtime.runtimeId)
         this.durableIdentityByRuntimeId.delete(runtime.runtimeId)
         this.quarantinedRuntimes.delete(runtime.runtimeId)
-        await runtime.stop().catch(() => false)
+        await this.stopRuntime(runtime).catch(() => false)
       }
       // Admission/constructor failures have no close event; failed handshakes
       // can also leave an unreapable child. The once guard joins all paths.
@@ -292,6 +297,7 @@ export class AgentRpcManager {
     if (record.sessionFile === sessionFile && record.sessionId === state.sessionId) return
     if (record.sessionId !== state.sessionId) {
       this.quarantinedRuntimes.add(runtime.runtimeId)
+      this.disposeWordPrediction(runtime.runtimeId, new Error('Runtime is quarantined after a session identity change'))
       this.durableIdentityByRuntimeId.delete(runtime.runtimeId)
       this.startSessionPathById.delete(runtime.runtimeId)
       notifyEnd(state)
@@ -331,7 +337,9 @@ export class AgentRpcManager {
       // are otherwise only surfaced as a transient renderer toast; keep a
       // durable trace in the main-process log for diagnosis.
       const type = isRecord(rawCommand) && typeof rawCommand.type === 'string' ? rawCommand.type : 'invalid'
-      console.error(`[agent-rpc] ${new Date().toISOString()} command ${type} failed:`, error instanceof Error ? error.message : error)
+      if (type !== 'predict_word' && type !== 'predict_word_feedback') {
+        console.error(`[agent-rpc] ${new Date().toISOString()} command ${type} failed:`, error instanceof Error ? error.message : error)
+      }
       throw error
     } finally {
       if (admittedId) {
@@ -390,6 +398,10 @@ export class AgentRpcManager {
       throw new Error('This OMP version does not support excluding shell output from the model context. Update OMP and try again.')
     }
     if (this.sessionMutations.has(runtime.runtimeId)) throw new Error('Session identity is being changed')
+    if (command.type === 'predict_word') return this.predictWord(runtime, translated)
+    if (['new_session', 'switch_session', 'clone', 'fork', 'branch'].includes(String(command.type))) {
+      this.disposeWordPrediction(runtime.runtimeId, new Error('Session identity is being changed'))
+    }
     // 診斷用 leaf 查詢是唯讀 get_tree；失敗/逾時降級為未知，不阻擋 compact
     if (command.type === 'compact') recordSessionDiagnostic('compact-requested', runtime.snapshot(), undefined, await runtime.readLeafId())
     if (command.type === 'new_session') {
@@ -529,7 +541,7 @@ export class AgentRpcManager {
     const runtime = this.runtimes.get(id)
     if (!runtime) return false
     if (this.sessionMutations.has(id)) throw new Error('Session identity is being changed')
-    return runtime.stop()
+    return this.stopRuntime(runtime)
   }
 
   /** Renderer-visible runtime list. Retiring/quarantined runtimes are excluded:
@@ -564,12 +576,12 @@ export class AgentRpcManager {
       return path !== undefined && canonicalSessionPath(path) === wanted
     })
     if (matches.some((runtime) => this.sessionMutations.has(runtime.runtimeId))) throw new Error('Session identity is being changed')
-    await Promise.all(matches.map((runtime) => runtime.stop()))
+    await Promise.all(matches.map((runtime) => this.stopRuntime(runtime)))
   }
 
   async stopForProjectRoots(roots: string[]): Promise<void> {
     const matches = [...this.runtimes.values()].filter((runtime) => roots.some((root) => isPathWithin(root, runtime.snapshot().cwd)))
-    await Promise.all(matches.map((runtime) => runtime.stop()))
+    await Promise.all(matches.map((runtime) => this.stopRuntime(runtime)))
   }
 
   async renameForSession(filePath: string, title: string): Promise<boolean> {
@@ -599,6 +611,7 @@ export class AgentRpcManager {
           throw new Error('Session identity changed before creating a fork')
         }
         this.sessionMutations.add(runtime.runtimeId)
+        this.disposeWordPrediction(runtime.runtimeId, new Error('Session identity is being changed'))
         this.commandsInFlight.set(runtime.runtimeId, 1)
         try {
           // Once issued, an unacknowledged mutation may already have changed
@@ -630,7 +643,7 @@ export class AgentRpcManager {
     } finally {
       // noUnsafeFinally: 不在 finally 內拋出（會遮蔽 try 區塊原本的例外）；
       // 以旗標記下，離開 finally 後再拋。
-      retirementFailed = retiringRuntime !== undefined && !await retiringRuntime.stop().catch(() => false)
+      retirementFailed = retiringRuntime !== undefined && !await this.stopRuntime(retiringRuntime).catch(() => false)
     }
     if (retirementFailed) {
       throw new Error('The fork may have been created, but its runtime could not be safely retired. Refresh the session list before retrying.')
@@ -641,7 +654,7 @@ export class AgentRpcManager {
   async stopAll(): Promise<void> {
     this.beginShutdown()
     const runtimes = [...this.runtimes.values()]
-    await Promise.all(runtimes.map((runtime) => runtime.stop()))
+    await Promise.all(runtimes.map((runtime) => this.stopRuntime(runtime)))
   }
 
   private async retireWhenIdle(runtime: RpcRuntime): Promise<void> {
@@ -665,7 +678,7 @@ export class AgentRpcManager {
     if (decision === 'gone') return true
     if (decision === 'busy') return false
     try {
-      const stopped = await runtime.stop()
+      const stopped = await this.stopRuntime(runtime)
       if (stopped && this.runtimes.get(runtime.runtimeId) === runtime) {
         this.runtimes.delete(runtime.runtimeId)
         this.idleSince.delete(runtime.runtimeId)
@@ -694,6 +707,38 @@ export class AgentRpcManager {
    */
   private canReclaim(runtime: RpcRuntime): boolean {
     return this.isIdle(runtime) && runtime.canRetireSafely()
+  }
+
+  private predictWord(runtime: RpcRuntime, command: RpcObject): Promise<RpcObject> {
+    let lane = this.wordPredictionLanes.get(runtime.runtimeId)
+    if (!lane) {
+      lane = new NativeWordPredictionLane(async (next) => {
+        this.requireOpen()
+        if (this.runtimes.get(runtime.runtimeId) !== runtime) throw new Error('Runtime was not found')
+        if (this.retiringRuntimes.has(runtime.runtimeId)) throw new Error('Runtime is being retired')
+        if (this.quarantinedRuntimes.has(runtime.runtimeId)) throw new Error('Runtime is quarantined after a session identity change')
+        if (this.sessionMutations.has(runtime.runtimeId)) throw new Error('Session identity is being changed')
+        return runtime.command(next)
+      })
+      this.wordPredictionLanes.set(runtime.runtimeId, lane)
+    }
+    return lane.predict(command)
+  }
+
+  private disposeWordPrediction(runtimeId: string, error: Error): void {
+    const lane = this.wordPredictionLanes.get(runtimeId)
+    if (!lane) return
+    this.wordPredictionLanes.delete(runtimeId)
+    lane.dispose(error)
+  }
+
+  private disposeWordPredictions(error: Error): void {
+    for (const runtimeId of [...this.wordPredictionLanes.keys()]) this.disposeWordPrediction(runtimeId, error)
+  }
+
+  private stopRuntime(runtime: RpcRuntime): Promise<boolean> {
+    this.disposeWordPrediction(runtime.runtimeId, new Error('Runtime is stopping'))
+    return runtime.stop()
   }
 
   private requireOpen(): void {
@@ -772,7 +817,7 @@ export class AgentRpcManager {
       if (idle) {
         this.retiringRuntimes.add(idle.runtimeId)
         try {
-          const stopped = await idle.stop()
+          const stopped = await this.stopRuntime(idle)
           if (stopped && this.runtimes.get(idle.runtimeId) === idle) this.runtimes.delete(idle.runtimeId)
         } finally { this.retiringRuntimes.delete(idle.runtimeId) }
       }

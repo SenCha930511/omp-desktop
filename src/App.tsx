@@ -47,9 +47,10 @@ import { HARNESS_AGENT_NAMES, HARNESS_PRODUCT_NAMES, HARNESS_SHORT_NAMES } from 
 import type { OmpBackgroundTask } from '@/lib/omp-background-tasks'
 import { continuedSessionKeys } from '@/lib/session-lineage'
 import { isBackgroundedSlashCommand, type SlashCommand } from '@/lib/slash-commands'
-import { I18nProvider, useI18n } from '@/lib/i18n'
+import { I18nProvider, resolveLocale, translate, useI18n, type Translate } from '@/lib/i18n'
 import { detectRendererPlatform } from '@/lib/platform-shortcuts'
 import { activeProjectScriptKind, ProjectScriptBusyError, setupNeedsRun } from '@/lib/project-scripts'
+import { projectsWithActivity } from '@/lib/project-activity'
 import { createSingleFlightAdmission, findProjectForSession, lastAssistantMessage, shouldRefreshGitOnSessionTransition, turnFileDeltas, workspaceCwd } from '@/lib/workspace'
 import {
   type AutomationScheduleRecord,
@@ -119,7 +120,6 @@ type ProjectScriptRunOutcome = { cancelled: true } | { exitCode: number }
 
 export default function App() {
   const bridge = hasBridge() ? window.desktop : null
-  const { t } = useI18n()
   const initialProject = bridge ? undefined : SAMPLE_PROJECTS[0]
   const initialSession = bridge ? undefined : SAMPLE_SESSIONS[0]
   const [projects, setProjects] = useState<ProjectRecord[]>(() => (bridge ? [] : SAMPLE_PROJECTS))
@@ -197,19 +197,6 @@ export default function App() {
       setHarnessUpdatePromptOpen(true)
     }
   }, [harnessUpdates.state.phase])
-  // Depends on `install` alone: the memoized result object changes with every
-  // observed update state, which would rebuild this callback for no reason.
-  const runHarnessUpdate = useCallback(() => {
-    setHarnessUpdatePromptOpen(false)
-    void harnessUpdates.install().then((state) => {
-      if (state?.phase === 'installed') setToast(t('sidebar.harnessUpdate.installedToast', { version: state.availableVersion ?? '' }))
-    })
-  }, [harnessUpdates.install, setToast, t])
-  const openHarnessUpdatePrompt = useCallback(() => {
-    // The error row retries directly: omp re-checks before installing anyway.
-    if (harnessUpdates.state.phase === 'error') runHarnessUpdate()
-    else setHarnessUpdatePromptOpen(true)
-  }, [harnessUpdates.state.phase, runHarnessUpdate])
   const appUpdates = useAppUpdates(bridge, reportError)
   useEffect(() => {
     window.localStorage.setItem('omp-desktop.cleared-session-attention', JSON.stringify(clearedAttention))
@@ -244,6 +231,22 @@ export default function App() {
     setSessions((items) => items.map((session) => (ids.has(session.id) ? { ...session, unread: false } : session)))
   }, [])
   const settingsState = useAppSettings({ bridge, reportError })
+  const locale = resolveLocale(settingsState.settings.locale)
+  const t = useCallback<Translate>((key, values) => translate(locale, key, values), [locale])
+  const tLatest = useStableCallback(t)
+  // Depends on `install` alone: the memoized result object changes with every
+  // observed update state, which would rebuild this callback for no reason.
+  const runHarnessUpdate = useCallback(() => {
+    setHarnessUpdatePromptOpen(false)
+    void harnessUpdates.install().then((state) => {
+      if (state?.phase === 'installed') setToast(tLatest('sidebar.harnessUpdate.installedToast', { version: state.availableVersion ?? '' }))
+    })
+  }, [harnessUpdates.install, setToast, tLatest])
+  const openHarnessUpdatePrompt = useCallback(() => {
+    // The error row retries directly: omp re-checks before installing anyway.
+    if (harnessUpdates.state.phase === 'error') runHarnessUpdate()
+    else setHarnessUpdatePromptOpen(true)
+  }, [harnessUpdates.state.phase, runHarnessUpdate])
   const activeHarness = settingsState.settings.activeHarness
   const browserAnnotations = useBrowserAnnotations()
   const workspace = useWorkspaceRuntime({
@@ -317,6 +320,7 @@ export default function App() {
     bridge,
     ready: settingsState.initialized,
     harness: activeHarness,
+    localePreference: settingsState.settings.locale,
     runtime: workspace.runtime,
     activeSession,
     lastSelectedModel: settingsState.settings.lastSelectedModels[activeHarness],
@@ -331,6 +335,7 @@ export default function App() {
     () => findProjectForSession(projects, activeSession) ?? projects.find((project) => project.id === workspace.activeProjectId) ?? projects[0],
     [projects, activeSession, workspace.activeProjectId],
   )
+  const activityProjects = useMemo(() => projectsWithActivity(projects, sessions), [projects, sessions])
   const activeCwd = workspaceCwd(activeProject, activeSession)
   // Mention list follows the sidebar's lineage collapse (session-lineage.ts):
   // the chain's live continuation is mentionable, the folded original is not.
@@ -392,15 +397,15 @@ export default function App() {
     // so the live catalog never advertises them. Merge them back like /btw so
     // they stay discoverable alongside the harness-provided entries.
     const injected: SlashCommand[] = [
-      ...(sideChatSupported ? [{ name: 'btw', description: 'Open side questions', source: 'builtin' }] : []),
-      { name: 'goal', description: 'Create or manage the session goal', source: 'builtin', input: { hint: '[set|show|pause|resume|drop] <objective>' } },
-      { name: 'pause', description: 'Pause the session goal', source: 'builtin' },
-      { name: 'status', description: 'Show the current session status', source: 'builtin' },
+      ...(sideChatSupported ? [{ name: 'btw', description: t('slash.command.btw'), source: 'builtin' }] : []),
+      { name: 'goal', description: t('slash.command.goal'), source: 'builtin', input: { hint: '[set|show|pause|resume|drop] <objective>' } },
+      { name: 'pause', description: t('slash.command.pause'), source: 'builtin' },
+      { name: 'status', description: t('slash.command.status'), source: 'builtin' },
     ]
     const present = new Set(base.map((command: SlashCommand) => command.name))
     const missing = injected.filter((command) => !present.has(command.name))
     return missing.length ? [...base, ...missing] : base
-  }, [workspace.runtime?.availableCommands, sideChatSupported])
+  }, [workspace.runtime?.availableCommands, sideChatSupported, t])
   const extension = useExtensionUi({
     bridge,
     activeRuntimeId: workspace.runtime?.runtimeId,
@@ -478,6 +483,7 @@ export default function App() {
 
   useAgentEvents({
     bridge,
+    localePreference: settingsState.settings.locale,
     runtimeIdRef: workspace.runtimeIdRef,
     runtimeSessionsRef: workspace.runtimeSessionsRef,
     runtimeOwnerRef: workspace.runtimeOwnerRef,
@@ -661,6 +667,7 @@ export default function App() {
     togglePinProject,
     setProjectSortMode,
     sendPrompt,
+    continueRuntime,
     stopRuntime,
     installSkill,
     installExtension,
@@ -737,11 +744,11 @@ export default function App() {
       void sideQuestions
         .ask(sideChatSessionId, question, topicId)
         .then((answered) => {
-          if (!answered) reportError(new Error('Side questions are unavailable for this session'))
+          if (!answered) reportError(new Error(tLatest('sidechat.error.unavailable')))
         })
         .catch(reportError)
     },
-    [sideChatSessionId, sideQuestions, reportError],
+    [sideChatSessionId, sideQuestions, reportError, tLatest],
   )
   const cancelSideQuestion = useCallback(
     (topicId?: string) => {
@@ -998,7 +1005,7 @@ export default function App() {
           id: `reclaim-images-${Date.now()}`,
           role: 'system',
           timestamp: Date.now(),
-          parts: [{ type: 'text', text: 'Some images from the reclaimed message exceeded the transport limit and could not be restored.' }],
+          parts: [{ type: 'text', text: tLatest('composer.queue.reclaimImagesTransportDropped') }],
         },
       ])
     }
@@ -1019,7 +1026,7 @@ export default function App() {
   const openSessionReference = useStableCallback((sessionId: string, harness: HarnessId) => {
     const session = sessions.find((candidate) => candidate.id === sessionId && candidate.harness === harness && !candidate.archived && candidate.depth === 0)
     if (session) void selectSession(session)
-    else setToast('That referenced session is archived or no longer available.')
+    else setToast(tLatest('sessions.referenceUnavailable'))
   })
   const switchModelPreset = useStableCallback((preset: PrimeModelPresetRecord) => {
     void sendPrompt(`/modelpreset switch ${preset.name}`).catch(reportError)
@@ -1045,7 +1052,7 @@ export default function App() {
   const dismissRestoreRequest = useCallback(() => setRestorePrompt(undefined), [])
   const startProjectScript = useCallback(
     async (kind: ProjectScriptKind) => {
-      if (!bridge || !activeProject || !activeCwd) throw new Error('Project scripts are available in the desktop app for an active project.')
+      if (!bridge || !activeProject || !activeCwd) throw new Error(tLatest('run.error.desktopProjectRequired'))
       if (activeProjectScriptRunRef.current || projectScriptStartingRef.current) throw new ProjectScriptBusyError()
       projectScriptStartingRef.current = true
       const run: ActiveProjectScriptRun = {
@@ -1058,7 +1065,7 @@ export default function App() {
       try {
         const project = activeProject.inferred ? await grantProject(activeProject) : activeProject
         const command = project.scripts?.[kind]?.trim() ?? ''
-        if (!command) throw new Error(`Configure a ${kind} command first.`)
+        if (!command) throw new Error(tLatest('run.error.configureCommand', { kind }))
         if (kind === 'setup') {
           const scripts = await bridge.projects.markSetupStarted(project.id, command, project.harness)
           patchProjectScripts(project.id, scripts)
@@ -1088,16 +1095,16 @@ export default function App() {
         projectScriptStartingRef.current = false
       }
     },
-    [activeCwd, activeProject, bridge, grantProject, patchProjectScripts, projectScriptSessionPath],
+    [activeCwd, activeProject, bridge, grantProject, patchProjectScripts, projectScriptSessionPath, tLatest],
   )
   const saveProjectScripts = useCallback(
     async (scripts: { setup: string; run: string }) => {
-      if (!bridge || !activeProject) throw new Error('Select a project first.')
+      if (!bridge || !activeProject) throw new Error(tLatest('run.error.selectProject'))
       const project = activeProject.inferred ? await grantProject(activeProject) : activeProject
       const updated = await bridge.projects.updateScripts(project.id, scripts, project.harness)
       patchProjectScripts(project.id, updated)
     },
-    [activeProject, bridge, grantProject, patchProjectScripts],
+    [activeProject, bridge, grantProject, patchProjectScripts, tLatest],
   )
   const stopProjectScript = useCallback(() => {
     const run = activeProjectScriptRunRef.current
@@ -1271,7 +1278,7 @@ export default function App() {
   const page =
     view === 'projects' ? (
       <ProjectsPage
-        projects={projects}
+        projects={activityProjects}
         sortMode={settingsState.settings.projectSortMode}
         onAdd={() => void addProject()}
         onOpen={selectProject}
@@ -1357,9 +1364,9 @@ export default function App() {
         onUpdate={settingsState.updateSettings}
         onRefreshHarnesses={refreshDetectedHarnesses}
         onResetBrowser={async () => {
-          if (!bridge) throw new Error(t('app.toast.browserDataDesktopOnly'))
+          if (!bridge) throw new Error(tLatest('app.toast.browserDataDesktopOnly'))
           if (!(await bridge.settings.resetBrowserData())) {
-            const error = new Error(t('app.toast.browserDataNotCleared'))
+            const error = new Error(tLatest('app.toast.browserDataNotCleared'))
             reportError(error)
             throw error
           }
@@ -1383,7 +1390,7 @@ export default function App() {
         >
           {sidebarVisible && initialized ? (
             <Sidebar
-              projects={projects}
+              projects={activityProjects}
               sessions={sessions}
               clearedAttention={clearedAttention}
               activeProjectId={activeProject?.id}
@@ -1542,8 +1549,12 @@ export default function App() {
                             onSavePreset={saveModelPreset}
                             reasoningLevels={provider.reasoningLevels}
                             fast={provider.fast}
+                            fastActive={provider.fastActive}
                             fastSupported={provider.selectedModel?.fastModeSupported ?? false}
                             fastAvailable={workspace.runtime?.fastModeAvailable !== false}
+                            slow={provider.slow}
+                            slowSupported={provider.slowSupported}
+                            slowScope={provider.slowScope}
                             usageLimit={provider.usageLimit}
                             approvalMode={settingsState.settings.ompApprovalMode}
                             onApprovalModeChange={changeApprovalMode}
@@ -1582,8 +1593,12 @@ export default function App() {
                             onModelChange={provider.changeModel}
                             onEffortChange={provider.changeEffort}
                             onFastChange={provider.changeFast}
+                            onFastRetry={provider.retryFast}
+                            onSlowChange={provider.changeSlow}
                             onSend={sendVisiblePrompt}
+                            onContinue={continueRuntime}
                             onStop={stopRuntime}
+                            onOpenSessionTree={openSessionTree}
                             retryStoppedTurn={stoppedTurnRetryAvailable}
                             onRetryStoppedTurn={retryTurn}
                             onRemoveAnnotation={browserAnnotations.remove}
@@ -1672,11 +1687,14 @@ export default function App() {
               />
             </Suspense>
           ) : null}
-          {extension.extensionUi ? (
-            <Suspense fallback={<LoadingPanel label={t('app.panel.request')} />}>
-              <ExtensionUiModal request={extension.extensionUi.request} onRespond={(response) => void extension.respondToExtensionUi(response)} platform={platform} />
-            </Suspense>
-          ) : null}
+          {extension.extensionUi ? (() => {
+            const pending = extension.extensionUi
+            return (
+              <Suspense fallback={<LoadingPanel label={t('app.panel.request')} />}>
+                <ExtensionUiModal request={pending.request} onRespond={(response) => void extension.respondToExtensionUi(response, pending)} platform={platform} />
+              </Suspense>
+            )
+          })() : null}
           {sessionTreeOpen ? (
             <SessionTreeDialog
               runtimeId={workspace.runtime?.runtimeId}

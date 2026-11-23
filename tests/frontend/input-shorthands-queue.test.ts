@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 import {
   formatQueuedItemsForRestore,
   isContinueShorthand,
-  MANUAL_CONTINUE_PROMPT,
   parseQueueShorthandInput,
 } from '../../src/lib/input-shorthands'
 
@@ -18,14 +17,6 @@ describe('isContinueShorthand', () => {
     expect(isContinueShorthand('cc')).toBe(false)
     expect(isContinueShorthand('..')).toBe(false)
     expect(isContinueShorthand(' continue')).toBe(false)
-  })
-})
-
-describe('MANUAL_CONTINUE_PROMPT', () => {
-  it('is the upstream synthetic continue notice, not a slash command', () => {
-    expect(MANUAL_CONTINUE_PROMPT).toContain('<system-notice>')
-    expect(MANUAL_CONTINUE_PROMPT).toContain('MUST resume most recent intent')
-    expect(MANUAL_CONTINUE_PROMPT).toContain('</system-notice>')
   })
 })
 

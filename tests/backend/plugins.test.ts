@@ -1,17 +1,18 @@
 import { spawn } from 'node:child_process'
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { join, relative, resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PluginService, beginPluginDiscoveryShutdown } from '../../electron/main/plugins'
 import type { SkillRecord } from '../../src/types/api'
 import { removeMcpDefinition, updateMcpSettings, updateMcpState } from '../../electron/main/plugins/mcp'
 import { ProjectService } from '../../electron/main/projects'
 import { JsonStateStore } from '../../electron/main/store'
+import { isPathWithin } from '../../electron/main/validation'
 
 const dirs: string[] = []
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }) })
-const temp = () => { const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-mcp-')); dirs.push(dir); return dir }
+const temp = () => { const dir = mkdtempSync(join(realpathSync.native(tmpdir()), 'omp-desktop-mcp-')); dirs.push(dir); return dir }
 
 describe('PluginService discovery', () => {
   it('reads dynamic bundled capability state on each refreshed catalog', async () => {
@@ -21,6 +22,7 @@ describe('PluginService discovery', () => {
     let enabled = true
     const service = new PluginService(null, async (path) => resolve(path), {
       agentDir,
+      homeDir: join(root, '__missing-home__'),
       builtInSkills: () => [{
         id: 'gooeypi-ask-user', name: 'Ask user', description: '', kind: 'extension',
         location: 'system', enabled,
@@ -36,7 +38,7 @@ describe('PluginService discovery', () => {
     const root = temp()
     const agentDir = join(root, 'agent')
     mkdirSync(agentDir)
-    const service = new PluginService(null, async (path) => resolve(path), { agentDir })
+    const service = new PluginService(null, async (path) => resolve(path), { agentDir, homeDir: join(root, '__missing-home__') })
 
     const first = service.list()
     const duplicate = service.refresh()
@@ -55,7 +57,7 @@ describe('PluginService discovery', () => {
       packages: ['local-package'],
       prompts: [sharedPrompt],
     }))
-    const service = new PluginService(null, async (path) => realpathSync(path), { agentDir })
+    const service = new PluginService(null, async (path) => realpathSync(path), { agentDir, homeDir: join(root, '__missing-home__') })
 
     const catalog = await service.list(root)
     const packageRecords = catalog.skills.filter((item) => item.kind === 'package' && item.source === 'local-package')
@@ -81,7 +83,7 @@ describe('PluginService discovery', () => {
       'sse-server': { type: 'sse', url: 'https://project.example/sse' },
       'null-shape': null,
     } }))
-    const service = new PluginService(null, async (path) => realpathSync(path), { agentDir })
+    const service = new PluginService(null, async (path) => realpathSync(path), { agentDir, homeDir: join(root, '__missing-home__') })
 
     const records = (await service.list(project)).skills.filter((item) => item.kind === 'mcp')
 
@@ -128,7 +130,7 @@ describe('PluginService discovery', () => {
     writeFileSync(join(projectAgentDir, 'mcp.json'), JSON.stringify({ mcpServers: {
       'project-must-be-visible': { type: 'http', url: 'https://project.example/mcp' },
     } }))
-    const service = new PluginService(null, async (path) => realpathSync(path), { agentDir })
+    const service = new PluginService(null, async (path) => realpathSync(path), { agentDir, homeDir: join(root, '__missing-home__') })
 
     const records = (await service.list(project)).skills.filter((item) => item.kind === 'mcp')
 
@@ -149,7 +151,7 @@ describe('PluginService discovery', () => {
     ]))
     const settingsPath = scope === 'user' ? join(agentDir, 'mcp.json') : join(projectAgentDir, 'mcp.json')
     writeFileSync(settingsPath, JSON.stringify({ mcpServers }))
-    const service = new PluginService(null, async (path) => realpathSync(path), { agentDir })
+    const service = new PluginService(null, async (path) => realpathSync(path), { agentDir, homeDir: join(root, '__missing-home__') })
 
     const catalog = await service.list(scope === 'project' ? project : undefined)
     const expectedSettingsPath = scope === 'project' ? realpathSync(settingsPath) : settingsPath
@@ -172,7 +174,7 @@ describe('PluginService discovery', () => {
     writeFileSync(mcpPath, JSON.stringify({ mcpServers: {
       docs: { type: 'stdio', command: 'mcp-native' },
     } }))
-    const service = new PluginService(null, async (path) => resolve(path), { agentDir, harness: 'omp' })
+    const service = new PluginService(null, async (path) => resolve(path), { agentDir, homeDir: join(root, '__missing-home__'), harness: 'omp' })
 
     const records = (await service.list()).skills.filter((item) => item.kind === 'mcp' && item.name === 'docs')
 
@@ -201,7 +203,7 @@ describe('PluginService discovery', () => {
     definitions[longKey] = { type: 'http', url: 'https://long.example/mcp' }
     definitions[oversizedKey] = { type: 'http', url: 'https://oversized.example/mcp' }
     writeFileSync(join(agentDir, 'mcp.json'), JSON.stringify({ mcpServers: definitions }))
-    const service = new PluginService(null, async (path) => resolve(path), { agentDir })
+    const service = new PluginService(null, async (path) => resolve(path), { agentDir, homeDir: join(root, '__missing-home__') })
 
     const records = (await service.list()).skills.filter((item) => item.kind === 'mcp' && item.location === 'user')
     const expected = [
@@ -246,7 +248,7 @@ describe('PluginService discovery', () => {
     writeFileSync(join(agentDir, 'mcp.json'), JSON.stringify({
       mcpServers: { supabase: { type: 'http', url: 'https://mcp.supabase.com/mcp' } },
     }))
-    const service = new PluginService(null, async (path) => resolve(path), { agentDir })
+    const service = new PluginService(null, async (path) => resolve(path), { agentDir, homeDir: join(root, '__missing-home__') })
 
     const catalog = await service.list()
 
@@ -261,7 +263,7 @@ describe('PluginService discovery', () => {
     mkdirSync(agentDir, { recursive: true })
     mkdirSync(packageRoot)
     writeFileSync(join(agentDir, 'settings.json'), JSON.stringify({ packages: [packageRoot] }))
-    const service = new PluginService(null, async (path) => resolve(path), { agentDir })
+    const service = new PluginService(null, async (path) => resolve(path), { agentDir, homeDir: join(root, '__missing-home__') })
 
     const record = (await service.list()).skills.find((skill) => skill.kind === 'package')
 
@@ -429,7 +431,7 @@ describe('PluginService discovery', () => {
     writeFileSync(join(skillDir, 'SKILL.md'), '---\nname: local\n---\nLocal skill')
     writeFileSync(join(agentDir, 'settings.json'), '{ this is not json')
     writeFileSync(join(projectAgentDir, 'settings.json'), JSON.stringify(['not', 'an', 'object']))
-    const service = new PluginService(null, async (path) => realpathSync(path), { agentDir })
+    const service = new PluginService(null, async (path) => realpathSync(path), { agentDir, homeDir: join(root, '__missing-home__') })
 
     const catalog = await service.list(project)
 
@@ -452,13 +454,34 @@ describe('PluginService discovery', () => {
     writeFileSync(projectPrompt, '# Project prompt')
     writeFileSync(join(agentDir, 'settings.json'), JSON.stringify({ prompts: [userPrompt] }))
     writeFileSync(join(projectAgentDir, 'settings.json'), JSON.stringify({ prompts: [projectPrompt] }))
-    const service = new PluginService(null, async (path) => realpathSync(path), { agentDir })
+    const service = new PluginService(null, async (path) => realpathSync(path), { agentDir, homeDir: join(root, '__missing-home__') })
 
     await service.list()
     await service.list(project)
 
     expect(service.authorizeReveal(userPrompt)).toBe(realpathSync(userPrompt))
     expect(service.authorizeReveal(projectPrompt)).toBe(realpathSync(projectPrompt))
+  })
+
+  it('authorizes aliased built-in records by their native physical identity', async () => {
+    const root = temp()
+    const agentDir = join(root, 'agent')
+    const prompt = join(root, 'aliased-prompt.md')
+    mkdirSync(agentDir)
+    writeFileSync(prompt, '# Alias identity')
+    const promptAlias = join(tmpdir(), relative(realpathSync.native(tmpdir()), root), 'aliased-prompt.md')
+    const portableAlias = realpathSync(promptAlias)
+    const canonicalPrompt = realpathSync.native(prompt)
+    const service = new PluginService(null, async (path) => realpathSync(path), {
+      agentDir,
+      homeDir: join(root, 'unused-home'),
+      builtInSkills: [{ id: 'aliased-prompt', name: 'Aliased prompt', description: '', kind: 'prompt', location: 'system', path: portableAlias, enabled: true }],
+    })
+
+    await service.list()
+
+    expect(service.authorizeReveal(promptAlias)).toBe(canonicalPrompt)
+    expect(service.authorizeReveal(prompt)).toBe(canonicalPrompt)
   })
 
   it('re-authorizes refresh scope and revokes reveal paths after project removal', async () => {
@@ -483,7 +506,7 @@ describe('PluginService discovery', () => {
       branch: async () => undefined,
       stopProjectProcesses: async (roots) => service.evictProjects(roots),
     })
-    const service = new PluginService(null, (path) => projectsService.authorizeProjectRoot(path), { agentDir })
+    const service = new PluginService(null, (path) => projectsService.authorizeProjectRoot(path), { agentDir, homeDir: join(root, '__missing-home__') })
 
     await service.list(project)
     expect(service.authorizeReveal(projectPrompt)).toBe(realpathSync(projectPrompt))
@@ -528,7 +551,7 @@ describe('PluginService discovery', () => {
     mkdirSync(resolve(ancestorSkill, '..'), { recursive: true })
     writeFileSync(localSkill, '---\nname: local\n---\nLocal skill')
     writeFileSync(ancestorSkill, '---\nname: ancestor\n---\nAncestor skill')
-    const service = new PluginService(null, async (path) => realpathSync(path), { agentDir })
+    const service = new PluginService(null, async (path) => realpathSync(path), { agentDir, homeDir: join(root, '__missing-home__') })
 
     const { skills: records } = await service.list(project)
 
@@ -540,18 +563,56 @@ describe('PluginService discovery', () => {
   it('keeps user-configured discovery contained to the agent directory and home', async () => {
     const root = temp()
     const agentDir = join(root, 'agent')
+    const homeDir = join(root, 'home')
+    const externalDir = join(root, 'external')
     const inside = join(agentDir, 'inside-prompt.md')
-    const outside = join(root, 'outside-prompt.md')
-    mkdirSync(agentDir)
+    const homePrompt = join(homeDir, 'home-prompt.md')
+    const outside = join(externalDir, 'outside-prompt.md')
+    const agentAlias = join(root, 'agent-alias')
+    const externalAlias = join(root, 'external-alias')
+    mkdirSync(agentDir); mkdirSync(homeDir); mkdirSync(externalDir)
     writeFileSync(inside, '# Inside\ncontained user discovery')
+    writeFileSync(homePrompt, '# Home\ncontained home discovery')
     writeFileSync(outside, '# Outside\nshould not be disclosed')
-    writeFileSync(join(agentDir, 'settings.json'), JSON.stringify({ prompts: [inside, outside] }))
-    const service = new PluginService(null, async (path) => realpathSync(path), { agentDir })
+    symlinkSync(agentDir, agentAlias, process.platform === 'win32' ? 'junction' : 'dir')
+    symlinkSync(externalDir, externalAlias, process.platform === 'win32' ? 'junction' : 'dir')
+    // tmpdir can be an 8.3 name or a symlink while temp() starts at its native
+    // physical identity. Supply both identities; neither is assumed to be 8.3.
+    const tempAliasAgent = join(tmpdir(), relative(realpathSync.native(tmpdir()), root), 'agent')
+    const insideAliases = [
+      join(agentAlias, 'inside-prompt.md'),
+      join(tempAliasAgent, 'inside-prompt.md'),
+      join(agentDir, 'unused', '..', 'inside-prompt.md'),
+      inside.replaceAll('\\', '/'),
+    ]
+    expect(realpathSync.native(join(tempAliasAgent, 'inside-prompt.md'))).toBe(realpathSync.native(inside))
+    writeFileSync(join(agentDir, 'settings.json'), JSON.stringify({
+      prompts: [
+        ...insideAliases,
+        '~/home-prompt.md',
+        outside,
+        join(externalAlias, 'outside-prompt.md'),
+        join(agentDir, '..', 'external', 'outside-prompt.md'),
+        join(root, 'missing', 'unresolved.md'),
+      ],
+    }))
+    const service = new PluginService(null, async (path) => realpathSync(path), { agentDir, homeDir })
+    const nativeAgent = realpathSync.native(agentDir)
+    const nativeHome = realpathSync.native(homeDir)
+    const nativeOutside = realpathSync.native(outside)
+    // The negative fixture is outside both roots even when the host tmpdir is
+    // under the real user profile (as it normally is on Windows runners).
+    expect(isPathWithin(nativeAgent, nativeOutside)).toBe(false)
+    expect(isPathWithin(nativeHome, nativeOutside)).toBe(false)
 
     const { skills: records } = await service.list()
 
-    expect(records).toContainEqual(expect.objectContaining({ kind: 'prompt', location: 'user', path: realpathSync(inside) }))
-    expect(records.some((record) => record.path === outside || record.path === realpathSync(outside))).toBe(false)
+    expect(records).toContainEqual(expect.objectContaining({ kind: 'prompt', location: 'user', path: realpathSync.native(inside) }))
+    expect(records).toContainEqual(expect.objectContaining({ kind: 'prompt', location: 'user', path: realpathSync.native(homePrompt) }))
+    expect(records.filter((record) => record.kind === 'prompt').map((record) => record.name)).not.toContain('outside-prompt')
+    expect(records.some((record) => record.path === outside || record.path === nativeOutside || record.path === join(externalAlias, 'outside-prompt.md'))).toBe(false)
+    expect(service.authorizeReveal(join(agentAlias, 'inside-prompt.md'))).toBe(realpathSync.native(inside))
+    expect(() => service.authorizeReveal(outside)).toThrow('plugin path was not discovered')
   })
 
   it('keeps project-configured discovery contained while accepting in-project files', async () => {
@@ -569,7 +630,7 @@ describe('PluginService discovery', () => {
     writeFileSync(join(projectAgentDir, 'settings.json'), JSON.stringify({
       prompts: [inside, outside, join(notes, 'linked-outside.md')],
     }))
-    const service = new PluginService(null, async (path) => realpathSync(path), { agentDir })
+    const service = new PluginService(null, async (path) => realpathSync(path), { agentDir, homeDir: join(root, '__missing-home__') })
 
     const { skills: records } = await service.list(project)
 
@@ -698,7 +759,7 @@ describe('PluginService MCP connections', () => {
       disabledServers: ['denied'],
       enabledServers: ['allowed'],
     }))
-    const service = new PluginService(null, async (path) => resolve(path), { agentDir })
+    const service = new PluginService(null, async (path) => resolve(path), { agentDir, homeDir: join(root, '__missing-home__') })
 
     const records = (await service.list()).skills.filter((item) => item.kind === 'mcp')
     const denied = records.find((item) => item.name === 'denied')
@@ -720,7 +781,7 @@ describe('PluginService MCP connections', () => {
     mkdirSync(agentDir)
     writeFileSync(join(agentDir, 'mcp.json.broken-1761234567890-42-9f0d3b7e'), '{ not json')
     writeFileSync(join(agentDir, 'mcp.json'), JSON.stringify({ mcpServers: { ok: { type: 'stdio', command: 'mcp-ok' } } }))
-    const service = new PluginService(null, async (path) => resolve(path), { agentDir })
+    const service = new PluginService(null, async (path) => resolve(path), { agentDir, homeDir: join(root, '__missing-home__') })
 
     const catalog = await service.list()
 
@@ -735,7 +796,7 @@ describe('PluginService MCP connections', () => {
     const root = temp()
     const agentDir = join(root, 'agent')
     mkdirSync(agentDir)
-    const service = new PluginService(null, async (path) => resolve(path), { agentDir })
+    const service = new PluginService(null, async (path) => resolve(path), { agentDir, homeDir: join(root, '__missing-home__') })
     const settingsPath = join(agentDir, 'mcp.json')
 
     // 公網必須 https;純 http 一律拒絕。
@@ -762,7 +823,7 @@ describe('PluginService MCP connections', () => {
     const root = temp()
     const agentDir = join(root, 'agent')
     mkdirSync(agentDir)
-    const service = new PluginService(null, async (path) => resolve(path), { agentDir })
+    const service = new PluginService(null, async (path) => resolve(path), { agentDir, homeDir: join(root, '__missing-home__') })
 
     for (const input of [
       { type: 'http', url: 'https://mcp.example/mcp' },
@@ -785,7 +846,7 @@ describe('PluginService MCP connections', () => {
     const root = temp()
     const agentDir = join(root, 'agent')
     mkdirSync(agentDir)
-    const service = new PluginService(null, async (path) => resolve(path), { agentDir })
+    const service = new PluginService(null, async (path) => resolve(path), { agentDir, homeDir: join(root, '__missing-home__') })
 
     expect((await service.connectMcp({ name: 'files', scope: 'user', type: 'stdio', command: 'mcp-files', args: ['--root', '/tmp'] })).ok).toBe(true)
     expect((await service.setMcpEnabled({ name: 'files', scope: 'user', enabled: false })).ok).toBe(true)
@@ -808,7 +869,7 @@ describe('PluginService MCP connections', () => {
     mcpServers['control\u0001key'] = { type: 'stdio', command: 'mcp-control' }
     mcpServers[oversizedKey] = { type: 'stdio', command: 'mcp-oversized' }
     writeFileSync(join(agentDir, 'mcp.json'), JSON.stringify({ mcpServers }))
-    const service = new PluginService(null, async (path) => resolve(path), { agentDir })
+    const service = new PluginService(null, async (path) => resolve(path), { agentDir, homeDir: join(root, '__missing-home__') })
 
     const records = (await service.list()).skills.filter((item) => item.kind === 'mcp')
 
@@ -830,7 +891,7 @@ describe('PluginService MCP connections', () => {
     mkdirSync(agentDir)
     const settingsPath = join(agentDir, 'mcp.json')
     writeFileSync(settingsPath, JSON.stringify({ mcpServers: { remote: { type: 'sse', url: 'https://mcp.example/sse', enabled: true } } }))
-    const service = new PluginService(null, async (path) => resolve(path), { agentDir })
+    const service = new PluginService(null, async (path) => resolve(path), { agentDir, homeDir: join(root, '__missing-home__') })
 
     const record = (await service.list()).skills.find((item) => item.kind === 'mcp' && item.name === 'remote')
     expect(record).toMatchObject({ enabled: true })
@@ -859,7 +920,7 @@ describe('PluginService MCP connections', () => {
       remote: { type: 'http', url: 'https://mcp.example/mcp', oauth: true, enabled: true },
       keep: { type: 'http', url: 'https://keep.example/mcp', enabled: true },
     } }))
-    const service = new PluginService(null, async (path) => resolve(path), { agentDir })
+    const service = new PluginService(null, async (path) => resolve(path), { agentDir, homeDir: join(root, '__missing-home__') })
 
     await expect(service.mutateCapability({ kind: 'mcp', action: 'remove', name: 'remote', scope: 'user' }))
       .resolves.toMatchObject({ ok: true })
@@ -879,7 +940,7 @@ describe('PluginService MCP connections', () => {
     const root = temp()
     const agentDir = join(root, 'agent')
     mkdirSync(agentDir)
-    const service = new PluginService(null, async (path) => resolve(path), { agentDir })
+    const service = new PluginService(null, async (path) => resolve(path), { agentDir, homeDir: join(root, '__missing-home__') })
 
     const response = await service.setMcpEnabled({ name: 'missing', scope: 'user', enabled: false })
     expect(response).toMatchObject({ ok: false, reason: 'blocked' })
@@ -893,7 +954,7 @@ describe('PluginService MCP connections', () => {
       docs: { type: 'http', url: 'https://docs.example/mcp', oauth: true },
       keep: { type: 'http', url: 'https://keep.example/mcp' },
     } }))
-    const service = new PluginService(null, async (path) => resolve(path), { agentDir })
+    const service = new PluginService(null, async (path) => resolve(path), { agentDir, homeDir: join(root, '__missing-home__') })
 
     const response = await service.mutateCapability({ kind: 'mcp', action: 'remove', name: 'docs', scope: 'user' })
 
@@ -912,7 +973,7 @@ describe('PluginService MCP connections', () => {
     } }))
     writeFileSync(executable, `#!/usr/bin/env node\nrequire('node:fs').writeFileSync(${JSON.stringify(capture)}, JSON.stringify(process.argv.slice(2))); process.stdout.write('removed\\n')\n`)
     chmodSync(executable, 0o755)
-    const service = new PluginService(executable, async (path) => resolve(path), { agentDir })
+    const service = new PluginService(executable, async (path) => resolve(path), { agentDir, homeDir: join(root, '__missing-home__') })
 
     await expect(service.mutateCapability({
       kind: 'mcp', action: 'remove', name: 'docs', source: 'npm:prime-docs', scope: 'user',
@@ -930,7 +991,7 @@ describe('PluginService MCP connections', () => {
     mkdirSync(agentDir)
     writeFileSync(executable, `#!/usr/bin/env node\nrequire('node:fs').writeFileSync(${JSON.stringify(join(root, 'argv.json'))}, JSON.stringify(process.argv.slice(2))); process.stdout.write('{"ok":true}\\n')\n`)
     chmodSync(executable, 0o755)
-    const service = new PluginService(executable, async (path) => resolve(path), { agentDir })
+    const service = new PluginService(executable, async (path) => resolve(path), { agentDir, homeDir: join(root, '__missing-home__') })
 
     expect((await service.mutateCapability({ kind: 'package', action: 'disable', name: 'acme-tools', source: 'npm:acme-tools', scope: 'user' })).ok).toBe(true)
     captures.push(readFileSync(join(root, 'argv.json'), 'utf8'))
@@ -949,7 +1010,7 @@ describe('PluginService MCP connections', () => {
     const service = new PluginService(null, async (path) => {
       expect(path).toBe(project)
       return resolve(path)
-    }, { agentDir, harness: 'omp' })
+    }, { agentDir, homeDir: join(root, '__missing-home__'), harness: 'omp' })
 
     const response = await service.connectMcp({
       name: 'project-files',
@@ -972,7 +1033,7 @@ describe('PluginService MCP connections', () => {
     const outside = join(root, 'outside')
     mkdirSync(project); mkdirSync(outside)
     symlinkSync(outside, join(project, '.omp'))
-    const service = new PluginService(null, async (path) => resolve(path), { agentDir, harness: 'omp' })
+    const service = new PluginService(null, async (path) => resolve(path), { agentDir, homeDir: join(root, '__missing-home__'), harness: 'omp' })
 
     await expect(service.connectMcp({
       name: 'escaped', scope: 'project', projectPath: project, type: 'stdio', command: 'mcp-local',
@@ -991,7 +1052,7 @@ describe('PluginService MCP connections', () => {
     const settingsPath = join(projectAgentDir, 'mcp.json')
     writeFileSync(settingsPath, JSON.stringify({ defaultModel: 'test/model' }))
     writeFileSync(join(outside, 'mcp.json'), JSON.stringify({ outside: 'unchanged' }))
-    const service = new PluginService(null, async (path) => realpathSync(path), { agentDir, harness: 'omp' })
+    const service = new PluginService(null, async (path) => realpathSync(path), { agentDir, homeDir: join(root, '__missing-home__'), harness: 'omp' })
     const internal = service as unknown as { settingsFingerprint(path: string): Promise<string> }
     const original = internal.settingsFingerprint.bind(service)
     let substituted = false
@@ -1059,7 +1120,7 @@ describe('PluginService MCP connections', () => {
     const agentDir = join(root, 'agent')
     mkdirSync(agentDir)
     writeFileSync(join(agentDir, 'mcp.json'), JSON.stringify({ mcpServers: { existing: { type: 'stdio', command: 'safe' } } }))
-    const service = new PluginService(null, async (path) => resolve(path), { agentDir, harness: 'omp' })
+    const service = new PluginService(null, async (path) => resolve(path), { agentDir, homeDir: join(root, '__missing-home__'), harness: 'omp' })
 
     await expect(service.connectMcp({ name: 'secret', scope: 'user', type: 'http', url: 'https://token@example.test/mcp' })).rejects.toThrow(/must not embed credentials/)
     const duplicate = await service.connectMcp({ name: 'existing', scope: 'user', type: 'stdio', command: 'other' })
@@ -1072,8 +1133,8 @@ describe('PluginService MCP connections', () => {
     const agentDir = join(root, 'agent')
     mkdirSync(agentDir)
     writeFileSync(join(agentDir, 'mcp.json'), JSON.stringify({ marker: 'kept' }))
-    const first = new PluginService(null, async (path) => resolve(path), { agentDir, harness: 'omp' })
-    const second = new PluginService(null, async (path) => resolve(path), { agentDir, harness: 'omp' })
+    const first = new PluginService(null, async (path) => resolve(path), { agentDir, homeDir: join(root, '__missing-home__'), harness: 'omp' })
+    const second = new PluginService(null, async (path) => resolve(path), { agentDir, homeDir: join(root, '__missing-home__'), harness: 'omp' })
 
     const responses = await Promise.all([
       first.connectMcp({ name: 'first', scope: 'user', type: 'stdio', command: 'mcp-first' }),
@@ -1108,7 +1169,7 @@ describe('PluginService MCP connections', () => {
       token: 'exited-test-owner',
       createdAt: Date.now() - 1_000,
     }))
-    const service = new PluginService(null, async (path) => resolve(path), { agentDir, harness: 'omp' })
+    const service = new PluginService(null, async (path) => resolve(path), { agentDir, homeDir: join(root, '__missing-home__'), harness: 'omp' })
 
     const response = await service.connectMcp({ name: 'after-crash', scope: 'user', type: 'stdio', command: 'mcp-after-crash' })
 
@@ -1123,7 +1184,7 @@ describe('PluginService MCP connections', () => {
     mkdirSync(agentDir)
     const settingsPath = join(agentDir, 'mcp.json')
     writeFileSync(settingsPath, JSON.stringify({ marker: 'kept' }))
-    const service = new PluginService(null, async (path) => resolve(path), { agentDir, harness: 'omp' })
+    const service = new PluginService(null, async (path) => resolve(path), { agentDir, homeDir: join(root, '__missing-home__'), harness: 'omp' })
     const internal = service as unknown as { settingsFingerprint(path: string): Promise<string> }
     const original = internal.settingsFingerprint.bind(service)
     let injected = false
@@ -1147,7 +1208,7 @@ describe('PluginService MCP connections', () => {
     mkdirSync(agentDir)
     const settingsPath = join(agentDir, 'mcp.json')
     writeFileSync(settingsPath, JSON.stringify({ marker: 'kept' }))
-    const service = new PluginService(null, async (path) => resolve(path), { agentDir, harness: 'omp' })
+    const service = new PluginService(null, async (path) => resolve(path), { agentDir, homeDir: join(root, '__missing-home__'), harness: 'omp' })
     const internal = service as unknown as { settingsFingerprint(path: string): Promise<string> }
     const original = internal.settingsFingerprint.bind(service)
     let conflicts = 0
@@ -1172,7 +1233,7 @@ describe('PluginService MCP connections', () => {
     mkdirSync(agentDir)
     const settingsPath = join(agentDir, 'mcp.json')
     writeFileSync(settingsPath, JSON.stringify({ marker: 'kept' }))
-    const service = new PluginService(null, async (path) => resolve(path), { agentDir, harness: 'omp' })
+    const service = new PluginService(null, async (path) => resolve(path), { agentDir, homeDir: join(root, '__missing-home__'), harness: 'omp' })
     const internal = service as unknown as { settingsFingerprint(path: string): Promise<string> }
     const original = internal.settingsFingerprint.bind(service)
     let externalRevision = 0
@@ -1223,7 +1284,7 @@ describe('PluginService OMP parity', () => {
     writeFileSync(join(agentDir, 'mcp.json'), JSON.stringify({ mcpServers: { docs: { type: 'http', url: 'https://docs.example/mcp' } } }))
     mkdirSync(join(project, '.omp'), { recursive: true })
     writeFileSync(join(project, '.omp', 'mcp.json'), JSON.stringify({ mcpServers: { files: { type: 'stdio', command: 'npx' } } }))
-    const service = new PluginService(null, async (path) => realpathSync(path), { agentDir, harness: 'omp' })
+    const service = new PluginService(null, async (path) => realpathSync(path), { agentDir, homeDir: join(root, '__missing-home__'), harness: 'omp' })
 
     const catalog = await service.list(project)
 
@@ -1249,7 +1310,7 @@ describe('PluginService OMP parity', () => {
     const project = join(root, 'project')
     mkdirSync(agentDir, { recursive: true })
     mkdirSync(project)
-    const service = new PluginService(null, async (path) => realpathSync(path), { agentDir, harness: 'omp' })
+    const service = new PluginService(null, async (path) => realpathSync(path), { agentDir, homeDir: join(root, '__missing-home__'), harness: 'omp' })
 
     const remote = await service.connectMcp({ name: 'docs:remote', scope: 'user', type: 'http', url: 'https://docs.example/mcp' })
     const stream = await service.connectMcp({ name: 'stream', scope: 'user', type: 'sse', url: 'https://docs.example/sse' })
@@ -1281,7 +1342,7 @@ describe('PluginService OMP parity', () => {
     mkdirSync(agentDir, { recursive: true })
     writeFileSync(executable, `#!/usr/bin/env node\nrequire('node:fs').writeFileSync(${JSON.stringify(capture)}, JSON.stringify(process.argv.slice(2))); process.stdout.write('{"ok":true}\\n')\n`)
     chmodSync(executable, 0o755)
-    const service = new PluginService(executable, async (path) => resolve(path), { agentDir, harness: 'omp' })
+    const service = new PluginService(executable, async (path) => resolve(path), { agentDir, homeDir: join(root, '__missing-home__'), harness: 'omp' })
 
     const result = await service.install('npm:@scope/example-plugin')
 
@@ -1300,7 +1361,7 @@ describe('PluginService OMP parity', () => {
     mkdirSync(agentDir, { recursive: true })
     mkdirSync(project)
     writeFileSync(source, 'export default () => undefined\n')
-    const service = new PluginService(null, async (path) => realpathSync(path), { agentDir, harness: 'omp' })
+    const service = new PluginService(null, async (path) => realpathSync(path), { agentDir, homeDir: join(root, '__missing-home__'), harness: 'omp' })
 
     const user = await service.installExtension({ source, scope: 'user' })
     const local = await service.installExtension({ source, scope: 'project', projectPath: project })
@@ -1391,7 +1452,7 @@ describe('PluginService catalog cache', () => {
     writeFileSync(join(agentDir, 'mcp.json'), JSON.stringify({ mcpServers: {
       'http-server': { type: 'http', url: 'https://mcp.example/server' },
     } }))
-    const service = new PluginService(null, async (path) => resolve(path), { agentDir })
+    const service = new PluginService(null, async (path) => resolve(path), { agentDir, homeDir: join(root, '__missing-home__') })
     const hasServer = async (): Promise<boolean> => (await service.list()).skills.some((item) => item.name === 'http-server')
 
     expect(await hasServer()).toBe(true)

@@ -1,7 +1,7 @@
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { lstat, realpath } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { join, parse, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { isBroadProjectRoot, ProjectService, resolveHomeSelection } from '../../electron/main/projects'
@@ -32,14 +32,14 @@ afterEach(() => {
 })
 
 function setup(): { root: string; service: ProjectService; store: JsonStateStore } {
-  const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-files-')); dirs.push(dir)
+  const dir = mkdtempSync(join(realpathSync.native(tmpdir()), 'omp-desktop-files-')); dirs.push(dir)
   const root = join(dir, 'project'); mkdirSync(root)
   const store = new JsonStateStore(join(dir, 'state.json'))
   const service = new ProjectService(store, () => null)
   return { root, service, store }
 }
 
-function session(id: string, projectPath: string, createdAt: string, updatedAt: string): SessionRecord {
+function session(id: string, projectPath: string, createdAt: string, updatedAt: string, overrides: Partial<SessionRecord> = {}): SessionRecord {
   return {
     id,
     harness: 'omp',
@@ -51,6 +51,7 @@ function session(id: string, projectPath: string, createdAt: string, updatedAt: 
     status: 'idle',
     depth: 0,
     archived: false,
+    ...overrides,
   }
 }
 
@@ -146,10 +147,10 @@ describe('ProjectService list enrichment', () => {
     mkdirSync(inferred)
     mkdirSync(dismissed)
     const sessions = [
-      session('persisted-newer', root, '2026-02-03T00:00:00.000Z', '2026-02-04T00:00:00.000Z'),
-      session('persisted-alias', projectAlias, '2026-02-01T00:00:00.000Z', '2026-02-06T00:00:00.000Z'),
+      session('persisted-newer', root, '2026-02-03T00:00:00.000Z', '2026-02-04T00:00:00.000Z', { archived: true }),
+      session('persisted-alias', projectAlias, '2026-02-01T00:00:00.000Z', '2026-02-06T00:00:00.000Z', { lastUserMessageAt: '2026-02-07T00:00:00.000Z' }),
       session('persisted-additional', additionalFolder, '2026-02-02T00:00:00.000Z', '2026-02-05T00:00:00.000Z'),
-      session('inferred-newer', inferred, '2026-03-03T00:00:00.000Z', '2026-03-04T00:00:00.000Z'),
+      session('inferred-newer', inferred, '2026-03-03T00:00:00.000Z', '2026-03-04T00:00:00.000Z', { lastUserMessageAt: '2026-03-05T00:00:00.000Z' }),
       session('inferred-older', inferred, '2026-03-01T00:00:00.000Z', '2026-03-07T00:00:00.000Z'),
       session('dismissed', dismissed, '2026-04-01T00:00:00.000Z', '2026-04-02T00:00:00.000Z'),
       session('missing', missing, '2026-05-01T00:00:00.000Z', '2026-05-02T00:00:00.000Z'),
@@ -160,7 +161,7 @@ describe('ProjectService list enrichment', () => {
       state.projects.push({
         id: 'persisted', harness: 'omp', name: 'Persisted', path: root,
         // Canonical aliases and repeated folders must not multiply counts.
-        folders: [root, projectAlias, additionalFolder, additionalFolder], primaryFolder: root, pinned: true,
+        folders: [root, projectAlias, additionalFolder, additionalFolder], primaryFolder: root, pinned: false,
         createdAt: now, lastOpenedAt: '2026-05-01T00:00:00.000Z', folderIdentities: identities(root, additionalFolder),
       })
       state.dismissedProjectPaths.push(dismissed)
@@ -171,25 +172,77 @@ describe('ProjectService list enrichment', () => {
 
     expect(filterSpy).not.toHaveBeenCalled()
     expect(records.map((record) => record.id)).toEqual([
-      'persisted',
       expect.stringMatching(/^inferred-/),
+      'persisted',
     ])
     expect(records[0]).toMatchObject({
-      id: 'persisted',
-      createdAt: now,
-      lastOpenedAt: '2026-05-01T00:00:00.000Z',
-      sessionCount: 3,
-    })
-    expect(records[1]).toMatchObject({
       path: realpathSync(inferred),
       createdAt: '2026-03-01T00:00:00.000Z',
       lastOpenedAt: '2026-03-07T00:00:00.000Z',
+      lastUserActivityAt: '2026-03-05T00:00:00.000Z',
       sessionCount: 2,
       inferred: true,
       readOnly: true,
     })
+    expect(records[1]).toMatchObject({
+      id: 'persisted',
+      createdAt: now,
+      lastOpenedAt: '2026-05-01T00:00:00.000Z',
+      lastUserActivityAt: '2026-02-07T00:00:00.000Z',
+      sessionCount: 3,
+    })
     expect(records.some((record) => record.path === realpathSync(dismissed))).toBe(false)
     expect(records.some((record) => record.path === resolve(missing))).toBe(false)
+  })
+
+  it('projects nested canonical activity to the deepest registered project without changing exact session counts', async () => {
+    const { root, service, store } = setup()
+    const nested = join(root, 'packages', 'app')
+    const projectAlias = `${root}-alias`
+    mkdirSync(nested, { recursive: true })
+    symlinkSync(root, projectAlias)
+    const now = '2026-01-01T00:00:00.000Z'
+    await store.update((state) => {
+      state.projects.push({
+        id: 'parent', harness: 'omp', name: 'Parent', path: root,
+        folders: [root, projectAlias], primaryFolder: root, pinned: false,
+        createdAt: now, lastOpenedAt: now, folderIdentities: identities(root),
+      })
+    })
+    service.bindProviders({
+      sessions: async () => [session('nested-turn', join(projectAlias, 'packages', 'app'), now, now, {
+        lastUserMessageAt: '2026-02-01T00:00:00.000Z',
+      })],
+      branch: async () => undefined,
+    })
+
+    const initial = await service.list()
+    expect(initial.find((record) => record.id === 'parent')).toMatchObject({
+      lastUserActivityAt: '2026-02-01T00:00:00.000Z',
+      sessionCount: 0,
+    })
+
+    await store.update((state) => {
+      state.projects.push({
+        id: 'nested', harness: 'omp', name: 'Nested', path: nested,
+        folders: [nested], primaryFolder: nested, pinned: false,
+        createdAt: now, lastOpenedAt: now, folderIdentities: identities(nested),
+      })
+    })
+    service.bindProviders({
+      sessions: async () => [session('nested-turn', join(projectAlias, 'packages', 'app'), now, now, {
+        lastUserMessageAt: '2026-03-01T00:00:00.000Z',
+      })],
+      branch: async () => undefined,
+    })
+
+    const updated = await service.list()
+    expect(updated.find((record) => record.id === 'parent')?.lastUserActivityAt).toBeUndefined()
+    expect(updated.find((record) => record.id === 'nested')).toMatchObject({
+      lastUserActivityAt: '2026-03-01T00:00:00.000Z',
+      sessionCount: 1,
+    })
+    expect(updated.filter((record) => record.lastUserActivityAt === '2026-03-01T00:00:00.000Z')).toHaveLength(1)
   })
 
   it('enriches persisted branches without spawning git for inferred roots', async () => {
@@ -459,21 +512,20 @@ describe('broad project root authorization', () => {
     expect(resolveHomeSelection(path, options)).toBe(expected ?? tmpdir())
   })
 
-  it('redirects a home-directory picker result to /tmp like the CLI', async () => {
+  it('redirects a home-directory picker result to the OS temp directory like the CLI', async () => {
     const { service, store } = setup()
     electronMocks.dialog.showOpenDialog.mockResolvedValue({ canceled: false, filePaths: [homedir()] })
 
     const project = await service.add()
-    expect(project?.path).toBe(realpathSync('/tmp'))
+    const fallback = realpathSync.native(process.platform === 'win32' ? tmpdir() : '/tmp')
+    expect(project?.path).toBe(fallback)
     expect(store.snapshot().projects).toHaveLength(1)
-    expect(store.snapshot().projects[0]?.primaryFolder).toBe(realpathSync('/tmp'))
+    expect(store.snapshot().projects[0]?.primaryFolder).toBe(fallback)
   })
 
-  it.each([
-    ['filesystem root', realpathSync(resolve('/'))],
-    ['home directory', realpathSync(homedir())],
-  ])('keeps a persisted %s visible but quarantined from authorization', async (_label, path) => {
+  it.each(['filesystem root', 'home directory'] as const)('keeps a persisted %s visible but quarantined from authorization', async (label) => {
     const { root, service, store } = setup()
+    const path = label === 'filesystem root' ? realpathSync(parse(root).root) : realpathSync(homedir())
     const now = new Date().toISOString()
     await store.update((state) => { state.projects.push({
       id: 'broad-project', harness: 'omp', name: 'Broad project', path, folders: [path], primaryFolder: path,
@@ -481,12 +533,12 @@ describe('broad project root authorization', () => {
     }) })
 
     expect((await service.list()).map((project) => project.id)).toEqual(['broad-project'])
-    await expect(service.authorizeCwd(path === resolve('/') ? root : path)).rejects.toThrow(/unsafe broad.*remove it and add a narrower project folder/i)
+    await expect(service.authorizeCwd(label === 'filesystem root' ? root : path)).rejects.toThrow(/unsafe broad.*remove it and add a narrower project folder/i)
   })
 
   it('does not reauthorize a quarantined broad grant while rebuilding after removal', async () => {
     const { root, service, store } = setup()
-    const filesystemRoot = realpathSync(resolve('/'))
+    const filesystemRoot = realpathSync(parse(root).root)
     const now = new Date().toISOString()
     await store.update((state) => { state.projects.push(
       {
@@ -534,18 +586,31 @@ describe('ProjectService file listing', () => {
     const { root, service, store } = setup()
     mkdirSync(join(root, 'readable'))
     writeFileSync(join(root, 'readable', 'kept.txt'), 'kept')
-    mkdirSync(join(root, 'unreadable'))
-    writeFileSync(join(root, 'unreadable', 'hidden.txt'), 'hidden')
-    chmodSync(join(root, 'unreadable'), 0o000)
-    await store.update((state) => { state.projects.push({ id: 'project', harness: 'omp', name: 'Project', path: root, folders: [root], primaryFolder: root, pinned: false, createdAt: new Date().toISOString(), lastOpenedAt: new Date().toISOString(), folderIdentities: identities(root) }) })
-    await service.list()
+    const unreadable = join(root, 'unreadable')
+    mkdirSync(unreadable)
+    writeFileSync(join(unreadable, 'hidden.txt'), 'hidden')
+    const account = process.env.USERNAME ?? ''
+    if (process.platform === 'win32') {
+      expect(account).not.toBe('')
+      const denied = spawnSync('icacls.exe', [unreadable, '/deny', `${account}:(RD)`], { encoding: 'utf8' })
+      expect(denied.status, denied.stderr).toBe(0)
+    } else {
+      chmodSync(unreadable, 0o000)
+    }
     try {
+      await store.update((state) => { state.projects.push({ id: 'project', harness: 'omp', name: 'Project', path: root, folders: [root], primaryFolder: root, pinned: false, createdAt: new Date().toISOString(), lastOpenedAt: new Date().toISOString(), folderIdentities: identities(root) }) })
+      await service.list()
       const listing = await service.listFiles(root)
       expect(listing.entries).toContainEqual({ path: 'readable/kept.txt', type: 'file' })
       expect(listing.entries.some((entry) => entry.path === 'unreadable/hidden.txt')).toBe(false)
       expect(listing.skipped).toBe(1)
     } finally {
-      chmodSync(join(root, 'unreadable'), 0o700)
+      if (process.platform === 'win32') {
+        const restored = spawnSync('icacls.exe', [unreadable, '/remove:d', account], { encoding: 'utf8' })
+        expect(restored.status, restored.stderr).toBe(0)
+      } else {
+        chmodSync(unreadable, 0o700)
+      }
     }
   })
 
