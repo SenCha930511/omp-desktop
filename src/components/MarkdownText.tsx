@@ -2,15 +2,8 @@ import { Check, Copy } from 'lucide-react'
 import { type ComponentPropsWithoutRef, Fragment, isValidElement, type MouseEvent, memo, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import type { Components, ExtraProps } from 'react-markdown'
 import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
-import remarkMath from 'remark-math'
-import rehypeKatex from 'rehype-katex'
-import type { PluggableList } from 'unified'
-// KaTeX ships its own stylesheet and fonts; the bundler emits both, and the
-// omp-desktop:// protocol already serves .woff2 with the right MIME type.
-import 'katex/dist/katex.min.css'
+import { useMarkdownMathPlugins } from './markdown-math-plugins'
 import { writeClipboardText } from '@/lib/clipboard'
-import { rehypeKatexCjkClass } from '@/lib/katex-cjk'
 import { splitMarkdownBlocks } from '@/lib/markdown-blocks'
 import { normalizeLatexDelimiters } from '@/lib/markdown-math'
 import { resolveWorkspaceFilePath, useMarkdownWorkspace } from '@/lib/markdown-workspace'
@@ -236,11 +229,6 @@ const MarkdownCodeBlock = memo(function MarkdownCodeBlock({ node: _node, childre
   )
 })
 
-const markdownPlugins: PluggableList = [[remarkGfm, { singleTilde: false }], remarkMath]
-/** Theme-matched KaTeX rendering: errors reuse the danger color, and unusual
- *  Unicode input stays silent instead of spamming the console. */
-const katexOptions = { errorColor: 'var(--danger)', strict: false } as const
-
 /**
  * Each block resolves its own base direction from its first strong character.
  * The browser skips descendants that carry their own `dir`, so a paragraph
@@ -296,8 +284,9 @@ export function advanceStreamingParse(state: StreamingParseState, textLength: nu
 }
 
 const MarkdownBlock = memo(function MarkdownBlock({ text }: { text: string }) {
+  const { plugins } = useMarkdownMathPlugins(text.includes('$'))
   return (
-    <ReactMarkdown remarkPlugins={markdownPlugins} rehypePlugins={[[rehypeKatex, katexOptions], rehypeKatexCjkClass]} skipHtml urlTransform={markdownUrlTransform} components={markdownComponents}>
+    <ReactMarkdown remarkPlugins={plugins.remarkPlugins} rehypePlugins={plugins.rehypePlugins} skipHtml urlTransform={markdownUrlTransform} components={markdownComponents}>
       {text}
     </ReactMarkdown>
   )
