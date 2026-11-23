@@ -42,14 +42,15 @@ function titleSlot(title: string): string {
 
 describe('OMP metadata WASM scanner', () => {
   it('matches the TS accumulator fields for a representative session', async () => {
-    const tail = [
+    const lines = [
       line({ type: 'session', id: 's1', cwd: '/p', timestamp: '2026-01-01T00:00:00.000Z', parentSession: 'parent', previousSessionFiles: ['/old', '/old', '/other'] }),
       line({ type: 'model_change', model: 'openai/gpt-5', role: 'default' }),
       line({ type: 'thinking_level_change', thinkingLevel: 'high' }),
       line({ type: 'title_change', title: 'My title' }),
       line({ type: 'message', timestamp: '2026-01-01T00:00:01.000Z', message: { role: 'user', content: [{ type: 'text', text: 'hello' }, { type: 'text', text: 'world' }] } }),
       line({ type: 'message', timestamp: '2026-01-01T00:00:02.000Z', message: { role: 'assistant', content: 'done', stopReason: 'end' } }),
-    ].join('\n') + '\n'
+    ]
+    const tail = `${lines.join('\n')}\n`
 
     const result = await scanOmpMetadataBytes(Buffer.from(tail), defaults)
     expect(result).toEqual({
@@ -114,14 +115,15 @@ describe('OMP metadata WASM scanner', () => {
   })
 
   it('ignores model changes with a non-default present role', async () => {
-    const tail = [
+    const lines = [
       line({ type: 'session', id: 'roles' }),
       line({ type: 'model_change', role: 'default', model: 'openai/gpt-5' }),
       line({ type: 'model_change', role: null, model: 'null/model' }),
       line({ type: 'model_change', role: 7, model: 'number/model' }),
       line({ type: 'model_change', role: 'task', model: 'task/model' }),
       line({ type: 'model_change', model: 'other/final' }),
-    ].join('\n') + '\n'
+    ]
+    const tail = `${lines.join('\n')}\n`
     const result = await scanOmpMetadataBytes(Buffer.from(tail), defaults)
     expect(result.status).toBe('ok')
     if (result.status !== 'ok') throw new Error('Expected an accumulator')

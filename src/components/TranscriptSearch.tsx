@@ -130,7 +130,7 @@ export function useTranscriptSearch(messages: TranscriptMessage[], root: RefObje
     // parent observer for mount and removal, and a row observer for streaming text.
     const rowObserver = new MutationObserver(() => schedule())
     const mountObserver = new MutationObserver(() => {
-      if (!observed || !observed.isConnected) schedule()
+      if (!observed?.isConnected) schedule()
     })
     mountObserver.observe(container, { childList: true, subtree: true })
     schedule()
