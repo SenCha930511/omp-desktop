@@ -1,4 +1,5 @@
 use chrono::{DateTime, Datelike, SecondsFormat, TimeZone, Utc};
+use serde_json::error::Category;
 use serde_json::{json, Map, Value};
 use std::alloc::{alloc as rust_alloc, dealloc as rust_dealloc, Layout};
 use std::cell::RefCell;
@@ -182,8 +183,10 @@ fn scan_inner(bytes: &[u8], id: String, created_at: String, updated_at: String, 
         let Ok(text) = std::str::from_utf8(line) else {
             return fallback("utf8");
         };
-        let Ok(value) = serde_json::from_str::<Value>(text) else {
-            continue;
+        let value = match serde_json::from_str::<Value>(text) {
+            Ok(value) => value,
+            Err(error) if error.classify() == Category::Syntax => continue,
+            Err(_) => return fallback("json"),
         };
         let Some(object) = value.as_object() else {
             continue;
