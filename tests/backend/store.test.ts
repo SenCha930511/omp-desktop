@@ -642,6 +642,49 @@ describe('JsonStateStore', () => {
     expect(reset.settings.ompApprovalMode).toBe('inherit')
   })
 
+  it('persists the exact native cached approval choice without rewriting valid state on load', async () => {
+    const dir = makeDirectory()
+    const path = join(dir, 'state.json')
+    writeFileSync(path, JSON.stringify({
+      version: 4,
+      projects: [],
+      settings: { ...defaultSettings(), ompApprovalMode: 'always-ask-cached' },
+      archivedSessions: [],
+      dismissedProjectPaths: [],
+      schedules: [],
+    }))
+    const source = readFileSync(path, 'utf8')
+
+    const store = new JsonStateStore(path)
+    expect(store.getSettings().ompApprovalMode).toBe('always-ask-cached')
+    expect(readFileSync(path, 'utf8')).toBe(source)
+
+    await store.update((state) => { state.settings.ompApprovalMode = 'inherit' })
+    expect(store.getSettings().ompApprovalMode).toBe('inherit')
+    await store.update((state) => { state.settings.ompApprovalMode = 'always-ask-cached' })
+    expect(new JsonStateStore(path).getSettings().ompApprovalMode).toBe('always-ask-cached')
+  })
+
+  it('falls back to inherit for approval aliases, malformed values, and localized strings without mutating state', () => {
+    const dir = makeDirectory()
+    const path = join(dir, 'state.json')
+    const invalidModes: unknown[] = ['cached', 'Always ask (cached)', 'always-ask-cached ', '', '一律詢問（快取）', '总是询问（缓存）', null, 1, true, ['always-ask-cached'], { mode: 'always-ask-cached' }, undefined]
+
+    for (const ompApprovalMode of invalidModes) {
+      writeFileSync(path, JSON.stringify({
+        version: 4,
+        projects: [],
+        settings: { ...defaultSettings(), ompApprovalMode },
+        archivedSessions: [],
+        dismissedProjectPaths: [],
+        schedules: [],
+      }))
+      const source = readFileSync(path, 'utf8')
+      expect(new JsonStateStore(path).getSettings().ompApprovalMode).toBe('inherit')
+      expect(readFileSync(path, 'utf8')).toBe(source)
+    }
+  })
+
   it('migrates the legacy pi harness for projects and the active workspace to omp', () => {
     const dir = makeDirectory()
     const path = join(dir, 'state.json')

@@ -5,6 +5,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentSettings } from '../../src/pages/settings/AgentSettings'
 import { DEFAULT_SETTINGS } from '../../src/lib/data'
+import { I18nProvider } from '../../src/lib/i18n'
 import type { AppSettings } from '../../src/types/api'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
@@ -113,5 +114,58 @@ describe('agent settings reasoning expansion', () => {
     })
 
     expect(onUpdate).toHaveBeenCalledWith({ defaultEffort: 'high' } satisfies Partial<AppSettings>)
+  })
+})
+
+describe('agent approval mode settings', () => {
+  function approvalSelect(): HTMLSelectElement {
+    const select = Array.from(container.querySelectorAll<HTMLSelectElement>('select')).find((candidate) => Array.from(candidate.options).some((option) => option.value === 'always-ask-cached'))
+    if (!select) throw new Error('approval mode select not found')
+    return select
+  }
+
+  it.each([
+    ['en', 'Always ask (cached)', "Use OMP's native cached-approval prompts when a new runtime starts. Running sessions are unchanged."],
+    ['zh-TW', '一律詢問（快取）', '在新執行環境啟動時使用 OMP 原生的快取核准提示。現有工作階段不受影響。'],
+    ['zh-CN', '总是询问（缓存）', '在新运行环境启动时使用 OMP 原生的缓存批准提示。现有会话不受影响。'],
+  ] as const)('renders the cached choice and next-runtime explanation in %s', (locale, label, description) => {
+    act(() => root.render(
+      <I18nProvider preference={locale}>
+        <AgentSettings
+          settings={{ ...DEFAULT_SETTINGS, ompApprovalMode: 'always-ask-cached' }}
+          meta={null}
+          onUpdate={() => undefined}
+          onRefreshHarnesses={async () => undefined}
+        />
+      </I18nProvider>,
+    ))
+
+    const select = approvalSelect()
+    expect(Array.from(select.options).map((option) => option.value)).toEqual(['inherit', 'always-ask', 'always-ask-cached', 'write', 'yolo'])
+    expect(select.value).toBe('always-ask-cached')
+    const cachedOption = select.options[2]
+    expect(cachedOption.textContent).toBe(label)
+    expect(cachedOption.title).toBe(description)
+    expect(container.textContent).toContain(description)
+  })
+
+  it('updates settings to the exact native cached value', () => {
+    const onUpdate = vi.fn()
+    act(() => root.render(
+      <AgentSettings
+        settings={{ ...DEFAULT_SETTINGS, ompApprovalMode: 'inherit' }}
+        meta={null}
+        onUpdate={onUpdate}
+        onRefreshHarnesses={async () => undefined}
+      />,
+    ))
+
+    const select = approvalSelect()
+    act(() => {
+      select.value = 'always-ask-cached'
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+
+    expect(onUpdate).toHaveBeenCalledExactlyOnceWith({ ompApprovalMode: 'always-ask-cached' } satisfies Partial<AppSettings>)
   })
 })

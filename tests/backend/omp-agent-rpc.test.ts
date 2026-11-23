@@ -336,11 +336,17 @@ describe('OMP RPC adapter argv', () => {
     expect(() => OMP_RPC_ADAPTER.buildStartArgs({ ...baseInput, providerId: 'p', modelId: 'model\nid' })).toThrow('Invalid model')
   })
 
-  it('includes --approval-mode only for validated overrides', () => {
-    expect(OMP_RPC_ADAPTER.buildStartArgs(baseInput)).not.toContain('--approval-mode')
-    const args = OMP_RPC_ADAPTER.buildStartArgs({ ...baseInput, approvalMode: 'yolo' })
-    expect(args.slice(-2)).toEqual(['--approval-mode', 'yolo'])
-    expect(() => OMP_RPC_ADAPTER.buildStartArgs({ ...baseInput, approvalMode: 'sometimes' })).toThrow('Invalid approval mode')
+  it.each(['always-ask', 'always-ask-cached', 'write', 'yolo'])('passes exactly one native --approval-mode %s override in the existing position', (approvalMode) => {
+    const args = OMP_RPC_ADAPTER.buildStartArgs({ ...baseInput, approvalMode })
+    expect(args).toEqual(['--mode', 'rpc-ui', '--cwd', '/work/project', '--approval-mode', approvalMode])
+    expect(args.filter((value) => value === '--approval-mode')).toHaveLength(1)
+  })
+
+  it('omits --approval-mode for inherit and rejects aliases, malformed values, and localized labels without downgrading', () => {
+    expect(OMP_RPC_ADAPTER.buildStartArgs(baseInput)).toEqual(['--mode', 'rpc-ui', '--cwd', '/work/project'])
+    for (const approvalMode of ['inherit', 'cached', 'sometimes', 'always-ask-cached ', '', '快取', '快取核准']) {
+      expect(() => OMP_RPC_ADAPTER.buildStartArgs({ ...baseInput, approvalMode })).toThrow('Invalid approval mode')
+    }
   })
 
   it('appends the enabled computer-use skill and forwards the scoped app extensions', () => {
@@ -542,13 +548,27 @@ describe('OMP RPC handshake', () => {
 
     await waitUntil(() => events.some((event) => event.type === 'fake_argv'))
     const argv = (events.find((event) => event.type === 'fake_argv') as { argv: string[] }).argv
-    expect(argv).toContain('--approval-mode')
+    expect(argv.filter((value) => value === '--approval-mode')).toHaveLength(1)
     expect(argv[argv.indexOf('--approval-mode') + 1]).toBe('yolo')
     expect(argv[argv.indexOf('--model') + 1]).toBe('openai-codex/gpt-5.6-luna')
     expect(argv).not.toContain('--provider')
     expect(argv).not.toContain('--skill')
     const extensionPaths = argv.flatMap((value, index) => value === '--extension' ? [argv[index + 1]] : [])
     expect(extensionPaths).toEqual(['/extensions/schedules.ts', '/extensions/browser.ts', '/extensions/ask-user.ts', '/extensions/collaboration.ts'])
+  })
+
+  it('spawns the fake native CLI with exactly the cached approval argv and no extra options', async () => {
+    const fake = fakeOmpAgent()
+    const manager = ompManager(fake.executable, { approvalMode: () => 'always-ask-cached' })
+    const events: Array<Record<string, unknown>> = []
+    manager.setEventSink(({ event }) => events.push(event))
+
+    await manager.start({ cwd: fake.cwd })
+
+    await waitUntil(() => events.some((event) => event.type === 'fake_argv'))
+    const argv = (events.find((event) => event.type === 'fake_argv') as { argv: string[] }).argv
+    expect(argv).toEqual(['--mode', 'rpc-ui', '--cwd', fake.cwd, '--approval-mode', 'always-ask-cached'])
+    expect(argv.filter((value) => value === '--approval-mode')).toHaveLength(1)
   })
 
   it('omits --approval-mode when no override is configured', async () => {
@@ -561,6 +581,7 @@ describe('OMP RPC handshake', () => {
 
     await waitUntil(() => events.some((event) => event.type === 'fake_argv'))
     const argv = (events.find((event) => event.type === 'fake_argv') as { argv: string[] }).argv
+    expect(argv).toEqual(['--mode', 'rpc-ui', '--cwd', fake.cwd])
     expect(argv).not.toContain('--approval-mode')
   })
 

@@ -174,9 +174,10 @@ interface ComposerProps {
 const approvalModeMeta = {
   inherit: { icon: Shield, labelKey: 'composer.approval.inherit', settingsKey: 'agent.approval.inherit', yolo: false },
   'always-ask': { icon: ShieldQuestionMark, labelKey: 'composer.approval.alwaysAsk', settingsKey: 'agent.approval.alwaysAsk', yolo: false },
+  'always-ask-cached': { icon: ShieldQuestionMark, labelKey: 'composer.approval.alwaysAskCached', settingsKey: 'agent.approval.alwaysAskCached', tooltipKey: 'agent.approval.alwaysAskCachedDescription', yolo: false },
   write: { icon: ShieldCheck, labelKey: 'composer.approval.write', settingsKey: 'agent.approval.write', yolo: false },
   yolo: { icon: ShieldAlert, labelKey: 'composer.approval.yolo', settingsKey: 'agent.approval.yolo', yolo: true },
-} as const satisfies Record<OmpApprovalMode, { icon: typeof Shield; labelKey: MessageKey; settingsKey: MessageKey; yolo: boolean }>
+} as const satisfies Record<OmpApprovalMode, { icon: typeof Shield; labelKey: MessageKey; settingsKey: MessageKey; tooltipKey?: MessageKey; yolo: boolean }>
 
 const EMPTY_ANNOTATIONS: BrowserAnnotation[] = []
 const noop = () => undefined
@@ -408,6 +409,7 @@ export const Composer = memo(function Composer({
 
   const [approvalMenuOpen, setApprovalMenuOpen] = useState(false)
   const approvalMenuRef = useRef<HTMLDivElement>(null)
+  const approvalTriggerRef = useRef<HTMLButtonElement>(null)
   useEffect(() => {
     if (!approvalMenuOpen) return
     const close = (event: MouseEvent) => {
@@ -1451,6 +1453,7 @@ export const Composer = memo(function Composer({
             ) : null}
             <div className="approval-mode" ref={approvalMenuRef}>
               <button
+                ref={approvalTriggerRef}
                 type="button"
                 className={`approval-mode-toggle ${approvalMeta.yolo ? 'is-yolo' : ''}`}
                 aria-label={approvalTitle}
@@ -1473,7 +1476,9 @@ export const Composer = memo(function Composer({
                         role="menuitemradio"
                         aria-checked={mode === approvalMode}
                         className={`approval-mode__option ${mode === approvalMode ? 'is-active' : ''}`}
+                        title={'tooltipKey' in meta ? t(meta.tooltipKey) : undefined}
                         onClick={() => {
+                          approvalTriggerRef.current?.focus()
                           setApprovalMenuOpen(false)
                           onApprovalModeChange?.(mode)
                         }}

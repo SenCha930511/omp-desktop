@@ -133,7 +133,7 @@ const OMP_UNSUPPORTED_COMMANDS = new Set([
   'agent_messages_clear',
 ])
 
-const OMP_APPROVAL_MODES = new Set(['always-ask', 'write', 'yolo'])
+const OMP_APPROVAL_MODES = new Set(['always-ask', 'always-ask-cached', 'write', 'yolo'])
 
 // 上游 LivePhase(v18.12.6 packages/tui/src/apps/live-visualizer.ts:15)。
 const LIVE_PHASES: ReadonlySet<string> = new Set(['connecting', 'listening', 'working', 'speaking', 'muted', 'error'])

@@ -22,7 +22,7 @@ export type HarnessId = (typeof HARNESS_IDS)[number]
  * `~/.omp/agent/config.yml`; the other values are passed to the omp CLI as
  * `--approval-mode` when starting an OMP runtime.
  */
-export const OMP_APPROVAL_MODES = ['inherit', 'always-ask', 'write', 'yolo'] as const
+export const OMP_APPROVAL_MODES = ['inherit', 'always-ask', 'always-ask-cached', 'write', 'yolo'] as const
 export type OmpApprovalMode = (typeof OMP_APPROVAL_MODES)[number]
 
 export interface HarnessStatus {
