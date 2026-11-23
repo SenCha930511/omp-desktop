@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -200,6 +201,67 @@ describe('FilePreviewService', () => {
       expect(badTokenResponse.status).toBe(404)
     } finally {
       await service.dispose()
+    }
+  })
+
+  it('supports .jfif and OS-decoded formats such as .heic and .tiff with unsupported fallback', async () => {
+    const { projectDir, projects } = await createAuthorizedFixture()
+    const jfifFile = join(projectDir, 'photo.jfif')
+    const heicFile = join(projectDir, 'photo.heic')
+    const tiffFile = join(projectDir, 'scan.tiff')
+    const brokenHeic = join(projectDir, 'broken.heic')
+
+    writeFileSync(jfifFile, Buffer.from([0xff, 0xd8, 0xff, 0xe0]))
+    writeFileSync(brokenHeic, Buffer.from('not-a-real-heic'))
+
+    const stubService = new FilePreviewService({
+      authorizeProjectPath: (path) => projects.authorizePath(path),
+      windowProvider: () => null,
+      decodeNativeImage: async (target) => {
+        if (target.endsWith('broken.heic')) return null
+        return { mimeType: 'image/png', bytes: Buffer.from([0x89, 0x50, 0x4e, 0x47]) }
+      },
+    })
+
+    expect(await stubService.readFile('photo.jfif', projectDir)).toMatchObject({
+      kind: 'image',
+      mimeType: 'image/jpeg',
+      name: 'photo.jfif',
+    })
+    writeFileSync(heicFile, Buffer.from('placeholder-heic'))
+    expect(await stubService.readFile('photo.heic', projectDir)).toMatchObject({
+      kind: 'image',
+      mimeType: 'image/png',
+      name: 'photo.heic',
+    })
+    expect(await stubService.readFile('broken.heic', projectDir)).toMatchObject({
+      kind: 'unsupported',
+      name: 'broken.heic',
+    })
+
+    if (process.platform === 'darwin') {
+      const samplePng = join(projectDir, 'seed.png')
+      writeFileSync(
+        samplePng,
+        Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64'),
+      )
+      execFileSync('/usr/bin/sips', ['-s', 'format', 'heic', samplePng, '--out', heicFile], { stdio: 'ignore' })
+      execFileSync('/usr/bin/sips', ['-s', 'format', 'tiff', samplePng, '--out', tiffFile], { stdio: 'ignore' })
+
+      const nativeService = new FilePreviewService({
+        authorizeProjectPath: (path) => projects.authorizePath(path),
+        windowProvider: () => null,
+      })
+
+      for (const candidate of [heicFile, tiffFile]) {
+        const result = await nativeService.readFile(candidate)
+        expect(result.kind).toBe('image')
+        if (result.kind === 'image') {
+          expect(result.mimeType).toBe('image/png')
+          expect(Buffer.from(result.base64, 'base64').subarray(0, 4)).toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+        }
+      }
+      expect(await nativeService.readFile(brokenHeic)).toMatchObject({ kind: 'unsupported', name: 'broken.heic' })
     }
   })
 })

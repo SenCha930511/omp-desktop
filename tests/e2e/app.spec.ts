@@ -2481,7 +2481,10 @@ test.describe('OMP Desktop desktop smoke', () => {
     await expect(trigger).toHaveCount(1)
     const pane = await page.locator('.conversation-pane').boundingBox()
     const hud = await page.locator('.transcript-hud').boundingBox()
+    const todoBox = await page.locator('.todo-hud').boundingBox()
+    const triggerBox = await trigger.boundingBox()
     expect(hud!.x + hud!.width).toBeGreaterThan(pane!.x + pane!.width - 20)
+    expect(todoBox!.x + todoBox!.width).toBeLessThanOrEqual(triggerBox!.x)
 
     await bar.click()
     await expect(bar).toHaveAttribute('aria-expanded', 'false')

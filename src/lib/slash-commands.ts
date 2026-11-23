@@ -227,15 +227,12 @@ export function slashSuggestions(commands: SlashCommand[], value: string) {
 
 // --- 忙碌時的 slash 分派 ---
 //
-// 忙碌(turn 進行中)不再一律排隊等 idle,依命令語意分三類:
-// - respond-local:TUI overlay 型唯讀查詢。上游 busy 時會拒絕無
-//   streamingBehavior 的 prompt,但這些命令的資料本就來自 get_state /
-//   get_session_stats / 服務層級快照(全部唯讀、busy 可用),GUI 直接以
-//   runtime 快照本地呈現,不送 RPC。/status 因上游 RPC 無文字處理器,
-//   空閒時也走同一本地路徑(slash 與 GUI 操作共用入口)。
-// - agent-control:agent 控制有專用 busy-safe RPC(/pause、/goal get 對應
-//   goal RPC),runtime 忙碌時直接送達。
-// - queue-until-idle:其餘命令上游 busy 語意未查證,保守維持排隊等 idle。
+// 忙碌(turn 進行中)不排進 steer 或 local queue,依命令語意即時分派:
+// - respond-local:TUI overlay 型唯讀查詢,直接以 runtime 快照本地呈現。
+// - agent-control:agent 控制專用 busy-safe RPC(/pause、/goal)。
+// - gui-action:桌面版視窗操作(/tree、/new、/resume、/login…)。
+// - send-direct:其餘 slash 命令(含 /model、/effort、/tools、/compact、
+//   skill 與模板展開命令等)直接送到執行中的 runtime,與 CLI 一致。
 /** GUI 自有入口處理的 slash 動作:不送模型,由 sendPrompt 直接分派。 */
 export type GuiSlashAction =
   // tree/branch/rewind → 開啟 SessionTreeDialog(dialog 自處理上游
@@ -258,7 +255,7 @@ export type BusySlashDisposition =
   | { kind: 'respond-local' }
   | { kind: 'agent-control'; command: Record<string, unknown> }
   | { kind: 'gui-action'; action: GuiSlashAction; target?: string }
-  | { kind: 'queue-until-idle' }
+  | { kind: 'send-direct' }
   // /goal 用法錯誤(缺 objective、不支援的 budget 子命令等):不送上游、
   // 也不排隊(idle 後會把用法錯字送成模型輸入),原地以 i18n hint 回報。
   | { kind: 'goal-usage-error'; messageKey: string }
@@ -329,7 +326,7 @@ export function alwaysLocalSlashCommand(name: string, catalog?: readonly SlashCo
 
 export function busySlashDisposition(prompt: string, catalog?: readonly SlashCommand[]): BusySlashDisposition {
   const invocation = parseSlashInvocation(prompt, catalog)
-  if (!invocation) return { kind: 'queue-until-idle' }
+  if (!invocation) return { kind: 'send-direct' }
   // 上游 dispatch 以主名為主鍵、別名指向同一命令;GUI 分類以 catalog 反查
   // 主名,同時保留打出原名(GUI 自有命令如 /status 優先於上游同名別名)。
   const typedName = invocation.name.toLowerCase()
@@ -362,7 +359,7 @@ export function busySlashDisposition(prompt: string, catalog?: readonly SlashCom
   const goalDispatch = goalSlashDispatch(typedName, args) ?? goalSlashDispatch(name, args)
   if (goalDispatch?.kind === 'rpc') return { kind: 'agent-control', command: goalDispatch.command }
   if (goalDispatch?.kind === 'error') return { kind: 'goal-usage-error', messageKey: goalDispatch.messageKey }
-  return { kind: 'queue-until-idle' }
+  return { kind: 'send-direct' }
 }
 
 /**

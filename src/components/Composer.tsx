@@ -1645,7 +1645,7 @@ export const Composer = memo(function Composer({
                   type="button"
                   className="send-button"
                   aria-label={t('composer.send')}
-                  title={messageEnterAction === 'queue' ? t('composer.send.queued') : t('composer.send.steer')}
+                  title={value.trim().startsWith('/') ? t('composer.send') : messageEnterAction === 'queue' ? t('composer.send.queued') : t('composer.send.steer')}
                   disabled={processingImages || submitting || loading || disabled}
                   onClick={() => void submit()}
                 >

@@ -132,7 +132,7 @@ interface MenuPoint {
 function fileTabIcon(filePath: string) {
   const lower = filePath.toLowerCase()
   if (lower.endsWith('.html') || lower.endsWith('.htm')) return Globe
-  if (/\.(png|jpe?g|gif|webp|svg|bmp|ico|avif)$/.test(lower)) return ImageIcon
+  if (/\.(png|jpe?g|jfif|gif|webp|svg|bmp|ico|avif|heic|heif|tiff?|jp2|icns|psd|tga|dng)$/.test(lower)) return ImageIcon
   if (lower.endsWith('.json') || lower.endsWith('.jsonc') || lower.endsWith('.jsonl')) return FileJson2
   if (/\.(tsx?|jsx?|mts|cts|css|scss|less|py|rs|go|java|kt|swift|c|cpp|h|cs|rb|php|sh|bash|zsh|sql|ya?ml|toml|vue|svelte|astro)$/.test(lower)) {
     return Code2

@@ -170,16 +170,20 @@ describe('busy queue parity between text and images', () => {
     expect(state.queuePrompt).toHaveBeenCalledWith('Steer this', 'steer', expect.any(Array), expect.any(Number))
   })
 
-  it('keeps compacts and slash commands deferred in the local queue while busy', async () => {
+  it('dispatches /compact and slash commands directly while busy without waiting in the queue', async () => {
     const busy = runtime()
     const state = fixture({ attachedRuntime: busy, listedRuntimes: [busy] })
 
     await state.actions.sendPrompt('/compact')
     await state.actions.sendPrompt('/model auto')
 
-    expect(state.command).not.toHaveBeenCalled()
-    expect(state.queuePrompt).toHaveBeenCalledWith('/compact', 'queue')
-    expect(state.queuePrompt).toHaveBeenCalledWith('/model auto', 'queue')
+    expect(state.queuePrompt).not.toHaveBeenCalled()
+    expect(state.command).toHaveBeenNthCalledWith(1, 'busy-runtime', { type: 'compact' })
+    expect(state.command).toHaveBeenNthCalledWith(2, 'busy-runtime', {
+      type: 'prompt',
+      message: '/model auto',
+      streamingBehavior: 'followUp',
+    })
   })
 
   it('answers read-only slash queries from the runtime snapshot without queueing or an RPC', async () => {
@@ -218,17 +222,24 @@ describe('busy queue parity between text and images', () => {
     expect(state.messages().filter((message) => message.role === 'system')).toHaveLength(1)
   })
 
-  it('still queues read-only queries whose data is not in the runtime snapshot', async () => {
+  it('sends server-side read-only slash commands directly while busy too', async () => {
     const busy = runtime()
     const state = fixture({ attachedRuntime: busy, listedRuntimes: [busy] })
 
-    // /tools、/jobs、/todo 的資料不在 runtime 快照內,上游 busy 語意未查證 → 保守排隊
     await state.actions.sendPrompt('/tools')
     await state.actions.sendPrompt('/todo')
 
-    expect(state.command).not.toHaveBeenCalled()
-    expect(state.queuePrompt).toHaveBeenCalledWith('/tools', 'queue')
-    expect(state.queuePrompt).toHaveBeenCalledWith('/todo', 'queue')
+    expect(state.queuePrompt).not.toHaveBeenCalled()
+    expect(state.command).toHaveBeenNthCalledWith(1, 'busy-runtime', {
+      type: 'prompt',
+      message: '/tools',
+      streamingBehavior: 'followUp',
+    })
+    expect(state.command).toHaveBeenNthCalledWith(2, 'busy-runtime', {
+      type: 'prompt',
+      message: '/todo',
+      streamingBehavior: 'followUp',
+    })
     expect(state.messages().filter((message) => message.role === 'system')).toHaveLength(0)
   })
 

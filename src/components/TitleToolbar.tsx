@@ -317,9 +317,9 @@ function TitleToolbarView({
       <div className="title-toolbar__identity">
         <strong>{view === 'session' ? (sessionTitle ?? project?.name ?? productName) : (project?.name ?? t(viewTitles[view]))}</strong>
         {(gitBranch ?? project?.gitBranch) && view === 'session' ? (
-          <span className="branch-pill">
+          <span className="branch-pill" title={gitBranch ?? project?.gitBranch}>
             <GitBranch size={12} />
-            {gitBranch ?? project?.gitBranch}
+            <span className="branch-pill__name">{gitBranch ?? project?.gitBranch}</span>
           </span>
         ) : null}
       </div>

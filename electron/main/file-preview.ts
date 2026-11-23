@@ -1,10 +1,12 @@
-import { dialog, type BrowserWindow, type OpenDialogOptions } from 'electron'
+import { dialog, nativeImage, type BrowserWindow, type OpenDialogOptions } from 'electron'
 import { randomBytes } from 'node:crypto'
 import { createServer, type Server } from 'node:http'
-import { open as openFileHandle, lstat, realpath } from 'node:fs/promises'
-import { basename, dirname, extname, isAbsolute, relative, resolve } from 'node:path'
+import { lstat, mkdtemp, open as openFileHandle, readFile, realpath, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { FilePreviewPayload, PickedFileRecord } from '../../src/types/api'
+import { processFailureReason, runProcess } from './process-utils'
 import { requireExistingPath, requireString } from './validation'
 
 export const MAX_TEXT_PREVIEW_BYTES = 2 * 1024 * 1024
@@ -18,6 +20,7 @@ const IMAGE_MIME_TYPES: Readonly<Record<string, string>> = {
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
+  '.jfif': 'image/jpeg',
   '.gif': 'image/gif',
   '.webp': 'image/webp',
   '.svg': 'image/svg+xml',
@@ -25,6 +28,10 @@ const IMAGE_MIME_TYPES: Readonly<Record<string, string>> = {
   '.ico': 'image/x-icon',
   '.avif': 'image/avif',
 }
+
+const TRANSCODED_IMAGE_EXTENSIONS = new Set([
+  '.heic', '.heif', '.tif', '.tiff', '.jp2', '.icns', '.psd', '.tga', '.dng',
+])
 
 const ASSET_MIME_TYPES: Readonly<Record<string, string>> = {
   '.html': 'text/html; charset=utf-8',
@@ -68,6 +75,56 @@ export interface FilePreviewDependencies {
   windowProvider: () => BrowserWindow | null
   openDialog?: (options: OpenDialogOptions) => Promise<{ canceled: boolean; filePaths: string[] }>
   enableHtmlServer?: boolean
+  decodeNativeImage?: (canonicalPath: string, extension: string) => Promise<{ mimeType: string; bytes: Buffer } | null>
+}
+
+async function decodeOsImage(canonicalPath: string): Promise<{ mimeType: string; bytes: Buffer } | null> {
+  if (process.platform === 'darwin') {
+    const workDir = await mkdtemp(join(tmpdir(), 'omp-img-'))
+    try {
+      const pngOut = join(workDir, 'preview.png')
+      const pngOutcome = await runProcess('/usr/bin/sips', ['-s', 'format', 'png', canonicalPath, '--out', pngOut], { timeoutMs: 15_000 })
+      if (!processFailureReason(pngOutcome)) {
+        const pngBytes = await readFile(pngOut).catch(() => null)
+        if (pngBytes && pngBytes.length > 0 && pngBytes.length <= MAX_IMAGE_PREVIEW_BYTES) {
+          return { mimeType: 'image/png', bytes: pngBytes }
+        }
+      }
+      const jpgOut = join(workDir, 'preview.jpg')
+      const jpgOutcome = await runProcess(
+        '/usr/bin/sips',
+        ['-s', 'format', 'jpeg', '-s', 'formatOptions', '88', canonicalPath, '--out', jpgOut],
+        { timeoutMs: 15_000 },
+      )
+      if (!processFailureReason(jpgOutcome)) {
+        const jpgBytes = await readFile(jpgOut).catch(() => null)
+        if (jpgBytes && jpgBytes.length > 0 && jpgBytes.length <= MAX_IMAGE_PREVIEW_BYTES) {
+          return { mimeType: 'image/jpeg', bytes: jpgBytes }
+        }
+      }
+    } finally {
+      await rm(workDir, { recursive: true, force: true }).catch(() => undefined)
+    }
+    return null
+  }
+  if (process.platform === 'win32') {
+    try {
+      const thumb = await nativeImage.createThumbnailFromPath(canonicalPath, { width: 2048, height: 2048 })
+      if (!thumb.isEmpty()) {
+        const pngBytes = thumb.toPNG()
+        if (pngBytes.length > 0 && pngBytes.length <= MAX_IMAGE_PREVIEW_BYTES) {
+          return { mimeType: 'image/png', bytes: pngBytes }
+        }
+        const jpgBytes = thumb.toJPEG(88)
+        if (jpgBytes.length > 0 && jpgBytes.length <= MAX_IMAGE_PREVIEW_BYTES) {
+          return { mimeType: 'image/jpeg', bytes: jpgBytes }
+        }
+      }
+    } catch {
+      return null
+    }
+  }
+  return null
 }
 
 interface HtmlPreviewGrant {
@@ -283,9 +340,9 @@ export class FilePreviewService {
       title: 'Open file',
       properties: ['openFile'],
       filters: [
-        { name: 'Supported files', extensions: ['md', 'markdown', 'mdx', 'txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'json', 'ts', 'tsx', 'js', 'jsx', 'css', 'html', 'yml', 'yaml'] },
+        { name: 'Supported files', extensions: ['md', 'markdown', 'mdx', 'txt', 'pdf', 'png', 'jpg', 'jpeg', 'jfif', 'gif', 'webp', 'svg', 'heic', 'heif', 'tif', 'tiff', 'json', 'ts', 'tsx', 'js', 'jsx', 'css', 'html', 'yml', 'yaml'] },
         { name: 'Documents & Text', extensions: ['md', 'markdown', 'mdx', 'txt', 'pdf', 'log', 'csv', 'json', 'yaml', 'yml', 'toml', 'xml'] },
-        { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif'] },
+        { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'jfif', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif', 'heic', 'heif', 'tif', 'tiff'] },
         { name: 'All files', extensions: ['*'] },
       ],
     }
@@ -336,6 +393,24 @@ export class FilePreviewService {
       }
       const bytes = await readBoundedBytes(canonical, MAX_IMAGE_PREVIEW_BYTES)
       return { kind: 'image', path: canonical, name, mimeType: imageMimeType, base64: bytes.toString('base64'), sizeBytes }
+    }
+
+    if (TRANSCODED_IMAGE_EXTENSIONS.has(extension)) {
+      if (sizeBytes > MAX_PDF_PREVIEW_BYTES) {
+        return { kind: 'too-large', path: canonical, name, sizeBytes, maxBytes: MAX_PDF_PREVIEW_BYTES }
+      }
+      const decoded = await (this.dependencies.decodeNativeImage ?? decodeOsImage)(canonical, extension)
+      if (!decoded || decoded.bytes.length === 0 || decoded.bytes.length > MAX_IMAGE_PREVIEW_BYTES) {
+        return { kind: 'unsupported', path: canonical, name, sizeBytes, extension }
+      }
+      return {
+        kind: 'image',
+        path: canonical,
+        name,
+        mimeType: decoded.mimeType,
+        base64: decoded.bytes.toString('base64'),
+        sizeBytes,
+      }
     }
 
     if (MARKDOWN_EXTENSIONS.has(extension)) {
