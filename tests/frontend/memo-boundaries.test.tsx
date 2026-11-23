@@ -95,8 +95,11 @@ afterEach(async () => {
 })
 
 const renderApp = async () => {
-  // Resolve the lazy transcript chunk up front so its Suspense boundary settles on mount.
-  await import('../../src/components/ConversationTranscript')
+  // Resolve the lazy transcript and composer chunks up front so their Suspense boundaries settle on mount.
+  await Promise.all([
+    import('../../src/components/ConversationTranscript'),
+    import('../../src/components/Composer'),
+  ])
   await act(async () => { root.render(<App />) })
   await act(async () => {})
 }

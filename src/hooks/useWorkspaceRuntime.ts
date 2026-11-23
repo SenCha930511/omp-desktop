@@ -395,25 +395,18 @@ export function useWorkspaceRuntime({
 
     const sessionKey = `${selected.generation}\0${selected.sessionFile}`
     const usePagedInitialRead = !reconciliation
-      && typeof bridge.sessions.readPage === 'function'
+      && typeof bridge.sessions?.readPage === 'function'
       && pagedSessionKeyRef.current !== sessionKey
 
     void runTranscriptRead({
       read: async (): Promise<{ messages: TranscriptMessage[]; pagination?: HistoryPaginationState }> => {
+        let pagination: HistoryPaginationState | undefined
         if (usePagedInitialRead) {
           const page = await bridge.sessions.readPage(selected.sessionFile!)
-          if (page.status === 'ok') {
-            return {
-              messages: page.messages,
-              pagination: applyPageResultToPagination(INITIAL_HISTORY_PAGINATION, page, false),
-            }
-          }
-          return {
-            messages: await bridge.sessions.read(selected.sessionFile!),
-            pagination: applyPageResultToPagination(INITIAL_HISTORY_PAGINATION, page, false),
-          }
+          pagination = applyPageResultToPagination(INITIAL_HISTORY_PAGINATION, page, false)
+          if (page.status === 'ok') return { messages: page.messages, pagination }
         }
-        return { messages: await bridge.sessions.read(selected.sessionFile!) }
+        return { messages: await bridge.sessions.read(selected.sessionFile!), pagination }
       },
       isCurrent: () => transcriptLoadRef.current === pendingLoad
         && workspaceRef.current.generation === pendingLoad.generation
