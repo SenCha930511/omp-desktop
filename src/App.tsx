@@ -159,6 +159,8 @@ export default function App() {
   // usePluginSkills 之前初始化,故以 ref 延後解析。
   const pluginSkillsRefreshRef = useRef<(() => Promise<void>) | null>(null)
   const [activeProjectScriptRun, setActiveProjectScriptRun] = useState<ActiveProjectScriptRun>()
+  const [previewFiles, setPreviewFiles] = useState<string[]>([])
+  const [activePreviewFile, setActivePreviewFile] = useState<string | null>(null)
   const activeProjectScriptRunRef = useRef<ActiveProjectScriptRun | undefined>(undefined)
   const projectScriptStartingRef = useRef(false)
   activeProjectScriptRunRef.current = activeProjectScriptRun
@@ -734,6 +736,35 @@ export default function App() {
       if (tab !== 'sidechat' && workspace.activeSessionId) sideQuestions.clear(workspace.activeSessionId)
     },
     [settingsState.closeOtherInspectorTabs, sideQuestions, workspace.activeSessionId],
+  )
+  const openFileInInspector = useCallback(
+    (filePath: string) => {
+      const normalized = filePath.trim()
+      if (!normalized) return
+      setPreviewFiles((current) => {
+        if (current.includes(normalized)) return current
+        const next = [...current, normalized]
+        return next.length > 12 ? next.slice(next.length - 12) : next
+      })
+      setActivePreviewFile(normalized)
+      openInspectorTab('preview')
+    },
+    [openInspectorTab],
+  )
+  const closePreviewFile = useCallback(
+    (filePath: string) => {
+      setPreviewFiles((current) => {
+        const index = current.indexOf(filePath)
+        if (index === -1) return current
+        const next = current.filter((item) => item !== filePath)
+        setActivePreviewFile((active) => {
+          if (active !== filePath) return active
+          return next[Math.min(index, next.length - 1)] ?? null
+        })
+        return next
+      })
+    },
+    [],
   )
   const toggleInspectorPanel = useCallback(() => {
     if (!settingsState.inspectorOpen || layout.inspectorSuppressed) layout.setSmallestInspectorAllowed(true)
@@ -1476,6 +1507,8 @@ export default function App() {
                           onDismissChanges={dismissChangesCard}
                           queuedMessageCount={queuedMessages.length + harnessQueuedMessageCount}
                           onOpenSessionReference={openSessionReference}
+                          cwd={activeCwd}
+                          onOpenFile={openFileInInspector}
                         />
                       </Suspense>
                       {btwHint ? (
@@ -1672,6 +1705,11 @@ export default function App() {
                         onOpenExternal={openExternal}
                         onRevealPath={revealInFileManager}
                         onGrantProject={grantActiveProject}
+                        previewFiles={previewFiles}
+                        activePreviewFile={activePreviewFile}
+                        onSelectPreviewFile={setActivePreviewFile}
+                        onClosePreviewFile={closePreviewFile}
+                        onOpenPreviewFile={openFileInInspector}
                         sideChat={inspectorSideChat}
                         subagents={inspectorSubagents}
                         overlay={layout.compactLayout}

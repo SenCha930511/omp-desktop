@@ -1,5 +1,5 @@
-import { AlertCircle, Ban, Check, CheckCircle2, FileText, FolderOpen, GitCompare, Globe, ListTodo, LoaderCircle, MessageSquareMore, MoreVertical, Plus, Search, Terminal, Users, X } from 'lucide-react'
-import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { AlertCircle, Ban, Check, CheckCircle2, Eye, FileText, FolderOpen, GitCompare, Globe, ListTodo, LoaderCircle, MessageSquareMore, MoreVertical, Plus, Search, Terminal, Users, X } from 'lucide-react'
+import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { TranscriptStore } from '@/app/transcript-store'
 import type { StampedPointerEvent } from '@/hooks/useAgentBrowserTabs'
 import type { BrowserAnnotationsApi } from '@/hooks/useBrowserAnnotations'
@@ -19,6 +19,8 @@ import { ChangesPanel } from './inspector/ChangesPanel'
 import { FilesPanel } from './inspector/FilesPanel'
 import { SubagentsTabPanel } from './inspector/SubagentsTabPanel'
 import { IconButton, useFocusTrap } from './ui'
+
+const FilePreviewPanel = lazy(() => import('./inspector/FilePreviewPanel').then((module) => ({ default: module.FilePreviewPanel })))
 
 export interface InspectorProps {
   platform?: NodeJS.Platform
@@ -58,6 +60,11 @@ export interface InspectorProps {
   onOpenExternal(url: string): void
   onRevealPath(path: string): void
   onGrantProject(): Promise<void> | void
+  previewFiles?: string[]
+  activePreviewFile?: string | null
+  onSelectPreviewFile?(path: string): void
+  onClosePreviewFile?(path: string): void
+  onOpenPreviewFile?(path: string): void
   /** Side-question conversation mounted when the Side questions tab is open. */
   sideChat?: SideChatPanelProps
   /** Session roster and selected agent transcript for the Agents tab. */
@@ -68,11 +75,13 @@ export interface InspectorProps {
 const NOOP_SUBSCRIBE = () => () => undefined
 const EMPTY_MESSAGES: TranscriptMessage[] = []
 const EMPTY_HISTORY: readonly CommandResult[] = []
+const EMPTY_PREVIEW_FILES: string[] = []
 
-const TAB_IDS: InspectorTab[] = ['changes', 'files', 'browser', 'sidechat', 'agents', 'tasks']
+const TAB_IDS: InspectorTab[] = ['changes', 'files', 'preview', 'browser', 'sidechat', 'agents', 'tasks']
 const TAB_ICONS = {
   changes: GitCompare,
   files: FolderOpen,
+  preview: Eye,
   browser: Globe,
   sidechat: MessageSquareMore,
   agents: Users,
@@ -139,6 +148,11 @@ export const Inspector = memo(function Inspector({
   onOpenExternal,
   onRevealPath,
   onGrantProject,
+  previewFiles = EMPTY_PREVIEW_FILES,
+  activePreviewFile = null,
+  onSelectPreviewFile,
+  onClosePreviewFile,
+  onOpenPreviewFile,
   sideChat,
   subagents,
   overlay = false,
@@ -357,7 +371,21 @@ export const Inspector = memo(function Inspector({
         />
       )
     }
-    if (tab === 'files') return <FilesPanel project={project} git={git} onReveal={onRevealPath} />
+    if (tab === 'files') return <FilesPanel project={project} git={git} onReveal={onRevealPath} onOpenFile={onOpenPreviewFile} />
+    if (tab === 'preview') {
+      return (
+        <Suspense fallback={null}>
+          <FilePreviewPanel
+            files={previewFiles}
+            activeFile={activePreviewFile}
+            onSelectFile={(path) => onSelectPreviewFile?.(path)}
+            onCloseFile={(path) => onClosePreviewFile?.(path)}
+            onOpenFile={(path) => onOpenPreviewFile?.(path)}
+            onReveal={onRevealPath}
+          />
+        </Suspense>
+      )
+    }
     if (tab === 'sidechat') return sideChat ? <SideChatPanel {...sideChat} /> : null
     if (tab === 'agents') return subagents ? <SubagentsTabPanel {...subagents} /> : null
     return <BackgroundTasksPanel tasks={taskItems} hasRuntime={hasRuntime} onCancelTask={onCancelBackgroundTask} onRefreshTasks={onRefreshBackgroundTasks} />
