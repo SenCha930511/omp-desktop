@@ -4,6 +4,7 @@ import { createAssistantTurnCoalescer } from '@/lib/assistant-turns'
 import { HARNESS_SHORT_NAMES } from '@/lib/harness'
 import { useI18n } from '@/lib/i18n'
 import { MarkdownWorkspaceProvider } from '@/lib/markdown-workspace'
+import type { HistoryPaginationState } from '@/lib/session-pagination'
 import type { GitStatus, HarnessId, TranscriptMessage } from '@/types/api'
 import { ChangesCard } from './ChangesCard'
 import { ErrorBoundary } from './ErrorBoundary'
@@ -47,6 +48,9 @@ export interface TranscriptProps {
   onOpenSessionReference?(sessionId: string, harness: HarnessId): void
   cwd?: string
   onOpenFile?(path: string): void
+  historyPagination?: HistoryPaginationState
+  onLoadOlderHistory?(): void
+  onReloadHistory?(): void
   onRetry?(): Promise<void>
   onRestorePrompt?(prompt: string): void
 }
@@ -97,6 +101,9 @@ function TranscriptView({
   onOpenSessionReference,
   cwd,
   onOpenFile,
+  historyPagination,
+  onLoadOlderHistory,
+  onReloadHistory,
   followKey,
   onRetry,
   onRestorePrompt,
@@ -104,7 +111,7 @@ function TranscriptView({
   const { t } = useI18n()
   const coalesce = useMemo(createAssistantTurnCoalescer, [])
   const groupedMessages = useMemo(() => coalesce(messages), [coalesce, messages])
-  const { announcement, awayFromBottom, hiddenCount, hiddenAfter, scrollRef, scrollToBottom, scrolled, showEarlier, showNewer, revealIndex, updatePinnedState, visibleMessages } = useTranscriptScroll(groupedMessages, visible, followKey)
+  const { announcement, awayFromBottom, hiddenCount, hiddenAfter, scrollRef, scrollToBottom, scrolled, showEarlier, showNewer, preparePrependAnchor, revealIndex, updatePinnedState, visibleMessages } = useTranscriptScroll(groupedMessages, visible, followKey)
   const search = useTranscriptSearch(groupedMessages, scrollRef, revealIndex, visible)
   const revealIndexRef = useRef(revealIndex)
   revealIndexRef.current = revealIndex
@@ -210,6 +217,58 @@ function TranscriptView({
             <button type="button" className="transcript__show-earlier" onClick={showEarlier}>
               {t('transcript.showEarlier', { count: Math.min(250, hiddenCount) })}
             </button>
+          ) : historyPagination?.staleReason ? (
+            <div className="transcript__pagination-notice" role="status">
+              <span>{t('transcript.pagination.stale')}</span>
+              {onReloadHistory ? (
+                <button type="button" className="transcript__show-earlier" onClick={onReloadHistory}>
+                  {t('transcript.pagination.reload')}
+                </button>
+              ) : null}
+            </div>
+          ) : historyPagination?.error ? (
+            <div className="transcript__pagination-notice" role="status">
+              <span>{t('transcript.pagination.error', { error: historyPagination.error })}</span>
+              {onLoadOlderHistory ? (
+                <button
+                  type="button"
+                  className="transcript__show-earlier"
+                  onClick={() => {
+                    preparePrependAnchor()
+                    onLoadOlderHistory()
+                  }}
+                >
+                  {t('transcript.pagination.retry')}
+                </button>
+              ) : null}
+            </div>
+          ) : historyPagination?.older.state === 'ready' && onLoadOlderHistory ? (
+            <button
+              type="button"
+              className="transcript__show-earlier"
+              disabled={historyPagination.loadingOlder}
+              onClick={() => {
+                preparePrependAnchor()
+                onLoadOlderHistory()
+              }}
+            >
+              {historyPagination.loadingOlder ? t('transcript.pagination.loading') : t('transcript.pagination.loadOlder')}
+            </button>
+          ) : historyPagination?.older.state === 'unavailable' ? (
+            <div className="transcript__pagination-notice" role="status">
+              <span>
+                {historyPagination.older.reason === 'streaming'
+                  ? t('transcript.pagination.unavailableStreaming')
+                  : historyPagination.older.reason === 'file-changing'
+                    ? t('transcript.pagination.unavailableFileChanging')
+                    : t('transcript.pagination.unavailableBudget')}
+              </span>
+              {(historyPagination.older.reason === 'streaming' || historyPagination.older.reason === 'file-changing') && onReloadHistory ? (
+                <button type="button" className="transcript__show-earlier" onClick={onReloadHistory}>
+                  {t('transcript.pagination.reload')}
+                </button>
+              ) : null}
+            </div>
           ) : null}
           {visibleMessages.map((message) => (
             <SearchMessage key={message.id} id={message.id} reveal={search.matchId === message.id}>

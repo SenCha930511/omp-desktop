@@ -1509,6 +1509,9 @@ export default function App() {
                           onOpenSessionReference={openSessionReference}
                           cwd={activeCwd}
                           onOpenFile={openFileInInspector}
+                          historyPagination={workspace.historyPagination}
+                          onLoadOlderHistory={workspace.loadOlderHistory}
+                          onReloadHistory={workspace.reloadHistory}
                         />
                       </Suspense>
                       {btwHint ? (

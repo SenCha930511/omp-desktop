@@ -19,6 +19,7 @@ export function useTranscriptScroll(messages: TranscriptMessage[], active = true
   const pinnedToBottomRef = useRef(true)
   const lastScrollTopRef = useRef(0)
   const lastScrollHeightRef = useRef(0)
+  const prependAnchorRef = useRef<{ firstId: string | undefined; count: number; scrollTop: number; scrollHeight: number } | null>(null)
   const manualScrollUntilRef = useRef(0)
   const smoothScrollUntilRef = useRef(0)
   /** Set while the reader expanded a work record: the accordion's growth
@@ -42,6 +43,7 @@ export function useTranscriptScroll(messages: TranscriptMessage[], active = true
     previousStreamingRef.current = false
     pinnedToBottomRef.current = true
     lastScrollTopRef.current = 0
+    prependAnchorRef.current = null
     manualScrollUntilRef.current = 0
     readerExpandedRef.current = false
     setVisibleLimit(250)
@@ -63,6 +65,23 @@ export function useTranscriptScroll(messages: TranscriptMessage[], active = true
       setScrolled(scrollRef.current.scrollTop > 8)
     }
   }, [active, windowEnd])
+
+  useLayoutEffect(() => {
+    const anchor = prependAnchorRef.current
+    const scroller = scrollRef.current
+    if (!anchor || !scroller || !active) return
+    const firstId = messages[0]?.id
+    if (messages.length > anchor.count && firstId !== anchor.firstId) {
+      const delta = scroller.scrollHeight - anchor.scrollHeight
+      const nextTop = Math.max(0, anchor.scrollTop + delta)
+      scroller.scrollTop = nextTop
+      lastScrollTopRef.current = nextTop
+      lastScrollHeightRef.current = scroller.scrollHeight
+      pinnedToBottomRef.current = false
+      setScrolled(nextTop > 8)
+      prependAnchorRef.current = null
+    }
+  }, [active, messages])
 
   useEffect(() => {
     const firstLoadedTranscript = previousCountRef.current === 0 && messages.length > 0
@@ -276,7 +295,21 @@ export function useTranscriptScroll(messages: TranscriptMessage[], active = true
     setAwayFromBottom(false)
   }
 
-  const showEarlier = () => setVisibleLimit((limit) => Math.min(messages.length, limit + 250))
+  const preparePrependAnchor = () => {
+    const scroller = scrollRef.current
+    if (!scroller) return
+    prependAnchorRef.current = {
+      firstId: messages[0]?.id,
+      count: messages.length,
+      scrollTop: scroller.scrollTop,
+      scrollHeight: scroller.scrollHeight,
+    }
+  }
+
+  const showEarlier = () => {
+    preparePrependAnchor()
+    setVisibleLimit((limit) => Math.min(messages.length, limit + 250))
+  }
   const showNewer = () => { setWindowEnd(Math.min(messages.length, end + 250)); setVisibleLimit(250) }
   const revealIndex = (index: number) => {
     if (index < 0) return
@@ -291,5 +324,5 @@ export function useTranscriptScroll(messages: TranscriptMessage[], active = true
     }
   }
 
-  return { announcement, awayFromBottom, hasNewContent, hiddenCount, hiddenAfter, scrollRef, scrollToBottom, scrolled, showEarlier, showNewer, revealIndex, updatePinnedState, visibleMessages }
+  return { announcement, awayFromBottom, hasNewContent, hiddenCount, hiddenAfter, scrollRef, scrollToBottom, scrolled, showEarlier, showNewer, preparePrependAnchor, revealIndex, updatePinnedState, visibleMessages }
 }

@@ -5,6 +5,9 @@
 .transcript__inner { min-height: 100%; padding: 0 28px; }
 .transcript__show-earlier { min-height: 30px; display: block; margin: 16px auto 26px; padding: 0 12px; border: 1px solid var(--border); border-radius: 999px; color: var(--text-secondary); background: var(--surface-raised); font-size: 11px; }
 .transcript__show-earlier:hover { color: var(--text); background: var(--surface-hover); }
+.transcript__show-earlier:disabled { opacity: .6; cursor: wait; }
+.transcript__pagination-notice { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 10px; margin: 14px auto 24px; padding: 8px 14px; border: 1px solid var(--border); border-radius: 10px; color: var(--text-secondary); background: var(--surface-subtle); font-size: 11.5px; }
+.transcript__pagination-notice .transcript__show-earlier { margin: 0; }
 .transcript-loading { display: flex; align-items: center; justify-content: center; gap: 7px; padding: 40px; color: var(--text-tertiary); }
 .session-welcome { max-width: 520px; margin: min(22vh, 170px) auto 0; display: flex; flex-direction: column; align-items: center; text-align: center; }
 .session-welcome h1 { margin: 18px 0 8px; font-size: 24px; line-height: 1.2; font-weight: 560; letter-spacing: -.02em; }
