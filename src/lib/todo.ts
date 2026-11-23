@@ -1,3 +1,5 @@
+import type { MessagePart, TranscriptMessage } from '@/types/api'
+
 /**
  * OMP renders its `todo` tool result as a fixed human-readable block:
  *
@@ -52,4 +54,29 @@ export function parseTodoToolResult(text: string): TodoPhase[] {
     }
   }
   return phases.filter((phase) => phase.tasks.length > 0)
+}
+
+const EMPTY_TODO_PHASES: TodoPhase[] = []
+const todoPhasesByPart = new WeakMap<MessagePart, TodoPhase[]>()
+
+/** Latest todo state across the whole transcript: the plan shown in the HUD. */
+export function latestTodoPhases(messages: readonly TranscriptMessage[]): TodoPhase[] {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    // Malformed rows (the per-message error boundary swaps in broken payloads)
+    // must not take the whole HUD down with them.
+    const parts = messages[index]?.parts
+    if (!Array.isArray(parts)) continue
+    for (const part of parts) {
+      if (part.type !== 'toolResult' || part.name !== 'todo') continue
+      const cached = todoPhasesByPart.get(part)
+      if (cached) {
+        if (cached.length > 0) return cached
+        continue
+      }
+      const phases = parseTodoToolResult(part.text)
+      todoPhasesByPart.set(part, phases)
+      if (phases.length > 0) return phases
+    }
+  }
+  return EMPTY_TODO_PHASES
 }

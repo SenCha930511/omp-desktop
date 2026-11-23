@@ -1,27 +1,11 @@
 import { Check, ChevronDown, ListTodo } from 'lucide-react'
 import { memo, useMemo, useState } from 'react'
 import { useI18n } from '@/lib/i18n'
-import { parseTodoToolResult, type TodoPhase } from '@/lib/todo'
+import { latestTodoPhases, type TodoPhase } from '@/lib/todo'
 import type { TranscriptMessage } from '@/types/api'
 import './transcript-hud.css'
 
-
-/** Latest todo state across the whole transcript: the plan shown in the HUD. */
-function latestTodoPhases(messages: readonly TranscriptMessage[]): TodoPhase[] {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    // Malformed rows (the per-message error boundary swaps in broken payloads)
-    // must not take the whole HUD down with them.
-    const parts = messages[index]!.parts
-    if (!Array.isArray(parts)) continue
-    for (const part of parts) {
-      if (part.type === 'toolResult' && part.name === 'todo') {
-        const phases = parseTodoToolResult(part.text)
-        if (phases.length > 0) return phases
-      }
-    }
-  }
-  return []
-}
+export { latestTodoPhases }
 
 function TodoHud({ phases }: { phases: TodoPhase[] }) {
   const { t } = useI18n()
