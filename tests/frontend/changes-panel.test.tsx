@@ -5,6 +5,8 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ChangesCard } from '../../src/components/ChangesCard'
 import { ChangesPanel } from '../../src/components/inspector/ChangesPanel'
+import { ResizeHandle } from '../../src/components/ResizeHandle'
+import { I18nProvider } from '../../src/lib/i18n'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
@@ -178,5 +180,73 @@ describe('ChangesPanel status states', () => {
     act(() => { button('Staged').click() })
     expect(button('Unstage').disabled).toBe(false)
     expect(button('Unstage all').disabled).toBe(false)
+  })
+})
+
+describe('localized diff and resize controls', () => {
+  it.each([
+    { locale: 'en', split: 'Split diff view', unified: 'Unified diff view', copy: 'Copy diff' },
+    { locale: 'zh-TW', split: '分割差異檢視', unified: '統一差異檢視', copy: '複製差異' },
+    { locale: 'zh-CN', split: '拆分差异视图', unified: '统一差异视图', copy: '复制差异' },
+  ] as const)('localizes diff titles for $locale without translating repository data', async ({ locale, split, unified, copy }) => {
+    const filePath = 'src/原始 <file>&.tsx'
+    const rawDiff = [
+      `diff --git a/${filePath} b/${filePath}`,
+      `--- a/${filePath}`,
+      `+++ b/${filePath}`,
+      '@@ -1 +1 @@',
+      '-const label = "Upstream"',
+      '+const label = "上游"',
+    ].join('\n')
+    const diff = vi.fn(async () => ({ text: rawDiff }))
+    Object.defineProperty(window, 'desktop', { configurable: true, value: { git: { diff } } })
+
+    await act(async () => {
+      root.render(
+        <I18nProvider preference={locale}>
+          <ChangesPanel cwd="/project" git={{ isRepo: true, files: [{ path: filePath, status: 'M', staged: false, additions: 1, deletions: 1 }] }} onRefreshGit={vi.fn()} />
+        </I18nProvider>,
+      )
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    const toggle = container.querySelector<HTMLButtonElement>(`.diff-header button[title="${split}"]`)!
+    const copyButton = container.querySelector<HTMLButtonElement>(`.diff-header button[title="${copy}"]`)!
+    const fileName = container.querySelector<HTMLSpanElement>('.diff-header > div > span')!
+    expect(toggle.getAttribute('aria-pressed')).toBe('false')
+    expect(copyButton.disabled).toBe(false)
+    expect(fileName.textContent).toBe(filePath)
+    expect([...container.querySelectorAll('.diff-view code')].map((line) => line.textContent).join('\n')).toBe(rawDiff)
+
+    act(() => { toggle.click() })
+    const unifiedToggle = container.querySelector<HTMLButtonElement>(`.diff-header button[title="${unified}"]`)!
+    expect(unifiedToggle.getAttribute('aria-pressed')).toBe('true')
+    expect(container.querySelector(`.diff-header button[title="${copy}"]`)).toBe(copyButton)
+    expect([...container.querySelectorAll('.diff-view code')].map((line) => line.textContent).join('\n')).toBe(rawDiff)
+    expect(fileName.textContent).toBe(filePath)
+  })
+
+  it.each([
+    { locale: 'en', suffix: 'double-click to reset' },
+    { locale: 'zh-TW', suffix: '按兩下即可重設' },
+    { locale: 'zh-CN', suffix: '双击以重置' },
+  ] as const)('localizes only the reset suffix for $locale', ({ locale, suffix }) => {
+    const label = 'Upstream panel 名稱'
+    const onChange = vi.fn()
+    act(() => {
+      root.render(
+        <I18nProvider preference={locale}>
+          <ResizeHandle orientation="vertical" label={label} value={400} min={200} max={600} defaultValue={320} onChange={onChange} />
+        </I18nProvider>,
+      )
+    })
+
+    const handle = container.querySelector<HTMLElement>('[role="separator"]')!
+    expect(handle.getAttribute('aria-label')).toBe(label)
+    expect(handle.title).toBe(`${label} · ${suffix}`)
+    act(() => { handle.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })) })
+    expect(onChange).toHaveBeenCalledOnce()
+    expect(onChange).toHaveBeenCalledWith(320)
   })
 })

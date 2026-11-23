@@ -411,7 +411,7 @@ export function ChangesPanel({
                   type="button"
                   className={diffMode === 'split' ? 'is-active' : ''}
                   aria-pressed={diffMode === 'split'}
-                  title={diffMode === 'split' ? 'Unified diff view' : 'Split diff view'}
+                  title={diffMode === 'split' ? t('changes.diff.view.unified') : t('changes.diff.view.split')}
                   onClick={() => setDiffMode((current) => (current === 'unified' ? 'split' : 'unified'))}
                 >
                   {diffMode === 'split' ? <Rows2 size={12} /> : <Columns2 size={12} />}
@@ -419,7 +419,7 @@ export function ChangesPanel({
                 <button
                   type="button"
                   disabled={!diff}
-                  title="Copy diff"
+                  title={t('changes.diff.copy')}
                   onClick={() => {
                     if (!diff) return
                     void navigator.clipboard?.writeText(diff)

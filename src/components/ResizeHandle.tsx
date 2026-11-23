@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import type { KeyboardEvent, PointerEvent as ReactPointerEvent } from 'react'
+import { useI18n } from '@/lib/i18n'
 
 type Orientation = 'vertical' | 'horizontal'
 
@@ -22,6 +23,7 @@ interface ResizeHandleProps {
 const clamp = (value: number, min: number, max: number) => Math.round(Math.min(Math.max(min, max), Math.max(min, value)))
 
 export function ResizeHandle({ orientation, label, value, min, max, defaultValue, onChange, startEdge = false, styleTarget = '.session-workspace', cssVariable: cssVariableProp }: ResizeHandleProps) {
+  const { t } = useI18n()
   const cleanupRef = useRef<(() => void) | null>(null)
   const safeMax = Math.max(min, max)
   const readCoordinate = (event: Pick<PointerEvent, 'clientX' | 'clientY'>) => orientation === 'vertical' ? event.clientX : event.clientY
@@ -102,7 +104,7 @@ export function ResizeHandle({ orientation, label, value, min, max, defaultValue
       aria-valuemax={safeMax}
       aria-valuenow={Math.round(value)}
       tabIndex={0}
-      title={`${label} · double-click to reset`}
+      title={`${label} · ${t('resize.resetSuffix')}`}
       onDoubleClick={() => onChange(clamp(defaultValue, min, safeMax))}
       onKeyDown={handleKeyDown}
       onPointerDown={beginDrag}
