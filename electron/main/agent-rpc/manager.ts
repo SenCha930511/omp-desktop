@@ -11,6 +11,8 @@ import { RpcRuntime } from './runtime'
 import { NativeWordPredictionLane } from './word-prediction'
 import type { RpcObject } from './types'
 import type { WorkspaceUseLease, WorkspaceUseOwner } from '../repository-use-gate'
+import { DESKTOP_OPEN_URL_TOOL, type DesktopOpenUrlService } from '../desktop-open-url'
+import type { DesktopHostToolResult, DesktopOpenUrlRegistrationOutcome } from '../../../src/types/host-capabilities'
 import { recordSessionDiagnostic } from './session-diagnostics'
 
 /**
@@ -57,6 +59,7 @@ export class AgentRpcManager {
   private readonly wordPredictionLanes = new Map<string, NativeWordPredictionLane>()
   private readonly idleSince = new Map<string, number>()
   private idleTimer: NodeJS.Timeout | null = null
+  private hostOpenUrl?: DesktopOpenUrlService
 
   constructor(
     private readonly executable: ExecutableSource,
@@ -72,6 +75,16 @@ export class AgentRpcManager {
   ) {}
 
   setEventSink(sink: (envelope: PrimeEventEnvelope) => void): void { this.eventSink = sink }
+
+  setHostOpenUrlService(service: DesktopOpenUrlService | undefined): void {
+    this.hostOpenUrl = service
+  }
+
+  async writeHostToolResult(runtimeId: string, result: DesktopHostToolResult): Promise<void> {
+    const runtime = this.runtimes.get(runtimeId)
+    if (!runtime) throw new Error('Runtime was not found')
+    await runtime.writeRawFrame(result as unknown as RpcObject)
+  }
 
   setWorkspaceUseProvider(provider: (
     cwd: string,
@@ -111,10 +124,11 @@ export class AgentRpcManager {
     if (this.idleTimer) clearTimeout(this.idleTimer)
     this.idleTimer = null
     this.idleSince.clear()
+    for (const runtimeId of this.runtimes.keys()) void this.hostOpenUrl?.retireRuntime(runtimeId)
   }
 
-  async start(raw: unknown): Promise<RuntimeInfo> {
-    return this.startWithMode(raw, true)
+  async start(raw: unknown, ownerId?: number): Promise<RuntimeInfo> {
+    return this.startWithMode(raw, true, ownerId)
   }
 
   /** Internal scheduler entrypoint: unattended children must never expose UI-blocking tools. */
@@ -122,7 +136,7 @@ export class AgentRpcManager {
     return this.startWithMode(raw, false)
   }
 
-  private async startWithMode(raw: unknown, interactive: boolean): Promise<RuntimeInfo> {
+  private async startWithMode(raw: unknown, interactive: boolean, ownerId?: number): Promise<RuntimeInfo> {
     this.requireOpen()
     const executable = resolveExecutable(this.executable)
     if (!executable) throw new Error(`${this.adapter.agentName} executable was not found`)
@@ -217,12 +231,17 @@ export class AgentRpcManager {
             // the failed-start path does; a leftover entry would keep a retired
             // child counted against the next settings refresh.
             this.runtimeEnvironmentRevisions.delete(closed.runtimeId)
+            void this.hostOpenUrl?.retireRuntime(closed.runtimeId)
             this.scheduleIdleRetirement()
             notifyRuntimeEnd(closed.snapshot())
           },
           runtimeEnvironment,
           {},
           this.adapter,
+          undefined,
+          (frame) => {
+            if (runtime) this.handleHostToolFrame(runtime.runtimeId, frame)
+          },
         )
         // Record the environment generation before admission resolves so a
         // concurrent settings refresh cannot mistake this child for a new one.
@@ -234,6 +253,9 @@ export class AgentRpcManager {
       await runtime.handshake()
       await this.decorate(runtime)
       if (runtime.snapshot().fastModeSupported && options.fast === true) await runtime.setServiceTier('priority', true)
+      if (interactive && ownerId !== undefined && this.hostOpenUrl) {
+        await this.registerHostTools(runtime, ownerId)
+      }
       try {
         const state = runtime.snapshot()
         this.runtimeStartListener(runtimeEnvironment, state)
@@ -298,6 +320,7 @@ export class AgentRpcManager {
     if (record.sessionId !== state.sessionId) {
       this.quarantinedRuntimes.add(runtime.runtimeId)
       this.disposeWordPrediction(runtime.runtimeId, new Error('Runtime is quarantined after a session identity change'))
+      void this.hostOpenUrl?.retireRuntime(runtime.runtimeId)
       this.durableIdentityByRuntimeId.delete(runtime.runtimeId)
       this.startSessionPathById.delete(runtime.runtimeId)
       notifyEnd(state)
@@ -706,7 +729,9 @@ export class AgentRpcManager {
    * still waiting for a user answer. Unknown settlement fails safe.
    */
   private canReclaim(runtime: RpcRuntime): boolean {
-    return this.isIdle(runtime) && runtime.canRetireSafely()
+    return this.isIdle(runtime)
+      && runtime.canRetireSafely()
+      && !(this.hostOpenUrl?.hasPendingOperations(runtime.runtimeId) ?? false)
   }
 
   private predictWord(runtime: RpcRuntime, command: RpcObject): Promise<RpcObject> {
@@ -738,7 +763,40 @@ export class AgentRpcManager {
 
   private stopRuntime(runtime: RpcRuntime): Promise<boolean> {
     this.disposeWordPrediction(runtime.runtimeId, new Error('Runtime is stopping'))
+    void this.hostOpenUrl?.retireRuntime(runtime.runtimeId)
     return runtime.stop()
+  }
+
+  private async registerHostTools(runtime: RpcRuntime, ownerId: number): Promise<void> {
+    if (!this.hostOpenUrl) return
+    const generation = await this.hostOpenUrl.beginInteractiveRegistration(runtime.runtimeId, ownerId)
+    let outcome: DesktopOpenUrlRegistrationOutcome = { ok: false }
+    try {
+      const response = await runtime.registerHostTools([DESKTOP_OPEN_URL_TOOL])
+      const toolNames = response.success === true && isRecord(response.data) && Array.isArray(response.data.toolNames)
+        ? response.data.toolNames.filter((name): name is string => typeof name === 'string')
+        : []
+      if (response.success === true) outcome = { ok: true, toolNames }
+    } catch {
+      outcome = { ok: false }
+    }
+    this.hostOpenUrl.finishRegistration({
+      runtimeId: runtime.runtimeId,
+      registrationGeneration: generation,
+      ownerId,
+      outcome,
+    })
+  }
+
+  private handleHostToolFrame(runtimeId: string, frame: RpcObject): void {
+    if (!this.hostOpenUrl) return
+    if (frame.type === 'host_tool_call') {
+      void this.hostOpenUrl.handleHostToolCall(runtimeId, frame)
+      return
+    }
+    if (frame.type === 'host_tool_cancel' && typeof frame.id === 'string' && typeof frame.targetId === 'string') {
+      void this.hostOpenUrl.cancel(runtimeId, frame.id, frame.targetId)
+    }
   }
 
   private requireOpen(): void {

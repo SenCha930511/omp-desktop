@@ -34,6 +34,7 @@ import type {
   ProjectSortMode,
   PromptDeliveryIntent,
   PromptImage,
+  RuntimeInfo,
   ScheduleInput,
   SchedulePatch,
   SessionRecord,
@@ -653,16 +654,14 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     let currentOwner = workspace.runtimeOwnerRef.current
     // An admission still in flight owns the turn slot even while
     // workspace.runtime is briefly null during runtime startup — the
-    // optimistic rows already mark the transcript busy. Queue behind it
-    // instead of losing the race with the single-flight gate.
-    if (bridge && intent === 'queue' && images.length === 0 && submissionAdmissionRef.current.active) {
+    // optimistic rows already mark the transcript busy. Ordinary prompts queue
+    // behind it; steers and slash commands wait briefly for admission, then
+    // dispatch directly against the active runtime.
+    if (bridge && !slashCommand && !compactRpc && intent === 'queue' && images.length === 0 && submissionAdmissionRef.current.active) {
       if (!queuedFlushPromptId) workspace.queuePrompt(prompt, intent)
       return
     }
-    // A steer aimed at a turn whose admission is still delivering must wait
-    // for that admission: workspace.runtime is briefly null during runtime
-    // startup, so the streaming-runtime shortcut below cannot route it yet.
-    if (bridge && intent === 'steer' && submissionAdmissionRef.current.active) {
+    if (bridge && (intent === 'steer' || slashCommand || compactRpc) && submissionAdmissionRef.current.active) {
       await submissionAdmissionRef.current.waitForIdle()
       if (workspace.workspaceRef.current.generation !== currentWorkspace.generation) return
       currentRuntime = getDeps().workspace.runtime
@@ -678,6 +677,44 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     )
     const completeQueuedFlush = () => {
       if (queuedFlushPromptId) workspace.removeQueuedPrompt(queuedFlushPromptId)
+    }
+    const sendDirectSlashCommand = async (targetRuntime: RuntimeInfo, generation: number) => {
+      if (!bridge) return
+      if (compactRpc) {
+        try {
+          await bridge.agent.command(targetRuntime.runtimeId, {
+            type: 'compact',
+            ...(compactRpc.customInstructions ? { customInstructions: compactRpc.customInstructions } : {}),
+          })
+          completeQueuedFlush()
+        } catch (error) {
+          if (queuedFlushPromptId) workspace.markQueuedPromptFlushFailed(queuedFlushPromptId)
+          reportError(error)
+          throw error
+        }
+        return
+      }
+      getDeps().onCommandStart?.(prompt.trim())
+      try {
+        const response = await bridge.agent.command(targetRuntime.runtimeId, {
+          type: 'prompt',
+          message: prompt,
+          streamingBehavior: streamingBehaviorForIntent(intent),
+          ...(images.length ? { images } : {}),
+        })
+        const data = response.data as { agentInvoked?: boolean } | undefined
+        if (workspace.workspaceRef.current.generation === generation) {
+          getDeps().onCommandFinish?.(undefined, data?.agentInvoked !== false)
+        }
+        completeQueuedFlush()
+      } catch (error) {
+        if (queuedFlushPromptId) workspace.markQueuedPromptFlushFailed(queuedFlushPromptId)
+        if (workspace.workspaceRef.current.generation === generation) {
+          getDeps().onCommandFinish?.(requestFailureMessage(error))
+        }
+        reportError(error)
+        throw error
+      }
     }
     // GUI 自有入口的 slash(tree/branch/rewind/fork/resume、new/clear、login/logout):絕不送模型。
     if (slashDisposition?.kind === 'gui-action') {
@@ -793,15 +830,9 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
           }
           return
         }
-        // Compacting mid-turn would abort the running turn, so it waits for the
-        // idle flush like any queued prompt. 其餘 slash 上游 busy 語意未查證,
-        // 一律保守排隊。承載圖片的 skill / 模板命令把圖片隨條目保存,
-        // flush 時原樣恢復,不靜默成純文字。
-        if (!queuedFlushPromptId) {
-          if (slashCarriesImages) workspace.queuePrompt(prompt, 'queue', [{ type: 'text', text: prompt }, ...images])
-          else workspace.queuePrompt(prompt, 'queue')
-        }
-        if (intent === 'steer') setToast(translate(locale, compactRpc ? 'slash.compactQueued' : 'slash.queued'))
+        // Slash commands and /compact dispatch directly to the live runtime
+        // just like OMP CLI rather than waiting in steer or local queues.
+        await sendDirectSlashCommand(currentRuntime, currentWorkspace.generation)
         return
       }
       if (intent === 'queue') {
@@ -1066,14 +1097,18 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
             completeQueuedFlush()
             return
           }
-          // Deferred local-only work: compacts and slash commands wait for
-          // the idle flush, and a session running outside OMP Desktop has no
-          // runtime to command — its input stays local until then.
+          if (activeRuntime?.isStreaming && (compactRpc || slashCommand)) {
+            retractPendingTurn()
+            workspace.attachRuntime(activeRuntime, generation)
+            await sendDirectSlashCommand(activeRuntime, generation)
+            return
+          }
+          // A session running outside OMP Desktop has no runtime handle to command —
+          // keep its input queued locally until finished.
           retractPendingTurn()
           queuedPromptId = slashCarriesImages
             ? workspace.queuePrompt(prompt, compactRpc ? 'queue' : intent, [{ type: 'text', text: prompt }, ...images])
             : workspace.queuePrompt(prompt, compactRpc ? 'queue' : intent)
-          if (compactRpc && intent === 'steer') setToast('Compaction will run when the current turn finishes.')
           return
         }
         if (slashDisposition?.kind === 'agent-control') {
@@ -1173,6 +1208,11 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
           })
           completeQueuedFlush()
         } else if (activeRuntime.isStreaming) {
+          if (slashCommand) {
+            retractPendingTurn()
+            await sendDirectSlashCommand(activeRuntime, generation)
+            return
+          }
           // Follow-ups are daemon-owned. Steers get a renderer-only pending
           // row so pickup can move them into history without redelivery.
           // The running turn owns the transcript: hand our optimistic rows back.

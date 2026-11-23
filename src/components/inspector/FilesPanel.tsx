@@ -183,7 +183,17 @@ export function collectDirectoryIds(nodes: FileTreeNode[]): Set<string> {
   return ids
 }
 
-export function FilesPanel({ project, git, onReveal }: { project?: ProjectRecord; git: GitStatus; onReveal(path: string): void }) {
+export function FilesPanel({
+  project,
+  git,
+  onReveal,
+  onOpenFile,
+}: {
+  project?: ProjectRecord
+  git: GitStatus
+  onReveal(path: string): void
+  onOpenFile?(path: string): void
+}) {
   const { t } = useI18n()
   const [query, setQuery] = useState('')
   const [treeRoots, setTreeRoots] = useState<FileTreeNode[]>([])
@@ -336,8 +346,15 @@ export function FilesPanel({ project, git, onReveal }: { project?: ProjectRecord
                 )
               }
 
-              return (
-                <button type="button" key={node.id} className="file-tree__item is-file" style={{ paddingLeft: `${8 + node.depth * 14}px` }} title={node.path} onClick={() => onReveal(node.fullPath)}>
+              const fileButton = (
+                <button
+                  type="button"
+                  key={onOpenFile ? undefined : node.id}
+                  className="file-tree__item is-file"
+                  style={{ paddingLeft: `${8 + node.depth * 14}px` }}
+                  title={node.path}
+                  onClick={() => (onOpenFile ? onOpenFile(node.fullPath) : onReveal(node.fullPath))}
+                >
                   <span className="file-tree__expander-placeholder" />
                   <span className="file-tree__icon">{getFileIcon(node.name)}</span>
                   <span className="file-tree__name">{node.name}</span>
@@ -351,6 +368,23 @@ export function FilesPanel({ project, git, onReveal }: { project?: ProjectRecord
                     </small>
                   ) : null}
                 </button>
+              )
+
+              if (!onOpenFile) return fileButton
+
+              return (
+                <div key={node.id} className="file-tree__row">
+                  {fileButton}
+                  <button
+                    type="button"
+                    className="file-tree__reveal"
+                    aria-label={t('files.reveal')}
+                    title={t('files.reveal')}
+                    onClick={() => onReveal(node.fullPath)}
+                  >
+                    <FolderOpen size={12} />
+                  </button>
+                </div>
               )
             })
           : null}

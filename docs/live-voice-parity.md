@@ -53,7 +53,7 @@ Codex realtime（GPT live）的**會話型語音模式，綁定當前 AgentSessi
 
 | 功能 | 上游語意 | GUI 改造前現況 | 結論 |
 |---|---|---|---|
-| Live voice（`/live`） | Codex realtime 會話，綁 session；音訊 I/O 在 harness 程序內 | 無 | **equivalent（經 RPC 接線）**——本階段完成 |
+| Live voice（`/live`） | Codex realtime 會話，綁 session；音訊 I/O 在 harness 程序內 | 無 | **deferred** —— main 事件轉發已落地；renderer／控制尚未接通 |
 | `live_start` / `live_stop` / `live_mute` | 見上；start 等到「連上且開始錄音」才回應 | 無 | equivalent — schema 白名單驗證＋10 分鐘客戶端逾時 |
 | `live_phase` / `live_levels` / `live_transcript` / `live_end` | 非 session event，保證送達；levels ≤100ms/幀 | 無 | equivalent — adapter 白名單轉發，renderer hook 摺疊；levels 不進 transcript store |
 | Dictation（聽寫） | 上游 TUI 另有獨立 mic dictation | GUI 自有 STT 填 composer（voice.ts / useDictation.ts） | **GUI-only，不得標為 live voice 等價**；本任務不改其行為，UI 與文件註明邊界 |

@@ -4,7 +4,7 @@ OMP Desktop is a desktop workspace for [OMP](https://github.com/can1357/oh-my-pi
 
 > **Origin:** this project is a fork of [GooeyPi](https://github.com/am-will/gooey-pi) by [am-will](https://github.com/am-will), forked at v1.1.17 and reworked into an OMP-only desktop workspace. See [Attribution](#attribution) and [LICENSE](LICENSE) for the upstream notice.
 
-<img width="2618" height="1672" alt="OMP Desktop workspace" src="docs/screenshot.png" />
+<img width="1540" height="980" alt="OMP Desktop workspace with a conversation, file tree, and composer" src="docs/screenshot.png" />
 
 ## Attribution
 

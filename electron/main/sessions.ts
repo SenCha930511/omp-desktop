@@ -1,17 +1,18 @@
+import { randomUUID } from 'node:crypto'
 import { watch, type Dirent, type Stats } from 'node:fs'
 import { readdir, realpath, unlink } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { isAbsolute, join, resolve, sep } from 'node:path'
-import type { HarnessId, SessionCatalogUpdate, SessionChangeEvent, SessionRecord, TranscriptMessage } from '../../src/types/api'
+import type { HarnessId, SessionCatalogUpdate, SessionChangeEvent, SessionRecord, TranscriptMessage, TranscriptOlder, TranscriptPageRequest, TranscriptReadPageResult, TranscriptRemainingBudget } from '../../src/types/api'
 import { SessionCatalogSync } from './sessions/sync'
 
 import { comparePaths, createAdmissionQueue, createSingleFlight, type AdmissionQueue } from './lib/async'
 import { resolveExecutable, runProcess, type ExecutableSource } from './process-utils'
 import { SessionMetadataCatalog, type SessionCatalogIo, type SessionNameTimestamp } from './sessions/catalog'
 import { createSessionMetadataReader, type SessionMetadata, type SessionMetadataReader } from './sessions/metadata'
-import { readTranscript } from './sessions/transcript'
+import { readTranscript, type TranscriptFileReader } from './sessions/transcript'
 import type { JsonStateStore } from './store'
-import { isPathWithin, requireBoolean, requireExistingDirectory, requireString } from './validation'
+import { isPathWithin, rejectUnknownKeys, requireBoolean, requireExistingDirectory, requireRecord, requireString } from './validation'
 
 interface RuntimeSessionState { isStreaming: boolean; isCompacting?: boolean }
 
@@ -27,13 +28,43 @@ const MAX_PENDING_TRANSCRIPT_READS = 32
 // filesystem and a failure is never cached.
 const PROJECT_PATH_CACHE_TTL_MS = 5_000
 const MAX_CACHED_PROJECT_PATHS = 1_024
+const MAX_TRANSCRIPT_SNAPSHOTS = 8
+const MAX_TRANSCRIPT_CURSORS = 64
+const TRANSCRIPT_CURSOR_TTL_MS = 5 * 60 * 1_000
+const MAX_TRANSCRIPT_CURSOR_CHARS = 128
 
 interface ProjectPathCacheEntry {
   canonical: string
   expiresAt: number
 }
 
-type TranscriptReader = (filePath: string, isStreaming: boolean) => Promise<TranscriptMessage[]>
+type TranscriptReader = TranscriptFileReader
+
+interface TranscriptSnapshotRecord {
+  id: string
+  canonicalPath: string
+  stamp: string
+  branchAnchor: string | null
+  expiresAt: number
+}
+
+interface TranscriptCursorRecord {
+  id: string
+  snapshot: TranscriptSnapshotRecord
+  endExclusiveMessageId: string
+  remaining: TranscriptRemainingBudget
+  expiresAt: number
+  nextCursorId?: string
+}
+
+export function requireTranscriptPageRequest(value: unknown): TranscriptPageRequest {
+  if (value === undefined) return {}
+  const request = requireRecord(value, 'request')
+  rejectUnknownKeys(request, ['cursor'], 'request')
+  return request.cursor === undefined
+    ? {}
+    : { cursor: requireString(request.cursor, 'request.cursor', { min: 1, max: MAX_TRANSCRIPT_CURSOR_CHARS }) }
+}
 
 type SessionPathAuthorizer = (sessionRootRealPath: string, sessionRealPath: string) => boolean
 
@@ -97,6 +128,9 @@ export class SessionService {
   private readonly catalog: SessionMetadataCatalog
   private readonly metadataReader: SessionMetadataReader
   private readonly transcriptReads = createSingleFlight<string, TranscriptMessage[]>()
+  private readonly transcriptPageReads = createSingleFlight<string, TranscriptReadPageResult>()
+  private readonly transcriptSnapshots = new Map<string, TranscriptSnapshotRecord>()
+  private readonly transcriptCursors = new Map<string, TranscriptCursorRecord>()
   private catalogSyncQueue: Promise<void> = Promise.resolve()
   private readonly catalogSync = new SessionCatalogSync()
   private readonly transcriptAdmission: AdmissionQueue
@@ -259,6 +293,130 @@ export class SessionService {
     }))
   }
 
+
+  async readPage(filePath: unknown, rawRequest: unknown = {}): Promise<TranscriptReadPageResult> {
+    const request = requireTranscriptPageRequest(rawRequest)
+    const safePath = await this.requireSessionPath(filePath)
+    // The cursor is only a registry key. Authorization and realpath checks run
+    // before lookup, and no source path, stamp, quota, or byte offset crosses
+    // the renderer boundary inside it.
+    const key = JSON.stringify([safePath, request.cursor ?? null])
+    return this.transcriptPageReads.run(key, () => this.transcriptAdmission.run(async () => {
+      const now = Date.now()
+      this.pruneTranscriptPageRegistry(now)
+      let cursor: TranscriptCursorRecord | undefined
+      if (request.cursor !== undefined) {
+        cursor = this.transcriptCursors.get(request.cursor)
+        if (!cursor || cursor.snapshot.canonicalPath !== safePath
+          || this.transcriptSnapshots.get(cursor.snapshot.id) !== cursor.snapshot) {
+          return { status: 'stale', reason: 'unknown-cursor' }
+        }
+        // Fail closed on an explicit cleaned/foreign/stale registry generation;
+        // a request never falls back to newest history.
+        const runtime = this.runtimeForSession(safePath)
+        if (runtime?.isStreaming === true || runtime?.isCompacting === true) return { status: 'unavailable', reason: 'streaming' }
+        cursor.expiresAt = now + TRANSCRIPT_CURSOR_TTL_MS
+        cursor.snapshot.expiresAt = cursor.expiresAt
+        this.transcriptCursors.delete(cursor.id)
+        this.transcriptCursors.set(cursor.id, cursor)
+        this.transcriptSnapshots.delete(cursor.snapshot.id)
+        this.transcriptSnapshots.set(cursor.snapshot.id, cursor.snapshot)
+      }
+      const reader = this.transcriptReader.readPage
+      if (!reader) throw new Error('Transcript pagination is not available for this reader')
+      const runtime = this.runtimeForSession(safePath)
+      const isStreaming = runtime?.isStreaming === true || runtime?.isCompacting === true
+      const loaded = await reader(safePath, isStreaming, cursor ? {
+        expectedStamp: cursor.snapshot.stamp,
+        endExclusiveMessageId: cursor.endExclusiveMessageId,
+        remaining: { ...cursor.remaining },
+      } : undefined)
+      if (loaded.status !== 'ok') return loaded
+      if (cursor && loaded.branchAnchor !== cursor.snapshot.branchAnchor) return { status: 'stale', reason: 'branch-changed' }
+      const snapshot = cursor?.snapshot ?? (loaded.stamp !== null ? this.createTranscriptSnapshot(safePath, loaded.stamp, loaded.branchAnchor, now) : null)
+      let older: TranscriptOlder = loaded.older.state === 'ready'
+        ? { state: 'end' }
+        : loaded.older
+      if (loaded.older.state === 'ready') {
+        const endExclusiveMessageId = loaded.messages[0]?.id
+        if (snapshot && endExclusiveMessageId !== undefined) {
+          const nextCursor = this.createTranscriptCursor(snapshot, endExclusiveMessageId, loaded.remaining, cursor)
+          older = { state: 'ready', cursor: nextCursor.id }
+        } else {
+          // A changing/streaming parser result cannot issue an unbound cursor.
+          older = { state: 'unavailable', reason: loaded.fileChanging ? 'file-changing' : 'graph-budget' }
+        }
+      }
+      return {
+        status: 'ok',
+        snapshotId: snapshot?.id ?? null,
+        messages: loaded.messages,
+        endExclusiveMessageId: cursor?.endExclusiveMessageId ?? null,
+        remaining: loaded.remaining,
+        older,
+      }
+    }))
+  }
+
+  private pruneTranscriptPageRegistry(now: number): void {
+    for (const [id, snapshot] of this.transcriptSnapshots) {
+      if (snapshot.expiresAt > now) continue
+      this.transcriptSnapshots.delete(id)
+      for (const [cursorId, cursor] of this.transcriptCursors) {
+        if (cursor.snapshot === snapshot) this.transcriptCursors.delete(cursorId)
+      }
+    }
+    for (const [id, cursor] of this.transcriptCursors) {
+      if (cursor.expiresAt <= now) this.transcriptCursors.delete(id)
+    }
+  }
+
+  private createTranscriptSnapshot(canonicalPath: string, stamp: string, branchAnchor: string | null, now: number): TranscriptSnapshotRecord {
+    const snapshot: TranscriptSnapshotRecord = {
+      id: randomUUID(), canonicalPath, stamp, branchAnchor,
+      expiresAt: now + TRANSCRIPT_CURSOR_TTL_MS,
+    }
+    this.transcriptSnapshots.set(snapshot.id, snapshot)
+    while (this.transcriptSnapshots.size > MAX_TRANSCRIPT_SNAPSHOTS) {
+      const oldest = this.transcriptSnapshots.keys().next().value
+      if (oldest === undefined) break
+      const evicted = this.transcriptSnapshots.get(oldest)
+      this.transcriptSnapshots.delete(oldest)
+      if (evicted) {
+        for (const [id, cursor] of this.transcriptCursors) {
+          if (cursor.snapshot === evicted) this.transcriptCursors.delete(id)
+        }
+      }
+    }
+    return snapshot
+  }
+
+  private createTranscriptCursor(
+    snapshot: TranscriptSnapshotRecord,
+    endExclusiveMessageId: string,
+    remaining: TranscriptRemainingBudget,
+    parent?: TranscriptCursorRecord,
+  ): TranscriptCursorRecord {
+    if (parent?.nextCursorId) {
+      const existing = this.transcriptCursors.get(parent.nextCursorId)
+      if (existing && existing.snapshot === snapshot && existing.endExclusiveMessageId === endExclusiveMessageId) {
+        existing.remaining = { ...remaining }
+        return existing
+      }
+    }
+    const cursor: TranscriptCursorRecord = {
+      id: randomUUID(), snapshot, endExclusiveMessageId, remaining: { ...remaining },
+      expiresAt: Date.now() + TRANSCRIPT_CURSOR_TTL_MS,
+    }
+    if (parent) parent.nextCursorId = cursor.id
+    this.transcriptCursors.set(cursor.id, cursor)
+    while (this.transcriptCursors.size > MAX_TRANSCRIPT_CURSORS) {
+      const oldest = this.transcriptCursors.keys().next().value
+      if (oldest === undefined) break
+      this.transcriptCursors.delete(oldest)
+    }
+    return cursor
+  }
 
   async rename(filePath: unknown, title: unknown): Promise<boolean> {
     const safePath = await this.requireSessionPath(filePath)

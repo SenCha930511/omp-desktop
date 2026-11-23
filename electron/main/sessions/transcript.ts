@@ -2,7 +2,7 @@ import { createReadStream } from 'node:fs'
 import { open, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import type { MessagePart, TranscriptMessage } from '../../../src/types/api'
+import type { MessagePart, TranscriptMessage, TranscriptRemainingBudget } from '../../../src/types/api'
 import {
   boundedString,
   contentText,
@@ -21,6 +21,8 @@ import { parseGooeyPiAgentMessage } from '../collaboration/message-envelope'
 const MAX_TRANSCRIPT_GRAPH_BYTES = 16 * 1024 * 1024
 const MAX_TRANSCRIPT_GRAPH_RECORDS = 10_000
 const MAX_TRANSCRIPT_MESSAGES = 400
+const MAX_EVICTED_RENDERABLE_IDS = 10_000
+const MAX_EVICTED_RENDERABLE_ID_CHARS = 1_000_000
 const MAX_TRANSCRIPT_PARTS = 2_000
 const MAX_TRANSCRIPT_TEXT_CHARS = 1024 * 1024
 const MAX_TRANSCRIPT_TOOL_CHARS = 512 * 1024
@@ -146,15 +148,47 @@ function partsFromMessage(message: JsonRecord): MessagePart[] {
   return parts.length ? parts : [{ type: 'text', text: '' }]
 }
 
-function boundedTranscript(transcript: TranscriptMessage[]): TranscriptMessage[] {
-  let textBudget = MAX_TRANSCRIPT_TEXT_CHARS
-  let toolBudget = MAX_TRANSCRIPT_TOOL_CHARS
-  let argsBudget = MAX_TRANSCRIPT_ARGS_CHARS
-  let imageBudget = MAX_TRANSCRIPT_IMAGE_CHARS
-  let partBudget = MAX_TRANSCRIPT_PARTS
+function initialTranscriptBudget(): TranscriptRemainingBudget {
+  return {
+    textChars: MAX_TRANSCRIPT_TEXT_CHARS,
+    toolChars: MAX_TRANSCRIPT_TOOL_CHARS,
+    argsChars: MAX_TRANSCRIPT_ARGS_CHARS,
+    imageChars: MAX_TRANSCRIPT_IMAGE_CHARS,
+    parts: MAX_TRANSCRIPT_PARTS,
+  }
+}
+
+interface BoundedTranscriptPage {
+  messages: TranscriptMessage[]
+  remaining: TranscriptRemainingBudget
+  /** Number of coalesced rows before the fixed 400-row display cap. */
+  cappedRows: number
+}
+
+/** Bounds one fixed page newest-first. The algorithm is shared with legacy
+ * reads so a newest page remains byte-identical; continuations pass the exact
+ * remainder left by all newer pages instead of receiving a fresh allowance. */
+function boundedTranscriptPage(
+  transcript: TranscriptMessage[],
+  endExclusiveMessageId: string | null,
+  remaining: TranscriptRemainingBudget,
+): BoundedTranscriptPage {
+  let anchorIndex = transcript.length
+  if (endExclusiveMessageId !== null) {
+    anchorIndex = -1
+    for (let index = 0; index < transcript.length; index += 1) {
+      if (transcript[index].id !== endExclusiveMessageId) continue
+      if (anchorIndex >= 0) throw new TranscriptAnchorNotFoundError()
+      anchorIndex = index
+    }
+    if (anchorIndex < 0) throw new TranscriptAnchorNotFoundError()
+  }
+  const candidates = transcript.slice(0, anchorIndex)
+  const cappedRows = Math.max(0, candidates.length - MAX_TRANSCRIPT_MESSAGES)
+  let { textChars: textBudget, toolChars: toolBudget, argsChars: argsBudget, imageChars: imageBudget, parts: partBudget } = remaining
   const bounded: TranscriptMessage[] = []
 
-  for (const message of transcript.slice(-MAX_TRANSCRIPT_MESSAGES).reverse()) {
+  for (const message of candidates.slice(-MAX_TRANSCRIPT_MESSAGES).reverse()) {
     const parts: MessagePart[] = []
     for (const part of [...message.parts].reverse()) {
       if (partBudget <= 0) break
@@ -200,6 +234,8 @@ function boundedTranscript(transcript: TranscriptMessage[]): TranscriptMessage[]
         if (part.data && imageBudget > 0) {
           data = boundedString(part.data, imageBudget)
           imageBudget -= Math.min(part.data.length, imageBudget)
+          // Blob resolution happens once per parsed occurrence, while this
+          // charge is deliberately repeated for every emitted base64 copy.
         }
         next = { ...part, data, dataTruncated: part.dataTruncated || Boolean(part.data && data !== part.data) || undefined }
       } else if (part.type === 'unsupported') {
@@ -219,7 +255,27 @@ function boundedTranscript(transcript: TranscriptMessage[]): TranscriptMessage[]
     }
     if (parts.length) bounded.push({ ...message, parts: parts.reverse() })
   }
-  return bounded.reverse()
+  return {
+    messages: bounded.reverse(),
+    remaining: { textChars: textBudget, toolChars: toolBudget, argsChars: argsBudget, imageChars: imageBudget, parts: partBudget },
+    cappedRows,
+  }
+}
+
+class TranscriptAnchorNotFoundError extends Error {}
+
+function hasDisplayableRows(transcript: TranscriptMessage[], remaining: TranscriptRemainingBudget): boolean {
+  for (const message of transcript.slice(-MAX_TRANSCRIPT_MESSAGES).reverse()) {
+    for (const part of [...message.parts].reverse()) {
+      if (remaining.parts <= 0) return false
+      if (part.type === 'text' || part.type === 'thinking' || part.type === 'agentMessage') {
+        if (remaining.textChars > 0) return true
+      } else if (part.type === 'toolResult') {
+        if (remaining.toolChars > 0) return true
+      } else return true
+    }
+  }
+  return false
 }
 
 /**
@@ -239,7 +295,44 @@ const primeTranscriptDialect: TranscriptDialect = {
     || (entry.type === 'custom_message' && entry.display === true),
 }
 
-export type TranscriptFileReader = (filePath: string, isStreaming: boolean) => Promise<TranscriptMessage[]>
+export interface TranscriptPageReadOptions {
+  /** Trusted snapshot stamp supplied by SessionService, never by the caller. */
+  expectedStamp?: string
+  endExclusiveMessageId?: string
+  remaining?: TranscriptRemainingBudget
+}
+
+export type TranscriptPendingOlder =
+  | { state: 'ready' }
+  | { state: 'end' }
+  | { state: 'unavailable'; reason: 'streaming' | 'file-changing' | 'graph-budget' | 'display-budget' | 'anchor-ambiguity' }
+
+export type TranscriptPageReaderResult =
+  | {
+      status: 'ok'
+      messages: TranscriptMessage[]
+      endExclusiveMessageId: string | null
+      remaining: TranscriptRemainingBudget
+      older: TranscriptPendingOlder
+      /** Main-process only; opaque snapshot ids never reveal these values. */
+      stamp: string | null
+      branchAnchor: string | null
+      fileChanging: boolean
+    }
+  | { status: 'stale'; reason: 'file-changed' | 'missing-anchor' }
+  | { status: 'unavailable'; reason: 'streaming' }
+
+export type TranscriptPageReader = (
+  filePath: string,
+  isStreaming: boolean,
+  options?: TranscriptPageReadOptions,
+) => Promise<TranscriptPageReaderResult>
+
+export interface TranscriptFileReader {
+  (filePath: string, isStreaming: boolean): Promise<TranscriptMessage[]>
+  /** Main-process facade over this same reader's parser and coalescing pass. */
+  readPage?: TranscriptPageReader
+}
 
 /** OMP externalizes image payloads into a global content-addressed blob store
  * (`<agentDir>/blobs/<sha256>`); session entries carry `blob:sha256:<hash>`
@@ -302,13 +395,15 @@ async function resolveImageBlobReferences(transcript: TranscriptMessage[], blobs
 const MAX_CACHED_TRANSCRIPTS = 3
 type TranscriptCache = Map<string, { stamp: string; messages: TranscriptMessage[] }>
 
-function transcriptFileStamp(info: { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number }): string {
-  return `${info.dev}\0${info.ino}\0${info.size}\0${info.mtimeMs}\0${info.ctimeMs}`
+function transcriptFileStamp(info: { dev: bigint; ino: bigint; size: bigint; mtimeNs: bigint; ctimeNs: bigint }): string {
+  return `${info.dev}\0${info.ino}\0${info.size}\0${info.mtimeNs}\0${info.ctimeNs}`
 }
 
 export function createTranscriptReader(dialect: TranscriptDialect = primeTranscriptDialect, blobsRoot: string = defaultOmpBlobsRoot()): TranscriptFileReader {
   const transcriptCache: TranscriptCache = new Map()
-  return (filePath, isStreaming) => readTranscriptWithDialect(dialect, filePath, isStreaming, blobsRoot, transcriptCache)
+  const reader: TranscriptFileReader = (filePath, isStreaming) => readTranscriptWithDialect(dialect, filePath, isStreaming, blobsRoot, transcriptCache)
+  reader.readPage = (filePath, isStreaming, options) => readTranscriptPageWithDialect(dialect, filePath, isStreaming, blobsRoot, transcriptCache, options)
+  return reader
 }
 
 /** Yields complete LF-delimited lines from the end of the file toward the
@@ -372,8 +467,13 @@ async function* jsonLinesReverse(filePath: string): AsyncGenerator<Buffer> {
  * The temporary edge index has explicit record/byte budgets; exhaustion is an
  * error, never permission to guess another active branch. Renderable payloads
  * still come exclusively from the original bounded entries map. */
-async function recoverTranscriptEdges(filePath: string): Promise<Map<string, string | null>> {
-  const edges = new Map<string, string | null>()
+interface RecoveredTranscriptEdge {
+  parentId: string | null
+  renderable: boolean
+}
+
+async function recoverTranscriptEdges(dialect: TranscriptDialect, filePath: string): Promise<Map<string, RecoveredTranscriptEdge>> {
+  const edges = new Map<string, RecoveredTranscriptEdge>()
   let edgeBytes = 0
   let recordCount = 0
   for await (const line of jsonLinesReverse(filePath)) {
@@ -390,23 +490,33 @@ async function recoverTranscriptEdges(filePath: string): Promise<Map<string, str
     // recovery independently bounded by the existing graph byte budget.
     edgeBytes += (entry.id.length + (parentId?.length ?? 0)) * 2 + 64
     if (edgeBytes > MAX_TRANSCRIPT_GRAPH_BYTES) throw new Error('Session transcript ancestry is too large to display')
-    edges.set(entry.id, parentId)
+    edges.set(entry.id, { parentId, renderable: dialect.isRenderable(entry) })
   }
   return edges
 }
 
-async function readTranscriptWithDialect(dialect: TranscriptDialect, filePath: string, isStreaming: boolean, blobsRoot: string, cache: TranscriptCache): Promise<TranscriptMessage[]> {
-  const initialStat = await stat(filePath)
-  if (initialStat.size > 256 * 1024 * 1024) throw new Error('Session transcript is too large to display')
-  const initialStamp = !isStreaming && initialStat.size > 0
-    ? transcriptFileStamp(initialStat)
-    : null
-  if (initialStamp !== null) {
+interface LoadedTranscript {
+  transcript: TranscriptMessage[]
+  cachedMessages?: TranscriptMessage[]
+  /** Stamp used by the existing non-empty, non-streaming tail-message cache. */
+  cacheStamp: string | null
+  /** Full current file stamp used only by snapshot paging. */
+  stamp: string | null
+  branchAnchor: string | null
+  graphBudget: boolean
+}
+
+async function loadTranscriptWithDialect(dialect: TranscriptDialect, filePath: string, isStreaming: boolean, blobsRoot: string, cache: TranscriptCache, useCache: boolean): Promise<LoadedTranscript> {
+  const initialStat = await stat(filePath, { bigint: true })
+  if (initialStat.size > 256n * 1024n * 1024n) throw new Error('Session transcript is too large to display')
+  const stamp = !isStreaming ? transcriptFileStamp(initialStat) : null
+  const cacheStamp = !isStreaming && initialStat.size > 0n ? stamp : null
+  if (useCache && cacheStamp !== null) {
     const cached = cache.get(filePath)
-    if (cached && cached.stamp === initialStamp) {
+    if (cached && cached.stamp === cacheStamp) {
       cache.delete(filePath)
       cache.set(filePath, cached)
-      return structuredClone(cached.messages)
+      return { transcript: [], cachedMessages: structuredClone(cached.messages), cacheStamp, stamp, branchAnchor: null, graphBudget: false }
     }
   }
   const entries = new Map<string, { id: string; parentId: string | null; entry: JsonRecord; bytes: number }>()
@@ -418,6 +528,22 @@ async function readTranscriptWithDialect(dialect: TranscriptDialect, filePath: s
   // longer covers the full file, so a confirmed capture whose branch yields
   // no retained payload must fail closed instead of rendering another branch.
   let payloadEvictionOccurred = false
+  // `entries` contains only dialect-renderable payloads by construction. Keep
+  // bounded evidence for ids FIFO-evicted from it: a later active-branch miss
+  // is then distinguishable from a title/model header or dangling parent.
+  const evictedRenderableIds = new Set<string>()
+  let evictedRenderableIdChars = 0
+  let evictedRenderableIdsOverflow = false
+  const noteEvictedRenderable = (id: string): void => {
+    if (evictedRenderableIds.has(id)) return
+    if (evictedRenderableIds.size >= MAX_EVICTED_RENDERABLE_IDS
+      || evictedRenderableIdChars + id.length > MAX_EVICTED_RENDERABLE_ID_CHARS) {
+      evictedRenderableIdsOverflow = true
+      return
+    }
+    evictedRenderableIds.add(id)
+    evictedRenderableIdChars += id.length
+  }
   // Upstream v18.12.6 session-entries.ts parity: the active leaf replays the
   // LAST record's captured `activeLeafId` (an off-branch record — late usage,
   // a routed background result — restores the branch it interrupted) instead
@@ -436,6 +562,9 @@ async function readTranscriptWithDialect(dialect: TranscriptDialect, filePath: s
     try { entry = JSON.parse(line) } catch { continue }
     if (!isRecord(entry) || entry.type === 'session' || typeof entry.id !== 'string' || entry.id.length > 1_024) continue
     const parentId = typeof entry.parentId === 'string' && entry.parentId.length <= 1_024 ? entry.parentId : null
+    // Every re-emission supersedes the evicted occurrence. In particular, a
+    // replacement by a non-renderable title/model record clears old evidence.
+    evictedRenderableIds.delete(entry.id)
     parentEdges.delete(entry.id)
     parentEdges.set(entry.id, parentId)
     while (parentEdges.size > MAX_TRANSCRIPT_GRAPH_RECORDS * 4) {
@@ -469,36 +598,53 @@ async function readTranscriptWithDialect(dialect: TranscriptDialect, filePath: s
       const oldestId = entries.keys().next().value as string | undefined
       if (oldestId === undefined) break
       payloadEvictionOccurred = true
+      noteEvictedRenderable(oldestId)
       graphBytes -= entries.get(oldestId)?.bytes ?? 0
       entries.delete(oldestId)
     }
   }
-  let recoveredParentEdges: Map<string, string | null> | undefined
-  const walkBranch = (startId: string | null): { branch: Array<{ id: string; entry: JsonRecord }>; missingEdgeId: string | null } => {
+  let recoveredParentEdges: Map<string, RecoveredTranscriptEdge> | undefined
+  interface BranchWalk {
+    branch: Array<{ id: string; entry: JsonRecord }>
+    missingEdgeId: string | null
+    graphBudget: boolean
+  }
+  const walkBranch = (startId: string | null): BranchWalk => {
     const collected: Array<{ id: string; entry: JsonRecord }> = []
     const visited = new Set<string>()
     let currentId = startId
     let missingEdgeId: string | null = null
+    let graphBudget = false
     while (currentId && !visited.has(currentId)) {
       visited.add(currentId)
       const node = entries.get(currentId)
       if (node) collected.push(node)
-      const parent = (recoveredParentEdges ?? parentEdges).get(currentId)
+      const edge = recoveredParentEdges?.get(currentId)
+      // Overflow makes memory of an off-window payload unknowable. Force the
+      // existing bounded recovery to classify this exact missing node instead
+      // of guessing that an ordinary non-renderable header was a message.
+      if (!node && evictedRenderableIdsOverflow && recoveredParentEdges === undefined) {
+        missingEdgeId = currentId
+        break
+      }
+      if (!node && (evictedRenderableIds.has(currentId) || edge?.renderable === true)) graphBudget = true
+      const parent = recoveredParentEdges ? edge?.parentId : parentEdges.get(currentId)
       // undefined = the edge fell outside the retained window (recoverable);
-      // null = a genuine root.
+      // null = a genuine root. Missing non-renderable/dangling ids retain the
+      // legacy partial-branch behavior; only renderable evidence pages.
       if (parent === undefined) { missingEdgeId = currentId; break }
       currentId = parent
     }
-    return { branch: collected, missingEdgeId }
+    return { branch: collected, missingEdgeId, graphBudget }
   }
   // Normal reads walk the small FIFO window. On its first miss, load one
   // bounded global last-occurrence index and reuse it for every subsequent
   // walk, regardless of how many interleaved eviction gaps the branch has.
-  const walkBranchWithRecovery = async (startId: string | null): Promise<Array<{ id: string; entry: JsonRecord }>> => {
+  const walkBranchWithRecovery = async (startId: string | null): Promise<BranchWalk> => {
     const walked = walkBranch(startId)
-    if (walked.missingEdgeId === null || recoveredParentEdges !== undefined) return walked.branch
-    recoveredParentEdges = await recoverTranscriptEdges(filePath)
-    return walkBranch(startId).branch
+    if (walked.missingEdgeId === null || recoveredParentEdges !== undefined) return walked
+    recoveredParentEdges = await recoverTranscriptEdges(dialect, filePath)
+    return walkBranch(startId)
   }
   // resolveSessionLeafId parity: the last record decides. An explicit null is
   // a cleared session (empty branch, never the dead-end fallback). A captured
@@ -512,12 +658,13 @@ async function readTranscriptWithDialect(dialect: TranscriptDialect, filePath: s
     if (captured === null) leafId = null
     else if (captured === lastRecordId || parentEdges.has(captured)) leafId = captured
     else {
-      recoveredParentEdges = await recoverTranscriptEdges(filePath)
+      recoveredParentEdges = await recoverTranscriptEdges(dialect, filePath)
       leafId = recoveredParentEdges.has(captured) ? captured : selfSelectedLeafId
     }
   }
-  let branch = leafId === null ? [] : await walkBranchWithRecovery(leafId)
-  if (!branch.length && entries.size && leafId !== null) {
+  let walked: BranchWalk = { branch: [], missingEdgeId: null, graphBudget: false }
+  if (leafId !== null) walked = await walkBranchWithRecovery(leafId)
+  if (!walked.branch.length && entries.size && leafId !== null) {
     if (payloadEvictionOccurred && leafId !== selfSelectedLeafId) {
       // A confirmed capture whose branch retained no payload after FIFO
       // eviction: rendering any other branch would silently switch the
@@ -531,9 +678,10 @@ async function readTranscriptWithDialect(dialect: TranscriptDialect, filePath: s
     // rendering an empty transcript.
     let fallbackId: string | null = null
     for (const id of entries.keys()) fallbackId = id
-    branch = await walkBranchWithRecovery(fallbackId)
+    walked = await walkBranchWithRecovery(fallbackId)
   }
-  branch.reverse()
+  const graphBudget = walked.graphBudget
+  const branch = walked.branch.reverse()
   const transcript: TranscriptMessage[] = []
   let activeAssistant: TranscriptMessage | undefined
   // First toolCall part index per id for the active turn: tool results resolve
@@ -694,13 +842,19 @@ async function readTranscriptWithDialect(dialect: TranscriptDialect, filePath: s
     activeAssistant = undefined
   }
   await resolveImageBlobReferences(transcript, blobsRoot)
-  const result = boundedTranscript(transcript)
-  if (initialStamp !== null && !result.some((message) => message.parts.some((part) => part.type === 'image'))) {
+  return { transcript, cacheStamp, stamp, branchAnchor: leafId, graphBudget }
+}
+
+async function readTranscriptWithDialect(dialect: TranscriptDialect, filePath: string, isStreaming: boolean, blobsRoot: string, cache: TranscriptCache): Promise<TranscriptMessage[]> {
+  const loaded = await loadTranscriptWithDialect(dialect, filePath, isStreaming, blobsRoot, cache, true)
+  if (loaded.cachedMessages) return loaded.cachedMessages
+  const result = boundedTranscriptPage(loaded.transcript, null, initialTranscriptBudget()).messages
+  if (loaded.cacheStamp !== null && !result.some((message) => message.parts.some((part) => part.type === 'image'))) {
     try {
-      const finalStat = await stat(filePath)
-      if (transcriptFileStamp(finalStat) === initialStamp) {
+      const finalStat = await stat(filePath, { bigint: true })
+      if (transcriptFileStamp(finalStat) === loaded.cacheStamp) {
         cache.delete(filePath)
-        cache.set(filePath, { stamp: initialStamp, messages: structuredClone(result) })
+        cache.set(filePath, { stamp: loaded.cacheStamp, messages: structuredClone(result) })
         while (cache.size > MAX_CACHED_TRANSCRIPTS) {
           const oldest = cache.keys().next().value
           if (oldest === undefined) break
@@ -710,6 +864,81 @@ async function readTranscriptWithDialect(dialect: TranscriptDialect, filePath: s
     } catch { /* Ignore post-read stat failures; return the parsed result uncached. */ }
   }
   return result
+}
+
+async function readTranscriptPageWithDialect(
+  dialect: TranscriptDialect,
+  filePath: string,
+  isStreaming: boolean,
+  blobsRoot: string,
+  cache: TranscriptCache,
+  options: TranscriptPageReadOptions = {},
+): Promise<TranscriptPageReaderResult> {
+  if (isStreaming && options.endExclusiveMessageId !== undefined) return { status: 'unavailable', reason: 'streaming' }
+  // Page loads deliberately do not reuse the bounded three-file tail-message
+  // cache: older rows must come from this one coalesced active-branch pass,
+  // while the cache retains exactly its previous size and legacy semantics.
+  const loaded = await loadTranscriptWithDialect(dialect, filePath, isStreaming, blobsRoot, cache, false)
+  let fileChanging = false
+  if (!isStreaming) {
+    try {
+      const finalStamp = transcriptFileStamp(await stat(filePath, { bigint: true }))
+      fileChanging = loaded.stamp === null || finalStamp !== loaded.stamp
+    } catch { fileChanging = true }
+  }
+  if (options.expectedStamp !== undefined
+    && (fileChanging || loaded.stamp === null || loaded.stamp !== options.expectedStamp)) {
+    return { status: 'stale', reason: 'file-changed' }
+  }
+
+  const endExclusiveMessageId = options.endExclusiveMessageId ?? null
+  let page: BoundedTranscriptPage
+  try {
+    page = boundedTranscriptPage(loaded.transcript, endExclusiveMessageId, options.remaining ?? initialTranscriptBudget())
+  } catch (error) {
+    if (error instanceof TranscriptAnchorNotFoundError) return { status: 'stale', reason: 'missing-anchor' }
+    throw error
+  }
+
+  const upperBound = endExclusiveMessageId === null
+    ? loaded.transcript.length
+    : loaded.transcript.findIndex((message) => message.id === endExclusiveMessageId)
+  let olderStart = upperBound
+  let ambiguousSuccessor = false
+  if (page.messages.length > 0) {
+    olderStart = -1
+    const firstId = page.messages[0].id
+    for (let index = 0; index < upperBound; index += 1) {
+      if (loaded.transcript[index].id !== firstId) continue
+      if (olderStart >= 0) ambiguousSuccessor = true
+      olderStart = index
+    }
+  }
+  const earlier = loaded.transcript.slice(0, Math.max(0, olderStart))
+  let older: TranscriptPendingOlder
+  if (fileChanging) older = { state: 'unavailable', reason: 'file-changing' }
+  else if (loaded.graphBudget) older = { state: 'unavailable', reason: 'graph-budget' }
+  else if (isStreaming) older = page.cappedRows > 0
+    ? { state: 'unavailable', reason: 'streaming' }
+    : { state: 'end' }
+  else if (ambiguousSuccessor) older = { state: 'unavailable', reason: 'anchor-ambiguity' }
+  else if (!earlier.length) older = { state: 'end' }
+  // A continuation ending exactly at the retained root is an honest bounded
+  // end, not a promise that arbitrarily old JSONL history can be retained.
+  else older = hasDisplayableRows(earlier, page.remaining)
+    ? { state: 'ready' }
+    : { state: 'unavailable', reason: 'display-budget' }
+
+  return {
+    status: 'ok',
+    messages: page.messages,
+    endExclusiveMessageId,
+    remaining: page.remaining,
+    older,
+    stamp: isStreaming || fileChanging ? null : loaded.stamp,
+    branchAnchor: loaded.branchAnchor,
+    fileChanging,
+  }
 }
 
 export const readTranscript: TranscriptFileReader = createTranscriptReader()

@@ -290,6 +290,39 @@ export interface TranscriptMessage {
   streaming?: boolean
 }
 
+export interface TranscriptPageRequest {
+  /** Opaque main-process continuation token. Omit for the newest page. */
+  cursor?: string
+}
+
+export interface TranscriptRemainingBudget {
+  textChars: number
+  toolChars: number
+  argsChars: number
+  imageChars: number
+  parts: number
+}
+
+export type TranscriptOlder =
+  | { state: 'ready'; cursor: string }
+  | { state: 'end' }
+  | { state: 'unavailable'; reason: 'streaming' | 'file-changing' | 'graph-budget' | 'display-budget' | 'anchor-ambiguity' }
+
+export type TranscriptReadPageResult =
+  | {
+      status: 'ok'
+      /** Opaque snapshot identity; null for a streaming or file-changing newest read. */
+      snapshotId: string | null
+      messages: TranscriptMessage[]
+      /** Null on newest; the exclusive upper-bound message id on cursor reads. */
+      endExclusiveMessageId: string | null
+      /** Shared display budgets remaining after every newer page in this snapshot. */
+      remaining: TranscriptRemainingBudget
+      older: TranscriptOlder
+    }
+  | { status: 'stale'; reason: 'unknown-cursor' | 'file-changed' | 'branch-changed' | 'missing-anchor' }
+  | { status: 'unavailable'; reason: 'streaming' }
+
 export interface PrimeContextUsage {
   tokens: number | null
   contextWindow: number
@@ -928,6 +961,23 @@ export interface SideQuestionTopic extends SideQuestionTurn {
   followUps: SideQuestionTurn[]
 }
 
+export type { HostAuthorizationResponseInput, HostAuthorizationSnapshot, HostOpenUrlPending } from './host-capabilities'
+import type { HostAuthorizationResponseInput, HostAuthorizationSnapshot } from './host-capabilities'
+
+export interface PickedFileRecord {
+  path: string
+  name: string
+}
+
+export type FilePreviewPayload =
+  | { kind: 'markdown'; path: string; name: string; content: string; truncated: boolean; sizeBytes: number }
+  | { kind: 'html'; path: string; name: string; content: string; truncated: boolean; sizeBytes: number; previewUrl?: string }
+  | { kind: 'text'; path: string; name: string; content: string; truncated: boolean; sizeBytes: number }
+  | { kind: 'image'; path: string; name: string; mimeType: string; base64: string; sizeBytes: number }
+  | { kind: 'pdf'; path: string; name: string; mimeType: 'application/pdf'; base64: string; sizeBytes: number }
+  | { kind: 'too-large'; path: string; name: string; sizeBytes: number; maxBytes: number }
+  | { kind: 'unsupported'; path: string; name: string; sizeBytes: number; extension: string }
+
 export interface DesktopApi {
   app: { getMeta(): Promise<AppMeta>; refreshHarnesses(): Promise<{ meta: AppMeta; settings: AppSettings }>; openExternal(url: string): Promise<boolean>; revealPath(path: string): Promise<boolean>; popupMenu(menu: ApplicationMenuName, x: number, y: number): Promise<boolean>; setTitleBarTheme(theme: Exclude<ThemeMode, 'system'>): Promise<boolean>; onOpenSettings(callback: () => void): () => void }
   menu: { popup(items: NativeMenuItem[]): Promise<string | null> }
@@ -958,10 +1008,15 @@ export interface DesktopApi {
     markSetupStarted(id: string, setup: string, harness?: HarnessId): Promise<ProjectScripts>
     finishSetup(id: string, setup: string, exitCode: number, harness?: HarnessId): Promise<ProjectScripts | undefined>
   }
+  files: {
+    read(filePath: string, baseDir?: string): Promise<FilePreviewPayload>
+    pick(): Promise<PickedFileRecord | null>
+  }
   sessions: {
     list(projectPath?: string, includeArchived?: boolean, harness?: HarnessId, force?: boolean): Promise<SessionRecord[]>
     sync(revision?: number, harness?: HarnessId): Promise<SessionCatalogUpdate>
     read(filePath: string): Promise<TranscriptMessage[]>
+    readPage(filePath: string, request?: TranscriptPageRequest): Promise<TranscriptReadPageResult>
     rename(filePath: string, title: string): Promise<boolean>
     archive(filePath: string, archived?: boolean): Promise<boolean>
     branch(filePath: string): Promise<SessionRecord>
@@ -1028,6 +1083,11 @@ export interface DesktopApi {
     delete(id: string): Promise<boolean>
     runNow(id: string): Promise<ScheduleRunRecord>
     onChanged(callback: (event: ScheduleChangeEvent) => void): () => void
+  }
+  hostAuth: {
+    snapshot(runtimeId: string): Promise<HostAuthorizationSnapshot>
+    respond(input: HostAuthorizationResponseInput): Promise<boolean>
+    onChanged(callback: (snapshot: HostAuthorizationSnapshot) => void): () => void
   }
 }
 

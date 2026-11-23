@@ -39,9 +39,12 @@ const INVOKE_CASES: Array<[domain: string, method: string, channel: string, args
   ['projects', 'updateScripts', 'projects:update-scripts', ['project-id', { setup: 'npm install', run: 'npm run dev' }, 'omp']],
   ['projects', 'markSetupStarted', 'projects:mark-setup-started', ['project-id', 'npm install', 'omp']],
   ['projects', 'finishSetup', 'projects:finish-setup', ['project-id', 'npm install', 0, 'omp']],
+  ['files', 'read', 'files:read', ['/repo/README.md', '/repo']],
+  ['files', 'pick', 'files:pick', []],
   ['sessions', 'list', 'sessions:list', ['/repo', true, 'omp', true]],
   ['sessions', 'sync', 'sessions:sync', [3, 'omp']],
   ['sessions', 'read', 'sessions:read', ['/session.jsonl']],
+  ['sessions', 'readPage', 'sessions:readPage', ['/session.jsonl', { cursor: 'opaque-cursor' }]],
   ['sessions', 'rename', 'sessions:rename', ['/session.jsonl', 'Title']],
   ['sessions', 'archive', 'sessions:archive', ['/session.jsonl', true]],
   ['sessions', 'delete', 'sessions:delete', ['/session.jsonl']],
@@ -92,6 +95,8 @@ const INVOKE_CASES: Array<[domain: string, method: string, channel: string, args
   ['schedules', 'resume', 'schedules:resume', ['schedule']],
   ['schedules', 'delete', 'schedules:delete', ['schedule']],
   ['schedules', 'runNow', 'schedules:run-now', ['schedule']],
+  ['hostAuth', 'snapshot', 'hostAuth:snapshot', ['runtime-1']],
+  ['hostAuth', 'respond', 'hostAuth:respond', [{ runtimeId: 'runtime-1', registrationGeneration: 1, requestId: 'req-1', decision: 'approve' }]],
 ]
 
 const SUBSCRIPTION_CASES: Array<[domain: string, method: string, channel: string]> = [
@@ -105,6 +110,7 @@ const SUBSCRIPTION_CASES: Array<[domain: string, method: string, channel: string
   ['browser', 'onPointer', 'browser:pointer'],
   ['browser', 'onActivity', 'browser:activity'],
   ['schedules', 'onChanged', 'schedules:changed'],
+  ['hostAuth', 'onChanged', 'hostAuth:changed'],
 ]
 
 describe('preload bridge contract', () => {

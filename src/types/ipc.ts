@@ -47,10 +47,15 @@ export const IPC_CHANNELS = {
     markSetupStarted: 'projects:mark-setup-started',
     finishSetup: 'projects:finish-setup',
   },
+  files: {
+    read: 'files:read',
+    pick: 'files:pick',
+  },
   sessions: {
     list: 'sessions:list',
     sync: 'sessions:sync',
     read: 'sessions:read',
+    readPage: 'sessions:readPage',
     branch: 'sessions:branch',
     setPinned: 'sessions:setPinned',
     rename: 'sessions:rename',
@@ -127,6 +132,11 @@ export const IPC_CHANNELS = {
     delete: 'schedules:delete',
     runNow: 'schedules:run-now',
     onChanged: 'schedules:changed',
+  },
+  hostAuth: {
+    snapshot: 'hostAuth:snapshot',
+    respond: 'hostAuth:respond',
+    onChanged: 'hostAuth:changed',
   },
 } as const satisfies { [Domain in keyof DesktopApi]: { [Method in keyof DesktopApi[Domain]]: `${WireNamespace<Domain>}:${string}` } }
 

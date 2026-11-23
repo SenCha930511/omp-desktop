@@ -12,6 +12,8 @@ export interface NativeFormProbe {
 }
 
 export interface NativeFormProbeOptions {
+  /** Opt-in deterministic native prediction responses; no provider is contacted. */
+  wordPrediction?: boolean
   /** Opt-in sticky-fast state; the ordinary form probe remains unchanged. */
   fastFallback?: boolean
   /** Opt-in session-scoped native slow state; all default/fast wire fields remain unchanged. */
@@ -28,6 +30,7 @@ function writeFakeOmp(fixtureRoot: string, sessionFile: string, wireFile: string
   const executable = join(fixtureRoot, 'omp-native-form-fake.cjs')
   const fastFallback = options.fastFallback === true
   const slowMode = options.slowMode === true
+  const wordPrediction = options.wordPrediction === true
   const modelId = fastFallback ? 'gpt-5.6' : 'gpt-fixture'
   const html = `<form action="https://invalid.example/ignored" onsubmit="throw new Error('must not execute')">
     <h1>Native wire probe</h1>
@@ -54,6 +57,7 @@ const formHtml = ${JSON.stringify(html)}
 const wireFile = ${JSON.stringify(wireFile)}
 const fastFallback = ${JSON.stringify(fastFallback)}
 const slowMode = ${JSON.stringify(slowMode)}
+const wordPrediction = ${JSON.stringify(wordPrediction)}
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
 let fastModeEnabled = true
 const fastModeActive = false
@@ -98,6 +102,12 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     send({ type: 'available_commands_update', commands: [] })
   } else if (command.type === 'get_subagents') {
     send({ id: command.id, type: 'response', command: command.type, success: true, data: { subagents: [] } })
+  } else if (wordPrediction && command.type === 'predict_word') {
+    fs.appendFileSync(wireFile, JSON.stringify(command) + '\\n')
+    send({ id: command.id, type: 'response', command: command.type, success: true, data: { suffix: command.text.includes('silent') ? null : ' world' } })
+  } else if (wordPrediction && command.type === 'predict_word_feedback') {
+    fs.appendFileSync(wireFile, JSON.stringify(command) + '\\n')
+    send({ id: command.id, type: 'response', command: command.type, success: true, data: {} })
   } else if (command.type === 'prompt') {
     streaming = true
     activePromptId = command.id
@@ -173,7 +183,7 @@ export async function launchNativeFormProbe(options: NativeFormProbeOptions = {}
     app = await electron.launch({ args: ['.', `--user-data-dir=${userData}`], cwd: process.cwd(), env: environment as Record<string, string>, timeout: 20_000 })
     page = await app.firstWindow({ timeout: 15_000 })
     await expect(page.locator('.app-shell')).toHaveAttribute('data-ready', 'true', { timeout: 20_000 })
-    if (options.fastFallback || options.slowMode) {
+    if (options.fastFallback || options.slowMode || options.wordPrediction) {
       // Start only the local RPC runtime; state-control probes never prompt the
       // model or emit an agent_start/provider interaction.
       await page.evaluate(async ({ cwd, sessionPath, fastFallback }) => {

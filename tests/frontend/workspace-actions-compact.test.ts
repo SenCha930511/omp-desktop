@@ -182,11 +182,15 @@ describe('/compact dispatch', () => {
     expect(state.messages().filter((message) => message.role === 'assistant' || message.role === 'system')).toEqual([])
   })
 
-  it('queues slash commands instead of steering them into the model', async () => {
+  it('dispatches slash commands directly while busy without queueing or routing to steer RPC', async () => {
     const state = fixture({ runtime: runtime('busy', true), ownsStreaming: true })
     await state.actions.sendPrompt('/effort high', [], 'steer')
-    expect(state.command).not.toHaveBeenCalled()
-    expect(state.queuePrompt).toHaveBeenCalledWith('/effort high', 'queue')
+    expect(state.queuePrompt).not.toHaveBeenCalled()
+    expect(state.command).toHaveBeenCalledWith('busy', {
+      type: 'prompt',
+      message: '/effort high',
+      streamingBehavior: 'steer',
+    })
   })
 
   it('rejects deferred displays without forwarding them', async () => {
@@ -213,14 +217,13 @@ describe('/compact dispatch', () => {
     expect(fixtureState.command).toHaveBeenCalledWith('idle-runtime', { type: 'compact', customInstructions: 'focus on auth' })
   })
 
-  it('queues compact for an owned streaming runtime', async () => {
+  it('dispatches compact immediately on an owned streaming runtime without waiting for steer or queue', async () => {
     const fixtureState = fixture({ runtime: runtime('streaming-runtime', true), ownsStreaming: true })
 
     await fixtureState.actions.sendPrompt('/compact', [], 'steer')
 
-    expect(fixtureState.command).not.toHaveBeenCalled()
-    expect(fixtureState.queuePrompt).toHaveBeenCalledWith('/compact', 'queue')
-    expect(fixtureState.setToast).toHaveBeenCalledWith('Compaction will run when the current turn finishes.')
+    expect(fixtureState.queuePrompt).not.toHaveBeenCalled()
+    expect(fixtureState.command).toHaveBeenCalledWith('streaming-runtime', { type: 'compact' })
   })
 
   it('does not start a runtime when there is nothing to compact', async () => {
@@ -253,15 +256,14 @@ describe('/compact dispatch', () => {
     expect(fixtureState.start).not.toHaveBeenCalled()
   })
 
-  it('queues compact for a non-owned streaming runtime instead of steering it', async () => {
+  it('dispatches compact directly for a non-owned streaming runtime instead of steering', async () => {
     const fixtureState = fixture({ runtime: runtime('external-streaming-runtime', true) })
 
     await fixtureState.actions.sendPrompt('/compact', [], 'steer')
 
-    expect(fixtureState.command).not.toHaveBeenCalled()
     expect(fixtureState.followUp).not.toHaveBeenCalled()
-    expect(fixtureState.queuePrompt).toHaveBeenCalledWith('/compact', 'queue')
-    expect(fixtureState.setToast).toHaveBeenCalledWith('Compaction will run when the current turn finishes.')
+    expect(fixtureState.queuePrompt).not.toHaveBeenCalled()
+    expect(fixtureState.command).toHaveBeenCalledWith('external-streaming-runtime', { type: 'compact' })
   })
 
   it('routes uppercase mode compacts to the upstream slash dispatcher instead of custom instructions', async () => {
@@ -303,16 +305,20 @@ describe('/compact dispatch', () => {
     expect(fixtureState.followUp).not.toHaveBeenCalled()
   })
 
-  it('queues a busy skill command with its images in the local entry', async () => {
-    // 忙碌时本地排隊:图片隨條目保存,flush 时原样恢復,不静默成纯文字。
+  it('dispatches a busy skill command with its images directly', async () => {
     const skillRuntime: RuntimeInfo = { ...runtime('busy', true), availableCommands: [{ name: 'commit', source: 'skill' }] }
     const fixtureState = fixture({ runtime: skillRuntime, ownsStreaming: true })
     const images = [{ type: 'image' as const, mimeType: 'image/png', data: 'iVBORw0KGgo=' }]
 
     await fixtureState.actions.sendPrompt('/commit', images)
 
-    expect(fixtureState.command).not.toHaveBeenCalled()
-    expect(fixtureState.queuePrompt).toHaveBeenCalledWith('/commit', 'queue', [{ type: 'text', text: '/commit' }, ...images])
+    expect(fixtureState.queuePrompt).not.toHaveBeenCalled()
+    expect(fixtureState.command).toHaveBeenCalledWith('busy', {
+      type: 'prompt',
+      message: '/commit',
+      streamingBehavior: 'followUp',
+      images,
+    })
   })
 
   it('still rejects images for slash commands outside the image-capable sources', async () => {

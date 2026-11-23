@@ -17,7 +17,15 @@ import { reconcileTranscripts } from '@/app/transcript-reconcile'
 import type { WorkspaceSnapshot } from '@/app/workspace'
 import { createPrimeEventBuffer, createQueuedMessageEvent, createSteerAcceptedEvent, createSteerPickupEvent, createSteerRetractEvent, replayPrimeEvents } from '@/lib/events'
 import type { PrimeEventBuffer } from '@/lib/events'
+import { errorMessage } from '@/lib/errors'
 import { moveComposerDraft } from '@/lib/composer-draft'
+import {
+  applyPageResultToPagination,
+  INITIAL_HISTORY_PAGINATION,
+  mergeNewestTranscriptTail,
+  prependOlderPage,
+  type HistoryPaginationState,
+} from '@/lib/session-pagination'
 import { findRuntimeForWorkspace, workspaceCwd } from '@/lib/workspace'
 import { readPendingQueues, savePendingQueues, type WithdrawnQueue } from '@/lib/queued-prompt-storage'
 import { parseSessionActionSnapshot } from '@/lib/session-actions'
@@ -99,6 +107,11 @@ export function useWorkspaceRuntime({
   const [runtime, setRuntime] = useState<RuntimeInfo | null>(null)
   const [workspaceGeneration, setWorkspaceGeneration] = useState(0)
   const [loadingSession, setLoadingSession] = useState(false)
+  const [historyPagination, setHistoryPagination] = useState<HistoryPaginationState>(INITIAL_HISTORY_PAGINATION)
+  const historyPaginationRef = useRef<HistoryPaginationState>(INITIAL_HISTORY_PAGINATION)
+  historyPaginationRef.current = historyPagination
+  const pagedSessionKeyRef = useRef<string | null>(null)
+  const olderReadSeqRef = useRef(0)
   const harnessRef = useRef(harness)
   harnessRef.current = harness
   const runtimeIdRef = useRef<string | null>(null)
@@ -246,6 +259,10 @@ export function useWorkspaceRuntime({
     setPendingQueuedPrompts(queuedPrompts)
     setActiveProjectId(project?.id)
     setActiveSessionId(session?.id)
+    olderReadSeqRef.current += 1
+    pagedSessionKeyRef.current = null
+    historyPaginationRef.current = INITIAL_HISTORY_PAGINATION
+    setHistoryPagination(INITIAL_HISTORY_PAGINATION)
     attachRuntime(nextRuntime, generation)
     if (bridge) {
       setMessages([])
@@ -376,13 +393,31 @@ export function useWorkspaceRuntime({
       }
     }
 
+    const sessionKey = `${selected.generation}\0${selected.sessionFile}`
+    const usePagedInitialRead = !reconciliation
+      && typeof bridge.sessions?.readPage === 'function'
+      && pagedSessionKeyRef.current !== sessionKey
+
     void runTranscriptRead({
-      read: () => bridge.sessions.read(selected.sessionFile!),
+      read: async (): Promise<{ messages: TranscriptMessage[]; pagination?: HistoryPaginationState }> => {
+        let pagination: HistoryPaginationState | undefined
+        if (usePagedInitialRead) {
+          const page = await bridge.sessions.readPage(selected.sessionFile!)
+          pagination = applyPageResultToPagination(INITIAL_HISTORY_PAGINATION, page, false)
+          if (page.status === 'ok') return { messages: page.messages, pagination }
+        }
+        return { messages: await bridge.sessions.read(selected.sessionFile!), pagination }
+      },
       isCurrent: () => transcriptLoadRef.current === pendingLoad
         && workspaceRef.current.generation === pendingLoad.generation
         && workspaceRef.current.sessionFile === pendingLoad.sessionFile,
-      onValue: (value) => {
+      onValue: ({ messages: value, pagination }) => {
         if (pendingLoad.eventBuffer.overflowed) return
+        if (pagination) {
+          pagedSessionKeyRef.current = sessionKey
+          historyPaginationRef.current = pagination
+          setHistoryPagination(pagination)
+        }
         const current = workspaceRef.current
         const readMarker = pendingLoad.runtimeId ? {
           generation: pendingLoad.generation,
@@ -398,16 +433,17 @@ export function useWorkspaceRuntime({
           setMessages((messages) => pendingLoad.eventBuffer.replay(messages))
           return
         }
+        const hasLoadedOlder = historyPaginationRef.current.hasLoadedOlder
         // Post-turn reconciliation reads restore disk authority, but unchanged
         // messages keep their identity so memoized rows do not re-render.
         if (pendingLoad.reconciliation) {
-          setMessages((messages) => reconcileTranscripts(messages, pendingLoad.eventBuffer.replay(value)))
+          setMessages((messages) => mergeNewestTranscriptTail(messages, pendingLoad.eventBuffer.replay(value), hasLoadedOlder, reconcileTranscripts))
           return
         }
         // Background reads (initial and external-sync) merge into the live
         // list so an optimistic message sent while the read was in flight is
         // not replaced away by older on-disk state.
-        setMessages((messages) => reconcileTranscriptMessages(messages, pendingLoad.eventBuffer.replay(value)))
+        setMessages((messages) => mergeNewestTranscriptTail(messages, pendingLoad.eventBuffer.replay(value), hasLoadedOlder, reconcileTranscriptMessages))
       },
       onError: (error) => {
         setMessages((messages) => pendingLoad.eventBuffer.replay(messages))
@@ -452,6 +488,50 @@ export function useWorkspaceRuntime({
     const inFlight = transcriptLoadRef.current
     if (inFlight?.started && inFlight.generation === dirty.generation && inFlight.sessionFile === dirty.sessionFile) return
     lastExternalReadStartedAtRef.current = Date.now()
+    startTranscriptRead(selected, false)
+  }, [startTranscriptRead])
+
+  const loadOlderHistory = useCallback(async () => {
+    const selected = workspaceRef.current
+    const current = historyPaginationRef.current
+    if (!bridge?.sessions?.readPage || !selected.sessionFile || current.loadingOlder || current.older.state !== 'ready') return
+    const seq = ++olderReadSeqRef.current
+    const cursor = current.older.cursor
+    const loadingState: HistoryPaginationState = { ...current, loadingOlder: true, error: undefined }
+    historyPaginationRef.current = loadingState
+    setHistoryPagination(loadingState)
+    try {
+      const result = await bridge.sessions.readPage(selected.sessionFile, { cursor })
+      if (
+        olderReadSeqRef.current !== seq
+        || workspaceRef.current.generation !== selected.generation
+        || workspaceRef.current.sessionFile !== selected.sessionFile
+      ) return
+      if (result.status === 'ok') {
+        setMessages((messages) => prependOlderPage(messages, result.messages, result.endExclusiveMessageId))
+      }
+      const next = applyPageResultToPagination(loadingState, result, true)
+      historyPaginationRef.current = next
+      setHistoryPagination(next)
+    } catch (reason) {
+      if (
+        olderReadSeqRef.current !== seq
+        || workspaceRef.current.generation !== selected.generation
+        || workspaceRef.current.sessionFile !== selected.sessionFile
+      ) return
+      const next: HistoryPaginationState = { ...current, loadingOlder: false, error: errorMessage(reason) }
+      historyPaginationRef.current = next
+      setHistoryPagination(next)
+    }
+  }, [bridge])
+
+  const reloadHistory = useCallback(() => {
+    const selected = workspaceRef.current
+    if (!selected.sessionFile) return
+    olderReadSeqRef.current += 1
+    pagedSessionKeyRef.current = null
+    historyPaginationRef.current = INITIAL_HISTORY_PAGINATION
+    setHistoryPagination(INITIAL_HISTORY_PAGINATION)
     startTranscriptRead(selected, false)
   }, [startTranscriptRead])
 
@@ -993,6 +1073,9 @@ export function useWorkspaceRuntime({
     setRuntime,
     workspaceGeneration,
     loadingSession,
+    historyPagination,
+    loadOlderHistory,
+    reloadHistory,
     runtimeIdRef,
     runtimeSessionsRef,
     runtimeOwnerRef,

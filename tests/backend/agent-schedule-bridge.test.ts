@@ -1,28 +1,44 @@
 import { mkdtempSync, rmSync } from 'node:fs'
+import { open, rename, unlink } from 'node:fs/promises'
+import { request as httpRequest } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { AgentScheduleBridge } from '../../electron/main/schedules/agent-bridge'
 import { AutomationService } from '../../electron/main/schedules/service'
-import { JsonStateStore } from '../../electron/main/store'
+import { JsonStateStore, type JsonStateStoreFileSystem } from '../../electron/main/store'
+
+class TestAgentScheduleBridge extends AgentScheduleBridge {
+  requestsFor(token: string | undefined): number | undefined {
+    return token ? this.claimForToken(token)?.requests : undefined
+  }
+}
 
 const dirs: string[] = []
-const bridges: AgentScheduleBridge[] = []
+const bridges: TestAgentScheduleBridge[] = []
+const services: AutomationService[] = []
+const stores: JsonStateStore[] = []
 afterEach(async () => {
   await Promise.all(bridges.splice(0).map((bridge) => bridge.stop()))
+  await Promise.all(services.splice(0).map((service) => service.stop()))
+  await Promise.all(stores.splice(0).map((store) => store.beginShutdown()))
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true, maxRetries: 5 })
 })
 
-async function fixture(harness: 'omp' = 'omp') {
+async function fixture(harness: 'omp' = 'omp', fileSystem?: JsonStateStoreFileSystem) {
   const dir = mkdtempSync(join(tmpdir(), 'omp-desktop-agent-schedules-'))
   dirs.push(dir)
-  const service = new AutomationService(new JsonStateStore(join(dir, 'state.json')), {
+  const store = new JsonStateStore(join(dir, 'state.json'), fileSystem)
+  stores.push(store)
+  await store.ready()
+  const service = new AutomationService(store, {
     validateTarget: async () => undefined,
     validateExecution: async () => undefined,
     run: async () => ({}),
     now: () => new Date('2030-01-01T00:00:00Z'),
   })
-  const bridge = new AgentScheduleBridge({
+  services.push(service)
+  const bridge = new TestAgentScheduleBridge({
     service, harness, skillPath: '/app/skills/omp-desktop-schedules',
     resolveScope: async ({ sessionPath }) => ({ projectId: 'project-one', sessionId: sessionPath ? 'session-one' : undefined }),
   })
@@ -36,7 +52,29 @@ async function fixture(harness: 'omp' = 'omp') {
     })
     return { status: response.status, body: await response.json() as { ok: boolean; result?: unknown; error?: string } }
   }
-  return { service, environment, call }
+  return { bridge, store, service, environment, call }
+}
+
+function rawBodyRequest(url: string, token: string | undefined, body: string) {
+  const request = httpRequest(url, {
+    method: 'POST',
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(body),
+      Connection: 'keep-alive',
+    },
+  })
+  const response = new Promise<{ status: number; body: string }>((resolve, reject) => {
+    request.on('response', (incoming) => {
+      const chunks: Buffer[] = []
+      incoming.on('data', (chunk: Buffer) => chunks.push(chunk))
+      incoming.on('end', () => resolve({ status: incoming.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') }))
+    })
+    request.on('error', reject)
+  })
+  request.write(body.slice(0, -1))
+  return { request, response, finish: () => request.end(body.slice(-1)) }
 }
 
 describe('AgentScheduleBridge', () => {
@@ -124,5 +162,80 @@ describe('AgentScheduleBridge', () => {
       body: JSON.stringify({ method: 'create', params: { target: 'current_session', input: {} } }),
     })
     expect(response.status).toBe(400)
+  })
+
+  it('drains partial-body rejects and admitted bodies before stop completes', async () => {
+    const { bridge, service, environment } = await fixture()
+    const body = JSON.stringify({ method: 'list', params: {} })
+    const rejected = rawBodyRequest(environment.OMP_DESKTOP_SCHEDULE_URL!, undefined, body)
+    expect(await rejected.response).toMatchObject({ status: 401, body: expect.stringContaining('Unauthorized') })
+    await bridge.stop()
+
+    await bridge.start()
+    const active = bridge.environmentFor({ cwd: '/project', sessionPath: '/sessions/active.jsonl' })
+    const admitted = rawBodyRequest(active.OMP_DESKTOP_SCHEDULE_URL!, active.OMP_DESKTOP_SCHEDULE_TOKEN, body)
+    while (bridge.requestsFor(active.OMP_DESKTOP_SCHEDULE_TOKEN) !== 1) {
+      await new Promise<void>((resolve) => setImmediate(resolve))
+    }
+    let stopped = false
+    const stopping = bridge.stop().then(() => { stopped = true })
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect(stopped).toBe(false)
+
+    admitted.finish()
+    expect(await admitted.response).toMatchObject({ status: 401, body: expect.stringContaining('Capability expired') })
+    await stopping
+    expect(service.list()).toEqual([])
+  })
+
+  it('drains an in-flight persisted response and closes every state handle before cleanup', async () => {
+    const liveHandles = new Set<string>()
+    const writeStarted = Promise.withResolvers<void>()
+    const allowWrite = Promise.withResolvers<void>()
+    let blockNextWrite = false
+    const fileSystem: JsonStateStoreFileSystem = {
+      open: async (path, flags, mode) => {
+        const handle = await open(path, flags, mode)
+        liveHandles.add(path)
+        return {
+          writeFile: (data, options) => handle.writeFile(data, options),
+          sync: async () => {
+            if (blockNextWrite && flags === 'w') {
+              blockNextWrite = false
+              writeStarted.resolve()
+              await allowWrite.promise
+            }
+            await handle.sync()
+          },
+          close: async () => {
+            try { await handle.close() } finally { liveHandles.delete(path) }
+          },
+        }
+      },
+      rename,
+      unlink,
+    }
+    const { bridge, store, call } = await fixture('omp', fileSystem)
+    blockNextWrite = true
+    const pendingResponse = call('create', {
+      target: 'current_project',
+      input: {
+        prompt: 'Persist before shutdown',
+        timing: { kind: 'once', at: '2030-01-02T00:00:00Z' },
+        execution: { model: 'auto', thinking: 'auto', speed: 'normal' },
+      },
+    })
+    await writeStarted.promise
+    let stopped = false
+    const stopping = bridge.stop().then(() => { stopped = true })
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect(stopped).toBe(false)
+    expect(liveHandles.size).toBe(1)
+
+    allowWrite.resolve()
+    expect((await pendingResponse).status).toBe(200)
+    await stopping
+    await store.beginShutdown()
+    expect(liveHandles).toEqual(new Set())
   })
 })

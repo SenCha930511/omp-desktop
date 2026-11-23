@@ -2,7 +2,7 @@ import type { CSSProperties } from 'react'
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { activityNotificationSignature, readClearedActivity, readClearedAttention, sessionCompanionNotificationSignature } from '@/app/session-attention'
 import { AgentBrowserLayer, type AgentSlotRect } from '@/components/AgentBrowserLayer'
-import { Composer, type HarnessQueuedPreview } from '@/components/Composer'
+import type { HarnessQueuedPreview } from '@/components/Composer'
 import { ExtensionUiPresentation } from '@/components/ExtensionUiPresentation'
 import { readComposerDraft } from '@/lib/composer-draft'
 import { ReasoningExpandedContext } from '@/components/ReasoningDisclosure'
@@ -59,6 +59,7 @@ import {
   type GitFileChange,
   HARNESS_IDS,
   type HarnessId,
+  type HostAuthorizationSnapshot,
   type InspectorTab,
   type MessagePart,
   type OmpApprovalMode,
@@ -74,10 +75,12 @@ import {
   type WorkspaceView,
 } from '@/types/api'
 
+const Composer = lazy(() => import('@/components/Composer').then((module) => ({ default: module.Composer })))
 const Transcript = lazy(() => import('@/components/ConversationTranscript').then((module) => ({ default: module.ConversationTranscript })))
 const Inspector = lazy(() => import('@/components/WorkspaceInspector').then((module) => ({ default: module.WorkspaceInspector })))
 const CommandPalette = lazy(() => import('@/components/CommandPalette').then((module) => ({ default: module.CommandPalette })))
 const ExtensionUiModal = lazy(() => import('@/components/ExtensionUiModal').then((module) => ({ default: module.ExtensionUiModal })))
+const HostOpenUrlPrompt = lazy(() => import('@/components/HostOpenUrlPrompt').then((module) => ({ default: module.HostOpenUrlPrompt })))
 const ProjectsPage = lazy(() => import('@/pages/ProjectsPage').then((module) => ({ default: module.ProjectsPage })))
 const ActivityPage = lazy(() => import('@/pages/ActivityPage').then((module) => ({ default: module.ActivityPage })))
 const ScheduledPage = lazy(() => import('@/pages/ScheduledPage').then((module) => ({ default: module.ScheduledPage })))
@@ -158,6 +161,11 @@ export default function App() {
   // usePluginSkills 之前初始化,故以 ref 延後解析。
   const pluginSkillsRefreshRef = useRef<(() => Promise<void>) | null>(null)
   const [activeProjectScriptRun, setActiveProjectScriptRun] = useState<ActiveProjectScriptRun>()
+  const [previewFiles, setPreviewFiles] = useState<string[]>([])
+  const [activePreviewFile, setActivePreviewFile] = useState<string | null>(null)
+  const [previewActivationRevision, setPreviewActivationRevision] = useState(0)
+  const [hostAuthSnapshot, setHostAuthSnapshot] = useState<HostAuthorizationSnapshot | null>(null)
+  const [hostAuthBusyId, setHostAuthBusyId] = useState<string | null>(null)
   const activeProjectScriptRunRef = useRef<ActiveProjectScriptRun | undefined>(undefined)
   const projectScriptStartingRef = useRef(false)
   activeProjectScriptRunRef.current = activeProjectScriptRun
@@ -414,6 +422,60 @@ export default function App() {
     setRuntime: workspace.setRuntime,
     reportError,
   })
+  const activeRuntimeId = workspace.runtime?.runtimeId
+  useEffect(() => {
+    const hostAuth = bridge?.hostAuth
+    if (!hostAuth || !activeRuntimeId) {
+      setHostAuthSnapshot(null)
+      setHostAuthBusyId(null)
+      return
+    }
+    let cancelled = false
+    setHostAuthBusyId(null)
+    void hostAuth.snapshot(activeRuntimeId)
+      .then((snapshot) => {
+        if (!cancelled) setHostAuthSnapshot(snapshot.pending ? snapshot : null)
+      })
+      .catch(() => {
+        if (!cancelled) setHostAuthSnapshot(null)
+      })
+    const unsubscribe = hostAuth.onChanged((snapshot) => {
+      if (cancelled || snapshot.runtimeId !== activeRuntimeId) return
+      setHostAuthBusyId(null)
+      setHostAuthSnapshot(snapshot.pending ? snapshot : null)
+    })
+    return () => {
+      cancelled = true
+      unsubscribe()
+    }
+  }, [activeRuntimeId, bridge])
+  const respondToHostOpenUrl = useCallback(
+    (decision: 'approve' | 'deny') => {
+      const hostAuth = bridge?.hostAuth
+      const pending = hostAuthSnapshot?.pending
+      if (!hostAuth || !hostAuthSnapshot || !pending || hostAuthBusyId === pending.requestId) return
+      const targetRequestId = pending.requestId
+      setHostAuthBusyId(targetRequestId)
+      void hostAuth.respond({
+        runtimeId: hostAuthSnapshot.runtimeId,
+        registrationGeneration: hostAuthSnapshot.registrationGeneration,
+        requestId: targetRequestId,
+        decision,
+      }).then((accepted) => {
+        setHostAuthBusyId((current) => (current === targetRequestId ? null : current))
+        if (!accepted) {
+          return hostAuth.snapshot(hostAuthSnapshot.runtimeId).then((latest) => {
+            setHostAuthSnapshot(latest.pending ? latest : null)
+          })
+        }
+        return undefined
+      }).catch((error) => {
+        setHostAuthBusyId((current) => (current === targetRequestId ? null : current))
+        reportError(error)
+      })
+    },
+    [bridge, hostAuthBusyId, hostAuthSnapshot, reportError],
+  )
   // /login /logout 的 GUI 驅動殼:provider 帳號面板掛在 Capabilities 頁,
   // 取消登入 = 對上游等待中的 extension_ui dialog 回 cancelled(上游中止
   // OAuth flow);憑證全程 OMP custody,panel 資料已白名單解析。
@@ -569,13 +631,20 @@ export default function App() {
     if (!activity) return
     if (activity.sessionFile !== activeRuntimeSessionFile && activity.sessionFile !== activeSessionFilePath) return
     setAgentPreviewSelected(activity.tabId === 'preview')
+    setActivePreviewFile(null)
     settingsState.setInspectorOpen(true)
     settingsState.selectInspectorTab('browser')
   }, [agentBrowser.activityEvent, activeRuntimeSessionFile, activeSessionFilePath, settingsState.setInspectorOpen, settingsState.selectInspectorTab])
   useEffect(() => {
     if (!activeAgentTabs.length) setAgentPreviewSelected(true)
   }, [activeAgentTabs.length])
-  const agentTabVisible = view === 'session' && settingsState.inspectorOpen && settingsState.inspectorTab === 'browser' && !agentPreviewSelected && activeAgentTabId !== null
+  const agentTabVisible =
+    view === 'session' &&
+    settingsState.inspectorOpen &&
+    settingsState.inspectorTab === 'browser' &&
+    activePreviewFile === null &&
+    !agentPreviewSelected &&
+    activeAgentTabId !== null
   const pluginScope = activeProject?.primaryFolder && !activeProject.inferred ? activeProject.primaryFolder : undefined
   const pluginSkills = usePluginSkills({ bridge, harness: activeHarness, scope: pluginScope, generation: workspace.workspaceGeneration, initialSkills: bridge ? [] : SAMPLE_SKILLS, reportError })
   pluginSkillsRefreshRef.current = pluginSkills.refresh
@@ -734,6 +803,42 @@ export default function App() {
     },
     [settingsState.closeOtherInspectorTabs, sideQuestions, workspace.activeSessionId],
   )
+  const selectInspectorTab = useCallback(
+    (tab: InspectorTab) => {
+      setActivePreviewFile(null)
+      settingsState.selectInspectorTab(tab)
+    },
+    [settingsState.selectInspectorTab],
+  )
+  const openFileInInspector = useStableCallback((filePath: string) => {
+    const normalized = filePath.trim()
+    if (!normalized) return
+    setPreviewFiles((current) => {
+      if (current.includes(normalized)) return current
+      const next = [...current, normalized]
+      return next.length > 12 ? next.slice(next.length - 12) : next
+    })
+    setActivePreviewFile(normalized)
+    setPreviewActivationRevision((value) => value + 1)
+    if (!settingsState.inspectorOpen || layout.inspectorSuppressed) layout.setSmallestInspectorAllowed(true)
+    if (!settingsState.inspectorOpen) settingsState.setInspectorOpen(true)
+  })
+  const selectPreviewFile = useCallback((filePath: string | null) => {
+    setActivePreviewFile(filePath)
+    if (filePath) setPreviewActivationRevision((value) => value + 1)
+  }, [])
+  const closePreviewFile = useCallback((filePath: string) => {
+    setPreviewFiles((current) => {
+      const index = current.indexOf(filePath)
+      if (index === -1) return current
+      const next = current.filter((item) => item !== filePath)
+      setActivePreviewFile((active) => {
+        if (active !== filePath) return active
+        return next[Math.min(index, next.length - 1)] ?? null
+      })
+      return next
+    })
+  }, [])
   const toggleInspectorPanel = useCallback(() => {
     if (!settingsState.inspectorOpen || layout.inspectorSuppressed) layout.setSmallestInspectorAllowed(true)
     toggleInspector()
@@ -1475,6 +1580,11 @@ export default function App() {
                           onDismissChanges={dismissChangesCard}
                           queuedMessageCount={queuedMessages.length + harnessQueuedMessageCount}
                           onOpenSessionReference={openSessionReference}
+                          cwd={activeCwd}
+                          onOpenFile={openFileInInspector}
+                          historyPagination={workspace.historyPagination}
+                          onLoadOlderHistory={workspace.loadOlderHistory}
+                          onReloadHistory={workspace.reloadHistory}
                         />
                       </Suspense>
                       {btwHint ? (
@@ -1523,7 +1633,17 @@ export default function App() {
                           onDismissOpenUrl={() => extension.dismissOpenUrlRequest()}
                           onDismissCapabilityNotice={extension.dismissCapabilityNotice}
                         >
-                          <Composer
+                          <Suspense fallback={(
+                            <div className="composer-input" aria-busy="true">
+                              <textarea
+                                rows={2}
+                                disabled
+                                placeholder={t('composer.placeholderLoading')}
+                                aria-label={t('composer.ariaLabel', { name: HARNESS_SHORT_NAMES[activeHarness] })}
+                              />
+                            </div>
+                          )}>
+                            <Composer
                             availableCommands={visibleSlashCommands}
                             key={
                               workspace.activeSessionId
@@ -1603,7 +1723,10 @@ export default function App() {
                             onRetryStoppedTurn={retryTurn}
                             onRemoveAnnotation={browserAnnotations.remove}
                             onClearAnnotations={browserAnnotations.clear}
-                          />
+                            wordPredictionAgent={bridge?.agent}
+                            wordPredictionSessionId={workspace.runtime?.sessionId}
+                            />
+                          </Suspense>
                         </ExtensionUiPresentation>
                       </ConversationDock>
                     </main>
@@ -1626,7 +1749,7 @@ export default function App() {
                         openTabs={settingsState.inspectorOpenTabs}
                         activeTab={settingsState.inspectorTab}
                         tabActivationRevision={settingsState.inspectorTabRevision}
-                        onTabChange={settingsState.selectInspectorTab}
+                        onTabChange={selectInspectorTab}
                         onCloseTab={closeInspectorTab}
                         onCloseOtherTabs={closeOtherInspectorTabs}
                         onReorderTabs={settingsState.reorderInspectorTabs}
@@ -1658,6 +1781,12 @@ export default function App() {
                         onOpenExternal={openExternal}
                         onRevealPath={revealInFileManager}
                         onGrantProject={grantActiveProject}
+                        previewFiles={previewFiles}
+                        activePreviewFile={activePreviewFile}
+                        previewActivationRevision={previewActivationRevision}
+                        onSelectPreviewFile={selectPreviewFile}
+                        onClosePreviewFile={closePreviewFile}
+                        onOpenPreviewFile={openFileInInspector}
                         sideChat={inspectorSideChat}
                         subagents={inspectorSubagents}
                         overlay={layout.compactLayout}
@@ -1695,6 +1824,15 @@ export default function App() {
               </Suspense>
             )
           })() : null}
+          {hostAuthSnapshot?.pending ? (
+            <Suspense fallback={null}>
+              <HostOpenUrlPrompt
+                snapshot={hostAuthSnapshot}
+                busy={hostAuthBusyId === hostAuthSnapshot.pending.requestId}
+                onDecision={respondToHostOpenUrl}
+              />
+            </Suspense>
+          ) : null}
           {sessionTreeOpen ? (
             <SessionTreeDialog
               runtimeId={workspace.runtime?.runtimeId}

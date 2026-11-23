@@ -332,6 +332,69 @@ describe('OMP transcript access through the service', () => {
       ['assistant', [{ type: 'text', text: 'answer' }]],
     ])
   })
+
+  it('pages native branch summaries, model fallbacks, metadata, and coalesced tools in exact order', async () => {
+    const { root, project, service } = setup()
+    mkdirSync(join(root, '-bucket'))
+    const file = join(root, '-bucket', NAME_A)
+    const entries = [
+      ompEntry('message', 'native-root', null, { message: { role: 'user', content: 'native question' } }),
+      ompEntry('branch_summary', 'native-summary', 'native-root', { summary: 'chosen native branch' }),
+      ompEntry('retry_fallback_applied', 'native-fallback', 'native-summary', {
+        from: 'anthropic/claude', to: 'openai/gpt',
+      }),
+      // Both records affect OMP metadata but are deliberately non-renderable.
+      // They remain on the active chain without becoming graph-budget evidence.
+      ompEntry('title_change', 'native-title', 'native-fallback', { title: 'Native paging fixture' }),
+      ompEntry('model_change', 'ordinary-model', 'native-title', { model: 'openai/gpt', resolvedModelIsFallback: false }),
+      ompEntry('message', 'native-turn', 'ordinary-model', {
+        message: { role: 'assistant', content: [
+          { type: 'text', text: 'native work' },
+          { type: 'toolCall', id: 'native-call', name: 'nativeTool' },
+        ] },
+      }),
+      ompEntry('message', 'native-result', 'native-turn', {
+        message: { role: 'toolResult', toolCallId: 'native-call', toolName: 'nativeTool', content: 'native tool output' },
+      }),
+    ]
+    let parent = 'native-result'
+    for (let index = 0; index < 399; index += 1) {
+      const id = `native-tail-${index}`
+      entries.push(ompEntry('message', id, parent, { message: { role: 'user', content: `tail ${index}` } }))
+      parent = id
+    }
+    writeOmpSession(file, { cwd: project, entries })
+
+    const newest = await service.readPage(file)
+    if (newest.status !== 'ok') throw new Error('Expected a stable OMP newest page')
+    expect(newest.messages).toEqual(await service.read(file))
+    expect(newest.messages).toHaveLength(400)
+    expect(newest.messages[0]).toMatchObject({
+      id: 'native-turn', role: 'assistant',
+      parts: [
+        { type: 'text', text: 'native work' },
+        { type: 'toolCall', id: 'native-call', name: 'nativeTool' },
+        { type: 'toolResult', name: 'nativeTool', text: 'native tool output' },
+      ],
+    })
+    expect(newest.older.state).toBe('ready')
+    if (newest.older.state !== 'ready') throw new Error('Expected a native continuation')
+
+    const older = await service.readPage(file, { cursor: newest.older.cursor })
+    if (older.status !== 'ok') throw new Error('Expected the OMP older page')
+    expect(older).toMatchObject({ endExclusiveMessageId: 'native-turn', older: { state: 'end' } })
+    expect(older.messages.map((message) => [message.id, message.role, message.parts])).toEqual([
+      ['native-root', 'user', [{ type: 'text', text: 'native question' }]],
+      ['native-summary', 'system', [{ type: 'text', text: 'chosen native branch' }]],
+      // Transcript rendering intentionally uses the fallback label only; it
+      // does not append the original model to the legacy reloaded row.
+      ['native-fallback', 'system', [{ type: 'text', text: 'Switched to openai/gpt due to a provider fallback' }]],
+    ])
+    expect([...older.messages, ...newest.messages].map((message) => message.id)).toEqual([
+      'native-root', 'native-summary', 'native-fallback', 'native-turn',
+      ...Array.from({ length: 399 }, (_, index) => `native-tail-${index}`),
+    ])
+  })
 })
 
 describe('OMP transcript active-leaf selection (upstream v18.12.6 parity)', () => {

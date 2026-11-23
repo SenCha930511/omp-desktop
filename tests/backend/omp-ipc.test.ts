@@ -28,8 +28,9 @@ function serviceStub(): Record<string, unknown> {
 interface TestServices {
   refreshHarnesses: Mock
   agents: { start: Mock; command: Mock; refreshState: Mock; stop: Mock; list: Mock }
-  sessions: { list: Mock; read: Mock; rename: Mock; archive: Mock; branch: Mock; setPinned: Mock }
+  sessions: { list: Mock; read: Mock; readPage: Mock; rename: Mock; archive: Mock; branch: Mock; setPinned: Mock }
   projects: { list: Mock; grantInferred: Mock }
+  files: { readFile: Mock; pickFile: Mock }
   checkouts: { list: Mock; execute: Mock }
   plugins: Record<string, Mock>
   catalog: { catalog: Mock }
@@ -38,12 +39,15 @@ interface TestServices {
   browser: { closeForSession: Mock }
   projectScripts: { killForSession: Mock }
   harnessUpdates: { getState: Mock; install: Mock }
+  hostOpenUrl: { snapshot: Mock; respond: Mock; onAnyChanged: Mock; revokeOwner: Mock }
 }
 
 interface Harness {
   invoke(channel: string, ...args: unknown[]): unknown
   services: TestServices
   registration: IpcRegistration
+  sender: { id: number; isDestroyed: () => boolean; getURL: () => string; mainFrame: { url: string }; send: Mock }
+  emitHostAuth(ownerId: number, snapshot: Record<string, unknown>): void
 }
 
 function buildServices() {
@@ -72,6 +76,10 @@ function buildServices() {
     meta: { version: '0.0.0-test' },
     refreshHarnesses: vi.fn(async () => ({ meta: { version: '0.0.0-refreshed' }, settings: settingsState })),
     projects: { ...serviceStub(), list: vi.fn(async () => ['omp-projects']), grantInferred: vi.fn(async () => 'omp-grant') },
+    files: {
+      readFile: vi.fn(async () => ({ kind: 'text', path: '/repo/README.md', name: 'README.md', content: 'hi', truncated: false, sizeBytes: 2 })),
+      pickFile: vi.fn(async () => ({ path: '/repo/README.md', name: 'README.md' })),
+    },
     checkouts: {
       list: vi.fn(async () => 'omp-checkouts'),
       execute: vi.fn(async () => 'omp-checkout'),
@@ -82,6 +90,7 @@ function buildServices() {
       requireSessionPath: ompSessionGate,
       list: vi.fn(async () => ['omp-sessions']),
       read: vi.fn(async () => ['omp-transcript']),
+      readPage: vi.fn(async () => ({ status: 'ok', snapshotId: 'snapshot', messages: ['omp-page'], endExclusiveMessageId: null, older: { state: 'end' } })),
       rename: vi.fn(async () => false),
       archive: vi.fn(async () => true),
       branch: vi.fn(async () => ({ id: 'omp-branched' })),
@@ -96,7 +105,7 @@ function buildServices() {
       stop: vi.fn(async () => true),
       list: vi.fn(() => [{ runtimeId: 'omp-runtime', harness: 'omp' }]),
     },
-    projectScripts: { ...serviceStub(), killForSession: vi.fn(async () => undefined) },
+    projectScripts: { ...serviceStub(), killOwner: vi.fn(async () => undefined), killForSession: vi.fn(async () => undefined) },
     git: serviceStub(),
     plugins: { ...serviceStub(), list: vi.fn(async () => 'omp-plugins'), install: vi.fn(async () => undefined), installExtension: vi.fn(async () => undefined), connectMcp: vi.fn(async () => undefined), setMcpEnabled: vi.fn(async () => undefined), refresh: vi.fn(async () => 'omp-plugins') },
     catalog: { catalog: vi.fn(async (_force: unknown) => catalog('omp')) },
@@ -108,6 +117,12 @@ function buildServices() {
     schedules: { ...serviceStub(), onDidChange: vi.fn(() => () => undefined), list: vi.fn(() => 'scheduled'), create: vi.fn(async () => 'created') },
     browser: { ...serviceStub(), closeForSession: vi.fn(() => true), onDidChange: vi.fn(() => vi.fn()), onPointer: vi.fn(() => vi.fn()), onActivity: vi.fn(() => vi.fn()) },
     harnessUpdates: { ...serviceStub(), getState: vi.fn(async () => ({ phase: 'idle' })), install: vi.fn(async () => ({ phase: 'idle' })) },
+    hostOpenUrl: {
+      snapshot: vi.fn((runtimeId: string, ownerId: number) => ({ runtimeId, ownerId, registrationGeneration: 1, pending: null })),
+      respond: vi.fn(async () => true),
+      onAnyChanged: vi.fn((_listener: (ownerId: number, snapshot: Record<string, unknown>) => void) => () => undefined),
+      revokeOwner: vi.fn(async () => undefined),
+    },
   }
 }
 
@@ -116,21 +131,28 @@ describe('harness-aware IPC routing', () => {
 
   beforeEach(() => {
     const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>()
+    let hostAuthListener: ((ownerId: number, snapshot: Record<string, unknown>) => void) | undefined
     electronMocks.ipcMain.handle.mockReset()
     electronMocks.ipcMain.on.mockReset()
     electronMocks.ipcMain.handle.mockImplementation((channel: string, listener: (event: unknown, ...args: unknown[]) => unknown) => {
       handlers.set(channel, listener)
     })
     const services = buildServices()
+    services.hostOpenUrl.onAnyChanged.mockImplementation((listener: (ownerId: number, snapshot: Record<string, unknown>) => void) => {
+      hostAuthListener = listener
+      return () => { hostAuthListener = undefined }
+    })
     const registration = registerIpc(services as never, EXPECTED_URL)
     const mainFrame = { url: EXPECTED_URL }
-    const sender = { id: 1, isDestroyed: () => false, getURL: () => EXPECTED_URL, mainFrame }
+    const sender = { id: 1, isDestroyed: () => false, getURL: () => EXPECTED_URL, mainFrame, send: vi.fn() }
     registration.authorize(sender as never)
     const event = { sender, senderFrame: mainFrame }
     harness = {
       invoke: (channel, ...args) => handlers.get(channel)!(event, ...args),
       services,
       registration,
+      sender,
+      emitHostAuth: (ownerId, snapshot) => hostAuthListener?.(ownerId, snapshot),
     }
   })
 
@@ -155,9 +177,48 @@ describe('harness-aware IPC routing', () => {
 
   it('routes agent:start to the single manager and strips the routing field before it sees the options', async () => {
     await expect(harness.invoke('agent:start', { cwd: '/work', harness: 'omp' })).resolves.toEqual({ started: 'omp', options: { cwd: '/work' } })
-    expect(harness.services.agents.start).toHaveBeenCalledWith({ cwd: '/work' })
+    expect(harness.services.agents.start).toHaveBeenCalledWith({ cwd: '/work' }, 1)
     await expect(harness.invoke('agent:start', { cwd: '/work' })).resolves.toEqual({ started: 'omp', options: { cwd: '/work' } })
-    expect(harness.services.agents.start).toHaveBeenLastCalledWith({ cwd: '/work' })
+    expect(harness.services.agents.start).toHaveBeenLastCalledWith({ cwd: '/work' }, 1)
+  })
+
+  it('binds hostAuth snapshot, respond, event forwarding, and revocation to the authorized owner window', async () => {
+    expect(harness.invoke('hostAuth:snapshot', 'omp-runtime')).toEqual({ runtimeId: 'omp-runtime', ownerId: 1, registrationGeneration: 1, pending: null })
+    expect(harness.services.hostOpenUrl.snapshot).toHaveBeenCalledWith('omp-runtime', 1)
+
+    await expect(harness.invoke('hostAuth:respond', {
+      runtimeId: 'omp-runtime',
+      registrationGeneration: 1,
+      requestId: 'req-1',
+      decision: 'approve',
+    })).resolves.toBe(true)
+    expect(harness.services.hostOpenUrl.respond).toHaveBeenCalledWith(1, {
+      runtimeId: 'omp-runtime',
+      registrationGeneration: 1,
+      requestId: 'req-1',
+      decision: 'approve',
+    })
+
+    for (const invalid of [
+      null,
+      { runtimeId: 'omp-runtime', registrationGeneration: 1, requestId: 'req-1', decision: 'approve', url: 'https://evil.test' },
+      { runtimeId: 'omp-runtime', registrationGeneration: '1', requestId: 'req-1', decision: 'approve' },
+      { runtimeId: 'omp-runtime', registrationGeneration: 1, requestId: 'req-1', decision: 'always' },
+      { runtimeId: '', registrationGeneration: 1, requestId: 'req-1', decision: 'deny' },
+    ]) {
+      await expect(async () => harness.invoke('hostAuth:respond', invalid)).rejects.toThrow(TypeError)
+    }
+    expect(harness.services.hostOpenUrl.respond).toHaveBeenCalledTimes(1)
+
+    harness.emitHostAuth(1, { runtimeId: 'omp-runtime', registrationGeneration: 1, pending: null })
+    expect(harness.sender.send).toHaveBeenCalledWith('hostAuth:changed', { runtimeId: 'omp-runtime', registrationGeneration: 1, pending: null })
+
+    harness.sender.send.mockClear()
+    harness.emitHostAuth(2, { runtimeId: 'omp-runtime', registrationGeneration: 1, pending: null })
+    expect(harness.sender.send).not.toHaveBeenCalled()
+
+    harness.registration.revoke(1)
+    expect(harness.services.hostOpenUrl.revokeOwner).toHaveBeenCalledWith(1)
   })
 
   it('routes agent:command and agent:stop through the single manager', async () => {
@@ -202,6 +263,13 @@ describe('harness-aware IPC routing', () => {
     expect(harness.services.checkouts.execute).toHaveBeenCalledWith('project', { strategy: 'branch', operation: 'switch', branch: 'feature' })
   })
 
+  it('routes files:read and files:pick through the file preview service', async () => {
+    await expect(harness.invoke('files:read', '/repo/README.md', '/repo')).resolves.toMatchObject({ kind: 'text', name: 'README.md' })
+    expect(harness.services.files.readFile).toHaveBeenCalledWith('/repo/README.md', '/repo')
+    await expect(harness.invoke('files:pick')).resolves.toEqual({ path: '/repo/README.md', name: 'README.md' })
+    expect(harness.services.files.pickFile).toHaveBeenCalledOnce()
+  })
+
   it('routes plugin catalog, installation, and MCP configuration with the omp harness argument', async () => {
     await harness.invoke('plugins:list', '/repo', 'omp')
     expect(harness.services.plugins.list).toHaveBeenCalledWith('/repo')
@@ -223,9 +291,12 @@ describe('harness-aware IPC routing', () => {
   it('routes session file operations through the omp session root authorization', async () => {
     await expect(harness.invoke('sessions:read', OMP_SESSION)).resolves.toEqual(['omp-transcript'])
     expect(harness.services.sessions.read).toHaveBeenCalledWith(OMP_SESSION)
+    await expect(harness.invoke('sessions:readPage', OMP_SESSION, { cursor: 'opaque' })).resolves.toMatchObject({ status: 'ok', snapshotId: 'snapshot' })
+    expect(harness.services.sessions.readPage).toHaveBeenCalledWith(OMP_SESSION, { cursor: 'opaque' })
 
     // A path the root does not contain fails with the session service's own error.
     await expect(async () => harness.invoke('sessions:read', '/etc/passwd')).rejects.toThrow('outside the OMP session directory')
+    await expect(async () => harness.invoke('sessions:readPage', '/etc/passwd', {})).rejects.toThrow('outside the OMP session directory')
 
     await expect(harness.invoke('sessions:rename', OMP_SESSION, 'Title')).resolves.toBe(false)
     expect(harness.services.sessions.rename).toHaveBeenCalledWith(OMP_SESSION, 'Title')
@@ -239,6 +310,14 @@ describe('harness-aware IPC routing', () => {
     await expect(harness.invoke('sessions:archive', OMP_SESSION, false)).resolves.toBe(true)
     expect(harness.services.browser.closeForSession).not.toHaveBeenCalled()
     expect(harness.services.projectScripts.killForSession).not.toHaveBeenCalled()
+  })
+
+  it('rejects malformed or smuggled transcript page requests before path lookup or service work', async () => {
+    harness.services.sessions.readPage.mockClear()
+    for (const request of [null, [], 'opaque', { cursor: '' }, { cursor: 'x'.repeat(129) }, { cursor: 'valid', limit: 1 }, { cursor: 'valid', byteOffset: 12 }]) {
+      await expect(async () => harness.invoke('sessions:readPage', OMP_SESSION, request)).rejects.toThrow(TypeError)
+    }
+    expect(harness.services.sessions.readPage).not.toHaveBeenCalled()
   })
 
   it('does not register the removed follow-up, credential, or heartbeat channels', () => {

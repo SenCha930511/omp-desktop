@@ -1,5 +1,5 @@
 import { IPC_CHANNELS } from '../../src/types/ipc'
-import { app, BrowserWindow, dialog, Menu, nativeTheme, protocol, safeStorage, screen, session, webContents } from 'electron'
+import { app, BrowserWindow, dialog, Menu, nativeTheme, protocol, safeStorage, screen, session, shell, webContents } from 'electron'
 import type { BrowserWindowConstructorOptions, Input, WebContents } from 'electron'
 import { extname, isAbsolute, join, relative, resolve, win32 as win32Path } from 'node:path'
 import { readFile, writeFile } from 'node:fs/promises'
@@ -13,6 +13,7 @@ import { MacBackgroundController, shouldStartInBackground } from './background'
 import { BrowserDownloadGuard } from './browser-downloads'
 import { installCrashGuards } from './crash-guard'
 import { CuaDriverService } from './cua-driver'
+import { DesktopOpenUrlService } from './desktop-open-url'
 import { GitService } from './git'
 import { CheckoutService } from './checkouts'
 import { createTrustedRendererUrlCache, isTrustedRendererUrl, registerIpc, type IpcRegistration } from './ipc'
@@ -22,6 +23,7 @@ import { PluginService, beginPluginDiscoveryShutdown } from './plugins'
 import { OmpModelCatalogService } from './providers-omp'
 import { PACKAGED_RENDERER_URL, PACKAGED_SMOKE_READY_EVENT, packagedSmokeMarker, packagedSmokeMarkerPath, serializePackagedSmokeMarker } from './packaged-smoke'
 import { ProjectService } from './projects'
+import { FilePreviewService } from './file-preview'
 import { SettingsService } from './settings-schedules'
 import { ScheduledRunExecutor } from './schedules/executor'
 import { AutomationService } from './schedules/service'
@@ -59,6 +61,7 @@ let projectScripts: ProjectScriptRunner | null = null
 let downloads: BrowserDownloadGuard | null = null
 let updateService: UpdateService | null = null
 let store: JsonStateStore | null = null
+let filePreviewService: FilePreviewService | null = null
 let automation: AutomationService | null = null
 let agentScheduleBridge: AgentScheduleBridge | null = null
 let agentBrowser: AgentBrowserService | null = null
@@ -92,12 +95,12 @@ function appIconPath(): string {
 
 // One policy for every surface that serves renderer content: the app protocol
 // response headers and the packaged browser-session header rewrite.
-const RENDERER_CONTENT_SECURITY_POLICY = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
+const RENDERER_CONTENT_SECURITY_POLICY = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; frame-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
 
 const rendererContentTypes: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
   '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon',
-  '.woff': 'font/woff', '.woff2': 'font/woff2', '.map': 'application/json; charset=utf-8',
+  '.woff': 'font/woff', '.woff2': 'font/woff2', '.ttf': 'font/ttf', '.map': 'application/json; charset=utf-8',
 }
 
 function registerRendererProtocol(): void {
@@ -139,6 +142,10 @@ function resolveRendererUrl(): string {
   }
   return parsed.href
 }
+
+// Chromium's immutable built-in PDF viewer extension loads as a subframe when
+// a trusted renderer displays a same-origin blob: PDF iframe.
+const CHROMIUM_PDF_VIEWER_PREFIX = 'chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/'
 
 function isAllowedBrowserUrl(raw: string): boolean {
   if (raw === 'about:blank') return true
@@ -188,7 +195,21 @@ export function hardenRenderer(window: BrowserWindow, trustedUrl: () => string =
     if (!isTrustedRendererUrl(event.url, trustedUrl())) event.preventDefault()
   })
   window.webContents.on('will-frame-navigate', (event) => {
-    if (!isTrustedRendererUrl(event.url, trustedUrl())) event.preventDefault()
+    const trusted = trustedUrl()
+    if (isTrustedRendererUrl(event.url, trusted)) return
+    if (event.isMainFrame !== true) {
+      if (event.url.startsWith(CHROMIUM_PDF_VIEWER_PREFIX)) return
+      try {
+        const parsed = new URL(trusted)
+        const origin = parsed.origin !== 'null'
+          ? parsed.origin
+          : parsed.protocol === 'omp-desktop:' && parsed.host
+            ? `${parsed.protocol}//${parsed.host}`
+            : null
+        if ((origin && event.url.startsWith(`blob:${origin}/`)) || (parsed.protocol === 'file:' && (event.url.startsWith('blob:null/') || event.url.startsWith('blob:file:///')))) return
+      } catch { /* fall through to deny */ }
+    }
+    event.preventDefault()
   })
 }
 
@@ -613,6 +634,11 @@ async function bootstrap(): Promise<void> {
   // catalog is constructed with a null executable and JSONL-only metadata.
   const sessions = new SessionService(stateStore, null, undefined, ompSessionServiceOptions())
   const projects = new ProjectService(stateStore, () => mainWindow)
+  const files = new FilePreviewService({
+    authorizeProjectPath: (path) => projects.authorizePath(path),
+    windowProvider: () => mainWindow,
+  })
+  filePreviewService = files
   const repositoryUseGate = new RepositoryUseGate()
   const checkouts = new CheckoutService(() => stateStore.getSettings().checkoutStrategy, projects, repositoryUseGate)
   // Git authorizes against the OMP project grants.
@@ -854,8 +880,13 @@ async function bootstrap(): Promise<void> {
   // Every forwarded envelope re-checks the renderer; while the window stays on
   // the trusted document the cached exact URL pair skips both URL parses.
   const isTrustedForwardTarget = createTrustedRendererUrlCache(trustedRendererUrl)
+  const hostOpenUrl = new DesktopOpenUrlService({
+    openExternal: (url) => shell.openExternal(url, { activate: true }),
+    writeResult: (runtimeId, result) => ompManager.writeHostToolResult(runtimeId, result),
+  })
+  ompManager.setHostOpenUrlService(hostOpenUrl)
   ipc = registerIpc({
-    meta, refreshHarnesses, projects, checkouts, sessions, agents: ompManager, projectScripts, git, plugins, catalog, settings, updates, harnessUpdates, cuaDriver, schedules, browser: browserService, voice,
+    meta, refreshHarnesses, projects, files, checkouts, sessions, agents: ompManager, projectScripts, git, plugins, catalog, settings, updates, harnessUpdates, cuaDriver, schedules, browser: browserService, voice, hostOpenUrl,
     popupApplicationMenu, setTitleBarTheme,
     applyInterfaceZoom,
   }, trustedRendererUrl)
@@ -1016,6 +1047,7 @@ app.on('before-quit', (event) => {
   downloads?.cancelAll()
   agentBrowser?.beginShutdown()
   void settleShutdown([
+    filePreviewService?.dispose() ?? Promise.resolve(),
     agentScheduleBridge?.stop() ?? Promise.resolve(),
     agentBrowserBridge?.stop() ?? Promise.resolve(),
     agentCollaborationBridge?.stop() ?? Promise.resolve(),

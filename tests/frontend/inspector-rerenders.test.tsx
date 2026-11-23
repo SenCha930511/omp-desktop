@@ -452,6 +452,126 @@ describe('inspector tabs', () => {
     window.localStorage.removeItem(INSPECTOR_OPEN_TABS_KEY)
     window.localStorage.removeItem(INSPECTOR_ACTIVE_TAB_KEY)
   })
+
+  it('omits File Preview from New tab and opens preview files directly as top-level inspector tabs', async () => {
+    function FileTabsHarness() {
+      const [openTabs] = useState<InspectorTab[]>(['changes', 'files'])
+      const [activeTab, setActiveTab] = useState<InspectorTab>('files')
+      const [previewFiles, setPreviewFiles] = useState<string[]>(['/repo/notes.md', '/repo/spec.pdf'])
+      const [activePreviewFile, setActivePreviewFile] = useState<string | null>('/repo/spec.pdf')
+      const [rev, setRev] = useState(1)
+      return (
+        <WorkspaceInspector
+          openTabs={openTabs}
+          activeTab={activeTab}
+          onTabChange={(tab) => {
+            setActivePreviewFile(null)
+            setActiveTab(tab)
+          }}
+          onClose={() => undefined}
+          git={{ isRepo: false, files: [] }}
+          browserHome="about:blank"
+          browserAnnotations={useBrowserAnnotations()}
+          agentBrowserTabs={[]}
+          activeAgentTabId={null}
+          agentPreviewSelected={false}
+          onSelectAgentTab={() => undefined}
+          onCloseAgentTab={() => undefined}
+          onShowBrowserPreview={() => undefined}
+          onAgentSlotRect={() => undefined}
+          onPreviewContext={() => undefined}
+          previewPointerEvent={null}
+          onNavigateAgentTab={() => undefined}
+          onRefreshGit={() => undefined}
+          onOpenExternal={() => undefined}
+          onRevealPath={() => undefined}
+          onGrantProject={() => undefined}
+          previewFiles={previewFiles}
+          activePreviewFile={activePreviewFile}
+          previewActivationRevision={rev}
+          onSelectPreviewFile={(filePath) => {
+            setActivePreviewFile(filePath)
+            if (filePath) setRev((v) => v + 1)
+          }}
+          onClosePreviewFile={(filePath) => {
+            const remaining = previewFiles.filter((item) => item !== filePath)
+            setPreviewFiles(remaining)
+            if (activePreviewFile === filePath) setActivePreviewFile(remaining[0] ?? null)
+          }}
+          onOpenPreviewFile={(filePath) => {
+            setPreviewFiles((current) => (current.includes(filePath) ? current : [...current, filePath]))
+            setActivePreviewFile(filePath)
+            setRev((v) => v + 1)
+          }}
+        />
+      )
+    }
+
+    await act(async () => {
+      root.render(<FileTabsHarness />)
+      await Promise.resolve()
+    })
+
+    const fileTab0 = container.querySelector<HTMLButtonElement>('#inspector-tab-file-0')
+    const fileTab1 = container.querySelector<HTMLButtonElement>('#inspector-tab-file-1')
+    expect(fileTab0?.textContent).toBe('notes.md')
+    expect(fileTab1?.textContent).toBe('spec.pdf')
+    expect(fileTab1?.getAttribute('aria-selected')).toBe('true')
+    expect(container.querySelector('.file-preview__tabs')).toBeNull()
+
+    const newTab = container.querySelector<HTMLButtonElement>('.inspector__tab-actions button[aria-label="New tab"]')
+    await act(async () => { newTab?.click() })
+    const newTabItems = [...container.querySelectorAll('.inspector-new-tab__item')].map((el) => el.textContent)
+    expect(newTabItems.some((text) => text?.includes('File Preview'))).toBe(false)
+
+    await act(async () => { fileTab0?.click() })
+    expect(fileTab0?.getAttribute('aria-selected')).toBe('true')
+
+    const closeNotes = container.querySelector<HTMLButtonElement>('.inspector-tab__close[aria-label="Close notes.md"]')
+    await act(async () => { closeNotes?.click() })
+    expect(container.querySelector('#inspector-tab-file-1')).toBeNull()
+    expect(container.querySelector<HTMLButtonElement>('#inspector-tab-file-0')?.textContent).toBe('spec.pdf')
+
+    const filesTab = container.querySelector<HTMLButtonElement>('#inspector-tab-files')
+    await act(async () => { filesTab?.click() })
+    expect(filesTab?.getAttribute('aria-selected')).toBe('true')
+  })
+
+  it('opens and closes multiple top-level browser tabs', async () => {
+    await act(async () => {
+      root.render(<Harness initialTab="browser" />)
+    })
+    expect(container.querySelector('#inspector-tab-browser')).not.toBeNull()
+    expect(container.querySelectorAll('webview.browser-webview')).toHaveLength(1)
+
+    const addBrowserTabBtn = container.querySelector<HTMLButtonElement>('#inspector-panel-browser button[aria-label="New browser tab"]')
+    expect(addBrowserTabBtn).not.toBeNull()
+    await act(async () => { addBrowserTabBtn?.click() })
+
+    const extraTab = container.querySelector<HTMLButtonElement>('#inspector-tab-browser-extra-1')
+    expect(extraTab).not.toBeNull()
+    expect(extraTab?.getAttribute('aria-selected')).toBe('true')
+    expect(container.querySelectorAll('webview.browser-webview')).toHaveLength(2)
+
+    const newTab = container.querySelector<HTMLButtonElement>('.inspector__tab-actions button[aria-label="New tab"]')
+    await act(async () => { newTab?.click() })
+    const input = container.querySelector<HTMLInputElement>('.inspector-new-tab__search input')!
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+    await act(async () => {
+      setter?.call(input, 'https://docs.example.com')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    })
+    expect(container.querySelector('#inspector-tab-browser-extra-2')?.getAttribute('aria-selected')).toBe('true')
+    expect(container.querySelectorAll('webview.browser-webview')).toHaveLength(3)
+
+    const closeExtra = container.querySelector<HTMLButtonElement>('#inspector-tab-browser-extra-2')?.parentElement?.querySelector<HTMLButtonElement>('.inspector-tab__close')
+    await act(async () => { closeExtra?.click() })
+    expect(container.querySelector('#inspector-tab-browser-extra-2')).toBeNull()
+    expect(container.querySelectorAll('webview.browser-webview')).toHaveLength(2)
+  })
 })
 
 describe('useBrowserAnnotations identity', () => {

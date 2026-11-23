@@ -81,7 +81,7 @@ describe('slash command catalog', () => {
     expect(parseSlashInvocation('/skill:officecli')).toEqual({ name: 'skill:officecli', args: '' })
     expect(parseSlashInvocation('/skill:officecli', [{ name: 'skill:officecli', source: 'skill' }])).toEqual({ name: 'skill:officecli', args: '' })
     expect(deferredSlashCommand('/skill:officecli')).toBeUndefined()
-    expect(busySlashDisposition('/skill:officecli')).toEqual({ kind: 'queue-until-idle' })
+    expect(busySlashDisposition('/skill:officecli')).toEqual({ kind: 'send-direct' })
     expect(slashSuggestions([
       { name: 'skill:officecli', source: 'skill' },
       { name: 'skill:pdf', source: 'skill' },
@@ -159,11 +159,9 @@ describe('busy slash dispatch', () => {
       expect(busySlashDisposition(prompt)).toEqual({ kind: 'respond-local' })
     }
   })
-  it('keeps mutations and queries without a local data source queued', () => {
-    // /model 帶參數是切換模型;/tools、/jobs、/todo、/memory 的資料不在
-    // runtime 快照內,上游 busy 語意未查證,保守排隊。
+  it('sends remaining slash commands directly instead of queueing until idle', () => {
     for (const prompt of ['/model auto', '/compact', '/tools', '/jobs', '/todo', '/todo done 3', '/memory', '/fast on', '/retry', '/fresh']) {
-      expect(busySlashDisposition(prompt)).toEqual({ kind: 'queue-until-idle' })
+      expect(busySlashDisposition(prompt)).toEqual({ kind: 'send-direct' })
     }
   })
   it('routes goal lifecycle commands through their busy-safe RPC', () => {
@@ -317,8 +315,8 @@ describe('alias normalization via the live catalog', () => {
   it('classifies alias invocations like their canonical commands', () => {
     expect(busySlashDisposition('/models', catalog)).toEqual({ kind: 'respond-local' })
     expect(busySlashDisposition('/models', catalog)).toEqual(busySlashDisposition('/model', catalog))
-    // catalog 尚未載入時依照 DEFERRED 清單的手寫別名兜底,不直送上游。
-    expect(busySlashDisposition('/models')).toEqual({ kind: 'queue-until-idle' })
+    // catalog 尚未載入時仍直接送往上游執行
+    expect(busySlashDisposition('/models')).toEqual({ kind: 'send-direct' })
     expect(deferredSlashCommand('/quit', catalog)).toBe('quit')
     // DEFERRED 內的手寫別名照舊就地辨識;catalog 獨有的別名由反查補上。
     expect(deferredSlashCommand('/providers', catalog)).toBe('providers')

@@ -11,8 +11,11 @@ import type { PluggableList } from 'unified'
 import 'katex/dist/katex.min.css'
 import { writeClipboardText } from '@/lib/clipboard'
 import { rehypeKatexCjkClass } from '@/lib/katex-cjk'
+import { normalizeLatexDelimiters } from '@/lib/markdown-math'
+import { resolveWorkspaceFilePath, useMarkdownWorkspace } from '@/lib/markdown-workspace'
 import { openExternalUrl } from '@/lib/desktop-actions'
 import { useI18n } from '@/lib/i18n'
+import { TranscriptImage } from './transcript/TranscriptImage'
 import { type SyntaxToken, tokenizeSyntaxLine } from './transcript/syntax'
 
 interface MarkdownTextProps {
@@ -44,22 +47,114 @@ function openMarkdownLink(event: MouseEvent<HTMLAnchorElement>, href?: string): 
   window.open(href, '_blank', 'noopener,noreferrer')
 }
 
+function isSafeLocalReference(value?: string): value is string {
+  if (!value) return false
+  const trimmed = value.trim()
+  if (!trimmed || trimmed.startsWith('//')) return false
+  if (trimmed.startsWith('file://')) return true
+  if (/^[A-Za-z]:[\\/]/.test(trimmed)) return true
+  return !/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(trimmed)
+}
+
+function isSafeInlineImageDataUri(value?: string): value is string {
+  if (!value || value.length > 14_000_000) return false
+  return /^data:image\/(?:png|jpeg|gif|webp);base64,[a-z\d+/=\s]+$/i.test(value)
+}
+
+function markdownUrlTransform(url: string): string {
+  if (isSafeInlineImageDataUri(url)) return url
+  if (isSafeLocalReference(url)) return url
+  if (/^(https?:|ircs?:|mailto:|xmpp:|#)/i.test(url)) return url
+  return ''
+}
+
+const MAX_CACHED_MARKDOWN_IMAGES = 32
+const localMarkdownImageCache = new Map<string, string>()
+
+function rememberMarkdownImage(key: string, dataUri: string): void {
+  localMarkdownImageCache.delete(key)
+  localMarkdownImageCache.set(key, dataUri)
+  if (localMarkdownImageCache.size > MAX_CACHED_MARKDOWN_IMAGES) {
+    const oldest = localMarkdownImageCache.keys().next()
+    if (!oldest.done) localMarkdownImageCache.delete(oldest.value)
+  }
+}
+
 function MarkdownLink({ node: _node, href, children, ...props }: ComponentPropsWithoutRef<'a'> & ExtraProps) {
   const { t } = useI18n()
-  return href && /^(https?:|mailto:|#)/i.test(href) ? (
-    <a {...props} href={href} rel="noreferrer" onClick={(event) => openMarkdownLink(event, href)}>
-      <bdi>{children}</bdi>
-    </a>
-  ) : (
+  const { cwd, onOpenFile } = useMarkdownWorkspace()
+  if (href && /^(https?:|mailto:|#)/i.test(href)) {
+    return (
+      <a {...props} href={href} rel="noreferrer" onClick={(event) => openMarkdownLink(event, href)}>
+        <bdi>{children}</bdi>
+      </a>
+    )
+  }
+  if (onOpenFile && isSafeLocalReference(href) && !href.trim().startsWith('#')) {
+    return (
+      <button
+        type="button"
+        className="markdown-file-link"
+        title={t('transcript.markdown.projectRelativeLink', { href })}
+        onClick={() => onOpenFile(resolveWorkspaceFilePath(href, cwd))}
+      >
+        <bdi>{children}</bdi>
+      </button>
+    )
+  }
+  return (
     <span className="markdown-link-unsupported" title={href ? t('transcript.markdown.projectRelativeLink', { href }) : undefined}>
       {children}
     </span>
   )
 }
 
-function MarkdownImage({ alt }: ComponentPropsWithoutRef<'img'> & ExtraProps) {
+function MarkdownImage({ alt, src }: ComponentPropsWithoutRef<'img'> & ExtraProps) {
   const { t } = useI18n()
-  return <span className="markdown-image-placeholder">{t('transcript.markdown.image', { label: alt || t('transcript.markdown.imageFallback') })}</span>
+  const { cwd } = useMarkdownWorkspace()
+  const label = alt || t('transcript.markdown.imageFallback')
+  const inlineSource = isSafeInlineImageDataUri(src) ? src : null
+  const localSrc = !inlineSource && isSafeLocalReference(src) ? src : null
+  const cacheKey = localSrc ? `${cwd ?? ''}\0${localSrc}` : null
+  const [resolvedSource, setResolvedSource] = useState<string | null>(() => (cacheKey ? localMarkdownImageCache.get(cacheKey) ?? null : null))
+
+  useEffect(() => {
+    if (!localSrc || !cacheKey || typeof window === 'undefined' || !window.desktop?.files?.read) {
+      setResolvedSource(null)
+      return
+    }
+    const cached = localMarkdownImageCache.get(cacheKey)
+    if (cached) {
+      setResolvedSource(cached)
+      return
+    }
+    let cancelled = false
+    setResolvedSource(null)
+    void window.desktop.files
+      .read(localSrc, cwd)
+      .then((payload) => {
+        if (cancelled || payload.kind !== 'image') return
+        const dataUri = `data:${payload.mimeType};base64,${payload.base64}`
+        rememberMarkdownImage(cacheKey, dataUri)
+        setResolvedSource(dataUri)
+      })
+      .catch(() => {
+        if (!cancelled) setResolvedSource(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [cacheKey, cwd, localSrc])
+
+  const imageSrc = inlineSource ?? resolvedSource
+  if (imageSrc) {
+    return (
+      <span className="markdown-image">
+        <TranscriptImage source={imageSrc} alt={label} />
+      </span>
+    )
+  }
+  return <span className="markdown-image-placeholder">{t('transcript.markdown.image', { label })}</span>
 }
 
 export const CODE_BLOCK_COPY_RESET_MS = 2_500
@@ -231,16 +326,17 @@ export const MarkdownText = memo(function MarkdownText({ text, streaming = false
 
   const boundary = streaming ? Math.min(parseStateRef.current.boundary, text.length) : text.length
   const parsedText = boundary === text.length ? text : text.slice(0, boundary)
+  const normalizedText = useMemo(() => normalizeLatexDelimiters(parsedText), [parsedText])
   // Keep the committed Markdown subtree intact between parses. Rendering the
   // unparsed suffix as a sibling block makes punctuation and partial words
   // jump onto separate lines while tokens are still arriving.
   const markdown = useMemo(
     () => (
-      <ReactMarkdown remarkPlugins={markdownPlugins} rehypePlugins={[[rehypeKatex, katexOptions], rehypeKatexCjkClass]} skipHtml components={markdownComponents}>
-        {parsedText}
+      <ReactMarkdown remarkPlugins={markdownPlugins} rehypePlugins={[[rehypeKatex, katexOptions], rehypeKatexCjkClass]} skipHtml urlTransform={markdownUrlTransform} components={markdownComponents}>
+        {normalizedText}
       </ReactMarkdown>
     ),
-    [parsedText],
+    [normalizedText],
   )
   return <div className="prose">{markdown}</div>
 })

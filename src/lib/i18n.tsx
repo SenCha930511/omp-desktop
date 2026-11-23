@@ -14,6 +14,7 @@ import { sidechatFragment } from '@/i18n/keys/sidechat'
 import { sessionTreeFragment } from '@/i18n/keys/sessiontree'
 import { sessionSettingsFragment } from '@/i18n/keys/session-settings'
 import { formsFragment } from '@/i18n/keys/forms'
+import { predictionsFragment } from '@/i18n/keys/predictions'
 
 export type MessageValues = Record<string, string | number>
 export type Translate = (key: MessageKey, values?: MessageValues) => string
@@ -32,6 +33,7 @@ const englishCatalog = {
   ...sessionTreeFragment.en,
   ...sessionSettingsFragment.en,
   ...formsFragment.en,
+  ...predictionsFragment.en,
 } satisfies Record<string, Message>
 
 export type MessageKey = keyof typeof englishCatalog
@@ -51,6 +53,7 @@ const simplifiedChineseCatalog: Partial<Record<MessageKey, Message>> = {
   ...sessionTreeFragment['zh-CN'],
   ...sessionSettingsFragment['zh-CN'],
   ...formsFragment['zh-CN'],
+  ...predictionsFragment['zh-CN'],
 }
 
 const traditionalChineseCatalog: Partial<Record<MessageKey, Message>> = {
@@ -67,6 +70,7 @@ const traditionalChineseCatalog: Partial<Record<MessageKey, Message>> = {
   ...sessionTreeFragment['zh-TW'],
   ...sessionSettingsFragment['zh-TW'],
   ...formsFragment['zh-TW'],
+  ...predictionsFragment['zh-TW'],
 }
 
 function browserLanguages(): readonly string[] {

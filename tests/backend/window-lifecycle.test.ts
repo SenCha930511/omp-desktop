@@ -257,6 +257,47 @@ describe('renderer hardening', () => {
       handler(name)(...[trusted] as never[])
       expect(trusted.preventDefault, name).not.toHaveBeenCalled()
     }
+
+    const sameOriginBlob = { url: 'blob:omp-desktop://app/1234', preventDefault: vi.fn() }
+    handler('will-frame-navigate')(...[sameOriginBlob] as never[])
+    expect(sameOriginBlob.preventDefault).not.toHaveBeenCalled()
+
+    const foreignBlob = { url: 'blob:https://attacker.test/1234', preventDefault: vi.fn() }
+    handler('will-frame-navigate')(...[foreignBlob] as never[])
+    expect(foreignBlob.preventDefault).toHaveBeenCalledOnce()
+
+    const pdfViewerSubframe = { url: 'chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/frame-1', isMainFrame: false, preventDefault: vi.fn() }
+    handler('will-frame-navigate')(...[pdfViewerSubframe] as never[])
+    expect(pdfViewerSubframe.preventDefault).not.toHaveBeenCalled()
+
+    const pdfViewerMainFrame = { url: 'chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/frame-1', isMainFrame: true, preventDefault: vi.fn() }
+    handler('will-frame-navigate')(...[pdfViewerMainFrame] as never[])
+    expect(pdfViewerMainFrame.preventDefault).toHaveBeenCalledOnce()
+
+    const otherExtensionSubframe = { url: 'chrome-extension://otherextensionid/index.html', isMainFrame: false, preventDefault: vi.fn() }
+    handler('will-frame-navigate')(...[otherExtensionSubframe] as never[])
+    expect(otherExtensionSubframe.preventDefault).toHaveBeenCalledOnce()
+  })
+
+  it('allows same-origin file:// blob subframes for local PDF previews', () => {
+    const fileHandlers = new Map<string, Handler>()
+    const fileWindow = {
+      webContents: {
+        on: (name: string, listener: Handler) => { fileHandlers.set(name, listener) },
+        once: (name: string, listener: Handler) => { fileHandlers.set(name, listener) },
+        setWindowOpenHandler: vi.fn(),
+        getURL: () => 'file:///app/out/renderer/index.html',
+        isDestroyed: vi.fn(() => false),
+        copyImageAt: vi.fn(),
+      },
+      isDestroyed: vi.fn(() => false),
+    }
+    hardenRenderer(fileWindow as unknown as BrowserWindow, () => 'file:///app/out/renderer/index.html')
+    const onFrame = fileHandlers.get('will-frame-navigate')!
+
+    const fileBlobSubframe = { url: 'blob:file:///1234', isMainFrame: false, preventDefault: vi.fn() }
+    onFrame(...[fileBlobSubframe] as never[])
+    expect(fileBlobSubframe.preventDefault).not.toHaveBeenCalled()
   })
 })
 
