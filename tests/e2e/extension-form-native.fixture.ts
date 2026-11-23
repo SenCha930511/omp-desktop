@@ -14,6 +14,8 @@ export interface NativeFormProbe {
 export interface NativeFormProbeOptions {
   /** Opt-in sticky-fast state; the ordinary form probe remains unchanged. */
   fastFallback?: boolean
+  /** Opt-in session-scoped native slow state; all default/fast wire fields remain unchanged. */
+  slowMode?: boolean
 }
 
 function titleSlot(timestamp: string): string {
@@ -25,6 +27,7 @@ function titleSlot(timestamp: string): string {
 function writeFakeOmp(fixtureRoot: string, sessionFile: string, wireFile: string, options: NativeFormProbeOptions = {}): string {
   const executable = join(fixtureRoot, 'omp-native-form-fake.cjs')
   const fastFallback = options.fastFallback === true
+  const slowMode = options.slowMode === true
   const modelId = fastFallback ? 'gpt-5.6' : 'gpt-fixture'
   const html = `<form action="https://invalid.example/ignored" onsubmit="throw new Error('must not execute')">
     <h1>Native wire probe</h1>
@@ -50,8 +53,10 @@ const activeSessionFile = args.includes('--resume') ? args[args.indexOf('--resum
 const formHtml = ${JSON.stringify(html)}
 const wireFile = ${JSON.stringify(wireFile)}
 const fastFallback = ${JSON.stringify(fastFallback)}
+const slowMode = ${JSON.stringify(slowMode)}
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
 let fastModeEnabled = true
+let slowModeEnabled = false
 let negotiated = false
 let streaming = false
 let activePromptId
@@ -70,6 +75,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
       model: { provider: 'openai-codex', id: ${JSON.stringify(modelId)}, name: 'GPT Fixture' },
       contextUsage: { tokens: 1200, contextWindow: 200000, percent: 1 },
       ...(fastFallback ? { fastModeEnabled, fastModeActive: false } : {}),
+      ...(slowMode ? { slowModeSupported: true, slowModeEnabled, slowModeScope: 'session' } : {}),
       queuedMessageCount: 0, queuedMessages: { steering: [], followUp: [] },
     } })
   } else if (command.type === 'get_session_stats') {
@@ -78,6 +84,13 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     fs.appendFileSync(wireFile, JSON.stringify(command) + '\\n')
     fastModeEnabled = command.enabled
     send({ id: command.id, type: 'response', command: command.type, success: true, data: {} })
+  } else if (slowMode && command.type === 'set_slow_mode') {
+    fs.appendFileSync(wireFile, JSON.stringify(command) + '\\n')
+    slowModeEnabled = command.enabled
+    send({ id: command.id, type: 'response', command: command.type, success: true, data: { enabled: command.enabled } })
+  } else if (slowMode && ['prompt', 'login'].includes(command.type)) {
+    fs.appendFileSync(wireFile, JSON.stringify(command) + '\\n')
+    send({ id: command.id, type: 'response', command: command.type, success: false, error: 'Unexpected interaction in Slow fixture' })
   } else if (command.type === 'set_subagent_subscription') {
     send({ id: command.id, type: 'response', command: command.type, success: true, data: { level: command.level } })
     send({ type: 'available_commands_update', commands: [] })
@@ -158,12 +171,12 @@ export async function launchNativeFormProbe(options: NativeFormProbeOptions = {}
     app = await electron.launch({ args: ['.', `--user-data-dir=${userData}`], cwd: process.cwd(), env: environment as Record<string, string>, timeout: 20_000 })
     page = await app.firstWindow({ timeout: 15_000 })
     await expect(page.locator('.app-shell')).toHaveAttribute('data-ready', 'true', { timeout: 20_000 })
-    if (options.fastFallback) {
-      // Start only the local RPC runtime; the sticky-state probe never prompts
-      // the model or emits an agent_start/provider interaction.
-      await page.evaluate(async ({ cwd, sessionPath }) => {
-        await window.desktop.agent.start({ cwd, sessionPath, model: 'openai-codex/gpt-5.6' })
-      }, { cwd: canonicalProject, sessionPath: sessionFile })
+    if (options.fastFallback || options.slowMode) {
+      // Start only the local RPC runtime; state-control probes never prompt the
+      // model or emit an agent_start/provider interaction.
+      await page.evaluate(async ({ cwd, sessionPath, fastFallback }) => {
+        await window.desktop.agent.start({ cwd, sessionPath, model: fastFallback ? 'openai-codex/gpt-5.6' : 'openai-codex/gpt-fixture' })
+      }, { cwd: canonicalProject, sessionPath: sessionFile, fastFallback: options.fastFallback === true })
     }
     const target = app
     const targetPage = page

@@ -1,4 +1,4 @@
-import { ArrowUp, AtSign, Check, ChevronDown, Clock3, Command, Edit3, Hourglass, ImageIcon, LoaderCircle, MessageCirclePlus, Mic, Paperclip, Plus, RotateCcw, Shield, ShieldAlert, ShieldCheck, ShieldQuestionMark, Square, Trash2, WandSparkles, X, Zap } from 'lucide-react'
+import { ArrowUp, AtSign, Check, ChevronDown, Clock3, Command, Edit3, Hourglass, ImageIcon, LoaderCircle, MessageCirclePlus, Mic, Paperclip, Plus, RotateCcw, Shield, ShieldAlert, ShieldCheck, ShieldQuestionMark, Square, Trash2, Turtle, WandSparkles, X, Zap } from 'lucide-react'
 import type { CSSProperties } from 'react'
 import { Fragment, memo, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useComposerImages } from '@/hooks/useComposerImages'
@@ -34,6 +34,7 @@ import type {
   SessionRecord,
   SessionUsage,
   SkillRecord,
+  SlowModeScope,
   ProjectRecord,
   VoiceTranscriptionProvider,
 } from '@/types/api'
@@ -83,6 +84,10 @@ interface ComposerProps {
   fastAvailable: boolean
   /** Actual service tier reported by the runtime, independent of the saved preference. */
   fastActive?: boolean
+  /** Slow preference and scope are shown only when both native facts are known. */
+  slow?: boolean
+  slowSupported?: boolean
+  slowScope?: SlowModeScope
   /** 帳號限流狀態(low_priority/wrap_up);顯示之避免誤把降速當 app bug。 */
   usageLimit?: UsageLimitState
   /** App-level OMP approval mode shown as a compact pill with an inline mode menu. */
@@ -132,6 +137,7 @@ interface ComposerProps {
   onEffortChange(value: PrimeEffortSelector): void
   onFastChange(value: boolean): void
   onFastRetry?(): void
+  onSlowChange?(value: boolean): void
   checkoutCatalog?: CheckoutCatalog
   /** Branch/worktree name shown before or without the linked-worktree catalog. */
   checkoutLabel?: string
@@ -207,6 +213,9 @@ export const Composer = memo(function Composer({
   fastSupported,
   fastAvailable,
   fastActive,
+  slow,
+  slowSupported,
+  slowScope,
   usageLimit,
   approvalMode = 'inherit',
   onApprovalModeChange,
@@ -242,6 +251,7 @@ export const Composer = memo(function Composer({
   onEffortChange,
   onFastChange,
   onFastRetry,
+  onSlowChange,
   checkoutCatalog,
   checkoutLabel,
   checkoutsLoading = false,
@@ -1403,6 +1413,18 @@ export const Composer = memo(function Composer({
                 onClick={() => onFastChange(!fast)}
               >
                 <Zap size={12} fill={fast ? 'currentColor' : 'none'} /> <span className="fast-mode-toggle__label">{t('composer.fast')}</span>
+              </button>
+            ) : null}
+            {slowSupported === true && typeof slow === 'boolean' && onSlowChange && (slowScope === 'global' || slowScope === 'session') ? (
+              <button
+                type="button"
+                className={`fast-mode-toggle slow-mode-toggle ${slow ? 'is-active' : ''}`}
+                aria-label={t('composer.slow')}
+                aria-pressed={slow}
+                title={t(slowScope === 'global' ? 'composer.slowTitleGlobal' : 'composer.slowTitleSession', { name: agentName })}
+                onClick={() => onSlowChange(!slow)}
+              >
+                <Turtle size={12} /> <span className="fast-mode-toggle__label">{t('composer.slow')}</span>
               </button>
             ) : null}
             {fastSupported && fast && fastActive === false && onFastRetry ? (

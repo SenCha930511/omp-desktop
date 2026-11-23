@@ -320,6 +320,7 @@ export default function App() {
     bridge,
     ready: settingsState.initialized,
     harness: activeHarness,
+    localePreference: settingsState.settings.locale,
     runtime: workspace.runtime,
     activeSession,
     lastSelectedModel: settingsState.settings.lastSelectedModels[activeHarness],
@@ -1551,6 +1552,9 @@ export default function App() {
                             fastActive={provider.fastActive}
                             fastSupported={provider.selectedModel?.fastModeSupported ?? false}
                             fastAvailable={workspace.runtime?.fastModeAvailable !== false}
+                            slow={provider.slow}
+                            slowSupported={provider.slowSupported}
+                            slowScope={provider.slowScope}
                             usageLimit={provider.usageLimit}
                             approvalMode={settingsState.settings.ompApprovalMode}
                             onApprovalModeChange={changeApprovalMode}
@@ -1590,6 +1594,7 @@ export default function App() {
                             onEffortChange={provider.changeEffort}
                             onFastChange={provider.changeFast}
                             onFastRetry={provider.retryFast}
+                            onSlowChange={provider.changeSlow}
                             onSend={sendVisiblePrompt}
                             onContinue={continueRuntime}
                             onStop={stopRuntime}

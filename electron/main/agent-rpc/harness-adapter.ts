@@ -1,4 +1,4 @@
-import type { HarnessId, PrimeContextUsage, SessionActionSnapshot, SessionUsage, SessionUsageTokens, UsageLimitState } from '../../../src/types/api'
+import type { HarnessId, PrimeContextUsage, SessionActionSnapshot, SessionUsage, SessionUsageTokens, SlowModeScope, UsageLimitState } from '../../../src/types/api'
 import { MAX_QUEUED_ACTIONS, parseSessionActionSnapshot } from '../../../src/lib/session-actions'
 import { extensionInjections } from '../extension-manifest'
 import { HARNESSES } from '../harness'
@@ -34,6 +34,8 @@ export interface HarnessStateReading {
   /** `/slow` 是否適用於目前模型;缺席代表上游未回報,讀取方保留既有值。 */
   slowModeSupported?: boolean
   slowModeEnabled?: boolean
+  /** Absent means unknown; never infer a write scope from the model or support flag. */
+  slowModeScope?: SlowModeScope
   sessionActions?: SessionActionSnapshot
 }
 
@@ -277,6 +279,7 @@ export const OMP_RPC_ADAPTER: HarnessRpcAdapter = {
     if (typeof data.fastModeActive === 'boolean') reading.serviceTierActive = data.fastModeActive
     if (typeof data.slowModeSupported === 'boolean') reading.slowModeSupported = data.slowModeSupported
     if (typeof data.slowModeEnabled === 'boolean') reading.slowModeEnabled = data.slowModeEnabled
+    if (data.slowModeScope === 'global' || data.slowModeScope === 'session') reading.slowModeScope = data.slowModeScope
     // state dump 以欄位缺席表達「未限流」;讀取方據此清除。
     const usageLimit = parseUsageLimitState(data.usageLimit)
     if (usageLimit) reading.usageLimit = usageLimit

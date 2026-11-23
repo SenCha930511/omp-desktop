@@ -1248,6 +1248,11 @@ export class RpcRuntime {
     if (reading.serviceTierActive !== undefined) this.info.serviceTierActive = reading.serviceTierActive
     if (reading.slowModeSupported !== undefined) this.info.slowModeSupported = reading.slowModeSupported
     if (reading.slowModeEnabled !== undefined) this.info.slowModeEnabled = reading.slowModeEnabled
+    // Scope is a fact about the current model's write target. An omitted or
+    // unrecognized value invalidates the previous target instead of leaving
+    // a stale global/session consequence visible in the UI.
+    if (reading.slowModeScope !== undefined) this.info.slowModeScope = reading.slowModeScope
+    else delete this.info.slowModeScope
     // state dump 以欄位缺席表達「未限流」;據此清除。
     if (reading.usageLimit !== undefined) this.info.usageLimit = reading.usageLimit
     else delete this.info.usageLimit

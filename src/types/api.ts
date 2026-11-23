@@ -334,6 +334,8 @@ export interface SessionUsage {
   tokens?: SessionUsageTokens
 }
 
+export type SlowModeScope = 'global' | 'session'
+
 export interface RuntimeInfo {
   configuredThinkingLevel?: PrimeEffortSelector
   /** Became true once the engine resolved the auto thinking level mid-turn in this session. */
@@ -364,6 +366,8 @@ export interface RuntimeInfo {
   /** 上游 get_state 的 slowModeSupported / slowModeEnabled(`/slow` 只適用部分模型)。 */
   slowModeSupported?: boolean
   slowModeEnabled?: boolean
+  /** Native write consequence; absent when unsupported or not authoritatively reported. */
+  slowModeScope?: SlowModeScope
   /**
    * 上游 SessionState.usageLimit:帳號已進 wrap-up 或 low-priority 期限流時
    * 才回報。顯示之,避免使用者把限流降速誤判為 app bug。

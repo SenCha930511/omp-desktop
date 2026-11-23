@@ -62,6 +62,10 @@ function renderComposer(
     fastActive?: boolean
     onFastChange?(value: boolean): void
     onFastRetry?(): void
+    slow?: boolean
+    slowSupported?: boolean
+    slowScope?: RuntimeInfo['slowModeScope']
+    onSlowChange?(value: boolean): void
     locale?: ResolvedLocale
   } = {},
 ) {
@@ -76,6 +80,9 @@ function renderComposer(
     fastSupported={fastOptions.fastSupported ?? false}
     fastAvailable
     fastActive={fastOptions.fastActive}
+    slow={fastOptions.slow}
+    slowSupported={fastOptions.slowSupported}
+    slowScope={fastOptions.slowScope}
     imageInputSupported={imageInputSupported}
     messageEnterAction={messageEnterAction}
     contextUsage={contextUsage}
@@ -87,6 +94,7 @@ function renderComposer(
     onEffortChange={vi.fn()}
     onFastChange={fastOptions.onFastChange ?? vi.fn()}
     onFastRetry={fastOptions.onFastRetry}
+    onSlowChange={fastOptions.onSlowChange}
     onSend={onSend}
     onContinue={callbacks.onContinue}
     onStop={callbacks.onStop ?? vi.fn()}
@@ -158,6 +166,63 @@ describe('Composer Fast retry', () => {
     expect(retry?.getAttribute('aria-label')).toBe(label)
     expect(retry?.textContent).toContain(label)
     expect(retry?.getAttribute('title')).toBe(title)
+  })
+})
+
+describe('Composer Slow controls', () => {
+  it.each([
+    ['en', 'Slow', 'global', 'Use OMP slow mode. This global preference persists across model switches and applies to every session and terminal using this provider.'],
+    ['en', 'Slow', 'session', 'Use OMP slow mode for the current model family in this session only. Each model family has its own preference.'],
+    ['zh-TW', '慢速', 'global', '使用 OMP 慢速模式。此全域偏好設定會跨模型切換保留，並套用於使用此提供者的所有工作階段與終端機。'],
+    ['zh-TW', '慢速', 'session', '僅在此工作階段對目前模型系列使用 OMP 慢速模式；每個模型系列各有獨立偏好設定。'],
+    ['zh-CN', '慢速', 'global', '使用 OMP 慢速模式。此全局偏好设置会跨模型切换保留，并应用于使用此提供商的所有会话和终端。'],
+    ['zh-CN', '慢速', 'session', '仅在此会话中对当前模型系列使用 OMP 慢速模式；每个模型系列都有独立的偏好设置。'],
+  ] as const)('renders localized %s Slow text and %s scope title', (locale, label, slowScope, title) => {
+    const changeSlow = vi.fn()
+    renderComposer(vi.fn(), true, false, 'queue', undefined, undefined, undefined, undefined, {}, {
+      locale, slow: false, slowSupported: true, slowScope, onSlowChange: changeSlow,
+    })
+
+    const toggle = container.querySelector<HTMLButtonElement>('.slow-mode-toggle')
+    expect(toggle?.textContent).toContain(label)
+    expect(toggle?.getAttribute('aria-label')).toBe(label)
+    expect(toggle?.getAttribute('title')).toBe(title)
+    expect(toggle?.getAttribute('aria-pressed')).toBe('false')
+    act(() => toggle!.click())
+    expect(changeSlow).toHaveBeenCalledExactlyOnceWith(true)
+  })
+
+  it('uses only authoritative enabled state for pressed styling and toggling off', () => {
+    const changeSlow = vi.fn()
+    renderComposer(vi.fn(), true, false, 'queue', undefined, undefined, undefined, undefined, {}, {
+      slow: true, slowSupported: true, slowScope: 'global', onSlowChange: changeSlow,
+    })
+    const toggle = container.querySelector<HTMLButtonElement>('.slow-mode-toggle')!
+    expect(toggle.getAttribute('aria-pressed')).toBe('true')
+    expect(toggle.classList.contains('is-active')).toBe(true)
+    act(() => toggle.click())
+    expect(changeSlow).toHaveBeenCalledExactlyOnceWith(false)
+  })
+
+  it.each([
+    ['unsupported', { slow: false, slowSupported: false, slowScope: 'global' }],
+    ['unknown support', { slow: false, slowScope: 'session' }],
+    ['unknown enabled preference', { slowSupported: true, slowScope: 'global' }],
+    ['unknown scope', { slow: false, slowSupported: true }],
+  ] as const)('hides Slow when state is %s instead of inferring it from the model', (_label, slowOptions) => {
+    const changeSlow = vi.fn()
+    renderComposer(vi.fn(), true, false, 'queue', undefined, undefined, undefined, undefined, {}, {
+      ...slowOptions, onSlowChange: changeSlow,
+    })
+    expect(container.querySelector('.slow-mode-toggle')).toBeNull()
+    expect(changeSlow).not.toHaveBeenCalled()
+  })
+
+  it('hides Slow when its mutation callback is unavailable', () => {
+    renderComposer(vi.fn(), true, false, 'queue', undefined, undefined, undefined, undefined, {}, {
+      slow: false, slowSupported: true, slowScope: 'session',
+    })
+    expect(container.querySelector('.slow-mode-toggle')).toBeNull()
   })
 })
 

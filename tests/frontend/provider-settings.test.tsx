@@ -4,7 +4,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { type ProviderCatalog, useProviderCatalog } from '../../src/hooks/useProviderCatalog'
 import { ProviderSettings } from '../../src/pages/settings/ProviderSettings'
-import type { PrimeModelCatalog, DesktopApi, RuntimeInfo } from '../../src/types/api'
+import type { LocalePreference, PrimeModelCatalog, DesktopApi, RuntimeInfo } from '../../src/types/api'
 
 const model = {
   key: 'openai-codex/gpt-5.6', provider: 'openai-codex', id: 'gpt-5.6', name: 'GPT-5.6', reasoning: true,
@@ -147,23 +147,34 @@ describe('provider runtime mutations', () => {
     command: DesktopApi['agent']['command']
     runtime?: RuntimeInfo | null
     syncRuntime?: (runtimeId: string) => Promise<void>
+    refreshState?: DesktopApi['agent']['refreshState']
     reportError?: (error: unknown) => void
+    localePreference?: LocalePreference
   }) {
     let value: ProviderCatalog | undefined
+    const initialRuntime = options.runtime === undefined ? runtime : options.runtime
     const catalogMock = vi.fn().mockResolvedValue(catalog)
+    const refreshState = options.refreshState ?? vi.fn().mockResolvedValue(initialRuntime)
     const bridge = {
-      agent: { command: options.command },
+      agent: { command: options.command, refreshState },
       providers: {
         catalog: catalogMock,
       },
     } as unknown as DesktopApi
     const syncRuntime = options.syncRuntime ?? vi.fn().mockResolvedValue(undefined)
     const reportError = options.reportError ?? vi.fn()
-    function Harness() {
-      value = useProviderCatalog({ bridge, runtime: options.runtime === undefined ? runtime : options.runtime, syncRuntime, reportError })
+    function Harness({ currentRuntime = initialRuntime }: { currentRuntime?: RuntimeInfo | null }) {
+      value = useProviderCatalog({ bridge, runtime: currentRuntime, syncRuntime, reportError, localePreference: options.localePreference })
       return null
     }
-    return render(<Harness />).then(() => ({ get value() { return value! }, catalogMock, syncRuntime, reportError }))
+    return render(<Harness />).then(() => ({
+      get value() { return value! },
+      catalogMock,
+      refreshState,
+      syncRuntime,
+      reportError,
+      updateRuntime: (nextRuntime: RuntimeInfo | null) => render(<Harness currentRuntime={nextRuntime} />),
+    }))
   }
 
   it('serializes rapid reasoning changes and rolls back/synchronizes the latest rejection', async () => {
@@ -307,6 +318,175 @@ describe('provider runtime mutations', () => {
     await act(async () => { await Promise.resolve() })
     expect(command).not.toHaveBeenCalled()
     expect(disabled.value.fast).toBe(false)
+  })
+
+  it('sends one exact slow command and refreshes authoritative state once before reattaching the UI', async () => {
+    const acknowledged = deferred<Record<string, unknown>>()
+    const refreshed = deferred<RuntimeInfo>()
+    const slowRuntime: RuntimeInfo = { ...runtime, slowModeSupported: true, slowModeEnabled: false, slowModeScope: 'session' }
+    const order: string[] = []
+    const command = vi.fn().mockImplementation(() => { order.push('command'); return acknowledged.promise })
+    const refreshState = vi.fn().mockImplementation(() => { order.push('refresh'); return refreshed.promise })
+    const syncRuntime = vi.fn().mockImplementation(async () => { order.push('sync') })
+    const hook = await mountCatalogHook({ command, refreshState, syncRuntime, runtime: slowRuntime })
+
+    act(() => hook.value.changeSlow(true))
+    await act(async () => { await Promise.resolve() })
+    expect(hook.value.slow).toBe(false)
+    expect(command).toHaveBeenCalledExactlyOnceWith('runtime-1', { type: 'set_slow_mode', enabled: true })
+    expect(hook.refreshState).not.toHaveBeenCalled()
+
+    await act(async () => { acknowledged.resolve({ success: true, data: { enabled: true } }); await acknowledged.promise; await Promise.resolve() })
+    expect(hook.value.slow).toBe(false)
+    expect(hook.refreshState).toHaveBeenCalledExactlyOnceWith('runtime-1')
+    expect(hook.syncRuntime).not.toHaveBeenCalled()
+
+    await act(async () => {
+      refreshed.resolve({ ...slowRuntime, slowModeEnabled: true })
+      await refreshed.promise
+      await Promise.resolve()
+    })
+    expect(order).toEqual(['command', 'refresh', 'sync'])
+    expect(hook.syncRuntime).toHaveBeenCalledExactlyOnceWith('runtime-1')
+  })
+
+  it('aborts a queued session Slow enable when a preceding model change produces global scope', async () => {
+    const modelChanged = deferred<Record<string, unknown>>()
+    const command = vi.fn()
+      .mockReturnValueOnce(modelChanged.promise)
+      .mockResolvedValue({})
+    const slowRuntime: RuntimeInfo = { ...runtime, slowModeSupported: true, slowModeEnabled: false, slowModeScope: 'session' }
+    const hook = await mountCatalogHook({ command, runtime: slowRuntime, localePreference: 'zh-TW' })
+
+    act(() => {
+      hook.value.changeModel('openai-codex/gpt-5.5')
+      hook.value.changeSlow(true)
+    })
+    await act(async () => { await Promise.resolve() })
+    expect(command).toHaveBeenCalledExactlyOnceWith('runtime-1', {
+      type: 'set_model', provider: 'openai-codex', modelId: 'gpt-5.5',
+    })
+
+    // The authoritative props move to a different model and write target
+    // before the primary queue reaches the click-time session-scoped request.
+    const changedRuntime: RuntimeInfo = {
+      ...slowRuntime,
+      model: { provider: 'anthropic', id: 'claude-sonnet', name: 'Claude Sonnet' },
+      slowModeScope: 'global',
+    }
+    await hook.updateRuntime(changedRuntime)
+    await act(async () => {
+      modelChanged.resolve({ success: true })
+      await modelChanged.promise
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(command.mock.calls.map(([, request]) => request)).toEqual([
+      { type: 'set_model', provider: 'openai-codex', modelId: 'gpt-5.5' },
+      { type: 'set_thinking_level', level: 'low' },
+    ])
+    expect(hook.refreshState).not.toHaveBeenCalled()
+    expect(hook.value.slow).toBe(false)
+    expect(hook.reportError).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      message: '要求執行前，模型、慢速偏好設定或慢速範圍已變更。請檢查目前的慢速狀態後再試一次。',
+    }))
+  })
+
+  it.each([
+    ['reported enabled preference', { slowModeEnabled: true }],
+    ['absent enabled preference', { slowModeEnabled: undefined }],
+    ['absent scope', { slowModeScope: undefined }],
+    ['changed scope', { slowModeScope: 'global' }],
+    ['absent support', { slowModeSupported: undefined }],
+    ['model identity', { model: { provider: 'openai-codex', id: 'gpt-5.5', name: 'GPT-5.5' } }],
+  ] as const)('does not let changed %s bypass queued Slow authorization', async (_label, patch) => {
+    const thinkingChanged = deferred<Record<string, unknown>>()
+    const command = vi.fn().mockReturnValueOnce(thinkingChanged.promise)
+    const slowRuntime: RuntimeInfo = { ...runtime, slowModeSupported: true, slowModeEnabled: false, slowModeScope: 'session' }
+    const hook = await mountCatalogHook({ command, runtime: slowRuntime })
+    act(() => {
+      hook.value.changeEffort('low')
+      hook.value.changeSlow(true)
+    })
+    await act(async () => { await Promise.resolve() })
+    expect(command).toHaveBeenCalledExactlyOnceWith('runtime-1', { type: 'set_thinking_level', level: 'low' })
+
+    await hook.updateRuntime({ ...slowRuntime, ...patch })
+    await act(async () => {
+      thinkingChanged.resolve({ success: true })
+      await thinkingChanged.promise
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(command).toHaveBeenCalledTimes(1)
+    expect(hook.refreshState).not.toHaveBeenCalled()
+    expect(hook.reportError).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      message: 'The model, Slow preference, or Slow scope changed before the request ran. Review the current Slow state and try again.',
+    }))
+  })
+
+  it('does not optimistically change slow preference when its command or authoritative refresh fails', async () => {
+    const slowRuntime: RuntimeInfo = { ...runtime, slowModeSupported: true, slowModeEnabled: false, slowModeScope: 'global' }
+    const rejected = deferred<Record<string, unknown>>()
+    const hook = await mountCatalogHook({ command: vi.fn().mockReturnValueOnce(rejected.promise), runtime: slowRuntime })
+    act(() => hook.value.changeSlow(true))
+    expect(hook.value.slow).toBe(false)
+    await act(async () => {
+      rejected.reject(new Error('slow rejected'))
+      try { await rejected.promise } catch { /* expected */ }
+      await Promise.resolve()
+    })
+    expect(hook.value.slow).toBe(false)
+    expect(hook.refreshState).not.toHaveBeenCalled()
+    expect(hook.syncRuntime).toHaveBeenCalledExactlyOnceWith('runtime-1')
+    expect(hook.reportError).toHaveBeenCalledWith(expect.objectContaining({ message: 'slow rejected' }))
+
+    const acknowledged = deferred<Record<string, unknown>>()
+    const refreshRejected = deferred<RuntimeInfo>()
+    const refreshFailure = await mountCatalogHook({
+      command: vi.fn().mockReturnValueOnce(acknowledged.promise),
+      refreshState: vi.fn().mockReturnValueOnce(refreshRejected.promise),
+      runtime: slowRuntime,
+    })
+    act(() => refreshFailure.value.changeSlow(true))
+    await act(async () => { acknowledged.resolve({ success: true }); await acknowledged.promise; await Promise.resolve() })
+    await act(async () => {
+      refreshRejected.reject(new Error('slow state refresh rejected'))
+      try { await refreshRejected.promise } catch { /* expected */ }
+      await Promise.resolve()
+    })
+    expect(refreshFailure.value.slow).toBe(false)
+    expect(refreshFailure.refreshState).toHaveBeenCalledExactlyOnceWith('runtime-1')
+    expect(refreshFailure.reportError).toHaveBeenCalledWith(expect.objectContaining({ message: 'slow state refresh rejected' }))
+  })
+
+  it.each([
+    ['unsupported', { slowModeSupported: false, slowModeEnabled: false, slowModeScope: 'session' }],
+    ['unknown support', { slowModeEnabled: false, slowModeScope: 'session' }],
+    ['unknown enabled preference', { slowModeSupported: true, slowModeScope: 'global' }],
+    ['unknown scope', { slowModeSupported: true, slowModeEnabled: false }],
+  ] as const)('does not mutate slow mode when native facts are %s', async (_label, fields) => {
+    const command = vi.fn().mockResolvedValue({})
+    const hook = await mountCatalogHook({ command, runtime: { ...runtime, ...fields } })
+    act(() => hook.value.changeSlow(true))
+    await act(async () => { await Promise.resolve() })
+    expect(command).not.toHaveBeenCalled()
+    expect(hook.refreshState).not.toHaveBeenCalled()
+  })
+
+  it('does not reattach or synthesize slow state after the runtime generation changes', async () => {
+    const acknowledged = deferred<Record<string, unknown>>()
+    const slowRuntime: RuntimeInfo = { ...runtime, slowModeSupported: true, slowModeEnabled: false, slowModeScope: 'session' }
+    const hook = await mountCatalogHook({ command: vi.fn().mockReturnValueOnce(acknowledged.promise), runtime: slowRuntime })
+    act(() => hook.value.changeSlow(true))
+    await hook.updateRuntime({ ...slowRuntime, runtimeId: 'runtime-2' })
+    await act(async () => { acknowledged.resolve({ success: true }); await acknowledged.promise; await Promise.resolve() })
+
+    expect(hook.value.slow).toBe(false)
+    expect(hook.refreshState).toHaveBeenCalledExactlyOnceWith('runtime-1')
+    expect(hook.syncRuntime).not.toHaveBeenCalled()
   })
 
   it('keeps local fast selection inert for retry without an active runtime', async () => {

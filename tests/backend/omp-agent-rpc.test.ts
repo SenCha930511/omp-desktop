@@ -55,6 +55,10 @@ interface FakeOmpOptions {
   fastModeActive?: boolean
   /** Reject this many native fast-mode requests to exercise the real runtime error path. */
   fastModeRejections?: number
+  /** Native slow preference and its explicitly reported write scope. */
+  slowModeEnabled?: boolean
+  slowModeSupported?: boolean
+  slowModeScope?: 'global' | 'session'
   /** When false the ready frame omits supportsBashExcludeFromContext. */
   bashExcludeFromContext?: boolean
 }
@@ -79,6 +83,7 @@ let streaming = false
 let askDialogEnabled = false
 let usageLimitVar = ${JSON.stringify(fakeUsageLimit)}
 let remainingFastModeRejections = ${options.fastModeRejections ?? 0}
+let slowModeEnabledVar = ${JSON.stringify(options.slowModeEnabled ?? false)}
 let sessionFileVar = ${JSON.stringify(options.initialSessionFile ?? null)}
 send({ type: 'ready', protocolVersion: 1, supportedProtocolVersions: [1, 2]${options.bashExcludeFromContext === false ? '' : ', supportsBashExcludeFromContext: true'} })
 send({ type: 'available_commands_update', commands: [{ name: 'help' }] })
@@ -105,7 +110,8 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     }
     send({ id: command.id, type: 'response', command: 'get_state', success: true, data: {
       sessionId: 'omp-session', isStreaming: streaming, isCompacting: false, thinkingLevel: 'medium',
-      fastModeEnabled: ${JSON.stringify(options.fastModeEnabled ?? true)}, slowModeSupported: true, slowModeEnabled: false, model: { provider: 'openai-codex', id: 'gpt-5.6-luna', name: 'Luna GPT-5.6' },
+      fastModeEnabled: ${JSON.stringify(options.fastModeEnabled ?? true)}, slowModeSupported: ${JSON.stringify(options.slowModeSupported ?? true)}, slowModeEnabled: slowModeEnabledVar, model: { provider: 'openai-codex', id: 'gpt-5.6-luna', name: 'Luna GPT-5.6' },
+      ${options.slowModeScope === undefined ? '' : `slowModeScope: ${JSON.stringify(options.slowModeScope)},`}
       ${options.fastModeActive === undefined ? '' : `fastModeActive: ${options.fastModeActive},`}
       queuedMessageCount: ${options.queuedMessageCount ?? 0},
       fakeAskDialogEnabled: askDialogEnabled,
@@ -156,6 +162,10 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     }
   } else if (command.type === 'set_service_tier') {
     send({ id: command.id, type: 'response', command: 'set_service_tier', success: false, error: 'Unknown command set_service_tier' })
+  } else if (command.type === 'set_slow_mode') {
+    slowModeEnabledVar = command.enabled
+    send({ type: 'fake_received', command: 'set_slow_mode', enabled: command.enabled })
+    send({ id: command.id, type: 'response', command: command.type, success: true, data: { enabled: command.enabled } })
   } else if (command.type === 'new_session') {
     sessionFileVar = ${JSON.stringify(options.newSessionFile ?? null)}
     send({ id: command.id, type: 'response', command: command.type, success: true, data: { cancelled: false } })
@@ -422,6 +432,7 @@ describe('OMP RPC handshake', () => {
     expect(runtime.serviceTierActive).toBeUndefined()
     expect(runtime.slowModeSupported).toBe(true)
     expect(runtime.slowModeEnabled).toBe(false)
+    expect(runtime.slowModeScope).toBeUndefined()
     expect(runtime.fastModeAvailable).toBe(true)
     expect(runtime.fastModeSupported).toBe(true)
     expect(runtime.bashExcludeFromContext).toBe(true)
@@ -432,6 +443,32 @@ describe('OMP RPC handshake', () => {
     // Unsolicited pre-request frames are tolerated and forwarded for the renderer to ignore.
     await waitUntil(() => events.some((event) => event.type === 'ready'))
     expect(events.some((event) => event.type === 'available_commands_update')).toBe(true)
+  })
+
+  it.each(['global', 'session'] as const)('reads native slow scope=%s and adopts only a follow-up authoritative state', async (slowModeScope) => {
+    const fake = fakeOmpAgent({ slowModeScope, slowModeEnabled: false })
+    const manager = ompManager(fake.executable, { providers: ompCatalog })
+    const runtime = await manager.start({ cwd: fake.cwd })
+    expect(runtime).toMatchObject({ slowModeSupported: true, slowModeEnabled: false, slowModeScope })
+
+    const acknowledged = await manager.command(runtime.runtimeId, { type: 'set_slow_mode', enabled: true })
+    expect(acknowledged).toMatchObject({ success: true, data: { enabled: true } })
+    // The native acknowledgment echoed the request; it is not state evidence.
+    expect(manager.list()[0]).toMatchObject({ slowModeEnabled: false, slowModeScope })
+
+    const refreshed = await manager.refreshState(runtime.runtimeId)
+    expect(refreshed).toMatchObject({ slowModeSupported: true, slowModeEnabled: true, slowModeScope })
+  })
+
+  it('keeps unsupported slow scope unknown and accepts only recognized adapter values', async () => {
+    const fake = fakeOmpAgent({ slowModeSupported: false })
+    const manager = ompManager(fake.executable, { providers: ompCatalog })
+    const runtime = await manager.start({ cwd: fake.cwd })
+    expect(runtime).toMatchObject({ slowModeSupported: false, slowModeEnabled: false })
+    expect(runtime.slowModeScope).toBeUndefined()
+    expect(OMP_RPC_ADAPTER.readState({ slowModeScope: 'provider' }).slowModeScope).toBeUndefined()
+    expect(OMP_RPC_ADAPTER.readState({ slowModeScope: 'global' }).slowModeScope).toBe('global')
+    expect(OMP_RPC_ADAPTER.readState({ slowModeScope: 'session' }).slowModeScope).toBe('session')
   })
 
   it.each([false, true])('reads fastModeActive=%s independently from the selected preference', async (fastModeActive) => {
