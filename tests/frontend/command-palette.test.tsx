@@ -8,6 +8,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { HarnessId } from '../../src/types/api'
 import { HARNESS_SHORT_NAMES } from '../../src/lib/harness'
 import App from '../../src/App'
+// Resolve every lazy boundary this integration test exercises before React
+// renders it, so module promise pings cannot outlive their act scope.
+import '../../src/components/CommandPalette'
+import '../../src/components/ConversationTranscript'
+import '../../src/components/WorkspaceInspector'
+import '../../src/pages/ProjectsPage'
+import '../../src/pages/ScheduledPage'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
