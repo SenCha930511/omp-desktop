@@ -122,12 +122,12 @@ export class FilePreviewService {
         { name: 'All files', extensions: ['*'] },
       ],
     }
-    const result = this.dependencies.openDialog
-      ? await this.dependencies.openDialog(options)
+    const result = await (this.dependencies.openDialog
+      ? this.dependencies.openDialog(options)
       : (() => {
           const parent = this.dependencies.windowProvider()
           return parent ? dialog.showOpenDialog(parent, options) : dialog.showOpenDialog(options)
-        })()
+        })())
     if (result.canceled || result.filePaths.length !== 1) return null
     const picked = await requireExistingPath(result.filePaths[0], 'picked file')
     const stat = await lstat(picked)

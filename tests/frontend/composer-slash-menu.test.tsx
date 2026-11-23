@@ -69,6 +69,7 @@ describe('Composer slash menu skill icon alignment', () => {
           reasoningLevels={['medium']}
           fast={false}
           fastSupported={false}
+          fastAvailable={false}
           imageInputSupported={false}
           messageEnterAction="queue"
           skills={skills}
