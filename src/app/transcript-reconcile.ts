@@ -45,17 +45,33 @@ export function transcriptMessageText(message: TranscriptMessage): string {
  * Re-inserts renderer-local user rows the read cannot know about. A steer the
  * harness injected is often not persisted as a user record, so the row that
  * rendered at submit time is the reader's only copy; dropping it on every
- * authoritative read made steers vanish. A persisted row with the same text
- * supersedes it instead, so the same prompt never renders twice.
+ * authoritative read made steers vanish.
+ *
+ * A persisted row supersedes a local row only when it is that prompt's own
+ * copy: same text, written at or after the submit time, matched one to one and
+ * nearest first. Text membership alone is not enough — earlier history with the
+ * same text ("continue" sent twice) must not swallow the new pending row.
  */
 export function keepLocalUserRows(current: TranscriptMessage[], next: TranscriptMessage[]): TranscriptMessage[] {
   const nextIds = new Set(next.map((message) => message.id))
-  const nextUserTexts = new Set(next.filter((message) => message.role === 'user').map(transcriptMessageText))
+  const persistedUsers = next.filter((message) => message.role === 'user' && typeof message.timestamp === 'number')
+  const superseded = new Set<TranscriptMessage>()
   const missing: TranscriptMessage[] = []
   for (const message of current) {
     if (message.role !== 'user' || !message.id.startsWith('user-') || nextIds.has(message.id)) continue
-    if (nextUserTexts.has(transcriptMessageText(message))) continue
-    missing.push(message)
+    const text = transcriptMessageText(message)
+    const rowTime = typeof message.timestamp === 'number' ? message.timestamp : Number.NaN
+    let best: TranscriptMessage | undefined
+    for (const candidate of persistedUsers) {
+      if (superseded.has(candidate) || transcriptMessageText(candidate) !== text) continue
+      const candidateTime = candidate.timestamp as number
+      // The harness writes the user record at or after submission; an older row
+      // with the same text is earlier history, not this prompt's copy.
+      if (Number.isFinite(rowTime) && candidateTime < rowTime - 2_000) continue
+      if (!best || Math.abs((best.timestamp as number) - rowTime) > Math.abs(candidateTime - rowTime)) best = candidate
+    }
+    if (best) superseded.add(best)
+    else missing.push(message)
   }
   if (!missing.length) return next
   const merged = [...next]

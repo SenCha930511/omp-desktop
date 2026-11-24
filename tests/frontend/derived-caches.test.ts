@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { deriveOmpBackgroundTasks } from '../../src/lib/omp-background-tasks'
 import { dedupeSubagentMessages } from '../../src/hooks/useSubagents'
-import { tokenizeSyntax, tokenizeSyntaxCached } from '../../src/components/transcript/syntax'
+import { tokenizeSyntax, tokenizeSyntaxCached, tokenizeSyntaxLine } from '../../src/components/transcript/syntax'
 import type { MessagePart, TranscriptMessage } from '../../src/types/api'
 
 type RawMessage = Record<string, unknown>
@@ -126,5 +126,13 @@ describe('tokenizeSyntaxCached', () => {
     const text = 'x'.repeat(16_385)
     expect(tokenizeSyntaxCached(text)).toEqual(tokenizeSyntax(text))
     expect(tokenizeSyntaxCached(text)).not.toBe(tokenizeSyntaxCached(text))
+  })
+
+  it('bounds the per-line cache by line length as well as entry count', () => {
+    const short = 'const bounded = 1'
+    expect(tokenizeSyntaxLine(short)).toBe(tokenizeSyntaxLine(short))
+    const huge = `const huge = '${'y'.repeat(20_000)}'`
+    expect(tokenizeSyntaxLine(huge)).toEqual(tokenizeSyntax(huge))
+    expect(tokenizeSyntaxLine(huge)).not.toBe(tokenizeSyntaxLine(huge))
   })
 })

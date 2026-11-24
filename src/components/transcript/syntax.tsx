@@ -29,7 +29,12 @@ export function tokenizeSyntax(text: string): SyntaxToken[] {
  * key; the cap keeps a long transcript from pinning unbounded memory.
  */
 export const SYNTAX_LINE_CACHE_LIMIT = 2_000
+/** Per-line and aggregate character caps: the entry count alone would let a
+ * few model-generated megabyte lines pin memory after their rows unmount. */
+const SYNTAX_LINE_MAX_CHARS = 16_384
+const SYNTAX_LINE_CACHE_CHARS = 1_048_576
 const lineTokenCache = new Map<string, SyntaxToken[]>()
+let lineTokenCacheChars = 0
 
 export function tokenizeSyntaxLine(line: string): SyntaxToken[] {
   const cached = lineTokenCache.get(line)
@@ -40,11 +45,15 @@ export function tokenizeSyntaxLine(line: string): SyntaxToken[] {
     return cached
   }
   const tokens = tokenizeSyntax(line)
-  if (lineTokenCache.size >= SYNTAX_LINE_CACHE_LIMIT) {
+  if (line.length > SYNTAX_LINE_MAX_CHARS) return tokens
+  while (lineTokenCache.size >= SYNTAX_LINE_CACHE_LIMIT || lineTokenCacheChars + line.length > SYNTAX_LINE_CACHE_CHARS) {
     const oldest = lineTokenCache.keys().next()
-    if (!oldest.done) lineTokenCache.delete(oldest.value)
+    if (oldest.done) break
+    lineTokenCache.delete(oldest.value)
+    lineTokenCacheChars -= oldest.value.length
   }
   lineTokenCache.set(line, tokens)
+  lineTokenCacheChars += line.length
   return tokens
 }
 

@@ -592,6 +592,17 @@ describe('external sync reconciliation', () => {
     const deduped = reconcileTranscripts([...disk, local], persisted)
     expect(deduped.map((message) => message.id)).toEqual(persisted.map((message) => message.id))
   })
+
+  it('does not let earlier history with the same text swallow a new pending prompt', () => {
+    const history: TranscriptMessage = { id: 'entry-1', role: 'user', timestamp: 1_000, parts: [{ type: 'text', text: 'continue' }] }
+    const pending: TranscriptMessage = { id: 'user-queued-2', role: 'user', timestamp: 50_000, parts: [{ type: 'text', text: 'continue' }] }
+    const read = [history]
+    const kept = reconcileTranscripts([history, pending], read)
+    expect(kept.map((message) => message.id)).toEqual(['entry-1', 'user-queued-2'])
+
+    const persisted = [history, { id: 'entry-2', role: 'user' as const, timestamp: 50_200, parts: [{ type: 'text' as const, text: 'continue' }] }]
+    expect(reconcileTranscripts([history, pending], persisted).map((message) => message.id)).toEqual(['entry-1', 'entry-2'])
+  })
 })
 
 describe('catalog tick session identity', () => {
