@@ -1219,6 +1219,11 @@ export const Composer = memo(function Composer({
                 setActiveSuggestion((current) => (event.key === 'ArrowDown' ? (current + 1) % suggestions.length : (current - 1 + suggestions.length) % suggestions.length))
                 return
               }
+              if (event.key === 'Tab' && !event.shiftKey && !event.nativeEvent.isComposing && menu && suggestions.length) {
+                event.preventDefault()
+                chooseSuggestion(activeSuggestion)
+                return
+              }
               if (event.key === 'Enter' && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && !event.nativeEvent.isComposing && menu && suggestions.length) {
                 // Fully typed commands without arguments submit on the first
                 // Enter instead of only re-selecting their own suggestion;

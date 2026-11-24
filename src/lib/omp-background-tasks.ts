@@ -248,15 +248,18 @@ export function deriveOmpBackgroundTasks({
       cancellable: true,
     })
   }
-  for (const entry of commandOutputHistory) {
-    if (entry.status !== 'running') continue
+  // Only the newest entry can still be running. A turn that ended without a
+  // matching finish event leaves older entries marked running forever, and the
+  // panel used to list that pile of dead bash rows as live work.
+  const runningBash = commandOutputHistory[0]
+  if (runningBash && runningBash.status === 'running') {
     tasks.push({
-      id: `bash:${entry.id}`,
+      id: `bash:${runningBash.id}`,
       kind: 'bash',
-      title: entry.command ?? 'bash',
+      title: runningBash.command ?? 'bash',
       type: 'bash',
       status: 'running',
-      cancellable: Boolean(entry.onAbort),
+      cancellable: Boolean(runningBash.onAbort),
     })
   }
   tasks.push(...activeTools)

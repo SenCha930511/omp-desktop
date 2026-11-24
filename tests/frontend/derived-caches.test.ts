@@ -108,6 +108,16 @@ describe('deriveOmpBackgroundTasks completed-message cache', () => {
     const finished = deriveOmpBackgroundTasks({ messages: [user, { ...streaming, streaming: false }], isStreaming: false })
     expect(finished).toEqual([])
   })
+
+  it('shows only the newest running bash entry so stale rows do not pile up', () => {
+    const history = [
+      { id: 3, text: 'out', command: 'newest', status: 'running' as const },
+      { id: 2, text: 'out', command: 'stale one', status: 'running' as const },
+      { id: 1, text: 'out', command: 'stale two', status: 'running' as const },
+    ]
+    const tasks = deriveOmpBackgroundTasks({ messages: [], commandOutputHistory: history })
+    expect(tasks.filter((task) => task.kind === 'bash').map((task) => task.title)).toEqual(['newest'])
+  })
 })
 
 describe('tokenizeSyntaxCached', () => {

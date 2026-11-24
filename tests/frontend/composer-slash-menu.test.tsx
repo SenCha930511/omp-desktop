@@ -152,4 +152,40 @@ describe('Composer slash menu skill icon alignment', () => {
     act(() => { skillOption!.click() })
     expect(textarea.value).toBe('keep this /skill:architect ')
   })
+
+  it('selects the active command with Tab instead of moving focus', () => {
+    act(() => {
+      root.render(
+        <Composer
+          busy={false}
+          model="provider/vision"
+          effort="medium"
+          modelsByProvider={modelsByProvider}
+          providers={providers}
+          reasoningLevels={['medium']}
+          fast={false}
+          fastSupported={false}
+          fastAvailable={false}
+          imageInputSupported={false}
+          messageEnterAction="queue"
+          skills={[]}
+          availableCommands={[{ name: 'btw', description: 'Open side questions', source: 'builtin' }]}
+          onModelChange={vi.fn()}
+          onEffortChange={vi.fn()}
+          onFastChange={vi.fn()}
+          onSend={vi.fn()}
+          onStop={vi.fn()}
+        />,
+      )
+    })
+    const textarea = container.querySelector('textarea')!
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, '/')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    act(() => {
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }))
+    })
+    expect(textarea.value).toBe('/btw ')
+  })
 })
