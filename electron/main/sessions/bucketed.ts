@@ -209,6 +209,7 @@ export function createBucketedMetadataParser(ingestRecord: BucketedRecordIngest)
  */
 export function createBranchSummaryTranscriptReader(blobsRoot?: string): TranscriptFileReader {
   return createTranscriptReader({
+    wasmDialectMode: 1,
     isRenderable: (entry) => entry.type === 'message' || entry.type === 'compaction' || entry.type === 'branch_summary'
       || (entry.type === 'custom_message' && entry.display === true)
       || Boolean(fallbackModelFromRecord(entry)),

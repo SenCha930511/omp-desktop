@@ -20,7 +20,7 @@ import {
   type SessionMetadataReader,
   type SessionMetadataReaderIo,
 } from './metadata'
-import { ompWasmEnabled, scanOmpMetadataBytes } from './omp-wasm'
+import { ompWasmEnabled, scanOmpMetadataBytes, scanOmpMetadataStream } from './omp-wasm'
 import { compactText, type TranscriptFileReader } from './transcript'
 
 /**
@@ -36,9 +36,9 @@ import { compactText, type TranscriptFileReader } from './transcript'
  * record shapes lives in `./bucketed`.
  */
 export const OMP_TITLE_SLOT_BYTES = 256
-// The WASM path wins on the catalog's many small files. Above 4 MiB the
-// streaming TS reader is at least as fast, so large sessions stay on it.
-const MAX_WASM_FAST_BYTES = 4 * 1024 * 1024
+// The zero-DOM streaming WASM core scans up to 16 MiB without materializing
+// the file as a whole Node Buffer; larger sessions use the incremental reader.
+const MAX_WASM_FAST_BYTES = 16 * 1024 * 1024
 const MAX_FAST_CACHE_ENTRIES = 5_000
 
 export function ompSessionRoot(): string {
@@ -154,19 +154,25 @@ export function createOmpSessionMetadataReader(io: SessionMetadataReaderIo = nod
   }
   const fastRead = async (filePath: string, fileStat: Stats): Promise<SessionMetadata | undefined> => {
     if (!io.readAll || !ompWasmEnabled() || fileStat.size > MAX_WASM_FAST_BYTES) return undefined
-    let bytes: Buffer
-    try {
-      bytes = await io.readAll(filePath)
-    } catch {
-      return undefined
-    }
-    if (bytes.byteLength > MAX_WASM_FAST_BYTES) return undefined
     const nameTimestamp = timestampFromBucketedSessionName(filePath)
-    const result = await scanOmpMetadataBytes(bytes, {
+    const defaults = {
       id: idFromBucketedFileName(filePath),
       createdAt: nameTimestamp !== undefined ? new Date(nameTimestamp).toISOString() : fileStat.birthtime.toISOString(),
       updatedAt: fileStat.mtime.toISOString(),
-    }, OMP_TITLE_SLOT_BYTES)
+    }
+    let result: Awaited<ReturnType<typeof scanOmpMetadataBytes>>
+    if (io.readAll === nodeMetadataReaderIo.readAll) {
+      result = await scanOmpMetadataStream(filePath, MAX_WASM_FAST_BYTES, defaults, OMP_TITLE_SLOT_BYTES)
+    } else {
+      let bytes: Buffer
+      try {
+        bytes = await io.readAll(filePath)
+      } catch {
+        return undefined
+      }
+      if (bytes.byteLength > MAX_WASM_FAST_BYTES) return undefined
+      result = await scanOmpMetadataBytes(bytes, defaults, OMP_TITLE_SLOT_BYTES)
+    }
     if (result.status === 'error') {
       if (result.reason === 'too-many-records') throw new Error('Session file has too many records')
       if (result.reason === 'record-too-large') throw new Error('JSONL record exceeded the maximum frame size')
