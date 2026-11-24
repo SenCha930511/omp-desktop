@@ -199,6 +199,15 @@ function slashSourceOrder(source?: string): number {
   return 0
 }
 
+/** Trailing `/command` token in the draft: at the start or after whitespace.
+ * The token keeps any spaces after it so `/modelpreset ` still lists its
+ * subcommands, and it never crosses a newline. */
+function trailingSlashToken(value: string): { start: number; query: string } | undefined {
+  const match = /(?:^|\s)(\/[^\n]*)$/.exec(value)
+  if (!match) return undefined
+  return { start: value.length - match[1].length, query: match[1] }
+}
+
 export const Composer = memo(function Composer({
   availableCommands = INITIAL_SLASH_COMMANDS,
   busy,
@@ -388,7 +397,7 @@ export const Composer = memo(function Composer({
       mentionMatch && acceptedMention && mentionStart === acceptedMention.start && value.slice(acceptedMention.start, acceptedMention.start + acceptedMention.text.length) === acceptedMention.text,
     )
     if (acceptedMention && !suppressAcceptedMention) acceptedMentionRef.current = null
-    setMenu(value.startsWith('/') && !value.includes('\n') ? 'command' : mentionMatch && !suppressAcceptedMention ? 'mention' : null)
+    setMenu(trailingSlashToken(value) ? 'command' : mentionMatch && !suppressAcceptedMention ? 'mention' : null)
   }, [value])
   useEffect(() => {
     setSessionReferenceIds((current) => {
@@ -732,9 +741,10 @@ export const Composer = memo(function Composer({
     }
     return map
   }, [commandCatalog])
+  const slashToken = trailingSlashToken(value)
   const suggestions =
     menu === 'command'
-      ? slashSuggestions(commandCatalog, value.startsWith('/') ? value : '/')
+      ? slashSuggestions(commandCatalog, slashToken?.query ?? '/')
           .map((item) => {
             const source = catalogByName.get(item.command.replace(/^\//, '').split(/\s+/)[0])?.source
             return {
@@ -746,7 +756,19 @@ export const Composer = memo(function Composer({
               source,
               icon: source === 'skill' ? <WandSparkles size={14} aria-hidden="true" /> : <Command size={14} aria-hidden="true" />,
               choose: () => {
-                setValue(`${item.command} ${value.startsWith('/') ? '' : value}`)
+                // Replace only the typed token, so a command can be inserted
+                // after an existing draft instead of discarding it.
+                if (!slashToken) {
+                  insert(`${value && !/\s$/.test(value) ? ' ' : ''}${item.command} `)
+                  return
+                }
+                const textarea = textareaRef.current
+                if (textarea) {
+                  textarea.setRangeText(`${item.command} `, slashToken.start, value.length, 'end')
+                  setValue(textarea.value)
+                } else {
+                  setValue(`${value.slice(0, slashToken.start)}${item.command} `)
+                }
                 setMenu(null)
                 textareaRef.current?.focus()
               },
@@ -801,8 +823,9 @@ export const Composer = memo(function Composer({
                     source: undefined,
                     icon: <WandSparkles size={14} aria-hidden="true" />,
                     choose: () => {
-                      setValue('/skill:')
-                      setMenu('command')
+                      // Insert at the caret: the skill picker must not discard
+                      // text the user already typed.
+                      insert(`${value && !/\s$/.test(value) ? ' ' : ''}/skill:`)
                       textareaRef.current?.focus()
                     },
                   }]
@@ -1195,6 +1218,11 @@ export const Composer = memo(function Composer({
               if (menu && suggestions.length && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
                 event.preventDefault()
                 setActiveSuggestion((current) => (event.key === 'ArrowDown' ? (current + 1) % suggestions.length : (current - 1 + suggestions.length) % suggestions.length))
+                return
+              }
+              if (event.key === 'Tab' && !event.shiftKey && !event.nativeEvent.isComposing && menu && suggestions.length) {
+                event.preventDefault()
+                chooseSuggestion(activeSuggestion)
                 return
               }
               if (event.key === 'Enter' && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && !event.nativeEvent.isComposing && menu && suggestions.length) {

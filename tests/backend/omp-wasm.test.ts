@@ -3,8 +3,9 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createOmpSessionMetadataReader } from '../../electron/main/sessions/omp'
+import { createBranchSummaryTranscriptReader } from '../../electron/main/sessions/bucketed'
 import { nodeMetadataReaderIo } from '../../electron/main/sessions/metadata'
-import { releaseOmpWasmAllocations, resetOmpWasmForTests, scanOmpMetadataBytes } from '../../electron/main/sessions/omp-wasm'
+import { readTranscriptTailWithWasm, releaseOmpWasmAllocations, resetOmpWasmForTests, scanOmpMetadataBytes } from '../../electron/main/sessions/omp-wasm'
 
 const wasmPath = resolve('assets/wasm/omp-jsonl-core.wasm')
 const defaults = { id: 'fallback-id', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' }
@@ -225,5 +226,105 @@ describe('OMP metadata WASM integration', () => {
     const metadata = await createOmpSessionMetadataReader(io)(file)
     expect(metadata.title).toBe('Disabled')
     expect(reads).toBe(0)
+  })
+})
+
+describe('OMP transcript WASM builder', () => {
+  function transcriptFile(entries: unknown[]): string {
+    const directory = mkdtempSync(join(tmpdir(), 'omp-desktop-wasm-transcript-'))
+    directories.push(directory)
+    const file = join(directory, '2026-01-01T00-00-00-000Z_transcript.jsonl')
+    writeFileSync(file, `${entries.map(line).join('\n')}\n`)
+    return file
+  }
+
+  async function readBoth(file: string) {
+    process.env.OMP_DESKTOP_DISABLE_WASM = '1'
+    let ts: Awaited<ReturnType<ReturnType<typeof createBranchSummaryTranscriptReader>>>
+    try {
+      ts = await createBranchSummaryTranscriptReader()(file, false)
+    } finally {
+      delete process.env.OMP_DESKTOP_DISABLE_WASM
+    }
+    const wasm = await readTranscriptTailWithWasm(file, 1)
+    return { ts, wasm }
+  }
+
+  const representative = [
+    { type: 'session', id: 's1', cwd: '/project', timestamp: '2026-01-01T00:00:00.000Z' },
+    { type: 'message', id: 'u1', parentId: null, timestamp: '2026-01-01T00:00:01.000Z', message: { role: 'user', content: [{ type: 'text', text: 'question' }] } },
+    {
+      type: 'message',
+      id: 'a1',
+      parentId: 'u1',
+      timestamp: '2026-01-01T00:00:02.000Z',
+      message: {
+        role: 'assistant',
+        stopReason: 'toolUse',
+        content: [
+          { type: 'thinking', thinking: 'considering' },
+          { type: 'text', text: 'Looking it up.' },
+          { type: 'toolCall', id: 'call-1', name: 'Read', arguments: { path: 'a.txt' } },
+        ],
+      },
+    },
+    { type: 'message', id: 't1', parentId: 'a1', timestamp: '2026-01-01T00:00:03.000Z', message: { role: 'toolResult', toolCallId: 'call-1', toolName: 'Read', content: [{ type: 'text', text: 'file body' }] } },
+    { type: 'compaction', id: 'c1', parentId: 't1', timestamp: '2026-01-01T00:00:04.000Z', summary: 'compacted' },
+    { type: 'branch_summary', id: 'b1', parentId: 'c1', timestamp: '2026-01-01T00:00:05.000Z', summary: 'branch note' },
+    { type: 'retry_fallback_applied', id: 'f1', parentId: 'b1', timestamp: '2026-01-01T00:00:06.000Z', to: 'anthropic/claude', from: 'openai/gpt-5' },
+    { type: 'message', id: 'a2', parentId: 'f1', timestamp: '2026-01-01T00:00:07.000Z', message: { role: 'assistant', content: 'done', stopReason: 'end' } },
+  ]
+
+  it('matches the TS reader for a representative session', async () => {
+    const { ts, wasm } = await readBoth(transcriptFile(representative))
+    expect(wasm.status).toBe('ok')
+    if (wasm.status !== 'ok') return
+    expect(wasm.messages).toEqual(ts)
+    expect(wasm.messages.map((message) => message.role)).toEqual(['user', 'assistant', 'system', 'system', 'system', 'assistant'])
+  })
+
+  it('falls back for a displayed custom message instead of guessing its shape', async () => {
+    const file = transcriptFile([
+      { type: 'session', id: 's1', cwd: '/project', timestamp: '2026-01-01T00:00:00.000Z' },
+      { type: 'custom_message', id: 'x1', parentId: null, display: true, timestamp: '2026-01-01T00:00:01.000Z', content: [{ type: 'text', text: 'custom' }] },
+    ])
+    const { wasm } = await readBoth(file)
+    expect(wasm.status).toBe('fallback')
+  })
+
+  it('splits a record across read chunks without changing the transcript', async () => {
+    const body = 'x'.repeat(400 * 1024)
+    const entries = [
+      { type: 'session', id: 's1', cwd: '/project', timestamp: '2026-01-01T00:00:00.000Z' },
+      { type: 'message', id: 'u1', parentId: null, timestamp: '2026-01-01T00:00:01.000Z', message: { role: 'user', content: [{ type: 'text', text: body }] } },
+      { type: 'message', id: 'a1', parentId: 'u1', timestamp: '2026-01-01T00:00:02.000Z', message: { role: 'assistant', content: 'ok', stopReason: 'end' } },
+    ]
+    const { ts, wasm } = await readBoth(transcriptFile(entries))
+    expect(wasm.status).toBe('ok')
+    if (wasm.status !== 'ok') return
+    expect(wasm.messages).toEqual(ts)
+  })
+
+  it('keeps the outcome own key identical for failed and successful turns', async () => {
+    const file = transcriptFile([
+      { type: 'session', id: 's1', cwd: '/project', timestamp: '2026-01-01T00:00:00.000Z' },
+      { type: 'message', id: 'a1', parentId: null, timestamp: '2026-01-01T00:00:01.000Z', message: { role: 'assistant', content: 'broken', stopReason: 'error', errorMessage: 'provider exploded' } },
+      { type: 'message', id: 'a2', parentId: 'a1', timestamp: '2026-01-01T00:00:02.000Z', message: { role: 'assistant', content: 'fine', stopReason: 'end' } },
+    ])
+    const { ts, wasm } = await readBoth(file)
+    expect(wasm.status).toBe('ok')
+    if (wasm.status !== 'ok') return
+    expect(wasm.messages).toEqual(ts)
+    expect(wasm.messages[0]).toMatchObject({ outcome: 'failed' })
+    expect(Object.hasOwn(wasm.messages[0], 'outcome')).toBe(true)
+    expect(Object.hasOwn(wasm.messages[2], 'outcome')).toBe(false)
+  })
+
+  it('falls back instead of guessing when the parent edge window overflows', async () => {
+    const entries: unknown[] = [{ type: 'session', id: 's1', cwd: '/project', timestamp: '2026-01-01T00:00:00.000Z' }]
+    for (let index = 0; index < 40_001; index += 1) entries.push({ type: 'model_usage', id: `m${index}`, parentId: null, purpose: 'turn' })
+    entries.push({ type: 'model_usage', id: 'z', parentId: null, purpose: 'turn', activeLeafId: 'ghost' })
+    const { wasm } = await readBoth(transcriptFile(entries))
+    expect(wasm.status).toBe('fallback')
   })
 })

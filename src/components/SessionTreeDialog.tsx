@@ -1,5 +1,5 @@
 import { ListTree, RefreshCw } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useState } from 'react'
 import { errorMessage } from '@/lib/errors'
 import { useI18n } from '@/lib/i18n'
 import { describeTreeEntry, flattenSessionTree, isBranchableEntry, parseBranchResult, parseSessionTree, treePreviewText, type SessionTreeData, type SessionTreeRow } from '@/lib/session-tree'
@@ -29,14 +29,27 @@ function kindLabel(description: ReturnType<typeof describeTreeEntry>, t: ReturnT
     case 'other': return description.entryType
   }
 }
+const timeFormatters = new Map<string, Intl.DateTimeFormat>()
 
-function SessionTreeRowView({ row, busy, onBranch }: { row: SessionTreeRow; busy: boolean; onBranch(entryId: string, prefill: boolean): void }) {
+/** One formatter per locale: building `Intl.DateTimeFormat` per row per render
+ * is measurable on a long tree, and the instance is immutable once built. */
+function sessionTreeTimeFormatter(locale?: string): Intl.DateTimeFormat {
+  const key = locale ?? ''
+  let formatter = timeFormatters.get(key)
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat(locale, { hour: '2-digit', minute: '2-digit' })
+    timeFormatters.set(key, formatter)
+  }
+  return formatter
+}
+
+const SessionTreeRowView = memo(function SessionTreeRowView({ row, busy, onBranch }: { row: SessionTreeRow; busy: boolean; onBranch(entryId: string, prefill: boolean): void }) {
   const { t } = useI18n()
   const description = describeTreeEntry(row.node.entry)
   const preview = treePreviewText(description)
   const branchable = isBranchableEntry(row.node.entry)
   const timestamp = row.node.entry.timestamp
-    ? new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' }).format(new Date(row.node.entry.timestamp))
+    ? sessionTreeTimeFormatter().format(new Date(row.node.entry.timestamp))
     : ''
   return (
     <div
@@ -65,7 +78,7 @@ function SessionTreeRowView({ row, busy, onBranch }: { row: SessionTreeRow; busy
       ) : null}
     </div>
   )
-}
+})
 
 /**
  * 工作階段樹狀檢視：顯示 get_tree 的 branch/leaf 結構，標示目前 leaf，
@@ -132,6 +145,9 @@ export function SessionTreeDialog({ runtimeId, onClose, onToast, onPrefillPrompt
     }
   }, [branchingId, onPrefillPrompt, onToast, runtimeId, t])
 
+  // One stable callback for every row: an inline arrow made each row a new
+  // prop value, so a dialog state change re-rendered the whole tree.
+  const handleBranch = useCallback((entryId: string, prefill: boolean) => { void branchFrom(entryId, prefill) }, [branchFrom])
   const rows = useMemo(() => (load.status === 'ready' ? flattenSessionTree(load.tree) : []), [load])
 
   return (
@@ -177,7 +193,7 @@ export function SessionTreeDialog({ runtimeId, onClose, onToast, onPrefillPrompt
               </div>
             ) : null}
             {rows.map((row) => (
-              <SessionTreeRowView key={row.node.entry.id} row={row} busy={branchingId !== null} onBranch={(entryId, prefill) => void branchFrom(entryId, prefill)} />
+              <SessionTreeRowView key={row.node.entry.id} row={row} busy={branchingId !== null} onBranch={handleBranch} />
             ))}
           </div>
         )

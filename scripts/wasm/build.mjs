@@ -15,7 +15,7 @@ function rustupWhich(tool) {
   return result.status === 0 ? result.stdout.trim() : undefined
 }
 
-const cargo = process.env.CARGO ?? 'cargo'
+const cargo = process.env.CARGO ?? rustupWhich('cargo') ?? 'cargo'
 const rustc = process.env.RUSTC ?? rustupWhich('rustc')
 if (!existsSync(manifest)) throw new Error(`Rust crate manifest is missing: ${manifest}`)
 

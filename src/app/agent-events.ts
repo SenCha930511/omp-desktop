@@ -1,6 +1,7 @@
 import type { PrimeEventBuffer } from '@/lib/events'
 import { EVENT_REPLAY_MAX_BYTES, EVENT_REPLAY_MAX_EVENTS, eventPayloadBytes } from '@/lib/event-buffer'
 import type { PrimeContextUsage, SessionUsage, SessionUsageTokens, TranscriptMessage } from '@/types/api'
+import { keepLocalUserRows } from './transcript-reconcile'
 
 export interface PendingAgentEvent {
   generation: number
@@ -134,7 +135,7 @@ export function reconcileTranscriptMessages(
     return persistedTail.some((message) => message.role === local.role)
   }
   const additions = localTail.filter((local) => LOCAL_MESSAGE_ID.test(local.id) && !persisted(local))
-  return additions.length ? [...incoming, ...additions] : incoming
+  return keepLocalUserRows(current, additions.length ? [...incoming, ...additions] : incoming)
 }
 
 /** Maximum events held for animation-frame replay before falling back to an authoritative transcript read. */

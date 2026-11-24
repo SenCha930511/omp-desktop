@@ -35,6 +35,20 @@ const EMPTY_SESSION: SideQuestionSessionState = {
 
 const SIDE_QUESTION_STATUSES: ReadonlySet<string> = new Set(['running', 'complete', 'cancelled', 'error', 'interrupted'])
 
+/** Stale session states kept beside the active one; the oldest drop first. */
+const MAX_CACHED_SESSIONS = 16
+
+function pruneSessionStates(
+  states: Readonly<Record<string, SideQuestionSessionState>>,
+  activeSessionId: string | null,
+): Readonly<Record<string, SideQuestionSessionState>> {
+  const evictable = Object.keys(states).filter((id) => id !== activeSessionId && !states[id].sending)
+  if (evictable.length <= MAX_CACHED_SESSIONS) return states
+  const next = { ...states }
+  for (const id of evictable.slice(0, evictable.length - MAX_CACHED_SESSIONS)) delete next[id]
+  return next
+}
+
 function parseTurn(raw: unknown): SideQuestionTurn | null {
   const turn = record(raw)
   if (!turn) return null
@@ -83,16 +97,71 @@ export function useSideQuestions(bridge: DesktopApi | null, activeSessionId: str
   const [states, setStates] = useState<Readonly<Record<string, SideQuestionSessionState>>>({})
   const probedRef = useRef(new Set<string>())
   const targetRef = useRef<{ sessionId: string | null; runtimeId: string | null }>({ sessionId: null, runtimeId: null })
+  const pendingDeltasRef = useRef(new Map<string, Map<string, string>>())
+  const frameRef = useRef<number | null>(null)
   targetRef.current = { sessionId: activeSessionId, runtimeId: activeRuntimeId }
 
   const update = useCallback((sessionId: string, apply: (session: SideQuestionSessionState) => SideQuestionSessionState) => {
-    setStates((current) => ({ ...current, [sessionId]: apply(current[sessionId] ?? EMPTY_SESSION) }))
+    setStates((current) => {
+      // Re-insert the touched session last so key order tracks recency.
+      const next: Record<string, SideQuestionSessionState> = {}
+      for (const [key, value] of Object.entries(current)) if (key !== sessionId) next[key] = value
+      next[sessionId] = apply(current[sessionId] ?? EMPTY_SESSION)
+      return pruneSessionStates(next, targetRef.current.sessionId)
+    })
+  }, [])
+
+  const flushDeltas = useCallback(() => {
+    const handle = frameRef.current
+    frameRef.current = null
+    if (handle !== null && handle > 0 && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(handle)
+    const pending = pendingDeltasRef.current
+    if (!pending.size) return
+    const batches = new Map(pending)
+    pending.clear()
+    setStates((current) => {
+      let next = current
+      for (const [sessionId, deltas] of batches) {
+        const session = next[sessionId] ?? EMPTY_SESSION
+        const live = { ...session.live }
+        for (const [topicId, delta] of deltas) live[topicId] = `${live[topicId] ?? ''}${delta}`
+        next = { ...next, [sessionId]: { ...session, live } }
+      }
+      return next
+    })
+  }, [])
+
+  const scheduleFlush = useCallback(() => {
+    if (frameRef.current !== null) return
+    if (typeof requestAnimationFrame === 'function') {
+      frameRef.current = requestAnimationFrame(() => {
+        frameRef.current = null
+        flushDeltas()
+      })
+      return
+    }
+    // Non-browser test environments have no frame clock; the microtask still
+    // coalesces one synchronous burst of deltas into a single render.
+    frameRef.current = -1
+    queueMicrotask(() => {
+      if (frameRef.current !== -1) return
+      frameRef.current = null
+      flushDeltas()
+    })
+  }, [flushDeltas])
+
+  useEffect(() => () => {
+    const handle = frameRef.current
+    frameRef.current = null
+    if (handle !== null && handle > 0 && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(handle)
+    pendingDeltasRef.current.clear()
   }, [])
 
   // Fold side-question events into the active session's store. Records carry
   // the full topic on every lifecycle change; deltas append to the running
   // latest turn. A finished record discards the accumulated live text so the
-  // persisted answer becomes the render source of truth.
+  // persisted answer becomes the render source of truth, which is why any
+  // buffered delta is flushed before the record is applied.
   useEffect(() => {
     if (!bridge) return
     return bridge.agent.onEvent(({ runtimeId, event }: PrimeEventEnvelope) => {
@@ -101,6 +170,7 @@ export function useSideQuestions(bridge: DesktopApi | null, activeSessionId: str
       if (!target.sessionId || runtimeId !== target.runtimeId) return
       const sessionId = target.sessionId
       if (event.type === 'side_question_record') {
+        flushDeltas()
         const topic = parseSideQuestionTopic(event.topic)
         if (!topic) return
         update(sessionId, (session) => {
@@ -111,10 +181,16 @@ export function useSideQuestions(bridge: DesktopApi | null, activeSessionId: str
         const topicId = string(event.topicId)
         const delta = string(event.delta)
         if (!topicId || delta === undefined) return
-        update(sessionId, (session) => ({ ...session, live: { ...session.live, [topicId]: `${session.live[topicId] ?? ''}${delta}` } }))
+        let deltas = pendingDeltasRef.current.get(sessionId)
+        if (!deltas) {
+          deltas = new Map()
+          pendingDeltasRef.current.set(sessionId, deltas)
+        }
+        deltas.set(topicId, `${deltas.get(topicId) ?? ''}${delta}`)
+        scheduleFlush()
       }
     })
-  }, [bridge, update])
+  }, [bridge, flushDeltas, scheduleFlush, update])
 
   // Support probe on first activation. Side chats are transient: the probe
   // only proves the harness answers the btw vocabulary; it deliberately does
@@ -136,8 +212,10 @@ export function useSideQuestions(bridge: DesktopApi | null, activeSessionId: str
   }, [update])
 
   const clear = useCallback((sessionId: string) => {
+    // Apply buffered deltas first so the cleared state is the final word.
+    flushDeltas()
     update(sessionId, (session) => ({ ...EMPTY_SESSION, supported: session.supported, sending: session.sending }))
-  }, [update])
+  }, [flushDeltas, update])
 
   const ask = useCallback(async (sessionId: string, question: string, topicId?: string): Promise<boolean> => {
     const target = targetRef.current

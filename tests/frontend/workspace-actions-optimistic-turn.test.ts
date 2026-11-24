@@ -163,20 +163,20 @@ describe('optimistic turn rows in existing sessions', () => {
 
     await state.actions.sendPrompt('Queue this')
 
-    expect(state.messages()).toEqual([])
+    expect(state.messages().map((message) => [message.role, message.parts.map((part) => part.type === 'text' ? part.text : '').join('')])).toEqual([['user', 'Queue this']])
     expect(state.queuePrompt).not.toHaveBeenCalled()
     expect(state.command).toHaveBeenCalledOnce()
     expect(state.command).toHaveBeenCalledWith('busy-runtime', expect.objectContaining({ type: 'follow_up', message: 'Queue this' }))
     expect(state.start).not.toHaveBeenCalled()
   })
 
-  it('retracts the optimistic rows when a steer joins a running turn', async () => {
+  it('keeps the submitted row when a steer joins a running turn', async () => {
     const busy = runtime('busy-runtime', true)
     const state = fixture({ listedRuntimes: [busy] })
 
     await state.actions.sendPrompt('Steer this', [], 'steer')
 
-    expect(state.messages()).toEqual([])
+    expect(state.messages().map((message) => [message.role, message.parts.map((part) => part.type === 'text' ? part.text : '').join('')])).toEqual([['user', 'Steer this']])
     expect(state.queuePrompt).toHaveBeenCalledWith('Steer this', 'steer', expect.any(Array), expect.any(Number))
     expect(state.command).toHaveBeenCalledWith('busy-runtime', expect.objectContaining({ type: 'steer', message: 'Steer this' }))
   })

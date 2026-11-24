@@ -16,6 +16,7 @@ import { SESSION_FILE_RECORD_LIMIT_BYTES } from '../jsonl-limits'
 import { strictJsonLines } from '../jsonl'
 import { isRecord } from '../validation'
 import type { JsonRecord } from './metadata'
+import { ompWasmEnabled, readTranscriptTailWithWasm } from './omp-wasm'
 import { parseGooeyPiAgentMessage } from '../collaboration/message-envelope'
 
 const MAX_TRANSCRIPT_GRAPH_BYTES = 16 * 1024 * 1024
@@ -286,11 +287,13 @@ function hasDisplayableRows(transcript: TranscriptMessage[], remaining: Transcri
  * than `message`, `compaction`, and `custom_message`).
  */
 export interface TranscriptDialect {
+  wasmDialectMode?: 0 | 1
   isRenderable(entry: JsonRecord): boolean
   renderEntry?(entry: JsonRecord, safeId: string): TranscriptMessage | undefined
 }
 
 const primeTranscriptDialect: TranscriptDialect = {
+  wasmDialectMode: 0,
   isRenderable: (entry) => entry.type === 'message' || entry.type === 'compaction'
     || (entry.type === 'custom_message' && entry.display === true),
 }
@@ -505,6 +508,8 @@ interface LoadedTranscript {
   branchAnchor: string | null
   graphBudget: boolean
 }
+
+const MIN_WASM_TRANSCRIPT_BYTES = 32n * 1024n
 
 async function loadTranscriptWithDialect(dialect: TranscriptDialect, filePath: string, isStreaming: boolean, blobsRoot: string, cache: TranscriptCache, useCache: boolean): Promise<LoadedTranscript> {
   const initialStat = await stat(filePath, { bigint: true })
@@ -840,7 +845,7 @@ async function loadTranscriptWithDialect(dialect: TranscriptDialect, filePath: s
         if (outcome) activeAssistant.message.outcome = outcome
       } else {
         activeAssistant = {
-          message: { id: safeId, role, timestamp, startedAt: timestamp, completedAt, parts: [], outcome },
+          message: { id: safeId, role, timestamp, startedAt: timestamp, completedAt, parts: [], ...(outcome ? { outcome } : {}) },
           toolCalls: new Map(),
         }
         appendAssistantParts(parts)
@@ -863,6 +868,46 @@ async function loadTranscriptWithDialect(dialect: TranscriptDialect, filePath: s
 }
 
 async function readTranscriptWithDialect(dialect: TranscriptDialect, filePath: string, isStreaming: boolean, blobsRoot: string, cache: TranscriptCache): Promise<TranscriptMessage[]> {
+  if (ompWasmEnabled() && dialect.wasmDialectMode !== undefined) {
+    const initialStat = await stat(filePath, { bigint: true })
+    if (initialStat.size > 256n * 1024n * 1024n) throw new Error('Session transcript is too large to display')
+    const stamp = !isStreaming ? transcriptFileStamp(initialStat) : null
+    const cacheStamp = !isStreaming && initialStat.size > 0n ? stamp : null
+    if (cacheStamp !== null) {
+      const cached = cache.get(filePath)
+      if (cached && cached.stamp === cacheStamp) {
+        cache.delete(filePath)
+        cache.set(filePath, cached)
+        return structuredClone(cached.messages)
+      }
+    }
+    if (initialStat.size >= MIN_WASM_TRANSCRIPT_BYTES) {
+      const wasm = await readTranscriptTailWithWasm(filePath, dialect.wasmDialectMode)
+      if (wasm.status === 'error') {
+        if (wasm.reason === 'record-too-large') throw new Error('JSONL record exceeded the maximum frame size')
+        if (wasm.reason === 'too-many-records') throw new Error('Session transcript has too many records')
+        if (wasm.reason === 'active-branch-too-large') throw new Error('Session transcript active branch is too large to display')
+        if (wasm.reason === 'file-too-large') throw new Error('Session transcript is too large to display')
+      } else if (wasm.status === 'ok') {
+        const result = wasm.messages
+        if (cacheStamp !== null) {
+          try {
+            const finalStat = await stat(filePath, { bigint: true })
+            if (transcriptFileStamp(finalStat) === cacheStamp) {
+              cache.delete(filePath)
+              cache.set(filePath, { stamp: cacheStamp, messages: structuredClone(result) })
+              while (cache.size > MAX_CACHED_TRANSCRIPTS) {
+                const oldest = cache.keys().next().value
+                if (oldest === undefined) break
+                cache.delete(oldest)
+              }
+            }
+          } catch { /* Ignore post-read stat failures; return the parsed result uncached. */ }
+        }
+        return result
+      }
+    }
+  }
   const loaded = await loadTranscriptWithDialect(dialect, filePath, isStreaming, blobsRoot, cache, true)
   if (loaded.cachedMessages) return loaded.cachedMessages
   const result = boundedTranscriptPage(loaded.transcript, null, initialTranscriptBudget()).messages

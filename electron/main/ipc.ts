@@ -181,14 +181,17 @@ export function registerIpc(services: Services, expectedRendererUrl: string): Ip
   let closed = false
   let announceRendererReady: (() => void) | null = null
   const whenRendererReady = new Promise<void>((resolve) => { announceRendererReady = resolve })
+  // Broadcasts re-check trust on every push while the window stays on one
+  // document. The cache keeps the exact (top-level, main-frame) pair and
+  // revalidates on any change, so trust never widens.
+  const isTrustedBroadcastTarget = createTrustedRendererUrlCache(expectedRendererUrl)
 
   const broadcast = (channel: typeof IPC_CHANNELS.sessions.onChanged | typeof IPC_CHANNELS.schedules.onChanged
     | typeof IPC_CHANNELS.browser.onChanged | typeof IPC_CHANNELS.browser.onPointer | typeof IPC_CHANNELS.browser.onActivity, payload: unknown): void => {
     if (closed) return
     for (const [id, contents] of authorized) {
       if (contents.isDestroyed()) { authorized.delete(id); continue }
-      if (isTrustedRendererUrl(contents.getURL(), expectedRendererUrl)
-        && isTrustedRendererUrl(contents.mainFrame.url, expectedRendererUrl)) contents.send(channel, payload)
+      if (isTrustedBroadcastTarget(contents.getURL(), contents.mainFrame.url)) contents.send(channel, payload)
     }
   }
 

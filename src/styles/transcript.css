@@ -225,6 +225,7 @@
 .activity-tool__preview.shine-sweep, .activity-tool__preview.shine-sweep * { color: transparent; -webkit-text-fill-color: transparent; }
 .activity-tool__summary .activity-tool__preview::before { content: '·'; margin-right: 8px; color: var(--text-tertiary); }
 .activity-tool__state { margin-left: auto; display: inline-flex; align-items: center; gap: 3px; color: var(--text-tertiary); font-size: 10px; white-space: nowrap; }
+.activity-tool__wait-elapsed { margin-left: 4px; font-variant-numeric: tabular-nums; }
 .activity-line.is-done .activity-tool__state { color: var(--success); }
 .activity-line.is-error .activity-tool__state { color: var(--danger); }
 .activity-tool__details { max-height: 260px; margin: 6px 0 3px 24px; overflow: auto; border: 1px solid var(--border); border-radius: 11px; background: var(--surface-subtle); color: var(--text-secondary); font-size: 11.5px; line-height: 1.6; animation: timeline-expand 180ms var(--ease-out); }

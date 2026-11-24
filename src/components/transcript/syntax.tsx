@@ -29,7 +29,12 @@ export function tokenizeSyntax(text: string): SyntaxToken[] {
  * key; the cap keeps a long transcript from pinning unbounded memory.
  */
 export const SYNTAX_LINE_CACHE_LIMIT = 2_000
+/** Per-line and aggregate character caps: the entry count alone would let a
+ * few model-generated megabyte lines pin memory after their rows unmount. */
+const SYNTAX_LINE_MAX_CHARS = 16_384
+const SYNTAX_LINE_CACHE_CHARS = 1_048_576
 const lineTokenCache = new Map<string, SyntaxToken[]>()
+let lineTokenCacheChars = 0
 
 export function tokenizeSyntaxLine(line: string): SyntaxToken[] {
   const cached = lineTokenCache.get(line)
@@ -40,18 +45,54 @@ export function tokenizeSyntaxLine(line: string): SyntaxToken[] {
     return cached
   }
   const tokens = tokenizeSyntax(line)
-  if (lineTokenCache.size >= SYNTAX_LINE_CACHE_LIMIT) {
+  if (line.length > SYNTAX_LINE_MAX_CHARS) return tokens
+  while (lineTokenCache.size >= SYNTAX_LINE_CACHE_LIMIT || lineTokenCacheChars + line.length > SYNTAX_LINE_CACHE_CHARS) {
     const oldest = lineTokenCache.keys().next()
-    if (!oldest.done) lineTokenCache.delete(oldest.value)
+    if (oldest.done) break
+    lineTokenCache.delete(oldest.value)
+    lineTokenCacheChars -= oldest.value.length
   }
   lineTokenCache.set(line, tokens)
+  lineTokenCacheChars += line.length
+  return tokens
+}
+
+/**
+ * Bounded LRU of whole-text tokens for `SyntaxText`. Re-renders of the same
+ * code block (virtual-scroll recycling, tab switches) used the uncached
+ * tokenizer and re-ran the scanner on identical input. Both caps keep a long
+ * transcript from pinning unbounded token arrays.
+ */
+const SYNTAX_TEXT_CACHE_LIMIT = 64
+const SYNTAX_TEXT_MAX_CHARS = 16_384
+const SYNTAX_TEXT_CACHE_CHARS = 524_288
+const textTokenCache = new Map<string, SyntaxToken[]>()
+let textTokenCacheChars = 0
+
+export function tokenizeSyntaxCached(text: string): SyntaxToken[] {
+  if (text.length > SYNTAX_TEXT_MAX_CHARS) return tokenizeSyntax(text)
+  const cached = textTokenCache.get(text)
+  if (cached) {
+    textTokenCache.delete(text)
+    textTokenCache.set(text, cached)
+    return cached
+  }
+  const tokens = tokenizeSyntax(text)
+  while (textTokenCache.size >= SYNTAX_TEXT_CACHE_LIMIT || textTokenCacheChars + text.length > SYNTAX_TEXT_CACHE_CHARS) {
+    const oldest = textTokenCache.keys().next()
+    if (oldest.done) break
+    textTokenCache.delete(oldest.value)
+    textTokenCacheChars -= oldest.value.length
+  }
+  textTokenCache.set(text, tokens)
+  textTokenCacheChars += text.length
   return tokens
 }
 
 export const SyntaxText = memo(function SyntaxText({ text }: { text: string }) {
   return (
     <>
-      {tokenizeSyntax(text).map((token, index) => (
+      {tokenizeSyntaxCached(text).map((token, index) => (
         <span className={token.kind === 'plain' ? undefined : `syntax-${token.kind}`} key={`${index}-${token.text.slice(0, 8)}`}>
           {token.text}
         </span>

@@ -29,6 +29,28 @@ export function formatWorkedDuration(milliseconds: number): string {
   return `${hours}h${String(minutes).padStart(2, '0')}m${String(seconds).padStart(2, '0')}s`
 }
 
+/** First render time of one exact tool part. The part object survives a disk
+ * reconciliation, so a remounted running row keeps counting from when the wait
+ * began instead of restarting at zero. */
+const toolPartSeenAt = new WeakMap<MessagePart, number>()
+
+function useWaitElapsed(part: MessagePart, active: boolean): number | undefined {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!active) return
+    setNow(Date.now())
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000)
+    return () => window.clearInterval(timer)
+  }, [active])
+  if (!active) return undefined
+  let startedAt = toolPartSeenAt.get(part)
+  if (startedAt === undefined) {
+    startedAt = Date.now()
+    toolPartSeenAt.set(part, startedAt)
+  }
+  return Math.max(0, now - startedAt)
+}
+
 export type ToolKind = 'question' | 'terminal' | 'web' | 'git' | 'file' | 'mcp'
 
 export function classifyTool(name: string): ToolKind {
@@ -253,6 +275,7 @@ const ToolPart = memo(function ToolPart({ part, next, streaming }: { part: Extra
   const testReport = result?.testReport
   const canExpand = Boolean(output || details || testReport || (part.args !== undefined && part.args !== ''))
   const state = failed ? 'error' : finished ? 'done' : !streaming ? 'unknown' : kind === 'question' ? 'waiting' : 'running'
+  const waitElapsed = useWaitElapsed(part, part.name.trim().toLowerCase() === 'wait' && !finished)
   const preview = part.name.trim().toLowerCase() === 'wait'
     ? waitTarget(part.args) || (details?.kind === 'wait'
       ? t(details.truncated ? 'transcript.tool.wait.jobLimit' : 'transcript.tool.wait.jobs', { count: details.jobs.length })
@@ -300,6 +323,7 @@ const ToolPart = memo(function ToolPart({ part, next, streaming }: { part: Extra
               <LoaderCircle className="spin" size={12} /> <span className="shine-sweep">{t('transcript.tool.state.running')}</span>
             </>
           )}
+          {waitElapsed !== undefined ? <span className="activity-tool__wait-elapsed">{t('transcript.tool.wait.elapsed', { duration: formatWorkedDuration(waitElapsed) })}</span> : null}
         </span>
         {canExpand ? open ? <ChevronDown size={13} /> : <ChevronRight size={13} /> : null}
       </button>

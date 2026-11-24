@@ -41,9 +41,52 @@ export interface SubagentPanelState {
   setSubscriptionLevel?(level: SubagentSubscriptionLevel): Promise<void>
 }
 
+/** True when every timestamp is numeric and non-decreasing, with the final
+ * timestamp unique so only the tail can match an equal-timestamp incoming key. */
+function isTailAppendable(messages: readonly Record<string, unknown>[]): boolean {
+  if (!messages.length) return false
+  let previous = Number.NEGATIVE_INFINITY
+  for (const message of messages) {
+    const timestamp = Number(message.timestamp)
+    if (!Number.isFinite(timestamp) || timestamp < previous) return false
+    previous = timestamp
+  }
+  const tail = Number(messages[messages.length - 1].timestamp)
+  return messages.length === 1 || Number(messages[messages.length - 2].timestamp) < tail
+}
+
 /** 以 role:timestamp 去重並按時間升冪;不設視窗上限(歷史併接專用)。 */
 export function dedupeSubagentMessages(current: Record<string, unknown>[], incoming: unknown[]): Record<string, unknown>[] {
   if (!incoming.length) return current
+  // Sustained streaming appends one live message at a time to an already
+  // sorted transcript. That case copies once and appends instead of building a
+  // full Map and sorting O(N log N) per token; anything out of order falls
+  // through to the Map path so the result stays identical.
+  if (isTailAppendable(current)) {
+    const tail = current[current.length - 1]
+    const tailTimestamp = Number(tail.timestamp)
+    const tailKey = `${tail.role}:${tail.timestamp}`
+    const additions = new Map<string, Record<string, unknown>>()
+    let tailReplacement: Record<string, unknown> | undefined
+    let previous = tailTimestamp
+    let appendable = true
+    for (const raw of incoming) {
+      const message = record(raw)
+      if (!message || typeof message.role !== 'string' || typeof message.timestamp !== 'number' || !Number.isFinite(message.timestamp)) continue
+      if (message.timestamp < previous) { appendable = false; break }
+      previous = message.timestamp
+      const key = `${message.role}:${message.timestamp}`
+      if (key === tailKey) tailReplacement = message
+      else additions.set(key, message)
+    }
+    if (appendable) {
+      if (!tailReplacement && additions.size === 0) return current
+      const merged = current.slice()
+      if (tailReplacement) merged[merged.length - 1] = tailReplacement
+      merged.push(...additions.values())
+      return merged
+    }
+  }
   const messages = new Map(current.map((message) => [`${message.role}:${message.timestamp}`, message]))
   for (const raw of incoming) {
     const message = record(raw)
@@ -63,6 +106,8 @@ export function combineSubagentMessages(history: Record<string, unknown>[] | und
 
 /** 單次「載入更早」最多連續翻頁數;上游每次回應都是 fromByte → 檔尾的完整剩餘,通常一頁收尾。 */
 const HISTORY_PAGE_LIMIT = 4
+/** Newest retained history rows per agent; older pages fall off the front. */
+const SUBAGENT_HISTORY_LIMIT = 2_000
 
 export function applySubagentFrame(current: SubagentView[], frame: Record<string, unknown>): SubagentView[] {
   const payload = record(frame.payload)
@@ -265,10 +310,16 @@ export function useSubagents(bridge: DesktopApi | null, runtimeId?: string, visi
       while (historyPages.current.size > 256) historyPages.current.delete(historyPages.current.keys().next().value!)
       setState((current) => {
         if (current.owner !== runtimeId) return current
-        return { ...current, agents: current.agents.map((item) => item.id !== id ? item : {
-          ...item,
-          history: incoming.length ? dedupeSubagentMessages(item.history ?? [], incoming) : item.history,
-          historyDone: page.done,
+        return { ...current, agents: current.agents.map((item) => {
+          if (item.id !== id) return item
+          const merged = incoming.length ? dedupeSubagentMessages(item.history ?? [], incoming) : item.history
+          // The history merge only grows; keep the newest bounded window so a
+          // long paged transcript cannot retain every page forever.
+          return {
+            ...item,
+            history: merged && merged.length > SUBAGENT_HISTORY_LIMIT ? merged.slice(-SUBAGENT_HISTORY_LIMIT) : merged,
+            historyDone: page.done,
+          }
         }) }
       })
     } finally {

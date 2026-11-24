@@ -288,6 +288,17 @@ export function useTranscriptScroll(messages: TranscriptMessage[], active = true
     if (scroller && typeof scroller.scrollTo === 'function') {
       smoothScrollUntilRef.current = performance.now() + SMOOTH_SCROLL_GUARD_MS
       scroller.scrollTo({ top: scroller.scrollHeight, behavior: 'smooth' })
+      // The ride targets the height measured now. A window change or a row
+      // that arrives inside the guard window grows the content where the
+      // resize observer deliberately yields, so an explicit jump landed short
+      // and could not be repeated. Land once more when the guard expires.
+      window.setTimeout(() => {
+        if (!pinnedToBottomRef.current) return
+        const current = scrollRef.current
+        if (!current || typeof current.scrollTo !== 'function') return
+        if (current.scrollHeight - current.scrollTop - current.clientHeight < 2) return
+        current.scrollTo({ top: current.scrollHeight, behavior: 'auto' })
+      }, SMOOTH_SCROLL_GUARD_MS + 50)
     }
     pinnedToBottomRef.current = true
     readerExpandedRef.current = false
