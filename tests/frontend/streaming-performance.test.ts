@@ -196,26 +196,27 @@ describe('Activity batching', () => {
 afterEach(() => { vi.useRealTimers() })
 
 describe('batched Prime event reduction', () => {
-  it('anchors an accepted steer immediately, then marks the exact pickup boundary', () => {
+  it('keeps an accepted steer visible, then moves it to the exact pickup boundary', () => {
     const steer = { id: 'queued-1', text: 'change direction', intent: 'steer' as const, timestamp: 2, parts: [{ type: 'text' as const, text: 'change direction' }] }
     const result = replayPrimeEvents(transcript(), [
       delta('before acceptance'),
       createSteerAcceptedEvent(steer),
       delta('still finishing the current work'),
-      createSteerPickupEvent([steer]),
+      createSteerPickupEvent([steer], 50),
       { type: 'turn_start' },
       delta('after pickup'),
     ])
 
     expect(result.map((message) => [message.role, message.kind])).toEqual([
       ['assistant', undefined],
-      ['user', undefined],
       ['assistant', undefined],
+      ['user', undefined],
       ['system', 'steer-read-marker'],
       ['assistant', undefined],
     ])
-    expect(result[1]).toMatchObject({ id: 'user-queued-1', steerState: 'read' })
-    expect(result[2]?.parts).toEqual([{ type: 'text', text: 'still finishing the current work', partId: expect.any(String) }])
+    expect(result[0]?.parts).toEqual([{ type: 'text', text: 'loaded:before acceptance' }])
+    expect(result[1]?.parts).toEqual([{ type: 'text', text: 'still finishing the current work', partId: expect.any(String) }])
+    expect(result[2]).toMatchObject({ id: 'user-queued-1', steerState: 'read', timestamp: 50 })
     expect(result[3]?.parts).toEqual([{ type: 'text', text: 'Steer read here' }])
     expect(result[4]?.parts).toEqual([{ type: 'text', text: 'after pickup', partId: expect.any(String) }])
   })
@@ -223,10 +224,10 @@ describe('batched Prime event reduction', () => {
   it('places repeated picked-up steers between the tool segments that consumed them', () => {
     const result = replayPrimeEvents(transcript(), [
       { type: 'tool_execution_start', toolCallId: 'read', toolName: 'Read', args: { path: 'before.ts' } },
-      createSteerPickupEvent([{ id: 'queued-1', text: 'change direction', intent: 'steer', timestamp: 2, parts: [{ type: 'text', text: 'change direction' }] }]),
+      createSteerPickupEvent([{ id: 'queued-1', text: 'change direction', intent: 'steer', timestamp: 2, parts: [{ type: 'text', text: 'change direction' }] }], 20),
       { type: 'turn_start' },
       { type: 'tool_execution_start', toolCallId: 'write', toolName: 'Write', args: { path: 'after.ts' } },
-      createSteerPickupEvent([{ id: 'queued-2', text: 'also compare the physics', intent: 'steer', timestamp: 3, parts: [{ type: 'text', text: 'also compare the physics' }] }]),
+      createSteerPickupEvent([{ id: 'queued-2', text: 'also compare the physics', intent: 'steer', timestamp: 3, parts: [{ type: 'text', text: 'also compare the physics' }] }], 30),
       { type: 'turn_start' },
       delta('continued after both pickups'),
     ])
@@ -234,14 +235,52 @@ describe('batched Prime event reduction', () => {
     expect(result.map((message) => message.role)).toEqual(['assistant', 'user', 'system', 'assistant', 'user', 'system', 'assistant'])
     expect(result[0]?.streaming).toBe(false)
     expect(result[0]?.parts.some((part) => part.type === 'toolCall' && part.name === 'Read')).toBe(true)
-    expect(result[1]).toMatchObject({ id: 'user-queued-1', timestamp: 2, parts: [{ type: 'text', text: 'change direction' }] })
+    expect(result[1]).toMatchObject({ id: 'user-queued-1', timestamp: 20, parts: [{ type: 'text', text: 'change direction' }] })
     expect(result[2]).toMatchObject({ kind: 'steer-read-marker' })
     expect(result[3]).toMatchObject({ role: 'assistant', streaming: false })
     expect(result[3]?.parts.some((part) => part.type === 'toolCall' && part.name === 'Write')).toBe(true)
-    expect(result[4]).toMatchObject({ id: 'user-queued-2', timestamp: 3, parts: [{ type: 'text', text: 'also compare the physics' }] })
+    expect(result[4]).toMatchObject({ id: 'user-queued-2', timestamp: 30, parts: [{ type: 'text', text: 'also compare the physics' }] })
     expect(result[5]).toMatchObject({ kind: 'steer-read-marker' })
     expect(result[6]?.streaming).toBe(true)
     expect(result[6]?.parts).toEqual([{ type: 'text', text: 'continued after both pickups', partId: expect.any(String) }])
+  })
+
+  it('keeps backgrounded bash tool results on the pre-steer assistant turn across split-turn updates', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-02T03:04:05.000Z'))
+    const steer = { id: 'queued-1', text: 'do not delete anything', intent: 'steer' as const, timestamp: 100, parts: [{ type: 'text' as const, text: 'do not delete anything' }] }
+    const backgroundedResult = {
+      content: [{ type: 'text', text: 'Backgrounded early as job bg_1' }],
+      details: { async: { type: 'bash', jobId: 'bg_1', state: 'running' }, timeoutSeconds: 300 },
+    }
+    const events: Record<string, unknown>[] = [
+      { type: 'tool_execution_start', toolCallId: 'call-1', toolName: 'bash', args: { command: 'find ~' } },
+      createSteerAcceptedEvent(steer),
+      { type: 'tool_execution_end', toolCallId: 'call-1', toolName: 'bash', result: backgroundedResult, isError: false },
+      createSteerPickupEvent([steer], 8_000),
+      { type: 'turn_start' },
+      { type: 'tool_execution_update', toolCallId: 'call-1', toolName: 'bash', partialResult: backgroundedResult },
+      delta('Understood, reporting only.'),
+    ]
+    resetTranscriptIdsForTests()
+    const sequential = events.reduce((current, event) => applyPrimeEvent(current, event), transcript())
+    resetTranscriptIdsForTests()
+    const batched = replayPrimeEvents(transcript(), events)
+
+    expect(batched).toEqual(sequential)
+    expect(batched.map((message) => [message.role, message.kind])).toEqual([
+      ['assistant', undefined],
+      ['user', undefined],
+      ['system', 'steer-read-marker'],
+      ['assistant', undefined],
+    ])
+    expect(batched[0]?.parts).toEqual([
+      { type: 'text', text: 'loaded:' },
+      { type: 'toolCall', id: 'call-1', name: 'bash', args: { command: 'find ~' }, partId: expect.any(String) },
+      { type: 'toolResult', name: 'bash', text: 'Backgrounded early as job bg_1', isError: false, details: { kind: 'bash', async: { jobId: 'bg_1', state: 'running' } }, partId: expect.any(String) },
+    ])
+    expect(batched[1]).toMatchObject({ id: 'user-queued-1', steerState: 'read', timestamp: 8_000, submittedAt: 100 })
+    expect(batched[3]?.parts).toEqual([{ type: 'text', text: 'Understood, reporting only.', partId: expect.any(String) }])
   })
 
   it('is equivalent to ordered single-event reduction across text, thinking, and tool merges', () => {
@@ -602,6 +641,26 @@ describe('external sync reconciliation', () => {
 
     const persisted = [history, { id: 'entry-2', role: 'user' as const, timestamp: 50_200, parts: [{ type: 'text' as const, text: 'continue' }] }]
     expect(reconcileTranscripts([history, pending], persisted).map((message) => message.id)).toEqual(['entry-1', 'entry-2'])
+  })
+
+  it('supersedes a delivered steer using submittedAt when omp persists its original submit timestamp', () => {
+    const prior: TranscriptMessage = { id: 'assistant-1', role: 'assistant', timestamp: 1_000, parts: [{ type: 'text', text: 'working' }] }
+    const deliveredLater: TranscriptMessage = {
+      id: 'user-queued-1',
+      role: 'user',
+      steerState: 'read',
+      timestamp: 10_000,
+      submittedAt: 2_000,
+      parts: [{ type: 'text', text: 'change direction' }],
+    }
+    const stillUnpersisted = reconcileTranscripts([prior, deliveredLater], [prior])
+    expect(stillUnpersisted.map((message) => message.id)).toEqual(['assistant-1', 'user-queued-1'])
+
+    const persisted = [
+      prior,
+      { id: 'entry-2', role: 'user' as const, timestamp: 2_000, parts: [{ type: 'text' as const, text: 'change direction' }] },
+    ]
+    expect(reconcileTranscripts([prior, deliveredLater], persisted).map((message) => message.id)).toEqual(['assistant-1', 'entry-2'])
   })
 })
 

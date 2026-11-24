@@ -155,7 +155,7 @@ describe('prompt admission versus background transcript reads', () => {
     expect(latest.pendingQueuedPrompts.map((prompt) => prompt.text)).toEqual(['other thread follow-up'])
   })
 
-  it('keeps the submitted steer row and drops only its chip once the harness injects it', () => {
+  it('settles the steer row as read and drops its chip once the harness injects it', () => {
     let flushFrame: FrameRequestCallback | undefined
     vi.stubGlobal('requestAnimationFrame', vi.fn((callback: FrameRequestCallback) => { flushFrame = callback; return 1 }))
     vi.stubGlobal('cancelAnimationFrame', vi.fn())
@@ -168,19 +168,59 @@ describe('prompt admission versus background transcript reads', () => {
     act(() => { latest.reconcileQueuedPrompts({ queuedCount: 1, steering: [], followUps: [] }) })
     expect(latest.pendingQueuedPrompts.map((prompt) => prompt.text)).toEqual(['change direction'])
 
-    // The injected user message proves delivery: the chip goes, the row stays
-    // as the reader's copy of what they sent.
+    // The injected user message proves delivery: the chip goes, the row settles
+    // as read at the delivery boundary with a read marker after it.
     act(() => {
       latest.deliverQueuedSteer('change direction')
       flushFrame?.(2)
     })
     expect(latest.pendingQueuedPrompts).toEqual([])
-    expect(latest.messages.filter((message) => message.role === 'user').map((message) => message.parts.map((part) => part.type === 'text' ? part.text : '').join(''))).toEqual(['change direction'])
+    expect(latest.messages).toMatchObject([
+      { role: 'user', steerState: 'read', timestamp: expect.any(Number), parts: [{ type: 'text', text: 'change direction' }] },
+      { role: 'system', kind: 'steer-read-marker', parts: [{ type: 'text', text: 'Steer read here' }] },
+    ])
 
     // A later snapshot with a stale count must not resurrect anything.
     act(() => { latest.reconcileQueuedPrompts({ queuedCount: 1, steering: ['change direction'], followUps: [] }) })
     expect(latest.pendingQueuedPrompts).toEqual([])
     expect(latest.messages.filter((message) => message.role === 'user')).toHaveLength(1)
+  })
+
+  it('moves an accepted steer past intermediate output and clears its waiting state when delivered', () => {
+    let flushFrame: FrameRequestCallback | undefined
+    vi.stubGlobal('requestAnimationFrame', vi.fn((callback: FrameRequestCallback) => { flushFrame = callback; return 1 }))
+    vi.stubGlobal('cancelAnimationFrame', vi.fn())
+    act(() => { root.render(createElement(Probe, { bridge: null })) })
+    let steerId = ''
+    act(() => {
+      latest.setMessages([{
+        id: 'assistant-live',
+        role: 'assistant',
+        timestamp: 1,
+        streaming: true,
+        parts: [{ type: 'text', text: 'Working before the steer.' }],
+      }])
+      steerId = latest.queuePrompt('redirect work', 'steer', [{ type: 'text', text: 'redirect work' }], 2)
+      latest.acceptSteer(steerId)
+      flushFrame?.(1)
+    })
+    act(() => {
+      latest.queueAgentEvent({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'still finishing' } })
+      flushFrame?.(2)
+    })
+    act(() => {
+      latest.deliverQueuedSteer('redirect work')
+      flushFrame?.(3)
+    })
+
+    expect(latest.pendingQueuedPrompts).toEqual([])
+    expect(latest.messages).toMatchObject([
+      { id: 'assistant-live', role: 'assistant', streaming: false, parts: [{ type: 'text', text: 'Working before the steer.' }] },
+      { role: 'assistant', streaming: false, parts: [{ type: 'text', text: 'still finishing' }] },
+      { id: `user-${steerId}`, role: 'user', steerState: 'read', timestamp: expect.any(Number), parts: [{ type: 'text', text: 'redirect work' }] },
+      { role: 'system', kind: 'steer-read-marker', parts: [{ type: 'text', text: 'Steer read here' }] },
+    ])
+    expect(latest.messages.some((message) => message.steerState === 'accepted')).toBe(false)
   })
 
   it('promotes an acknowledged omp steer into history while leaving true queued prompts pending', () => {
@@ -213,8 +253,8 @@ describe('prompt admission versus background transcript reads', () => {
     expect(latest.pendingQueuedPrompts.map((prompt) => prompt.text)).toEqual(['do this next turn'])
     expect(latest.messages).toMatchObject([
       { id: 'assistant-live', role: 'assistant', streaming: false },
-      { role: 'user', steerState: 'read', timestamp: 2, parts: [{ type: 'text', text: 'change direction' }] },
       { role: 'user', parts: [{ type: 'text', text: 'do this next turn' }] },
+      { role: 'user', steerState: 'read', timestamp: expect.any(Number), parts: [{ type: 'text', text: 'change direction' }] },
       { role: 'system', kind: 'steer-read-marker', parts: [{ type: 'text', text: 'Steer read here' }] },
     ])
   })
@@ -305,7 +345,7 @@ describe('prompt admission versus background transcript reads', () => {
     expect(latest.pendingQueuedPrompts).toEqual([])
     expect(latest.messages).toMatchObject([
       { id: 'assistant-live', role: 'assistant', streaming: false },
-      { role: 'user', steerState: 'read', timestamp: 2, parts: [{ type: 'text', text: 'fast steer' }] },
+      { role: 'user', steerState: 'read', timestamp: expect.any(Number), parts: [{ type: 'text', text: 'fast steer' }] },
       { role: 'system', kind: 'steer-read-marker', parts: [{ type: 'text', text: 'Steer read here' }] },
     ])
   })

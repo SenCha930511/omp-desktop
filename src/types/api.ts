@@ -280,6 +280,8 @@ export interface TranscriptMessage {
   role: 'user' | 'assistant' | 'agent' | 'goal' | 'tool' | 'system'
   /** Renderer-local steering lifecycle. Persisted transcripts remain harness-owned. */
   steerState?: 'accepted' | 'read'
+  /** Original submit timestamp preserved when a delivered steer moves `timestamp` to `deliveredAt`. */
+  submittedAt?: number
   /** Renderer-only row markers: consumed-steer boundaries and level-tagged agent notice rows. */
   kind?: 'steer-read-marker' | 'agent-notice' | 'agent-notice-warning' | 'agent-notice-error'
   timestamp?: string | number
