@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { resolveLocale, translate, useI18n, type Translate } from '@/lib/i18n'
+import type { ComposerSelection } from '@/lib/workspace'
 import { PRIME_THINKING_LEVELS } from '@/types/api'
 import type { HarnessId, LocalePreference, PrimeModelCatalog, PrimeModelDescriptor, PrimeThinkingLevel, PrimeEffortSelector, DesktopApi, RuntimeInfo, SessionRecord, SlowModeScope, UsageLimitState } from '@/types/api'
 
@@ -31,6 +32,31 @@ export function groupModelsByProvider(models: readonly PrimeModelDescriptor[] | 
     else grouped.set(model.provider, [model])
   }
   return grouped
+}
+
+export interface CatalogSelection extends ComposerSelection {
+  provider?: string
+  id?: string
+}
+
+/**
+ * The single place that decides "what selection is in force": the composer's
+ * current model/effort/fast resolved against a catalog, falling back to the
+ * given descriptor. Pure — it never writes composer state.
+ */
+export function resolveCatalogSelection(
+  catalog: PrimeModelCatalog | null | undefined,
+  current: ComposerSelection,
+  fallback: PrimeModelDescriptor | undefined,
+): CatalogSelection {
+  const selected = catalog?.models.find((candidate) => candidate.key === current.model && isUsable(candidate)) ?? fallback
+  return {
+    model: selected?.key ?? '',
+    provider: selected?.provider,
+    id: selected?.id,
+    effort: supportsEffort(selected, current.effort) ? current.effort : selected?.reasoning ? 'auto' : selected?.availableThinkingLevels[0] ?? 'off',
+    fast: Boolean(selected?.fastModeSupported && current.fast),
+  }
 }
 
 interface UseProviderCatalogOptions {
@@ -75,6 +101,14 @@ export interface ProviderCatalog {
   modelsByProvider: ReadonlyMap<string, PrimeModelDescriptor[]>
   refresh(force?: boolean): Promise<void>
   resolveSelection?(): Promise<Pick<ProviderCatalog, 'model' | 'effort' | 'fast'>>
+  /** Read-only view of the selection resolveSelection would apply; null until a usable model is known. */
+  peekSelection?(): ComposerSelection | null
+  /**
+   * Apply the composer selection to a ready runtime before a prompt. Sends only
+   * the differing commands, then one authoritative refresh; returns the
+   * refreshed snapshot. Never writes composer state.
+   */
+  alignRuntime?(runtime: RuntimeInfo): Promise<RuntimeInfo>
   changeModel(modelKey: string): void
   changeEffort(value: PrimeEffortSelector): void
   changeFast(enabled: boolean): void
@@ -234,8 +268,18 @@ export function useProviderCatalog({ bridge, ready = true, harness = 'omp', loca
     // session's persisted metadata. The latter two only apply when the tab
     // changes so a catalog refresh cannot revert what the user picked.
     if (runtime?.model?.provider && runtime.model.id) {
-      pendingSelectionsRef.current.delete(sessionKey)
+      const pending = pendingSelectionsRef.current.get(sessionKey)
+      const pendingModel = pending && catalog.models.find((candidate) => candidate.key === pending.model && isUsable(candidate))
       const runtimeModel = catalog.models.find((candidate) => candidate.provider === runtime.model?.provider && candidate.id === runtime.model?.id && isUsable(candidate))
+      // An unsent choice parked while no runtime existed outranks an idle
+      // runtime that appeared later (for example a startup prewarm). Keep it
+      // until alignment refreshes the runtime to the same selection.
+      if (pending && pendingModel && !runtime.isStreaming && (!runtimeModel || runtimeModel.key !== pendingModel.key)) {
+        if (modelRef.current !== pendingModel.key) updateModel(pendingModel.key)
+        if (supportsEffort(pendingModel, pending.effort) && effortRef.current !== pending.effort) updateEffort(pending.effort)
+        return
+      }
+      pendingSelectionsRef.current.delete(sessionKey)
       if (runtimeModel) {
         if (modelRef.current !== runtimeModel.key) updateModel(runtimeModel.key)
         rememberSelectionRef.current(runtimeModel.key)
@@ -291,6 +335,9 @@ export function useProviderCatalog({ bridge, ready = true, harness = 'omp', loca
       }
       return
     }
+    // A live runtime now owns the selection; its mutation queue is the source
+    // of truth, so an older parked choice must not come back on a later render.
+    pendingSelectionsRef.current.delete(sessionKeyRef.current)
     queueRuntimeMutation(
       runtime.runtimeId,
       async () => {
@@ -309,6 +356,9 @@ export function useProviderCatalog({ bridge, ready = true, harness = 'omp', loca
       pendingSelectionsRef.current.set(sessionKeyRef.current, { model: modelRef.current, effort: nextEffort })
       return
     }
+    // A live runtime now owns the selection; its mutation queue is the source
+    // of truth, so an older parked choice must not come back on a later render.
+    pendingSelectionsRef.current.delete(sessionKeyRef.current)
     queueRuntimeMutation(
       runtime.runtimeId,
       async () => { await bridge.agent.command(runtime.runtimeId, { type: 'set_thinking_level', level: nextEffort }) },
@@ -320,6 +370,9 @@ export function useProviderCatalog({ bridge, ready = true, harness = 'omp', loca
     const previous = fastRef.current
     updateFast(enabled)
     if (!bridge || !runtime) return
+    // A live runtime now owns the selection; its mutation queue is the source
+    // of truth, so an older parked choice must not come back on a later render.
+    pendingSelectionsRef.current.delete(sessionKeyRef.current)
     const authorizedRuntimeId = runtime.runtimeId
     const authorizedServiceTier = runtime.serviceTier
     const authorizedProvider = runtime.model?.provider
@@ -407,18 +460,69 @@ export function useProviderCatalog({ bridge, ready = true, harness = 'omp', loca
 
   const resolvedAutoEffort = effort !== 'auto' || runtime?.autoThinkingResolved !== true ? undefined : PRIME_THINKING_LEVELS.find((level) => level === runtime.thinkingLevel)
 
+  const currentSelection = (): ComposerSelection => ({ model: modelRef.current, effort: effortRef.current, fast: fastRef.current })
+
   const resolveSelection = async () => {
     const next = catalog ?? (bridge && ready ? await bridge.providers.catalog(false, harness) : null)
-    const selected = next?.models.find((candidate) => candidate.key === modelRef.current && isUsable(candidate)) ?? fallbackModel(next)
+    const selection = resolveCatalogSelection(next, currentSelection(), fallbackModel(next))
     if (next) setCatalogFor(harness, next)
-    const resolvedModel = selected?.key ?? ''
-    const resolvedEffort = supportsEffort(selected, effortRef.current) ? effortRef.current : selected?.reasoning ? 'auto' : selected?.availableThinkingLevels[0] ?? 'off'
-    const resolvedFast = Boolean(selected?.fastModeSupported && fastRef.current)
-    updateModel(resolvedModel)
-    updateEffort(resolvedEffort)
-    updateFast(resolvedFast)
-    return { model: resolvedModel, effort: resolvedEffort, fast: resolvedFast }
+    updateModel(selection.model)
+    updateEffort(selection.effort)
+    updateFast(selection.fast)
+    return { model: selection.model, effort: selection.effort, fast: selection.fast }
   }
+
+  // Read-only counterpart of resolveSelection: no catalog fetch, no state
+  // write, and no fallback selection until a catalog actually offers a model.
+  const peekSelection = useCallback((): ComposerSelection | null => {
+    if (!catalog) return null
+    const selection = resolveCatalogSelection(catalog, currentSelection(), fallbackModel(catalog))
+    return selection.model ? { model: selection.model, effort: selection.effort, fast: selection.fast } : null
+  }, [catalog, fallbackModel])
+
+  const alignRuntime = useCallback(async (runtime: RuntimeInfo): Promise<RuntimeInfo> => {
+    if (!bridge) throw new Error('No desktop bridge is available to align the runtime.')
+    // A streaming runtime owns the live turn: mutating its model mid-stream
+    // would change the turn that is already running.
+    if (runtime.isStreaming) return runtime
+    const runtimeId = runtime.runtimeId
+    const aligned = Promise.withResolvers<RuntimeInfo>()
+    // The same queue the composer's own mutations use: a prompt can never
+    // overtake a model/effort/fast request the user just issued. Resolve the
+    // selection inside the queued task so a later user change wins.
+    mutationQueueRef.current = mutationQueueRef.current.then(async () => {
+      try {
+        const next = catalog ?? (ready ? await bridge.providers.catalog(false, harness) : null)
+        const selection = resolveCatalogSelection(next, currentSelection(), fallbackModel(next))
+        const current = latestRuntimeRef.current?.runtimeId === runtimeId ? latestRuntimeRef.current : runtime
+        const commands: Record<string, unknown>[] = []
+        if (selection.provider !== undefined && selection.id !== undefined
+          && (current.model?.provider !== selection.provider || current.model?.id !== selection.id)) {
+          commands.push({ type: 'set_model', provider: selection.provider, modelId: selection.id })
+        }
+        // `auto` is a per-turn policy, not a level to compare against.
+        if (selection.effort !== 'auto' && (current.configuredThinkingLevel ?? current.thinkingLevel) !== selection.effort) {
+          commands.push({ type: 'set_thinking_level', level: selection.effort })
+        }
+        if (current.fastModeSupported === true) {
+          const desiredTier = selection.fast ? 'priority' : 'default'
+          if ((current.serviceTier === 'priority' ? 'priority' : 'default') !== desiredTier) {
+            commands.push({ type: 'set_service_tier', serviceTier: desiredTier })
+          }
+        }
+        if (commands.length === 0) {
+          aligned.resolve(current)
+          return
+        }
+        for (const command of commands) await bridge.agent.command(runtimeId, command)
+        aligned.resolve(await bridge.agent.refreshState(runtimeId))
+      } catch (error) {
+        // The caller owns reporting: a failed alignment fails the prompt.
+        aligned.reject(error)
+      }
+    })
+    return aligned.promise
+  }, [bridge, catalog, fallbackModel, harness, ready])
 
   return {
     model, effort, fast,
@@ -428,6 +532,6 @@ export function useProviderCatalog({ bridge, ready = true, harness = 'omp', loca
     slowScope: runtime?.slowModeScope,
     usageLimit: runtime?.usageLimit,
     catalog, selectedModel, reasoningLevels, resolvedAutoEffort, modelsByProvider,
-    refresh, resolveSelection, changeModel, changeEffort, changeFast, changeSlow, retryFast,
+    refresh, resolveSelection, peekSelection, alignRuntime, changeModel, changeEffort, changeFast, changeSlow, retryFast,
   }
 }

@@ -1,4 +1,4 @@
-import type { GitFileChange, GitStatus, ProjectRecord, RuntimeInfo, SessionRecord, TranscriptMessage } from '@/types/api'
+import type { GitFileChange, GitStatus, PrimeEffortSelector, ProjectRecord, RuntimeInfo, SessionRecord, TranscriptMessage } from '@/types/api'
 
 
 export interface OwnedGitStatus {
@@ -145,6 +145,64 @@ export function findRuntimeForWorkspace(runtimes: RuntimeInfo[], cwd?: string, s
   // forked the session into a duplicate.
   return runtimes.find((runtime) => runtimeMatchesWorkspace(runtime, cwd, sessionFile))
     ?? runtimes.find((runtime) => runtime.sessionFile !== undefined && runtime.sessionFile === sessionFile)
+}
+
+/** The composer's model/effort/fast choice, as the provider catalog resolved it. */
+export interface ComposerSelection {
+  /** Model key exactly as the catalog lists it (`provider/modelId` or a bare id). */
+  model: string
+  effort: PrimeEffortSelector
+  fast: boolean
+}
+
+function runtimeReportsModel(runtime: RuntimeInfo, modelKey: string): boolean {
+  const provider = runtime.model?.provider
+  const id = runtime.model?.id
+  if (!id) return false
+  return modelKey === id || (provider !== undefined && modelKey === `${provider}/${id}`)
+}
+
+/**
+ * Whether a ready runtime already reflects the composer's selection.
+ * `auto` effort is a policy the runtime resolves per turn, so any reported
+ * level satisfies it; fast is only comparable when the runtime reports support.
+ */
+export function runtimeSatisfiesSelection(runtime: RuntimeInfo, selection: ComposerSelection): boolean {
+  if (selection.model && !runtimeReportsModel(runtime, selection.model)) return false
+  if (selection.effort !== 'auto' && (runtime.configuredThinkingLevel ?? runtime.thinkingLevel) !== selection.effort) return false
+  // A priority runtime is authoritative when the composer has not yet seen it
+  // (the initial fast preference is false). Only a requested fast mode that the
+  // runtime does not provide blocks adoption; the runtime's live value may
+  // still switch the composer on when it attaches.
+  if (runtime.fastModeSupported === true && selection.fast && runtime.serviceTier !== 'priority') return false
+  return true
+}
+
+/**
+ * Runtime lookup that refuses an idle runtime which disagrees with the
+ * composer's latest selection: adopting it would hand the prompt path a stale
+ * model. A streaming runtime is still adoptable because it owns the live
+ * transcript. Without a selection this is exactly findRuntimeForWorkspace.
+ */
+export function findAdoptableRuntime(
+  runtimes: RuntimeInfo[],
+  cwd: string | undefined,
+  sessionFile: string | undefined,
+  selection?: ComposerSelection | null,
+): RuntimeInfo | undefined {
+  if (!selection) return findRuntimeForWorkspace(runtimes, cwd, sessionFile)
+  if (!cwd || !sessionFile) return undefined
+  const candidates = [
+    ...runtimes.filter((runtime) => runtimeMatchesWorkspace(runtime, cwd, sessionFile)),
+    ...runtimes.filter((runtime) => runtime.sessionFile !== undefined && runtime.sessionFile === sessionFile),
+  ]
+  const seen = new Set<string>()
+  for (const candidate of candidates) {
+    if (seen.has(candidate.runtimeId)) continue
+    seen.add(candidate.runtimeId)
+    if (candidate.isStreaming || runtimeSatisfiesSelection(candidate, selection)) return candidate
+  }
+  return undefined
 }
 
 export function selectStartupWorkspace(

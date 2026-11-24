@@ -590,4 +590,259 @@ describe('provider runtime mutations', () => {
     expect(command).not.toHaveBeenCalled()
     expect(hook.syncRuntime).not.toHaveBeenCalled()
   })
+  it('keeps an unsent model choice when an idle runtime attaches later', async () => {
+    const command = vi.fn().mockResolvedValue({})
+    const hook = await mountCatalogHook({ command, runtime: null })
+    await act(async () => { await Promise.resolve() })
+
+    act(() => hook.value.changeModel('openai-codex/gpt-5.5'))
+    expect(hook.value.model).toBe('openai-codex/gpt-5.5')
+
+    await hook.updateRuntime(runtime)
+
+    expect(hook.value.model).toBe('openai-codex/gpt-5.5')
+    expect(command).not.toHaveBeenCalled()
+  })
+
+})
+
+describe('composer selection peek and runtime alignment', () => {
+  function mountSelectionHook(options: {
+    runtime?: RuntimeInfo | null
+    command?: DesktopApi['agent']['command']
+    refreshState?: DesktopApi['agent']['refreshState']
+    lastSelectedModel?: string
+  } = {}) {
+    let value: ProviderCatalog | undefined
+    const currentRuntime = options.runtime === undefined ? null : options.runtime
+    const command = options.command ?? vi.fn().mockResolvedValue({})
+    const refreshState = options.refreshState ?? vi.fn().mockResolvedValue(currentRuntime)
+    const catalogMock = vi.fn().mockResolvedValue(catalog)
+    const rememberModel = vi.fn()
+    const syncRuntime = vi.fn().mockResolvedValue(undefined)
+    const reportError = vi.fn()
+    const bridge = { agent: { command, refreshState }, providers: { catalog: catalogMock } } as unknown as DesktopApi
+    function Harness() {
+      value = useProviderCatalog({
+        bridge,
+        runtime: currentRuntime,
+        defaultEffort: 'medium',
+        lastSelectedModel: options.lastSelectedModel,
+        rememberModel,
+        syncRuntime,
+        reportError,
+      })
+      return null
+    }
+    return render(<Harness />).then(() => ({
+      get value() { return value! },
+      catalogMock,
+      command,
+      refreshState,
+      rememberModel,
+      syncRuntime,
+      reportError,
+    }))
+  }
+
+  const alignedModel = { provider: model.provider, id: model.id, name: model.name }
+
+  it('peeks the selection resolveSelection applies without writing composer state', async () => {
+    const hook = await mountSelectionHook({ lastSelectedModel: model.key })
+    await act(async () => { await Promise.resolve() })
+    expect(hook.value.model).toBe(model.key)
+    const before = { model: hook.value.model, effort: hook.value.effort, fast: hook.value.fast }
+
+    const peeked = hook.value.peekSelection!()
+
+    expect(peeked).toEqual({ model: model.key, effort: hook.value.effort, fast: false })
+    expect({ model: hook.value.model, effort: hook.value.effort, fast: hook.value.fast }).toEqual(before)
+    expect(hook.rememberModel).not.toHaveBeenCalled()
+    const resolved = await hook.value.resolveSelection!()
+    expect(resolved).toEqual({ model: peeked!.model, effort: peeked!.effort, fast: peeked!.fast })
+    expect({ model: hook.value.model, effort: hook.value.effort, fast: hook.value.fast }).toEqual(before)
+  })
+
+  it('peeks null until a catalog with a usable model is available', async () => {
+    const pending = deferred<PrimeModelCatalog>()
+    const bridge = { providers: { catalog: vi.fn(() => pending.promise) } } as unknown as DesktopApi
+    const reportError = vi.fn()
+    let value!: ProviderCatalog
+    function Harness() {
+      value = useProviderCatalog({ bridge, runtime: null, defaultEffort: 'medium', syncRuntime: noop, reportError })
+      return null
+    }
+    act(() => root.render(<Harness />))
+    expect(value.peekSelection!()).toBeNull()
+
+    await act(async () => {
+      pending.resolve(catalog)
+      await pending.promise
+      await Promise.resolve()
+    })
+    expect(value.peekSelection!()).toEqual({ model: expect.any(String), effort: expect.any(String), fast: false })
+  })
+
+  it('peeks null when no catalog model is usable', async () => {
+    const hook = await mountSelectionHook()
+    await act(async () => { await Promise.resolve() })
+    hook.catalogMock.mockResolvedValue({ ...catalog, models: catalog.models.map((entry) => ({ ...entry, available: false })) })
+    await act(async () => { await hook.value.refresh(true) })
+
+    expect(hook.value.peekSelection!()).toBeNull()
+  })
+
+  it('sends only the differing selection commands in order, refreshes once, and returns the authoritative snapshot', async () => {
+    const order: string[] = []
+    const command = vi.fn(async (_runtimeId: string, request: Record<string, unknown>) => {
+      order.push(String(request.type))
+      return {}
+    })
+    const refreshed: RuntimeInfo = { ...runtime, model: alignedModel, configuredThinkingLevel: 'medium', thinkingLevel: 'medium', serviceTier: 'default', fastModeSupported: true }
+    const refreshState = vi.fn(async () => { order.push('refresh'); return refreshed })
+    const hook = await mountSelectionHook({ command, refreshState, lastSelectedModel: model.key })
+    await act(async () => { await Promise.resolve() })
+    const stale: RuntimeInfo = {
+      ...runtime,
+      model: { provider: 'openai-codex', id: 'gpt-5.5', name: 'GPT-5.5' },
+      configuredThinkingLevel: 'low',
+      thinkingLevel: 'low',
+      serviceTier: 'priority',
+      fastModeSupported: true,
+    }
+
+    let aligned: RuntimeInfo | undefined
+    await act(async () => { aligned = await hook.value.alignRuntime!(stale) })
+
+    expect(order).toEqual(['set_model', 'set_thinking_level', 'set_service_tier', 'refresh'])
+    expect(command.mock.calls.map(([, request]) => request)).toEqual([
+      { type: 'set_model', provider: 'openai-codex', modelId: 'gpt-5.6' },
+      { type: 'set_thinking_level', level: 'medium' },
+      { type: 'set_service_tier', serviceTier: 'default' },
+    ])
+    expect(refreshState).toHaveBeenCalledExactlyOnceWith('runtime-1')
+    expect(aligned).toBe(refreshed)
+    // Alignment must never rewrite the composer through the update setters.
+    expect(hook.value.model).toBe(model.key)
+    expect(hook.value.effort).toBe('medium')
+    expect(hook.value.fast).toBe(false)
+  })
+
+  it('is a no-op when the runtime already reports the selection', async () => {
+    const hook = await mountSelectionHook({ lastSelectedModel: model.key })
+    await act(async () => { await Promise.resolve() })
+    const matching: RuntimeInfo = {
+      ...runtime,
+      model: alignedModel,
+      configuredThinkingLevel: 'medium',
+      thinkingLevel: 'medium',
+      serviceTier: 'default',
+      fastModeSupported: true,
+    }
+
+    let aligned: RuntimeInfo | undefined
+    await act(async () => { aligned = await hook.value.alignRuntime!(matching) })
+
+    expect(hook.command).not.toHaveBeenCalled()
+    expect(hook.refreshState).not.toHaveBeenCalled()
+    expect(aligned).toBe(matching)
+  })
+
+  it('skips effort alignment for auto and fast alignment when unsupported', async () => {
+    const hook = await mountSelectionHook({ lastSelectedModel: model.key })
+    await act(async () => { await Promise.resolve() })
+    act(() => {
+      hook.value.changeEffort('auto')
+      hook.value.changeFast(true)
+    })
+    const target: RuntimeInfo = {
+      ...runtime,
+      model: alignedModel,
+      configuredThinkingLevel: 'low',
+      thinkingLevel: 'low',
+      serviceTier: 'default',
+      fastModeSupported: false,
+    }
+
+    await act(async () => { await hook.value.alignRuntime!(target) })
+
+    expect(hook.command).not.toHaveBeenCalled()
+    expect(hook.refreshState).not.toHaveBeenCalled()
+  })
+
+  it('serializes alignment behind pending provider mutations', async () => {
+    const pendingCommand = deferred<Record<string, unknown>>()
+    const command = vi.fn(() => pendingCommand.promise)
+    const refreshState = vi.fn(async () => runtime)
+    const hook = await mountSelectionHook({ command, refreshState, lastSelectedModel: model.key })
+    await act(async () => { await Promise.resolve() })
+    const stale: RuntimeInfo = { ...runtime, model: { provider: 'openai-codex', id: 'gpt-5.5', name: 'GPT-5.5' } }
+
+    const first = hook.value.alignRuntime!(stale)
+    await act(async () => { await Promise.resolve() })
+    expect(command).toHaveBeenCalledTimes(1)
+    const second = hook.value.alignRuntime!(stale)
+    await act(async () => { await Promise.resolve() })
+    expect(command).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      pendingCommand.resolve({})
+      await pendingCommand.promise
+      await first
+      await second
+    })
+
+    expect(command).toHaveBeenCalledTimes(2)
+    expect(refreshState).toHaveBeenCalledTimes(2)
+  })
+  it('resolves a queued alignment against the selection current at execution time', async () => {
+    const pendingCommand = deferred<Record<string, unknown>>()
+    const command = vi.fn(() => pendingCommand.promise)
+    const refreshState = vi.fn(async () => runtime)
+    const hook = await mountSelectionHook({ command, refreshState, lastSelectedModel: model.key })
+    await act(async () => { await Promise.resolve() })
+    const stale: RuntimeInfo = { ...runtime, model: { provider: 'openai-codex', id: 'gpt-5.5', name: 'GPT-5.5' } }
+
+    const aligned = hook.value.alignRuntime!(stale)
+    act(() => { hook.value.changeModel('anthropic/claude-sonnet') })
+    await act(async () => {
+      pendingCommand.resolve({})
+      await pendingCommand.promise
+      await aligned
+    })
+
+    expect(command).toHaveBeenNthCalledWith(1, 'runtime-1', { type: 'set_model', provider: 'anthropic', modelId: 'claude-sonnet' })
+    expect(command).toHaveBeenNthCalledWith(2, 'runtime-1', { type: 'set_thinking_level', level: 'low' })
+  })
+
+
+  it('propagates an alignment failure without refreshing or reporting through the hook', async () => {
+    const command = vi.fn().mockRejectedValue(new Error('model rejected'))
+    const hook = await mountSelectionHook({ command, lastSelectedModel: model.key })
+    await act(async () => { await Promise.resolve() })
+    const stale: RuntimeInfo = { ...runtime, model: { provider: 'openai-codex', id: 'gpt-5.5', name: 'GPT-5.5' } }
+
+    await expect(hook.value.alignRuntime!(stale)).rejects.toThrow('model rejected')
+
+    expect(hook.refreshState).not.toHaveBeenCalled()
+    expect(hook.syncRuntime).not.toHaveBeenCalled()
+  })
+
+  it('leaves a streaming runtime untouched', async () => {
+    const hook = await mountSelectionHook({ lastSelectedModel: model.key })
+    await act(async () => { await Promise.resolve() })
+    const streaming: RuntimeInfo = {
+      ...runtime,
+      isStreaming: true,
+      model: { provider: 'openai-codex', id: 'gpt-5.5', name: 'GPT-5.5' },
+      thinkingLevel: 'low',
+    }
+
+    let aligned: RuntimeInfo | undefined
+    await act(async () => { aligned = await hook.value.alignRuntime!(streaming) })
+
+    expect(aligned).toBe(streaming)
+    expect(hook.command).not.toHaveBeenCalled()
+    expect(hook.refreshState).not.toHaveBeenCalled()
+  })
 })
