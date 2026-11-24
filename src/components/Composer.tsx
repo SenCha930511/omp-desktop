@@ -199,10 +199,11 @@ function slashSourceOrder(source?: string): number {
   return 0
 }
 
-/** Trailing `/command` token in the draft: at the start or after whitespace,
- * with no newline inside. Lets `/` open the menu mid-sentence. */
+/** Trailing `/command` token in the draft: at the start or after whitespace.
+ * The token keeps any spaces after it so `/modelpreset ` still lists its
+ * subcommands, and it never crosses a newline. */
 function trailingSlashToken(value: string): { start: number; query: string } | undefined {
-  const match = /(?:^|\s)(\/[^\s\n]*)$/.exec(value)
+  const match = /(?:^|\s)(\/[^\n]*)$/.exec(value)
   if (!match) return undefined
   return { start: value.length - match[1].length, query: match[1] }
 }
