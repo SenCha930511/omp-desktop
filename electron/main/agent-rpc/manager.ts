@@ -46,6 +46,8 @@ export class AgentRpcManager {
   private readonly runtimes = new Map<string, RpcRuntime>()
   private readonly startingRuntimes = new Set<string>()
   private readonly retiringRuntimes = new Set<string>()
+  /** One in-flight fork per source path: a second trigger joins it instead of forking the fork. */
+  private readonly forksInFlight = new Map<string, Promise<string>>()
   private readonly runtimeEnvironmentRevisions = new Map<string, number>()
   /** Requested resume path per runtime id, valid until the handshake reports the authoritative session file. */
   private readonly startSessionPathById = new Map<string, string>()
@@ -802,6 +804,17 @@ export class AgentRpcManager {
   /** Fork through OMP so its hooks, active branch and artifacts share one owner. */
   async forkForSession(filePath: string, cwd: string): Promise<string> {
     const source = await this.validateSessionPath(filePath)
+    const key = canonicalSessionPath(source)
+    const existing = this.forksInFlight.get(key)
+    if (existing) return existing
+    const pending = this.performFork(source, cwd)
+    this.forksInFlight.set(key, pending)
+    const settle = () => { if (this.forksInFlight.get(key) === pending) this.forksInFlight.delete(key) }
+    pending.then(settle, settle)
+    return pending
+  }
+
+  private async performFork(source: string, cwd: string): Promise<string> {
     const started = await this.start({ cwd, sessionPath: source })
     let retiringRuntime: RpcRuntime | undefined
     let retirementFailed = false
