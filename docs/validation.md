@@ -106,33 +106,6 @@ Use focused tests while developing, then choose the aggregate that matches the c
 
 Packaging is native: run each platform command on its matching operating system and architecture. The public `package:mac`, `package:linux`, and `package:win` commands use distribution mode; macOS and Windows distribution checks require their external signing configuration. A successful local-QA command must not be described as a public trust check.
 
-## Focused resource measurements
-
-Build the production bundles before measuring the real Electron renderer. The headless benchmark builds the selected production modules itself and exercises CPU, elapsed time, GC heap, and small-input contrast cases. The Electron benchmark uses a built renderer and an isolated hermetic fixture.
-
-```sh
-npm run build:bundle
-node --expose-gc scripts/performance/cpu-memory-budget.mjs --output <path>
-node scripts/performance/electron-resource-budget.mjs --output <path>
-node scripts/performance/electron-resource-budget.mjs --math --output <path>
-```
-
-`cpu-memory-budget.mjs` takes seven measured trials per case and compares the median CPU milliseconds, elapsed milliseconds, and retained heap deltas. It does not measure whole-app startup or frame time.
-
-`electron-resource-budget.mjs` launches the built app with a temporary home and a controlled fake-agent child. It captures per-process Electron memory and CPU metrics, Chromium heap after forced GC, DOM counters, and loaded JavaScript, CSS, fonts, and script execution. Read `scope` in the output for the fixture boundaries. Its command census measures JSON-RPC traffic, not CPU attribution.
-
-Use `--math` to require a real inline formula. Use `--eager` only with a control build that loads KaTeX. The control check waits for an ordinary Transcript to mount; it does not assume every module arrives while the home view is visible.
-
-The probe checks `Network.requestWillBeSent` and `Debugger.scriptParsed` separately. A cached script may execute without a fresh request. It also checks actual stylesheet hrefs, so an empty `PerformanceResourceTiming` buffer cannot be misread as a no-KaTeX result. Positive baseline guards require ordinary network requests and script executions; the tool never treats an empty performance buffer as evidence of absence.
-
-`percentCPUUsage` and `idleWakeupsPerSecond` are averages between calls. `cumulativeCPUUsage` measures seconds since process startup. The benchmark subtracts cumulative CPU only for matching `pid` and `creationTime` pairs, and never sums cumulative values across periods. See [Electron's CPU usage contract](https://www.electronjs.org/docs/latest/api/structures/cpu-usage).
-
-`verify-bundle-size.mjs` accepts an optional output-directory argument. With no argument, it validates `out`. It also tests whether the entry HTML eagerly references hashed or hashless `katex-vendor` JavaScript or stylesheets.
-
-```sh
-node scripts/release/verify-bundle-size.mjs <out-directory>
-```
-
 ## Dependency audit policy
 
 The [dependency-audit workflow](../.github/workflows/audit.yml) runs weekly and on manual dispatch. It uses the repository toolchain and executes `npm run audit:production` against the production dependency graph. This scheduled job re-audits the production graph against a current advisory database so advisories disclosed after a merge are still detected.

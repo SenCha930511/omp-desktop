@@ -14,7 +14,7 @@ This pass reduces repeated catalog work in the main process and defers KaTeX for
 
 KaTeX plugins and their stylesheet load after a normalized Markdown block sees a dollar delimiter. Ordinary Markdown gets a stable GFM-only configuration. Math, CJK annotations, syntax-error colors, inline code and URL security rules retain the original pipeline. A first uncached math block can show normalized Markdown before the plugin request and stylesheet finish. A load failure leaves readable Markdown, logs once, and does not retry. The shared ready cache stays alive for the renderer lifetime; it does not retain a separate parser per block.
 
-Focused headless results, using Node v24.22.3 under `scripts/performance/cpu-memory-budget.mjs`:
+Focused headless results, using Node v24.22.3:
 
 | Workload | Before | After | Difference |
 |---|---:|---:|---:|
@@ -25,7 +25,7 @@ The identity cache costs bounded memory to reduce normalization CPU. These are m
 
 Two paired eager/lazy Electron runs measured the ordinary-text fixture once per arm. After eight session switches, lazy KaTeX used 0.83–0.85 MiB less `JSHeapUsedSize`, and 3.5–6.6 MiB less renderer working set. Another run put one formula through the app and observed one `.katex` root, the lazy JavaScript and stylesheet, the expected WOFF2 fonts, and no renderer page errors. Ordinary text had no KaTeX resources. These runs cover the fixture, not every possible document or host.
 
-The final production build has `initialRendererBytes=1,026,840`, down from 1,307,421 bytes. The initial HTML has no eager KaTeX JavaScript or stylesheet references. The lazy build retains the same features otherwise; it is a load-timing change, not deletion of math support. See [Focused resource measurements](validation.md#focused-resource-measurements) for reproduction commands and metric definitions.
+The final production build has `initialRendererBytes=1,026,840`, down from 1,307,421 bytes. The initial HTML has no eager KaTeX JavaScript or stylesheet references. The lazy build retains the same features otherwise; it is a load-timing change, not deletion of math support. The ad hoc probes used for these measurements were removed after validation.
 
 ## Verification units
 
