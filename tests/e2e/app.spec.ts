@@ -261,6 +261,7 @@ if (args[0] === 'models' && args.includes('--json')) {
 if (!args.includes('--mode') || args[args.indexOf('--mode') + 1] !== 'rpc-ui') process.exit(2)
 fs.writeFileSync(marker('omp-runtime.pid'), String(process.pid))
 fs.writeFileSync(marker('omp-runtime-args.json'), JSON.stringify(args))
+fs.appendFileSync(marker('omp-spawn-log.jsonl'), JSON.stringify({ pid: process.pid, args }) + '\\n')
 const resumeIndex = args.indexOf('--resume')
 let sessionFile = resumeIndex >= 0 ? args[resumeIndex + 1] : ${JSON.stringify(realpathSync(fixtureSessionPath))}
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
@@ -292,6 +293,10 @@ const rewriteTitleSlot = (title) => {
 }
 let negotiated = false
 let streaming = false
+// The fixture's authoritative model/thinking, mutated by the set_* commands
+// below so a prewarm-aligned runtime reports what the composer chose.
+let currentModel = { provider: 'openai-codex', id: 'gpt-fixture', name: 'GPT Fixture' }
+let currentThinking = 'medium'
 let pendingPrompt
 let answers = {}
 const btwTopics = {}
@@ -307,18 +312,40 @@ let drainBarrierFollowUp = null
 send({ type: 'ready', protocolVersion: 1, supportedProtocolVersions: [1, 2] })
 readline.createInterface({ input: process.stdin }).on('line', (line) => {
   const command = JSON.parse(line)
+  const loggedCommand = {}
+  for (const key of ['type', 'provider', 'modelId', 'level', 'serviceTier']) if (typeof command[key] === 'string') loggedCommand[key] = command[key]
+  if (typeof command.message === 'string') loggedCommand.message = command.message
+  fs.appendFileSync(marker('omp-command-log.jsonl'), JSON.stringify(loggedCommand) + '\\n')
   if (command.type === 'negotiate_protocol') {
     negotiated = true
     send({ id: command.id, type: 'response', command: command.type, success: true, data: { protocolVersion: 2 } })
   } else if (!negotiated) {
     send({ id: command.id, type: 'response', command: command.type, success: false, error: 'Protocol was not negotiated' })
   } else if (command.type === 'get_state') {
-    setTimeout(() => send({ id: command.id, type: 'response', command: command.type, success: true, data: {
-      sessionId: 'fixture-session', sessionFile, isStreaming: streaming, thinkingLevel: 'medium',
-      model: { provider: 'openai-codex', id: 'gpt-fixture', name: 'GPT Fixture' },
-      contextUsage: { tokens: 12000, contextWindow: 100000, percent: 12 },
-      fastModeEnabled: false, queuedMessageCount: steeringQueue.length + followUpQueue.length, queuedMessages: { steering: [...steeringQueue], followUp: [...followUpQueue] }, sessionActions: sessionActionsSnapshot(),
-    } }), Number(process.env.OMP_FIXTURE_START_DELAY_MS || 0))
+    // The delayed response is the observable handshake window: the marker
+    // exists exactly while this state request is still in flight.
+    fs.writeFileSync(marker('omp-get-state-pending'), String(Date.now()))
+    setTimeout(() => {
+      fs.rmSync(marker('omp-get-state-pending'), { force: true })
+      send({ id: command.id, type: 'response', command: command.type, success: true, data: {
+        sessionId: 'fixture-session', sessionFile, isStreaming: streaming, isSettled: true, hasPendingAsyncWork: false, thinkingLevel: currentThinking,
+        model: currentModel,
+        contextUsage: { tokens: 12000, contextWindow: 100000, percent: 12 },
+        fastModeEnabled: false, queuedMessageCount: steeringQueue.length + followUpQueue.length, queuedMessages: { steering: [...steeringQueue], followUp: [...followUpQueue] }, sessionActions: sessionActionsSnapshot(),
+      } })
+    }, Number(process.env.OMP_FIXTURE_START_DELAY_MS || 0))
+  } else if (command.type === 'set_model') {
+    const knownNames = { 'anthropic/claude-fixture': 'Claude Fixture', 'openai-codex/gpt-fixture': 'GPT Fixture' }
+    const provider = String(command.provider)
+    const modelId = String(command.modelId)
+    currentModel = { provider, id: modelId, name: knownNames[provider + '/' + modelId] ?? modelId }
+    send({ id: command.id, type: 'response', command: command.type, success: true, data: { model: currentModel } })
+  } else if (command.type === 'set_thinking_level') {
+    currentThinking = String(command.level)
+    send({ id: command.id, type: 'response', command: command.type, success: true, data: { thinkingLevel: currentThinking } })
+  } else if (command.type === 'set_service_tier') {
+    const priority = command.serviceTier === 'priority'
+    send({ id: command.id, type: 'response', command: command.type, success: true, data: { enabled: priority, active: priority } })
   } else if (command.type === 'compact') {
     fs.writeFileSync(marker('compact-command-reached'), 'reached')
     // Manual compaction behaves exactly like the real harness: it appends the
@@ -605,11 +632,22 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
       const persistedAt = new Date().toISOString()
       fs.appendFileSync(sessionFile, JSON.stringify({ type: 'message', id: 'fixture-adopted-user', parentId: lastEntryId(), timestamp: persistedAt, message: { role: 'user', content: [{ type: 'text', text: message }], timestamp: Date.parse(persistedAt) } }) + '\\n')
     }
+    // The prewarm turn ends with the same authoritative disk reconciliation,
+    // which only sees this fixture file: persist the exchange so the visible
+    // reply survives the refresh.
+    if (message === 'prewarm first prompt') {
+      const persistedAt = new Date().toISOString()
+      fs.appendFileSync(sessionFile, JSON.stringify({ type: 'message', id: 'fixture-prewarm-user', parentId: lastEntryId(), timestamp: persistedAt, message: { role: 'user', content: message, timestamp: Date.parse(persistedAt) } }) + '\\n')
+    }
     send({ type: 'agent_start' })
     send({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Fixture response.' } })
     if (message.includes('Draft placeholder adoption probe')) {
       const persistedAt = new Date().toISOString()
       fs.appendFileSync(sessionFile, JSON.stringify({ type: 'message', id: 'fixture-adopted-assistant', parentId: lastEntryId(), timestamp: persistedAt, message: { role: 'assistant', content: 'Fixture response.', timestamp: Date.parse(persistedAt) } }) + '\\n')
+    }
+    if (message === 'prewarm first prompt') {
+      const persistedAt = new Date().toISOString()
+      fs.appendFileSync(sessionFile, JSON.stringify({ type: 'message', id: 'fixture-prewarm-assistant', parentId: 'fixture-prewarm-user', timestamp: persistedAt, message: { role: 'assistant', content: 'Fixture response.', timestamp: Date.parse(persistedAt) } }) + '\\n')
     }
     send({ type: 'agent_end' })
     send({ id: command.id, type: 'response', command: command.type, success: true, data: { agentInvoked: true } })
@@ -749,7 +787,7 @@ test.describe('OMP Desktop desktop smoke', () => {
       if (noOmp) renameSync(fixture.ompExecutable, `${fixture.ompExecutable}.pending`)
       try {
         const environment = hermeticEnvironment(fixture.home, fixture.ompExecutable, fixture.cuaExecutable, noOmp)
-        if (testInfo.title === 'shows a new conversation immediately while the harness starts') environment.OMP_FIXTURE_START_DELAY_MS = '2500'
+        if (testInfo.title === 'shows a new conversation immediately while the harness starts' || testInfo.title === 'prewarms the startup session and reuses it for the first prompt') environment.OMP_FIXTURE_START_DELAY_MS = '2500'
         if (testInfo.title === 'Command-Q backgrounds the window and menu-bar Open restores it') environment.OMP_DESKTOP_E2E_HIDE_WINDOWS = '0'
         if (testInfo.title === 'offers to update omp when the startup check finds a newer version') environment.OMP_FIXTURE_UPDATE_AVAILABLE = '17.3.0'
         app = await electron.launch({
@@ -1485,6 +1523,7 @@ test.describe('OMP Desktop desktop smoke', () => {
     const composer = page.getByRole('combobox', { name: 'Message OMP' })
     await composer.fill('Start a turn to fork')
     await composer.press('Enter')
+    await expect.poll(() => page.evaluate(async () => (await window.desktop.agent.list()).length)).toBe(1)
     const runtimes = await page.evaluate(() => window.desktop.agent.list())
     expect(runtimes).toHaveLength(1)
     await page.evaluate((runtimeId) => window.desktop.agent.command(runtimeId, { type: 'fork', entryId: 'fixture-goal-summary' }), runtimes[0].runtimeId)
@@ -3035,6 +3074,51 @@ test.describe('OMP Desktop desktop smoke', () => {
     await page.screenshot({ path: test.info().outputPath('new-session-starting.png') })
     await expect(page.locator('.transcript .thinking-dots')).toHaveCount(0, { timeout: 15000 })
     await expect(page.locator('.composer-attachment-error')).toHaveCount(0)
+  })
+
+  test('prewarms the startup session and reuses it for the first prompt', async () => {
+    const readLog = (name: string): Record<string, unknown>[] => {
+      const file = join(fixtureRoot, name)
+      if (!existsSync(file)) return []
+      return readFileSync(file, 'utf8').split('\n').filter((line) => line.trim().length > 0).map((line) => JSON.parse(line) as Record<string, unknown>)
+    }
+    const spawns = () => readLog('omp-spawn-log.jsonl') as { pid: number; args: string[] }[]
+
+    // The prewarm's handshake get_state is deliberately delayed; the shell must
+    // already be interactive while that window is still open.
+    await expect.poll(() => existsSync(join(fixtureRoot, 'omp-get-state-pending'))).toBe(true)
+    await expect(page.locator('.app-shell')).toHaveAttribute('data-ready', 'true')
+    await expect(page.locator('.app-shell')).toBeVisible()
+
+    // One background resume of the bootstrap-selected session with no model:
+    // the prewarm carries no selection the composer did not choose.
+    await expect.poll(() => spawns().length).toBe(1)
+    const prewarmArgs = spawns()[0].args
+    const resumeIndex = prewarmArgs.indexOf('--resume')
+    expect(resumeIndex).toBeGreaterThanOrEqual(0)
+    expect(prewarmArgs[resumeIndex + 1]).toBe(fixtureSessionFile)
+    expect(prewarmArgs).not.toContain('--model')
+    // The prewarm sends no prompt; the first prompt comes from the composer.
+    expect(existsSync(join(fixtureRoot, 'prompt-args.json'))).toBe(false)
+
+    const composer = page.getByRole('combobox', { name: 'Message OMP' })
+    await composer.fill('prewarm first prompt')
+    await page.getByRole('button', { name: 'Send message', exact: true }).click()
+    // The submission happened inside the window: the join is what lets the
+    // first prompt ride the pending launch instead of spawning its own child.
+    expect(existsSync(join(fixtureRoot, 'omp-get-state-pending'))).toBe(true)
+
+    // The join pays the delayed handshake plus the alignment get_state reads,
+    // so the first reply legitimately takes several fixture delays.
+    await expect(page.locator('.transcript').getByText('Fixture response.', { exact: true })).toBeVisible({ timeout: 30_000 })
+    // The first prompt joined the pending launch instead of spawning a second child.
+    expect(spawns()).toHaveLength(1)
+    expect(JSON.parse(readFileSync(join(fixtureRoot, 'prompt-args.json'), 'utf8'))).toMatchObject({ message: 'prewarm first prompt' })
+    // The joined runtime was aligned to the composer's model before the prompt.
+    const commandTypes = readLog('omp-command-log.jsonl').map((entry) => entry.type)
+    const modelIndex = commandTypes.indexOf('set_model')
+    expect(modelIndex).toBeGreaterThanOrEqual(0)
+    expect(commandTypes.indexOf('prompt')).toBeGreaterThan(modelIndex)
   })
 
   test('persists density and reserves space for the actual composer and command result', async () => {

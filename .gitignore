@@ -13,3 +13,6 @@ test-results
 .claude/worktrees/
 __pycache__/
 .claude/settings.local.json
+
+target/
+.fast/

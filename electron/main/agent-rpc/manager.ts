@@ -4,7 +4,7 @@ import { assertNoMcpAuthenticationCommand } from '../../../src/lib/mcp-policy'
 import { parseSessionActionSnapshot, streamingBehaviorForIntent } from '../../../src/lib/session-actions'
 import { resolveExecutable, type ExecutableSource } from '../process-utils'
 import { canonicalSessionPath } from '../session-paths'
-import { isPathWithin, isRecord, rejectUnknownKeys, requireId, requireRecord, requireString } from '../validation'
+import { isPathWithin, isRecord, rejectUnknownKeys, requireId, requireRecord, requireString, type JsonObject } from '../validation'
 import { isThinkingLevel, validateRpcCommand } from './command-schema'
 import { OMP_RPC_ADAPTER, type HarnessRpcAdapter } from './harness-adapter'
 import { RpcRuntime } from './runtime'
@@ -14,6 +14,18 @@ import type { WorkspaceUseLease, WorkspaceUseOwner } from '../repository-use-gat
 import { DESKTOP_OPEN_URL_TOOL, type DesktopOpenUrlService } from '../desktop-open-url'
 import type { DesktopHostToolResult, DesktopOpenUrlRegistrationOutcome } from '../../../src/types/host-capabilities'
 import { recordSessionDiagnostic } from './session-diagnostics'
+import { SessionLaunches, type OwnedLaunch } from './session-launches'
+
+/** Bounded retry for a deferral chain; a second deferral in a row is pathological. */
+const MAX_LAUNCH_ATTEMPTS = 2
+
+/** A caller's validated selection, read per caller before joining or spawning. */
+interface StartRequest {
+  readonly selectedModel?: PrimeModelDescriptor
+  readonly modelId?: string
+  readonly thinking?: string
+  readonly fast: boolean
+}
 
 /**
  * Structural slice of the provider catalog the manager needs; PrimeProviderService
@@ -41,6 +53,10 @@ export class AgentRpcManager {
   private readonly durableIdentityByRuntimeId = new Map<string, { sessionId?: string; sessionFile: string }>()
   /** sessionId 滾動(true identity change)後遭隔離的 runtime:舊 token 的 claim 已撤,不得再承載任何命令,只等安全退役。 */
   private readonly quarantinedRuntimes = new Set<string>()
+  /** At most one launch in flight per canonical session path (see SessionLaunches). */
+  private readonly launches = new SessionLaunches()
+  /** Interactive owner whose host tools were registered on a runtime; never transferred to another owner. */
+  private readonly hostToolOwnerByRuntimeId = new Map<string, number>()
   private runtimeEnvironmentRevision = 0
   private eventSink: (envelope: PrimeEventEnvelope) => void = () => undefined
   private runtimeEnvironmentProvider: (scope: { cwd: string; sessionPath?: string; interactive: boolean }) => NodeJS.ProcessEnv = () => ({})
@@ -147,14 +163,158 @@ export class AgentRpcManager {
     const sessionPath = options.sessionPath === undefined
       ? undefined
       : await this.validateSessionPath(requireString(options.sessionPath, 'sessionPath', { max: 4096 }))
+    if (sessionPath !== undefined && this.mutatingRuntimeForSession(sessionPath)) {
+      throw new Error('Session identity is being changed')
+    }
+    if (sessionPath !== undefined) await this.retireStaleRuntimeForSession(sessionPath)
     if (sessionPath !== undefined) {
       // Reuse the process that already owns this file. Opening it in a second
       // OMP process can trigger lock-conflict forking; normal resume itself
-      // does not imply a new session identity.
-      const existing = this.getForSession(sessionPath)
-      if (existing && this.sessionMutations.has(existing.runtimeId)) throw new Error('Session identity is being changed')
-      if (existing && !this.retiringRuntimes.has(existing.runtimeId)) return existing
+      // does not imply a new session identity. Only a post-handshake runtime
+      // qualifies, so a caller never receives a pre-handshake snapshot.
+      const existing = this.readyRuntimeForSession(sessionPath)
+      if (existing) return this.reuseReadyRuntime(existing, interactive, ownerId)
     }
+    // The selection stays per caller: a joiner never inherits the owner's model
+    // claim, and a spawn validates it exactly as before.
+    const request = await this.readStartRequest(options)
+    this.requireOpen()
+    if (sessionPath === undefined) return this.spawnRuntime({ executable, cwd, request, interactive, ownerId })
+    const key = canonicalSessionPath(sessionPath)
+    for (let attempt = 0; ; attempt += 1) {
+      if (attempt >= MAX_LAUNCH_ATTEMPTS) throw new Error('The session is already being started by another caller')
+      await this.retireStaleRuntimeForSession(key)
+      const ready = this.readyRuntimeForSession(key)
+      if (ready) return this.reuseReadyRuntime(ready, interactive, ownerId)
+      const decision = this.launches.begin(key, { interactive, ownerId, revision: this.runtimeEnvironmentRevision })
+      if (decision.kind === 'owner') {
+        try {
+          return await this.spawnRuntime({ executable, cwd, sessionPath, request, interactive, ownerId, launch: decision.launch })
+        } catch (error) {
+          // No automatic retry: the slot is freed so a later manual start can
+          // spawn cleanly.
+          decision.launch.fail(error)
+          throw error
+        }
+      }
+      if (decision.kind === 'join') {
+        // Settles only after the owner's handshake, decoration and host tools; a
+        // failed owner rejects this caller with the same error.
+        const info = await decision.ticket.ready
+        const joined = this.runtimes.get(info.runtimeId)
+        if (!joined || this.startingRuntimes.has(info.runtimeId)) continue
+        if (!this.isCurrentEnvironment(joined.runtimeId)) {
+          // A capability/settings change landed while this launch was in
+          // flight. A busy turn keeps the child; an idle stale child must be
+          // retired before the caller can start a fresh environment.
+          if (joined.snapshot().isStreaming) return this.reuseReadyRuntime(joined, interactive, ownerId)
+          const retired = await this.retireForCheckout(joined).catch(() => false)
+          if (!retired) throw new Error('The session runtime could not be refreshed')
+          continue
+        }
+        return this.reuseReadyRuntime(joined, interactive, ownerId)
+      }
+      // Different audience (for example the scheduler while the renderer is
+      // starting the same session): wait for that launch instead of opening the
+      // file a second time, then re-evaluate the ready gate.
+      const info = await decision.ticket.ready.catch(() => undefined)
+      if (info) {
+        const joined = this.runtimes.get(info.runtimeId)
+        if (joined && !this.startingRuntimes.has(info.runtimeId)) {
+          if (!this.isCurrentEnvironment(joined.runtimeId)) {
+            if (joined.snapshot().isStreaming) return this.reuseReadyRuntime(joined, interactive, ownerId)
+            const retired = await this.retireForCheckout(joined).catch(() => false)
+            if (!retired) throw new Error('The session runtime could not be refreshed')
+            continue
+          }
+          return this.reuseReadyRuntime(joined, interactive, ownerId)
+        }
+      }
+    }
+  }
+
+  /**
+   * Hand a caller the resident runtime for its session. Reuse keeps the existing
+   * semantics (no model is applied to a live runtime). Host tools are repaired
+   * only for an interactive owner that has none — a runtime created by an
+   * unattended launch must not stay without desktop tools for the window that
+   * opened it — while an existing interactive owner is never transferred.
+   */
+  private async reuseReadyRuntime(runtime: RpcRuntime, interactive: boolean, ownerId?: number): Promise<RuntimeInfo> {
+    if (this.retiringRuntimes.has(runtime.runtimeId)) throw new Error('Runtime is being retired')
+    if (this.quarantinedRuntimes.has(runtime.runtimeId)) throw new Error('Runtime is quarantined after a session identity change')
+    if (!this.isCurrentEnvironment(runtime.runtimeId)) throw new Error('Runtime environment is stale')
+    if (interactive && ownerId !== undefined && !this.hasInteractiveHostTools(runtime.runtimeId)) {
+      await this.registerHostTools(runtime, ownerId)
+    }
+    return runtime.snapshot()
+  }
+
+  /** Whether a runtime still carries a live interactive host-tool registration. */
+  private hasInteractiveHostTools(runtimeId: string): boolean {
+    const registeredOwner = this.hostToolOwnerByRuntimeId.get(runtimeId)
+    if (registeredOwner === undefined) return false
+    if (!this.hostOpenUrl) return true
+    // A closed window's registration is revoked in the service; the runtime then
+    // has no interactive owner and may be repaired for the caller that reuses it.
+    if (this.hostOpenUrl.snapshot(runtimeId, registeredOwner).registrationGeneration === 0) {
+      this.hostToolOwnerByRuntimeId.delete(runtimeId)
+      return false
+    }
+    return true
+  }
+
+  /** A resident runtime for the session that already finished its handshake. */
+  private readyRuntimeForSession(sessionPath: string): RpcRuntime | undefined {
+    const wanted = canonicalSessionPath(sessionPath)
+    return [...this.runtimes.values()].find((runtime) => {
+      if (this.startingRuntimes.has(runtime.runtimeId)) return false
+      if (this.retiringRuntimes.has(runtime.runtimeId)) return false
+      if (!this.isCurrentEnvironment(runtime.runtimeId)) return false
+      const sessionFile = runtime.snapshot().sessionFile
+      // Before the handshake reports the authoritative file the resume path is
+      // the only identity; a still-starting child never reaches this point.
+      if (sessionFile === undefined) return this.startSessionPathById.get(runtime.runtimeId) === wanted
+      return canonicalSessionPath(sessionFile) === wanted
+    })
+  }
+
+  /** Retire an idle stale-environment child, or refuse to spawn beside a busy one. */
+  private async retireStaleRuntimeForSession(sessionPath: string): Promise<void> {
+    const wanted = canonicalSessionPath(sessionPath)
+    const stale = [...this.runtimes.values()].find((runtime) => {
+      if (this.startingRuntimes.has(runtime.runtimeId)) return false
+      if (this.retiringRuntimes.has(runtime.runtimeId)) return false
+      if (this.quarantinedRuntimes.has(runtime.runtimeId)) return false
+      if (this.isCurrentEnvironment(runtime.runtimeId)) return false
+      const sessionFile = runtime.snapshot().sessionFile
+      return (sessionFile !== undefined && canonicalSessionPath(sessionFile) === wanted)
+        || this.startSessionPathById.get(runtime.runtimeId) === wanted
+    })
+    if (!stale) return
+    if (stale.snapshot().isStreaming) throw new Error('The session runtime is still busy in an older environment')
+    const retired = await this.retireForCheckout(stale).catch(() => false)
+    if (!retired) throw new Error('The stale session runtime could not be retired')
+  }
+
+  /** A runtime whose native identity mutation still owns the requested source file. */
+  private mutatingRuntimeForSession(sessionPath: string): RpcRuntime | undefined {
+    const wanted = canonicalSessionPath(sessionPath)
+    return [...this.runtimes.values()].find((runtime) => {
+      if (!this.sessionMutations.has(runtime.runtimeId)) return false
+      const current = runtime.snapshot().sessionFile
+      return (current !== undefined && canonicalSessionPath(current) === wanted)
+        || this.startSessionPathById.get(runtime.runtimeId) === wanted
+    })
+  }
+
+  /** Whether a runtime was spawned with the current capability/environment revision. */
+  private isCurrentEnvironment(runtimeId: string): boolean {
+    return (this.runtimeEnvironmentRevisions.get(runtimeId) ?? this.runtimeEnvironmentRevision) >= this.runtimeEnvironmentRevision
+  }
+
+  /** Validate the caller's model/thinking/fast before it joins or spawns anything. */
+  private async readStartRequest(options: JsonObject): Promise<StartRequest> {
     let selectedModel: PrimeModelDescriptor | undefined
     let modelId: string | undefined
     if (options.model !== undefined) {
@@ -170,7 +330,25 @@ export class AgentRpcManager {
       if (selectedModel && (thinking === 'auto' ? !selectedModel.reasoning : !selectedModel.availableThinkingLevels.includes(thinking))) throw new TypeError(`${selectedModel.name} does not support ${thinking} reasoning`)
     }
     if (options.fast !== undefined && typeof options.fast !== 'boolean') throw new TypeError('fast must be a boolean')
-    this.requireOpen()
+    return { selectedModel, modelId, thinking, fast: options.fast === true }
+  }
+
+  /**
+   * Spawn, handshake, decorate and register one child. The launch (when this
+   * caller owns one) is published only after every readiness step, so a joiner
+   * can never observe a pre-handshake runtime.
+   */
+  private async spawnRuntime(input: {
+    executable: string
+    cwd: string
+    sessionPath?: string
+    request: StartRequest
+    interactive: boolean
+    ownerId?: number
+    launch?: OwnedLaunch
+  }): Promise<RuntimeInfo> {
+    const { executable, cwd, sessionPath, request, interactive, ownerId, launch } = input
+    const { selectedModel, modelId, thinking, fast } = request
     const runtimeEnvironmentRevision = this.runtimeEnvironmentRevision
     const runtimeEnvironment = this.runtimeEnvironmentProvider({ cwd, sessionPath, interactive })
     let runtime: RpcRuntime | undefined
@@ -226,6 +404,7 @@ export class AgentRpcManager {
             this.startSessionPathById.delete(closed.runtimeId)
             this.durableIdentityByRuntimeId.delete(closed.runtimeId)
             this.quarantinedRuntimes.delete(closed.runtimeId)
+            this.hostToolOwnerByRuntimeId.delete(closed.runtimeId)
             this.idleSince.delete(closed.runtimeId)
             // Normal close must release the environment generation exactly like
             // the failed-start path does; a leftover entry would keep a retired
@@ -252,7 +431,7 @@ export class AgentRpcManager {
       if (runtimeEnvironmentRevision < this.runtimeEnvironmentRevision) void this.retireWhenIdle(runtime)
       await runtime.handshake()
       await this.decorate(runtime)
-      if (runtime.snapshot().fastModeSupported && options.fast === true) await runtime.setServiceTier('priority', true)
+      if (runtime.snapshot().fastModeSupported && fast) await runtime.setServiceTier('priority', true)
       if (interactive && ownerId !== undefined && this.hostOpenUrl) {
         await this.registerHostTools(runtime, ownerId)
       }
@@ -264,6 +443,8 @@ export class AgentRpcManager {
       } catch { /* capability binding must never fail a start */ }
       this.startingRuntimes.delete(runtime.runtimeId)
       this.scheduleIdleRetirement()
+      // The only ready-publication point in the system.
+      launch?.publish(runtime.snapshot())
       return runtime.snapshot()
     } catch (error) {
       if (runtime) {
@@ -276,6 +457,7 @@ export class AgentRpcManager {
         this.startSessionPathById.delete(runtime.runtimeId)
         this.durableIdentityByRuntimeId.delete(runtime.runtimeId)
         this.quarantinedRuntimes.delete(runtime.runtimeId)
+        this.hostToolOwnerByRuntimeId.delete(runtime.runtimeId)
         await this.stopRuntime(runtime).catch(() => false)
       }
       // Admission/constructor failures have no close event; failed handshakes
@@ -567,13 +749,11 @@ export class AgentRpcManager {
     return this.stopRuntime(runtime)
   }
 
-  /** Renderer-visible runtime list. Retiring/quarantined runtimes are excluded:
-   * commands against them fail by design, so advertising them only invites the
-   * renderer to adopt one inside the ~30s stop window and surface a raw
-   * "Runtime is being retired" error — the idle-prompt path must instead see
-   * them as gone and transparently start a fresh runtime. */
+  /** Renderer-visible runtime list. Starting, retiring, and quarantined runtimes
+   * are excluded: a caller must wait for the launch ticket instead of adopting
+   * a pre-handshake snapshot or a runtime inside its stop window. */
   list(): RuntimeInfo[] {
-    return [...this.runtimes.values()].filter((runtime) => !this.retiringRuntimes.has(runtime.runtimeId) && !this.quarantinedRuntimes.has(runtime.runtimeId)).map((runtime) => runtime.snapshot())
+    return [...this.runtimes.values()].filter((runtime) => !this.startingRuntimes.has(runtime.runtimeId) && !this.retiringRuntimes.has(runtime.runtimeId) && !this.quarantinedRuntimes.has(runtime.runtimeId)).map((runtime) => runtime.snapshot())
   }
 
   /** Cheap ownership probe for IPC routing; requireRuntime keeps the authoritative not-found error. */
@@ -769,6 +949,9 @@ export class AgentRpcManager {
 
   private async registerHostTools(runtime: RpcRuntime, ownerId: number): Promise<void> {
     if (!this.hostOpenUrl) return
+    // Record before the round trip so a concurrent interactive caller cannot
+    // register the same runtime for a second owner.
+    this.hostToolOwnerByRuntimeId.set(runtime.runtimeId, ownerId)
     const generation = await this.hostOpenUrl.beginInteractiveRegistration(runtime.runtimeId, ownerId)
     let outcome: DesktopOpenUrlRegistrationOutcome = { ok: false }
     try {
@@ -780,12 +963,16 @@ export class AgentRpcManager {
     } catch {
       outcome = { ok: false }
     }
-    this.hostOpenUrl.finishRegistration({
+    const status = this.hostOpenUrl.finishRegistration({
       runtimeId: runtime.runtimeId,
       registrationGeneration: generation,
       ownerId,
       outcome,
     })
+    if (status !== 'registered' && this.hostToolOwnerByRuntimeId.get(runtime.runtimeId) === ownerId) {
+      const snapshot = this.hostOpenUrl.snapshot(runtime.runtimeId, ownerId)
+      if (snapshot.registrationGeneration === generation) this.hostToolOwnerByRuntimeId.delete(runtime.runtimeId)
+    }
   }
 
   private handleHostToolFrame(runtimeId: string, frame: RpcObject): void {

@@ -106,7 +106,7 @@ export interface BucketedMetadataAccumulator {
   records: number
 }
 
-function idFromBucketedFileName(filePath: string): string {
+export function idFromBucketedFileName(filePath: string): string {
   const base = basename(filePath, '.jsonl')
   const separator = base.indexOf('_')
   return separator >= 0 ? base.slice(separator + 1) : base
@@ -128,7 +128,7 @@ function createBucketedAccumulator(filePath: string, fileStat: Stats): BucketedM
   }
 }
 
-function bucketedMetadataFromAccumulator(state: BucketedMetadataAccumulator, filePath: string, fallbackUpdated: string): SessionMetadata {
+export function bucketedMetadataFromAccumulator(state: BucketedMetadataAccumulator, filePath: string, fallbackUpdated: string): SessionMetadata {
   return {
     id: state.id,
     filePath,

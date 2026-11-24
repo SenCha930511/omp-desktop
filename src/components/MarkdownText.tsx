@@ -2,15 +2,9 @@ import { Check, Copy } from 'lucide-react'
 import { type ComponentPropsWithoutRef, Fragment, isValidElement, type MouseEvent, memo, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import type { Components, ExtraProps } from 'react-markdown'
 import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
-import remarkMath from 'remark-math'
-import rehypeKatex from 'rehype-katex'
-import type { PluggableList } from 'unified'
-// KaTeX ships its own stylesheet and fonts; the bundler emits both, and the
-// omp-desktop:// protocol already serves .woff2 with the right MIME type.
-import 'katex/dist/katex.min.css'
+import { useMarkdownMathPlugins } from './markdown-math-plugins'
 import { writeClipboardText } from '@/lib/clipboard'
-import { rehypeKatexCjkClass } from '@/lib/katex-cjk'
+import { splitMarkdownBlocks } from '@/lib/markdown-blocks'
 import { normalizeLatexDelimiters } from '@/lib/markdown-math'
 import { resolveWorkspaceFilePath, useMarkdownWorkspace } from '@/lib/markdown-workspace'
 import { openExternalUrl } from '@/lib/desktop-actions'
@@ -235,11 +229,6 @@ const MarkdownCodeBlock = memo(function MarkdownCodeBlock({ node: _node, childre
   )
 })
 
-const markdownPlugins: PluggableList = [[remarkGfm, { singleTilde: false }], remarkMath]
-/** Theme-matched KaTeX rendering: errors reuse the danger color, and unusual
- *  Unicode input stays silent instead of spamming the console. */
-const katexOptions = { errorColor: 'var(--danger)', strict: false } as const
-
 /**
  * Each block resolves its own base direction from its first strong character.
  * The browser skips descendants that carry their own `dir`, so a paragraph
@@ -294,6 +283,15 @@ export function advanceStreamingParse(state: StreamingParseState, textLength: nu
   return { state, delayMs: STREAMING_PARSE_INTERVAL_MS - elapsed }
 }
 
+const MarkdownBlock = memo(function MarkdownBlock({ text }: { text: string }) {
+  const { plugins } = useMarkdownMathPlugins(text.includes('$'))
+  return (
+    <ReactMarkdown remarkPlugins={plugins.remarkPlugins} rehypePlugins={plugins.rehypePlugins} skipHtml urlTransform={markdownUrlTransform} components={markdownComponents}>
+      {text}
+    </ReactMarkdown>
+  )
+})
+
 /** Render model-authored Markdown without enabling raw HTML or remote images. */
 export const MarkdownText = memo(function MarkdownText({ text, streaming = false }: MarkdownTextProps) {
   const parseStateRef = useRef<StreamingParseState>({ boundary: text.length, lastParseAt: 0 })
@@ -327,16 +325,10 @@ export const MarkdownText = memo(function MarkdownText({ text, streaming = false
   const boundary = streaming ? Math.min(parseStateRef.current.boundary, text.length) : text.length
   const parsedText = boundary === text.length ? text : text.slice(0, boundary)
   const normalizedText = useMemo(() => normalizeLatexDelimiters(parsedText), [parsedText])
-  // Keep the committed Markdown subtree intact between parses. Rendering the
-  // unparsed suffix as a sibling block makes punctuation and partial words
-  // jump onto separate lines while tokens are still arriving.
-  const markdown = useMemo(
-    () => (
-      <ReactMarkdown remarkPlugins={markdownPlugins} rehypePlugins={[[rehypeKatex, katexOptions], rehypeKatexCjkClass]} skipHtml urlTransform={markdownUrlTransform} components={markdownComponents}>
-        {normalizedText}
-      </ReactMarkdown>
-    ),
-    [normalizedText],
-  )
+  // Committed blocks keep their parsed React tree between streaming ticks;
+  // only the tail block re-parses. The settled render is one block, so the
+  // final output converges to the same single-pass parse.
+  const blocks = useMemo(() => (streaming ? splitMarkdownBlocks(normalizedText) : [normalizedText]), [streaming, normalizedText])
+  const markdown = useMemo(() => blocks.map((block, index) => <MarkdownBlock key={index} text={block} />), [blocks])
   return <div className="prose">{markdown}</div>
 })

@@ -1,5 +1,5 @@
 import { Fragment, memo } from 'react'
-import { type SyntaxTokenKind, tokenizeSyntaxText } from '@/lib/syntax-text'
+import { MAX_SYNTAX_HIGHLIGHTS, type SyntaxTokenKind, tokenizeSyntaxText } from '@/lib/syntax-text'
 
 export type { SyntaxTokenKind }
 
@@ -8,23 +8,12 @@ export interface SyntaxToken {
   text: string
 }
 
-// Bound styled fragments even though the shared tokenizer scans the admitted
-// 200k-character tool output once for classification.
-export const MAX_SYNTAX_HIGHLIGHTS = 10_000
+export { MAX_SYNTAX_HIGHLIGHTS }
 
 export function tokenizeSyntax(text: string): SyntaxToken[] {
-  const tokens = tokenizeSyntaxText(text)
+  const tokens = tokenizeSyntaxText(text, MAX_SYNTAX_HIGHLIGHTS)
   const bounded: SyntaxToken[] = []
-  let highlights = 0
-  for (let index = 0; index < tokens.length; index += 1) {
-    const token = tokens[index]
-    if (token.kind !== 'plain') {
-      if (highlights >= MAX_SYNTAX_HIGHLIGHTS) {
-        bounded.push({ kind: 'plain', text: text.slice(token.start) })
-        break
-      }
-      highlights += 1
-    }
+  for (const token of tokens) {
     const previous = bounded.at(-1)
     if (token.kind === 'plain' && previous?.kind === 'plain') previous.text += token.text
     else bounded.push({ kind: token.kind, text: token.text })

@@ -275,7 +275,7 @@ export function parseArchitectures(output) {
 
 export function assertAsarLayout(entries) {
   const normalized = new Set(entries.map((entry) => entry.replaceAll('\\', '/').replace(/^\//, '')))
-  const required = ['out/main/index.js', 'out/preload/index.js', 'out/renderer/index.html']
+  const required = ['out/main/index.js', 'out/main/omp-jsonl-core.wasm', 'out/preload/index.js', 'out/renderer/index.html']
   const missing = required.filter((entry) => !normalized.has(entry))
   if (missing.length) throw new Error(`ASAR is missing required runtime entries: ${missing.join(', ')}`)
   const forbiddenPrefixes = ['node_modules/lucide-react/', 'node_modules/react/', 'node_modules/react-dom/', 'node_modules/react-markdown/', 'node_modules/remark-gfm/']

@@ -1,8 +1,17 @@
 import type { SessionCatalogUpdate, SessionRecord } from '../../../src/types/api'
 
+function sameValue(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true
+  if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false
+  for (let index = 0; index < left.length; index += 1) {
+    if (!Object.is(left[index], right[index])) return false
+  }
+  return true
+}
+
 function unchanged(previous: SessionRecord | undefined, next: SessionRecord): boolean {
   return previous !== undefined && Object.keys(previous).length === Object.keys(next).length
-    && (Object.keys(next) as (keyof SessionRecord)[]).every((key) => Object.is(previous[key], next[key]))
+    && (Object.keys(next) as (keyof SessionRecord)[]).every((key) => sameValue(previous[key], next[key]))
 }
 
 /** Publishes a coherent catalog revision; lagging clients recover with a full snapshot. */

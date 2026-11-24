@@ -34,6 +34,7 @@ import { useProviderAccounts } from '@/hooks/useProviderAccounts'
 import { useProviderCatalog } from '@/hooks/useProviderCatalog'
 import { useSessionSettings } from '@/hooks/useSessionSettings'
 import { useSidebarActions } from '@/hooks/useSidebarActions'
+import { useStartupPrewarm } from '@/hooks/useStartupPrewarm'
 import { useStableCallback } from '@/hooks/useStableCallback'
 import { useToast } from '@/hooks/useToast'
 import { useWorkspaceActions } from '@/hooks/useWorkspaceActions'
@@ -524,6 +525,18 @@ export default function App() {
     sessionHasOpenExtensionUi: extension.hasOpenRequestForSession,
     onHarnessSwitch,
     reportError,
+  })
+  // One post-paint launch of the bootstrap-selected session, so the first
+  // prompt joins a child that is already negotiating instead of paying the
+  // whole local resume cost. Never attaches, never prompts, never reports.
+  useStartupPrewarm({
+    bridge,
+    initialized,
+    harness: activeHarness,
+    session: activeSession,
+    cwd: activeCwd,
+    projectInferred: activeProject?.inferred,
+    attachedRuntime: workspace.runtime,
   })
   const platform = meta?.platform ?? detectRendererPlatform()
   const detectedHarnesses = useMemo(() => (meta ? HARNESS_IDS.filter((harness) => Boolean(meta.harnesses[harness].path)) : []), [meta])

@@ -1,5 +1,5 @@
 import { createReadStream, type Stats } from 'node:fs'
-import { stat } from 'node:fs/promises'
+import { open, readFile, stat } from 'node:fs/promises'
 import { basename } from 'node:path'
 import type { Readable } from 'node:stream'
 import type { SessionRecord, SessionStatus } from '../../../src/types/api'
@@ -221,11 +221,26 @@ export interface SessionMetadataReaderIo {
   inspect(path: string): Promise<Stats>
   /** Opens a byte-range read of `[start, end]` (inclusive), mirroring createReadStream. */
   openStream(path: string, start: number, end: number): Readable
+  /** Reads at most `length` bytes from the file start; used for fixed prefix slots. */
+  readPrefix?(path: string, length: number): Promise<Buffer | undefined>
+  /** Reads the whole file for the cold metadata fast path. */
+  readAll?(path: string): Promise<Buffer>
 }
 
 export const nodeMetadataReaderIo: SessionMetadataReaderIo = {
   inspect: stat,
   openStream: (path, start, end) => createReadStream(path, { start, end }),
+  readPrefix: async (path, length) => {
+    const handle = await open(path, 'r')
+    try {
+      const buffer = Buffer.allocUnsafe(length)
+      const { bytesRead } = await handle.read(buffer, 0, length, 0)
+      return bytesRead > 0 ? buffer.subarray(0, bytesRead) : undefined
+    } finally {
+      await handle.close().catch(() => undefined)
+    }
+  },
+  readAll: (path) => readFile(path),
 }
 
 /**

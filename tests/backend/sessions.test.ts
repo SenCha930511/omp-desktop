@@ -35,10 +35,10 @@ function setup(
   return { root, project, service, store }
 }
 
-function writeSession(path: string, project: string, id: string, timestamp = '2025-01-01T00:00:00.000Z'): void {
+function writeSession(path: string, project: string, id: string, timestamp = '2025-01-01T00:00:00.000Z', title = id): void {
   writeFileSync(path, [
     JSON.stringify({ type: 'session', id, cwd: project, timestamp }),
-    JSON.stringify({ type: 'message', id: `${id}-message`, parentId: null, message: { role: 'user', content: id, timestamp } }),
+    JSON.stringify({ type: 'message', id: `${id}-message`, parentId: null, message: { role: 'user', content: title, timestamp } }),
     '',
   ].join('\n'))
 }
@@ -151,6 +151,58 @@ describe('SessionService catalog scaling', () => {
     const invalidate = vi.spyOn(catalog, 'invalidateLiveCatalog')
     expect(await service.list(project, false, true)).toMatchObject([{ id: 'new-session' }])
     expect(invalidate).toHaveBeenCalledOnce()
+  })
+
+  it('returns fresh records without retaining runtime status or caller mutations', async () => {
+    const { root, project, service } = setup()
+    const file = join(root, 'fresh-record.jsonl')
+    writeSession(file, project, 'fresh-record')
+    service.bindRuntimeHooks({
+      get: () => ({ isStreaming: true }),
+      stop: async () => undefined,
+      rename: async () => false,
+    })
+
+    const [running] = await service.list()
+    expect(running.status).toBe('running')
+    const expected = { ...running, status: 'idle' }
+    service.bindRuntimeHooks({
+      get: () => undefined,
+      stop: async () => undefined,
+      rename: async () => false,
+    })
+    running.title = 'caller mutation'
+    running.archived = true
+    running.pinned = true
+
+    const [idle] = await service.list()
+    expect(idle.status).toBe('idle')
+    expect([idle]).toEqual([expected])
+  })
+
+  it('invalidates normalized paths when a session metadata object is replaced', async () => {
+    const { root, project, service } = setup()
+    const newProject = join(dirname(project), 'replacement-project'); mkdirSync(newProject)
+    const file = join(root, 'replacement.jsonl')
+    const originalTimestamp = '2025-01-01T00:00:00.000Z'
+    const replacementTimestamp = '2025-02-01T00:00:00.000Z'
+    writeSession(file, project, 'replacement', originalTimestamp, 'Original title')
+
+    const warmed = await service.list(project)
+    expect(warmed).toMatchObject([{ id: 'replacement', title: 'Original title', createdAt: originalTimestamp }])
+    expect(warmed[0]?.filePath).toBe(realpathSync(file))
+    expect(warmed[0]?.projectPath).toBe(realpathSync(project))
+
+    writeSession(file, newProject, 'replacement', replacementTimestamp, 'Replacement title')
+    // An unchanged prepared snapshot need not refresh; force publishes the new
+    // metadata identity even though the canonical session path is unchanged.
+    const fresh = await service.list(newProject, false, true)
+    expect(fresh).toMatchObject([{
+      id: 'replacement', title: 'Replacement title', createdAt: replacementTimestamp, lastUserMessageAt: replacementTimestamp,
+    }])
+    expect(fresh[0]?.filePath).toBe(realpathSync(file))
+    expect(fresh[0]?.projectPath).toBe(realpathSync(newProject))
+    expect(await service.list(project, false, true)).toEqual([])
   })
 
   it('coalesces concurrent lists and reuses metadata by canonical path, mtime, and size', async () => {

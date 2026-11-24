@@ -1,0 +1,21 @@
+{
+  "capturedAt": "2026-11-23T23:10:00Z",
+  "commit": "465cccd",
+  "node": "v24.22.3",
+  "commands": {
+    "pure": "node scripts/performance/fast-anything-budget.mjs",
+    "transcript": "node scripts/performance/transcript-parse-budget.mjs"
+  },
+  "pure": [
+    { "name": "trajectory-500-frames", "iterations": 1, "medianMs": 2502.372, "p95Ms": 2502.372, "totalMs": 2502.372 },
+    { "name": "search-1000-messages-200-queries", "iterations": 200, "medianMs": 0.134, "p95Ms": 0.184, "totalMs": 18.774 },
+    { "name": "syntax-200kb-100-scans", "iterations": 100, "medianMs": 2.529, "p95Ms": 5.25, "totalMs": 301.408 },
+    { "name": "sidebar-5000-recent-100", "iterations": 100, "medianMs": 1.126, "p95Ms": 1.242, "totalMs": 113.475 },
+    { "name": "catalog-5000-names-100", "iterations": 100, "medianMs": 2.859, "p95Ms": 3.348, "totalMs": 292.101 },
+    { "name": "hud-400-messages-1000", "iterations": 1000, "medianMs": 0.012, "p95Ms": 0.026, "totalMs": 16.723 }
+  ],
+  "transcript": [
+    { "name": "transcript-2000-tool-results", "iterations": 3, "medianMs": 56.65, "p95Ms": 62.724, "totalMs": 172.875 },
+    { "name": "transcript-50mb-cold-open", "iterations": 1, "medianMs": 107.168, "p95Ms": 107.168, "totalMs": 107.168 }
+  ]
+}
