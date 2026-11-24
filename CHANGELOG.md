@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.3.21 — 2026-11-24
+
+### Added
+
+- Startup prewarm for the selected durable OMP session, using the interactive launch path without creating a session, sending a prompt, or generating model output.
+- A Rust/WASM OMP metadata scanner with a TypeScript fallback, packaged WASM verification, and large-session streaming reads.
+- CPU, memory, transcript, catalog, math, and bundle-size improvements across startup, project scans, search, and rendering.
+
+### Changed
+
+- The workspace becomes usable before the prewarm handshake finishes, and concurrent starts for the same session converge on one ready runtime.
+- Provider and composer alignment preserves restored model, effort, and fast choices while the runtime becomes ready.
+- Oversized PNG, JPEG, and WebP prompt attachments are fitted to the RPC frame before sending; the main-process frame guard remains the final boundary.
+
+### Fixed
+
+- Large images no longer fail with `command is too large for the RPC transport`.
+- Concurrent and deferred session starts no longer leak duplicate children, attach pre-handshake runtimes to renderer discovery, or lose host-tool registration after an unavailable acknowledgement.
+- WASM scanner cleanup, catalog array comparison, syntax highlighting budgets, and transcript insertion paths were hardened.
+
+**Full Changelog**: https://github.com/SenCha930511/omp-desktop/compare/v1.3.20...v1.3.21
+
 ## 1.3.20 — 2026-11-23
 
 ### Added

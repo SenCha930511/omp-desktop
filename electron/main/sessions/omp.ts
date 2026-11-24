@@ -1,22 +1,26 @@
-import { closeSync, openSync, readSync, writeSync } from 'node:fs'
+import { closeSync, openSync, readSync, writeSync, type Stats } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { isRecord } from '../validation'
 import type { SessionServiceOptions } from '../sessions'
 import type { SessionCatalogIo } from './catalog'
 import {
+  bucketedMetadataFromAccumulator,
   createBranchSummaryTranscriptReader,
   createBucketedCatalogIo,
   createBucketedMetadataParser,
+  idFromBucketedFileName,
   isBucketedSessionPath,
   timestampFromBucketedSessionName,
 } from './bucketed'
 import {
   createIncrementalMetadataReader,
   nodeMetadataReaderIo,
+  type SessionMetadata,
   type SessionMetadataReader,
   type SessionMetadataReaderIo,
 } from './metadata'
+import { ompWasmEnabled, scanOmpMetadataBytes } from './omp-wasm'
 import { compactText, type TranscriptFileReader } from './transcript'
 
 /**
@@ -32,6 +36,10 @@ import { compactText, type TranscriptFileReader } from './transcript'
  * record shapes lives in `./bucketed`.
  */
 export const OMP_TITLE_SLOT_BYTES = 256
+// The WASM path wins on the catalog's many small files. Above 4 MiB the
+// streaming TS reader is at least as fast, so large sessions stay on it.
+const MAX_WASM_FAST_BYTES = 4 * 1024 * 1024
+const MAX_FAST_CACHE_ENTRIES = 5_000
 
 export function ompSessionRoot(): string {
   return join(homedir(), '.omp', 'agent', 'sessions')
@@ -60,14 +68,21 @@ const ompMetadataParser = createBucketedMetadataParser((state, value) => {
 })
 
 async function readOmpTitleSlot(io: SessionMetadataReaderIo, filePath: string): Promise<string | undefined> {
-  const stream = io.openStream(filePath, 0, OMP_TITLE_SLOT_BYTES - 1)
-  const chunks: Buffer[] = []
-  try {
-    for await (const chunk of stream) chunks.push(typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk as Buffer)
-  } finally {
-    stream.destroy()
+  let slot: Buffer
+  if (io.readPrefix) {
+    const prefix = await io.readPrefix(filePath, OMP_TITLE_SLOT_BYTES)
+    if (!prefix) return undefined
+    slot = prefix
+  } else {
+    const stream = io.openStream(filePath, 0, OMP_TITLE_SLOT_BYTES - 1)
+    const chunks: Buffer[] = []
+    try {
+      for await (const chunk of stream) chunks.push(typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk as Buffer)
+    } finally {
+      stream.destroy()
+    }
+    slot = Buffer.concat(chunks)
   }
-  const slot = Buffer.concat(chunks)
   const newline = slot.indexOf(0x0a)
   if (newline < 0) return undefined
   let value: unknown
@@ -127,9 +142,58 @@ export function writeOmpTitleSlot(filePath: string, title: string): boolean {
  */
 export function createOmpSessionMetadataReader(io: SessionMetadataReaderIo = nodeMetadataReaderIo): SessionMetadataReader {
   const readTail = createIncrementalMetadataReader(ompMetadataParser, io, OMP_TITLE_SLOT_BYTES)
+  const fastCache = new Map<string, { size: number; mtimeMs: number; metadata: SessionMetadata }>()
+  const rememberFast = (filePath: string, fileStat: Stats, metadata: SessionMetadata): void => {
+    fastCache.delete(filePath)
+    fastCache.set(filePath, { size: fileStat.size, mtimeMs: fileStat.mtimeMs, metadata })
+    while (fastCache.size > MAX_FAST_CACHE_ENTRIES) {
+      const oldest = fastCache.keys().next().value
+      if (oldest === undefined) break
+      fastCache.delete(oldest)
+    }
+  }
+  const fastRead = async (filePath: string, fileStat: Stats): Promise<SessionMetadata | undefined> => {
+    if (!io.readAll || !ompWasmEnabled() || fileStat.size > MAX_WASM_FAST_BYTES) return undefined
+    let bytes: Buffer
+    try {
+      bytes = await io.readAll(filePath)
+    } catch {
+      return undefined
+    }
+    if (bytes.byteLength > MAX_WASM_FAST_BYTES) return undefined
+    const nameTimestamp = timestampFromBucketedSessionName(filePath)
+    const result = await scanOmpMetadataBytes(bytes, {
+      id: idFromBucketedFileName(filePath),
+      createdAt: nameTimestamp !== undefined ? new Date(nameTimestamp).toISOString() : fileStat.birthtime.toISOString(),
+      updatedAt: fileStat.mtime.toISOString(),
+    }, OMP_TITLE_SLOT_BYTES)
+    if (result.status === 'error') {
+      if (result.reason === 'too-many-records') throw new Error('Session file has too many records')
+      if (result.reason === 'record-too-large') throw new Error('JSONL record exceeded the maximum frame size')
+      return undefined
+    }
+    if (result.status !== 'ok') return undefined
+    const metadata = bucketedMetadataFromAccumulator(result.accumulator, filePath, fileStat.mtime.toISOString())
+    rememberFast(filePath, fileStat, metadata)
+    return metadata
+  }
   return async (filePath, knownStat) => {
-    const [metadata, title] = await Promise.all([readTail(filePath, knownStat), readOmpTitleSlot(io, filePath)])
+    let fileStat: Stats
+    try {
+      fileStat = knownStat ?? await io.inspect(filePath)
+    } catch (error) {
+      fastCache.delete(filePath)
+      throw error
+    }
+    const cached = fastCache.get(filePath)
+    if (cached && cached.size === fileStat.size && cached.mtimeMs === fileStat.mtimeMs) return cached.metadata
+    if (!cached) {
+      const fast = await fastRead(filePath, fileStat)
+      if (fast) return fast
+    }
+    const [metadata, title] = await Promise.all([readTail(filePath, fileStat), readOmpTitleSlot(io, filePath)])
     if (title !== undefined) metadata.title = compactText(title, 100)
+    rememberFast(filePath, fileStat, metadata)
     return metadata
   }
 }

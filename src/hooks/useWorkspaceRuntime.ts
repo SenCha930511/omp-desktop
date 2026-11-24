@@ -26,7 +26,7 @@ import {
   prependOlderPage,
   type HistoryPaginationState,
 } from '@/lib/session-pagination'
-import { findRuntimeForWorkspace, workspaceCwd } from '@/lib/workspace'
+import { findAdoptableRuntime, type ComposerSelection, workspaceCwd } from '@/lib/workspace'
 import { readPendingQueues, savePendingQueues, type WithdrawnQueue } from '@/lib/queued-prompt-storage'
 import { parseSessionActionSnapshot } from '@/lib/session-actions'
 import type { HarnessId, MessagePart, DesktopApi, ProjectRecord, PromptDeliveryIntent, QueuedPrompt, RuntimeInfo, SessionActionSnapshot, SessionRecord, TranscriptMessage } from '@/types/api'
@@ -330,14 +330,17 @@ export function useWorkspaceRuntime({
   }, [adoptSessionId, runtime, sessions])
 
 
-  const reconcileRuntime = useCallback(async (generation: number) => {
+  // `selection` is the composer's current choice (read-only). An idle runtime
+  // that disagrees with it is not adopted: the prewarmed child would otherwise
+  // overwrite a model the user picked before the first prompt.
+  const reconcileRuntime = useCallback(async (generation: number, selection?: ComposerSelection | null) => {
     if (!bridge) return
     const selected = workspaceRef.current
     if (selected.generation !== generation || !selected.sessionFile) return
     try {
       const runtimes = (await bridge.agent.list()).filter((candidate) => candidate.harness === harnessRef.current)
       if (workspaceRef.current.generation !== generation) return
-      let match = findRuntimeForWorkspace(runtimes, selected.cwd, selected.sessionFile)
+      let match = findAdoptableRuntime(runtimes, selected.cwd, selected.sessionFile, selection)
       if (!match) {
         // The runtime we own now reports a different session file (a native
         // session boundary or a move). Follow the owned runtime instead of

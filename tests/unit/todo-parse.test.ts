@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { parseTodoToolResult } from '../../src/lib/todo'
+import { latestTodoPhases, parseTodoToolResult } from '../../src/lib/todo'
+import type { TranscriptMessage } from '../../src/types/api'
 
 const RESULT = `Remaining items (2):
   - task2 [in_progress] (phase A)
@@ -42,5 +43,13 @@ describe('parseTodoToolResult', () => {
   it('returns empty for unrelated tool output', () => {
     expect(parseTodoToolResult('Read 3 files from the workspace.')).toEqual([])
     expect(parseTodoToolResult('')).toEqual([])
+  })
+
+  it('reuses parsed phases for an unchanged todo part', () => {
+    const part = { type: 'toolResult' as const, name: 'todo', text: RESULT }
+    const message: TranscriptMessage = { id: 'todo', role: 'tool', parts: [part] }
+    const first = latestTodoPhases([message])
+    const second = latestTodoPhases([{ ...message, parts: [part] }])
+    expect(second).toBe(first)
   })
 })

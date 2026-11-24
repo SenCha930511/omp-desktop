@@ -1,11 +1,17 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { describe, expect, it } from 'vitest'
+import { beforeAll, describe, expect, it } from 'vitest'
 import { MarkdownText } from '../../src/components/MarkdownText'
+import { preloadMarkdownMathPlugins, readMarkdownMathPlugins } from '../../src/components/markdown-math-plugins'
 
 function render(text: string): string {
   return renderToStaticMarkup(createElement(MarkdownText, { text }))
 }
+
+beforeAll(async () => {
+  await preloadMarkdownMathPlugins()
+  expect(readMarkdownMathPlugins()).toBeDefined()
+})
 
 describe('KaTeX CJK spacing', () => {
   it('marks CJK math roots for the spacing overrides', () => {

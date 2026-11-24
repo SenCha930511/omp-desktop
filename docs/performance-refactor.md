@@ -2,6 +2,31 @@
 
 The refactor keeps OMP session files authoritative and preserves IPC sender/path authorization, atomic state persistence, and background project-script/browser ownership.
 
+## Fast-anything pass (2026-11-23)
+
+The measured pass covers streaming trajectory previews, Markdown block commits, search indexing, todo caching, main-process sorting and transcript assembly, KaTeX font trimming, and the Rust/WASM OMP metadata cold scan. See [performance-fast-anything.md](performance-fast-anything.md) for the baseline, final numbers, and deferred work.
+
+## CPU and memory pass (2026-11-24)
+
+This pass reduces repeated catalog work in the main process and defers KaTeX for ordinary Markdown. It preserves caller-owned `SessionRecord` objects, session lineage, renderer behavior, and the existing Rust/WASM metadata reader.
+
+`SessionService` caches normalized file and project paths by `SessionMetadata` identity. `list()` reuses normalized paths without changing output ownership. A caller that adds a mutable metadata reader must preserve the same invariant: objects stay unchanged after catalog publication, and a content change produces a fresh object. The cache deliberately uses weak keys instead of retaining historical sessions.
+
+KaTeX plugins and their stylesheet load after a normalized Markdown block sees a dollar delimiter. Ordinary Markdown gets a stable GFM-only configuration. Math, CJK annotations, syntax-error colors, inline code and URL security rules retain the original pipeline. A first uncached math block can show normalized Markdown before the plugin request and stylesheet finish. A load failure leaves readable Markdown, logs once, and does not retry. The shared ready cache stays alive for the renderer lifetime; it does not retain a separate parser per block.
+
+Focused headless results, using Node v24.22.3:
+
+| Workload | Before | After | Difference |
+|---|---:|---:|---:|
+| 5,000 sessions, 100 identical `SessionService.sync` calls | 679.722 ms | 394.152 ms | 42.0% less CPU |
+| Retained heap after that workload | 6,606,744 B | 6,887,872 B | 281,128 B additional |
+
+The identity cache costs bounded memory to reduce normalization CPU. These are medians from a synthetic workload, not whole-app measurements.
+
+Two paired eager/lazy Electron runs measured the ordinary-text fixture once per arm. After eight session switches, lazy KaTeX used 0.83–0.85 MiB less `JSHeapUsedSize`, and 3.5–6.6 MiB less renderer working set. Another run put one formula through the app and observed one `.katex` root, the lazy JavaScript and stylesheet, the expected WOFF2 fonts, and no renderer page errors. Ordinary text had no KaTeX resources. These runs cover the fixture, not every possible document or host.
+
+The final production build has `initialRendererBytes=1,026,840`, down from 1,307,421 bytes. The initial HTML has no eager KaTeX JavaScript or stylesheet references. The lazy build retains the same features otherwise; it is a load-timing change, not deletion of math support. The ad hoc probes used for these measurements were removed after validation.
+
 ## Verification units
 
 - [x] Enable streaming Markdown at its actual callers and defer collapsed reasoning bodies.

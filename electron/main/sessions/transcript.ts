@@ -683,23 +683,40 @@ async function loadTranscriptWithDialect(dialect: TranscriptDialect, filePath: s
   const graphBudget = walked.graphBudget
   const branch = walked.branch.reverse()
   const transcript: TranscriptMessage[] = []
-  let activeAssistant: TranscriptMessage | undefined
-  // First toolCall part index per id for the active turn: tool results resolve
-  // their call in O(1) instead of scanning the accumulated parts.
-  let toolCallIndexById = new Map<string, number>()
-  const beginAssistantTurn = (): void => { toolCallIndexById = new Map() }
-  const registerToolCalls = (startIndex: number, added: MessagePart[]): void => {
-    for (let offset = 0; offset < added.length; offset += 1) {
-      const part = added[offset]
-      if (part.type === 'toolCall' && part.id !== undefined && !toolCallIndexById.has(part.id)) {
-        toolCallIndexById.set(part.id, startIndex + offset)
-      }
+  interface PartNode {
+    part: MessagePart
+    previous?: PartNode
+    next?: PartNode
+  }
+  interface AssistantDraft {
+    message: TranscriptMessage
+    head?: PartNode
+    tail?: PartNode
+    toolCalls: Map<string, PartNode>
+  }
+  let activeAssistant: AssistantDraft | undefined
+  const insertPart = (draft: AssistantDraft, after: PartNode | undefined, part: MessagePart): PartNode => {
+    const node: PartNode = { part, previous: after, next: after?.next }
+    if (after) {
+      if (after.next) after.next.previous = node
+      after.next = node
+    } else {
+      draft.head = node
     }
+    if (!node.next) draft.tail = node
+    if (part.type === 'toolCall' && part.id !== undefined && !draft.toolCalls.has(part.id)) draft.toolCalls.set(part.id, node)
+    return node
   }
   const appendAssistantParts = (added: MessagePart[]): void => {
     if (!activeAssistant) return
-    registerToolCalls(activeAssistant.parts.length, added)
-    activeAssistant.parts.push(...added)
+    for (const part of added) insertPart(activeAssistant, activeAssistant.tail, part)
+  }
+  const finishAssistant = (): void => {
+    if (!activeAssistant) return
+    const parts: MessagePart[] = []
+    for (let node = activeAssistant.head; node; node = node.next) parts.push(node.part)
+    activeAssistant.message.parts = parts
+    activeAssistant = undefined
   }
   for (const { id, entry } of branch) {
     const safeId = boundedString(id, 1_024)
@@ -718,7 +735,7 @@ async function loadTranscriptWithDialect(dialect: TranscriptDialect, filePath: s
         completedAt: timestamp,
         parts: [{ type: 'compaction', status: 'done', tokensBefore, tokensAfter, summary, firstKeptEntryId, customInstructions }],
       })
-      activeAssistant = undefined
+      finishAssistant()
       continue
     }
     if (entry.type === 'custom_message') {
@@ -739,7 +756,7 @@ async function loadTranscriptWithDialect(dialect: TranscriptDialect, filePath: s
           completedAt: timestamp,
           parts: [{ type: 'compaction', status: outcome === 'cancelled' ? 'cancelled' : 'failed', outcome, reason, error: text }],
         })
-        activeAssistant = undefined
+        finishAssistant()
         continue
       }
       // customType/details/content 的形狀決策與 live reducer 共用
@@ -751,10 +768,10 @@ async function loadTranscriptWithDialect(dialect: TranscriptDialect, filePath: s
         const timestamp = typeof entry.timestamp === 'string' ? boundedString(entry.timestamp, 128) : undefined
         if (shape.kind === 'agentMessage' && activeAssistant) {
           appendAssistantParts([{ type: 'agentMessage', text, agentName }])
-          activeAssistant.completedAt = timestamp ?? activeAssistant.completedAt
+          activeAssistant.message.completedAt = timestamp ?? activeAssistant.message.completedAt
         } else if (shape.kind === 'activity' && activeAssistant) {
           appendAssistantParts([{ type: 'toolCall', id: safeId, name: shape.name }, { type: 'toolResult', name: shape.name, text }])
-          activeAssistant.completedAt = timestamp ?? activeAssistant.completedAt
+          activeAssistant.message.completedAt = timestamp ?? activeAssistant.message.completedAt
         } else {
           transcript.push({
             id: safeId,
@@ -765,7 +782,7 @@ async function loadTranscriptWithDialect(dialect: TranscriptDialect, filePath: s
               ? [{ type: 'text', text }]
               : [{ type: 'toolCall', id: safeId, name: shape.name }, { type: 'toolResult', name: shape.name, text }],
           })
-          activeAssistant = undefined
+          finishAssistant()
         }
       }
       continue
@@ -774,7 +791,7 @@ async function loadTranscriptWithDialect(dialect: TranscriptDialect, filePath: s
       // A dialect-specific record type reached the walk; render it standalone.
       const rendered = dialect.renderEntry?.(entry, safeId)
       if (rendered) transcript.push(rendered)
-      activeAssistant = undefined
+      finishAssistant()
       continue
     }
     const message = isRecord(entry.message) ? entry.message : {}
@@ -789,7 +806,7 @@ async function loadTranscriptWithDialect(dialect: TranscriptDialect, filePath: s
         agentName: collaborationMessage.fromTitle ? boundedString(collaborationMessage.fromTitle, 200) : undefined,
         parts: [{ type: 'text', text: boundedString(collaborationMessage.text, MAX_PART_TEXT_CHARS) }],
       })
-      activeAssistant = undefined
+      finishAssistant()
       continue
     }
     const role = roleOf(message)
@@ -801,15 +818,12 @@ async function loadTranscriptWithDialect(dialect: TranscriptDialect, filePath: s
     const parts = partsFromMessage(message)
     if (role === 'tool' && activeAssistant) {
       const toolCallId = typeof message.toolCallId === 'string' ? boundedString(message.toolCallId, 1_024) : undefined
-      const callIndex = toolCallId !== undefined ? toolCallIndexById.get(toolCallId) ?? -1 : -1
-      if (callIndex >= 0) {
-        activeAssistant.parts.splice(callIndex + 1, 0, ...parts)
-        for (const [callId, index] of toolCallIndexById) {
-          if (index > callIndex) toolCallIndexById.set(callId, index + parts.length)
-        }
-        registerToolCalls(callIndex + 1, parts)
+      const call = toolCallId !== undefined ? activeAssistant.toolCalls.get(toolCallId) : undefined
+      if (call) {
+        let cursor = call
+        for (const part of parts) cursor = insertPart(activeAssistant, cursor, part)
       } else appendAssistantParts(parts)
-      activeAssistant.completedAt = completedAt ?? activeAssistant.completedAt
+      activeAssistant.message.completedAt = completedAt ?? activeAssistant.message.completedAt
       continue
     }
     if (role === 'assistant') {
@@ -822,25 +836,28 @@ async function loadTranscriptWithDialect(dialect: TranscriptDialect, filePath: s
       const outcome = failed ? 'failed' as const : undefined
       if (activeAssistant) {
         appendAssistantParts(parts)
-        activeAssistant.completedAt = completedAt ?? activeAssistant.completedAt
-        if (outcome) activeAssistant.outcome = outcome
+        activeAssistant.message.completedAt = completedAt ?? activeAssistant.message.completedAt
+        if (outcome) activeAssistant.message.outcome = outcome
       } else {
-        beginAssistantTurn()
-        registerToolCalls(0, parts)
-        activeAssistant = { id: safeId, role, timestamp, startedAt: timestamp, completedAt, parts, outcome }
-        transcript.push(activeAssistant)
+        activeAssistant = {
+          message: { id: safeId, role, timestamp, startedAt: timestamp, completedAt, parts: [], outcome },
+          toolCalls: new Map(),
+        }
+        appendAssistantParts(parts)
+        transcript.push(activeAssistant.message)
       }
       if (failed) {
         const failure = typeof message.errorMessage === 'string' && message.errorMessage.trim() ? boundedString(message.errorMessage, MAX_PART_TEXT_CHARS) : 'The turn failed.'
         transcript.push({ id: `error-${safeId}`, role: 'system', timestamp: completedAt ?? timestamp, parts: [{ type: 'text', text: failure }] })
-        activeAssistant = undefined
+        finishAssistant()
       }
       continue
     }
     const item: TranscriptMessage = { id: safeId, role, timestamp, parts }
     transcript.push(item)
-    activeAssistant = undefined
+    finishAssistant()
   }
+  finishAssistant()
   await resolveImageBlobReferences(transcript, blobsRoot)
   return { transcript, cacheStamp, stamp, branchAnchor: leafId, graphBudget }
 }

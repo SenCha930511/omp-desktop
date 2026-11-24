@@ -2,7 +2,7 @@ import { appendFileSync, createReadStream, mkdtempSync, rmSync, statSync, writeF
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { createIncrementalMetadataReader, type MetadataLineParser, type SessionMetadata, type SessionMetadataReaderIo } from '../../electron/main/sessions/metadata'
+import { createIncrementalMetadataReader, nodeMetadataReaderIo, type MetadataLineParser, type SessionMetadata, type SessionMetadataReaderIo } from '../../electron/main/sessions/metadata'
 
 interface Accumulator { texts: string[] }
 
@@ -64,5 +64,14 @@ describe('incremental metadata cache budget', () => {
     // An evicted entry re-reads from the start; a retained one resumes at the
     // previous size. Only the charged-array accounting produces the eviction.
     expect(starts).toEqual([0])
+  })
+
+  it('reads a fixed prefix without constructing a stream', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'omp-desktop-metadata-prefix-'))
+    dirs.push(root)
+    const file = join(root, 'prefix.txt')
+    writeFileSync(file, 'abcdef')
+    await expect(nodeMetadataReaderIo.readPrefix?.(file, 4)).resolves.toEqual(Buffer.from('abcd'))
+    await expect(nodeMetadataReaderIo.readPrefix?.(file, 10)).resolves.toEqual(Buffer.from('abcdef'))
   })
 })

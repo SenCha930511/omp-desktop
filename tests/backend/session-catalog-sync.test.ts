@@ -36,6 +36,19 @@ it('transmits only changed records and preserves untouched identities at 5,000 s
   expect(applySessionCatalogDelta(applied, unchanged)).toBe(applied)
 })
 
+it('treats equal array fields as an unchanged record', () => {
+  const catalog = new SessionCatalogSync()
+  const record = { ...session(1), lastUserTexts: ['one', 'two'] }
+  catalog.publish([record])
+  const snapshot = catalog.read()
+  catalog.publish([{ ...record, lastUserTexts: ['one', 'two'] }])
+  const update = catalog.read(snapshot.revision)
+  expect(update.kind).toBe('delta')
+  if (update.kind !== 'delta') throw new Error('Expected a delta')
+  expect(update.upserts).toEqual([])
+  expect(update.removals).toEqual([])
+})
+
 it('recovers missed revisions with a coherent full snapshot', () => {
   const catalog = new SessionCatalogSync()
   expect(catalog.read()).toEqual({ kind: 'snapshot', revision: 0, records: [] })

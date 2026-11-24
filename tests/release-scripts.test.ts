@@ -1293,10 +1293,11 @@ describe('post-package verification helpers', () => {
   })
 
   test('requires the ASAR and rejects duplicated renderer dependencies', () => {
-    const entries = ['/out/main/index.js', '/out/preload/index.js', '/out/renderer/index.html']
+    const entries = ['/out/main/index.js', '/out/main/omp-jsonl-core.wasm', '/out/preload/index.js', '/out/renderer/index.html']
     expect(() => assertAsarLayout(entries)).not.toThrow()
     expect(() => assertAsarLayout([...entries, '/node_modules/react/index.js'])).toThrow(/duplicated/)
     expect(() => assertAsarLayout(entries.filter((entry) => !entry.includes('out/main')))).toThrow(/missing required/)
+    expect(() => assertAsarLayout(entries.filter((entry) => !entry.endsWith('omp-jsonl-core.wasm')))).toThrow(/missing required/)
     expect(() => assertAsarLayout(entries.map((entry) => entry.replaceAll('/', '\\')))).not.toThrow()
   })
 
@@ -1605,6 +1606,38 @@ describe('release size budgets', () => {
         rendererJsCssBytes: 418,
       })
       expect(() => assertBundleSizeBudgets(metrics)).not.toThrow()
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  test('rejects initial KaTeX assets without rejecting lazy references or normal entry assets', () => {
+    const directory = createBundleSizeFixture()
+    try {
+      const indexPath = join(directory, 'renderer/index.html')
+      const normalEntry = readFileSync(indexPath, 'utf8')
+      const lazyReference = '<script>globalThis.loadMath = () => import("./assets/katex-vendor-lazy.js")</script>'
+      const verify = () => spawnSync(process.execPath, [resolve('scripts/release/verify-bundle-size.mjs'), directory], { encoding: 'utf8' })
+      writeSizedFile(join(directory, 'renderer/assets/katex-vendor-eager.js'), 107)
+      writeSizedFile(join(directory, 'renderer/assets/katex-vendor-eager.css'), 108)
+      writeSizedFile(join(directory, 'renderer/assets/katex-vendor.js'), 109)
+
+      writeFileSync(indexPath, `${normalEntry}${lazyReference}`)
+      const allowed = verify()
+      expect(allowed.status, JSON.stringify({ error: allowed.error, stdout: allowed.stdout, stderr: allowed.stderr })).toBe(0)
+      expect(allowed.stdout).toContain('Bundle size budgets passed')
+
+      for (const eagerReference of [
+        '<script type="module" src="./assets/katex-vendor-eager.js"></script>',
+        '<link rel="modulepreload" href="./assets/katex-vendor-eager.js">',
+        '<link rel="stylesheet" href="./assets/katex-vendor-eager.css">',
+        '<script type="module" src="./assets/katex-vendor.js"></script>',
+      ]) {
+        writeFileSync(indexPath, `${normalEntry}${eagerReference}${lazyReference}`)
+        const rejected = verify()
+        expect(rejected.status).toBe(1)
+        expect(rejected.stderr).toContain('Renderer index must not initially reference katex-vendor JavaScript or CSS')
+      }
     } finally {
       rmSync(directory, { recursive: true, force: true })
     }

@@ -26,4 +26,12 @@ describe('tool syntax tokenization', () => {
       indexOf.mockRestore()
     }
   })
+
+  it('stops scanning once the highlight budget is reached', () => {
+    const input = Array.from({ length: 100 }, () => '"key":"value"').join(',')
+    const tokens = tokenizeSyntaxText(input, 2)
+    expect(tokens.filter((token) => token.kind !== 'plain')).toHaveLength(2)
+    expect(tokens.at(-1)?.kind).toBe('plain')
+    expect(tokens.map((token) => token.text).join('')).toBe(input)
+  })
 })

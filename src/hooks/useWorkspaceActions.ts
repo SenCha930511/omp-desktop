@@ -22,7 +22,7 @@ import { parseBashShorthandInput, parsePythonShorthandInput } from '@/lib/input-
 import { bashResultFailed, bashResultStatusText, buildBashResultMessage, readBashResult } from '@/lib/bash-result'
 import { resolveLocale, translate, type MessageKey } from '@/lib/i18n'
 import type { DEFAULT_SETTINGS } from '@/lib/data'
-import { type createSingleFlightAdmission, findProjectForSession, findRuntimeForWorkspace, newSessionProject, projectContainsPath, workspaceCwd } from '@/lib/workspace'
+import { type createSingleFlightAdmission, findAdoptableRuntime, findProjectForSession, newSessionProject, projectContainsPath, workspaceCwd } from '@/lib/workspace'
 import type {
   CapabilityMutationInput,
   ExtensionInstallInput,
@@ -243,7 +243,7 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
     persistPanel({ inspectorOpen: next })
   }
   const selectProject = async (project: ProjectRecord) => {
-    const { bridge, layout, settingsState, sessions, workspace, setSessions, setView, clearSessionAttention, reportError } = getDeps()
+    const { bridge, layout, provider, settingsState, sessions, workspace, setSessions, setView, clearSessionAttention, reportError } = getDeps()
     if (layout.compactLayout) {
       layout.setSmallestSidebarAllowed(false)
       settingsState.setSidebarOpen(false)
@@ -264,13 +264,19 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
       // remain display-only until the user performs an action that needs a
       // filesystem grant (starting work or running a project script).
       if (bridge && !project.inferred) await bridge.projects.touch(project.id, project.harness)
-      await workspace.reconcileRuntime(generation)
+      // A runtime discovered for the newly opened workspace must not be adopted
+      // behind a newer composer selection (for example an idle prewarmed child).
+      // Reduced harnesses may omit the composer surface; without a peek the
+      // existing lookup semantics apply unchanged.
+      const selection = provider?.peekSelection?.() ?? null
+      if (selection) await workspace.reconcileRuntime(generation, selection)
+      else await workspace.reconcileRuntime(generation)
     } catch (error) {
       if (workspace.workspaceRef.current.generation === generation) reportError(error)
     }
   }
   const selectSession = async (session: SessionRecord) => {
-    const { bridge, layout, settingsState, projects, workspace, setSessions, setView, clearSessionAttention, reportError } = getDeps()
+    const { bridge, layout, provider, settingsState, projects, workspace, setSessions, setView, clearSessionAttention, reportError } = getDeps()
     if (layout.compactLayout) {
       layout.setSmallestSidebarAllowed(false)
       settingsState.setSidebarOpen(false)
@@ -289,7 +295,11 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
       // user activity is projected from user turns separately. Inferred
       // projects stay display-only until granted.
       if (bridge && !project.inferred) await bridge.projects.touch(project.id, project.harness)
-      await workspace.reconcileRuntime(generation)
+      // Reduced harnesses may omit the composer surface; without a peek the
+      // existing lookup semantics apply unchanged.
+      const selection = provider?.peekSelection?.() ?? null
+      if (selection) await workspace.reconcileRuntime(generation, selection)
+      else await workspace.reconcileRuntime(generation)
     } catch (error) {
       if (workspace.workspaceRef.current.generation === generation) reportError(error)
     }
@@ -1039,7 +1049,11 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
             tracked.cwd === selected.cwd &&
             (!selected.sessionFile || tracked.sessionFile === selected.sessionFile),
         )
-        let activeRuntime = belongsHere ? tracked : findRuntimeForWorkspace(liveRuntimes, selected.cwd, selected.sessionFile)
+        // The composer's selection, read without writing composer state: an
+        // idle prewarmed runtime that reports a different model must not be
+        // adopted behind the user's back. A streaming runtime still wins.
+        const composerSelection = provider.peekSelection?.() ?? null
+        let activeRuntime = belongsHere ? tracked : findAdoptableRuntime(liveRuntimes, selected.cwd, selected.sessionFile, composerSelection)
         const selectedSession = selected.sessionFile ? sessions.find((session) => session.filePath === selected.sessionFile) : undefined
         if (compactCommand && !activeRuntime) {
           if (!selected.sessionFile) {
@@ -1145,6 +1159,9 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
         let startedRuntime = false
         let startedSessionNeedsTitle = false
         if (slashCommand && !compactRpc) getDeps().onCommandStart?.(prompt.trim())
+        // Resolved once per send: both the on-demand start and the pre-prompt
+        // alignment must use the same latest composer surface.
+        const latestProvider = getDeps().provider
         if (!activeRuntime) {
           workspace.attachRuntime(undefined, generation)
           if (images.length > 0 && selected.sessionFile && selectedSession?.status === 'running') {
@@ -1159,7 +1176,6 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
               /* the start below reports the authorization failure */
             }
           }
-          const latestProvider = getDeps().provider
           const selection = latestProvider.resolveSelection ? await latestProvider.resolveSelection() : latestProvider
           if (workspace.workspaceRef.current.generation !== generation) return
           if (!selection.model) throw new Error(`No model is available for ${HARNESS_AGENT_NAMES[activeHarness]}. Enable or connect a provider, then try again.`)
@@ -1199,6 +1215,14 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
         if (!sameSession && (activeRuntime.cwd !== selected.cwd || (selected.sessionFile && activeRuntime.sessionFile !== selected.sessionFile))) {
           if (startedRuntime) await bridge.agent.stop(activeRuntime.runtimeId).catch(() => false)
           throw new Error(`${HARNESS_AGENT_NAMES[activeHarness]} returned a runtime for a different workspace or session.`)
+        }
+        // A ready runtime that predates the composer's latest selection (a
+        // prewarm, or a runtime discovered through agent.list) must agree with
+        // it before the prompt frame leaves — otherwise the live-runtime
+        // precedence effect rewrites the user's choice backwards.
+        if (!activeRuntime.isStreaming && latestProvider.alignRuntime) {
+          activeRuntime = await latestProvider.alignRuntime(activeRuntime)
+          if (workspace.workspaceRef.current.generation !== generation) return
         }
         workspace.attachRuntime(activeRuntime, generation)
         if (compactRpc) {

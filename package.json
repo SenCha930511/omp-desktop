@@ -1,6 +1,6 @@
 {
   "name": "omp-desktop",
-  "version": "1.3.20",
+  "version": "1.3.21",
   "private": true,
   "description": "A desktop workspace for OMP",
   "main": "out/main/index.js",
@@ -15,7 +15,9 @@
   "scripts": {
     "dev": "electron-vite dev",
     "build": "npm run typecheck && npm run build:bundle",
-    "build:bundle": "electron-vite build",
+    "build:bundle": "electron-vite build && node scripts/wasm/copy.mjs",
+    "wasm:build": "node scripts/wasm/build.mjs",
+    "wasm:verify": "node scripts/performance/omp-wasm-bench.mjs",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.tests.json && tsc --noEmit -p tsconfig.scripts.json && tsc --noEmit -p tsconfig.extensions.json",
     "lint": "biome lint --config-path=scripts/release/biome.json electron src tests scripts assets/extensions electron.vite.config.ts playwright.config.ts vitest.config.ts",
@@ -27,7 +29,7 @@
     "test:e2e": "npm run build && npm run test:e2e:hermetic",
     "test:e2e:hermetic": "playwright test",
     "release:verify": "npm run release:verify:package && npm run test:e2e:hermetic",
-    "release:verify:package": "node scripts/release/preflight.mjs --toolchain-only && npm run typecheck && npm run check && npm run test:coverage && npm run build:bundle && npm run release:bundle-size",
+    "release:verify:package": "node scripts/release/preflight.mjs --toolchain-only && npm run typecheck && npm run check && npm run wasm:verify && npm run test:coverage && npm run build:bundle && npm run release:bundle-size",
     "release:bundle-size": "node scripts/release/preflight.mjs --toolchain-only && node scripts/release/verify-bundle-size.mjs",
     "audit:production": "node scripts/release/audit-production.mjs",
     "package:mac": "node scripts/release/package.mjs --public --platform mac",

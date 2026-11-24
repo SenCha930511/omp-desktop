@@ -134,11 +134,19 @@ export function indexSidebarSessions(
     }
     for (const projectId of new Set(claiming)) sessionsByProject.get(projectId)?.push(session)
   }
+  const recentUseMs = new WeakMap<SessionRecord, number>()
+  const recentUseKey = (session: SessionRecord): number => {
+    const cached = recentUseMs.get(session)
+    if (cached !== undefined) return cached
+    const key = Date.parse(session.lastUserMessageAt ?? session.createdAt)
+    recentUseMs.set(session, key)
+    return key
+  }
   const compareByRecentUse = (left: SessionRecord, right: SessionRecord) => {
     if (Boolean(left.pinned) !== Boolean(right.pinned)) return left.pinned ? -1 : 1
     // Clicking a session or receiving background assistant updates keeps order
     // stable; only new user turns (lastUserMessageAt) float a thread to the top.
-    const difference = Date.parse(right.lastUserMessageAt ?? right.createdAt) - Date.parse(left.lastUserMessageAt ?? left.createdAt)
+    const difference = recentUseKey(right) - recentUseKey(left)
     return difference || right.createdAt.localeCompare(left.createdAt) || left.filePath.localeCompare(right.filePath)
   }
   activeSessions.sort(compareByRecentUse)
@@ -158,9 +166,22 @@ export function sessionModifiedAt(session: SessionRecord): number {
 
 /** Cross-project recency list: newest file modification first, pinned rows included. */
 export function recentSidebarSessions(sessions: SessionRecord[], limit = SIDEBAR_RECENT_LIMIT): SessionRecord[] {
-  return [...sessions]
-    .sort((left, right) => sessionModifiedAt(right) - sessionModifiedAt(left) || right.createdAt.localeCompare(left.createdAt) || left.filePath.localeCompare(right.filePath))
-    .slice(0, limit)
+  const cap = Math.max(0, Math.floor(limit))
+  if (cap === 0) return []
+  const compare = (left: { session: SessionRecord; sortKey: number }, right: { session: SessionRecord; sortKey: number }) =>
+    right.sortKey - left.sortKey || right.session.createdAt.localeCompare(left.session.createdAt) || left.session.filePath.localeCompare(right.session.filePath)
+  const selected: Array<{ session: SessionRecord; sortKey: number }> = []
+  for (const session of sessions) {
+    const candidate = { session, sortKey: sessionModifiedAt(session) }
+    if (selected.length >= cap) {
+      if (compare(candidate, selected[selected.length - 1]!) >= 0) continue
+      selected.pop()
+    }
+    let index = selected.length
+    while (index > 0 && compare(candidate, selected[index - 1]!) < 0) index -= 1
+    selected.splice(index, 0, candidate)
+  }
+  return selected.map((entry) => entry.session)
 }
 
 type Translator = (key: MessageKey, values?: Record<string, string | number>) => string

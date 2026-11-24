@@ -87,4 +87,15 @@ describe('streaming Markdown rendering', () => {
       expect(container.querySelector('.prose')?.textContent).toBe('Answer one two final')
     } finally { vi.unstubAllGlobals() }
   })
+
+  it('renders committed paragraphs as separate stable blocks while the tail streams', () => {
+    const render = (text: string) => act(() => root.render(createElement(MarkdownText, { text, streaming: true })))
+    const first = 'First paragraph '.repeat(40)
+    const second = 'Second paragraph '.repeat(40)
+    render(`${first}\n\n${second}\n\nTail`)
+    expect(container.querySelectorAll('.prose > p')).toHaveLength(3)
+    expect(container.textContent).toContain('Tail')
+    render(`${first}\n\n${second}\n\nTail grows`)
+    expect(container.textContent).toContain('Tail grows')
+  })
 })
