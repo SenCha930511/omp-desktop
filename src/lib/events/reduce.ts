@@ -97,9 +97,10 @@ export function createSteerAcceptedEvent(prompt: QueuedPrompt): Record<string, u
   return { type: 'omp_desktop_steer_accepted', prompt, [LOCAL_STEER_ACCEPTED]: true }
 }
 
-/** Renderer-only event: the symbol prevents an agent frame from spoofing a local pickup. */
-export function createSteerPickupEvent(prompts: QueuedPrompt[]): Record<string, unknown> {
-  return { type: 'omp_desktop_steer_pickup', prompts, [LOCAL_STEER_PICKUP]: true }
+/** Renderer-only event: the symbol prevents an agent frame from spoofing a local pickup.
+ *  Delivery time is stamped at creation so buffered replay is deterministic. */
+export function createSteerPickupEvent(prompts: QueuedPrompt[], deliveredAt = Date.now()): Record<string, unknown> {
+  return { type: 'omp_desktop_steer_pickup', prompts, deliveredAt, [LOCAL_STEER_PICKUP]: true }
 }
 
 /** Renderer-only event: a queued or steering prompt renders its user row immediately. */
@@ -393,29 +394,48 @@ export function replayPrimeEvents(
       continue
     }
     if (type === 'omp_desktop_steer_pickup' && (raw as Record<PropertyKey, unknown>)[LOCAL_STEER_PICKUP] === true) {
+      const deliveredAt = typeof raw.deliveredAt === 'number' && Number.isFinite(raw.deliveredAt) ? raw.deliveredAt : Date.now()
       const prompts = Array.isArray(raw.prompts) ? raw.prompts : []
       const pickedUp = prompts.flatMap((value) => {
         const message = steerMessage(value, 'read')
         return message ? [message] : []
       })
       if (!pickedUp.length) continue
-      finalizeStreaming(Date.now(), false)
-      copyTranscript()
+      finalizeStreaming(deliveredAt, false)
+      // Drafts are keyed by message index, so materialize before reordering.
+      materializeDrafts()
+      // Move the steer row from its submit/accept point to where the harness
+      // actually delivered it, because output streamed in between would
+      // otherwise sit below a steer the agent had not read yet.
+      const pickedIds = new Set(pickedUp.map((message) => message.id))
+      const existingById = new Map<string, TranscriptMessage>()
+      const moved: TranscriptMessage[] = []
+      for (const message of next) {
+        if (pickedIds.has(message.id) && !existingById.has(message.id)) {
+          existingById.set(message.id, message)
+          continue
+        }
+        moved.push(message)
+      }
       for (const message of pickedUp) {
-        const existingIndex = next.findIndex((candidate) => candidate.id === message.id)
-        if (existingIndex >= 0) draftMessage(existingIndex).steerState = 'read'
-        else next.push(message)
+        const existing = existingById.get(message.id)
+        moved.push(existing
+          ? { ...existing, steerState: 'read', timestamp: deliveredAt }
+          : { ...message, timestamp: deliveredAt })
       }
       const markerId = `steer-read-${pickedUp.map((message) => message.id).join('-')}`
-      if (!next.some((message) => message.id === markerId)) {
-        next.push({
+      if (!moved.some((message) => message.id === markerId)) {
+        moved.push({
           id: markerId,
           role: 'system',
           kind: 'steer-read-marker',
-          timestamp: Date.now(),
+          timestamp: deliveredAt,
           parts: [{ type: 'text', text: pickedUp.length === 1 ? 'Steer read here' : `${pickedUp.length} steers read here` }],
         })
       }
+      if (stats) stats.transcriptCopies += 1
+      rebase(moved)
+      copiedMessages = true
       continue
     }
     if (isCompactionEvent(raw)) {

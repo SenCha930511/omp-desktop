@@ -838,14 +838,14 @@ export function useWorkspaceRuntime({
     reconcileQueuedPrompts(snapshot)
   }, [reconcileQueuedPrompts])
 
-  /** A steer the harness injected into the running turn: only the queue chip
-   *  is dropped here. The submitted row stays in the transcript so the reader
-   *  keeps seeing what they sent; reconciliation supersedes it only when the
-   *  harness persisted a row with the same text. omp's queuedMessageCount can
-   *  stay at 1 until the turn ends, so the snapshot fold alone would leave the
-   *  chip behind. */
+  /** A steer the harness injected into the running turn: drop the queue chip
+   *  and settle the submitted row as read at the delivery point. omp renders
+   *  no row of its own for the injected user message, and its
+   *  queuedMessageCount can stay at 1 until the turn ends, so neither the
+   *  snapshot fold nor raw message events would settle the row on time. */
   const deliverQueuedSteer = useCallback((text: string) => {
-    const prompt = pendingQueuedPromptsRef.current.find((candidate) => candidate.intent === 'steer' && candidate.text === text)
+    const trimmed = text.trim()
+    const prompt = pendingQueuedPromptsRef.current.find((candidate) => candidate.intent === 'steer' && candidate.text.trim() === trimmed)
     if (!prompt) return
     observedSteerIdsRef.current.delete(prompt.id)
     harnessHeldSteerIdsRef.current.delete(prompt.id)
@@ -857,7 +857,10 @@ export function useWorkspaceRuntime({
       else queuedPromptsByOwnerRef.current.delete(owner)
     }
     setPendingQueuedPrompts(next)
-  }, [])
+    // Route through the ordered event buffer so the moved row and its read
+    // marker land after any preceding tool output in the same frame.
+    queueAgentEvent(createSteerPickupEvent([prompt]))
+  }, [queueAgentEvent])
 
   /** Re-queues input omp withdrew for an abort (`abort_and_restore_queue`).
    * Steers the reply proves withdrawn lose their optimistic row and queue

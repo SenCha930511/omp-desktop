@@ -196,26 +196,27 @@ describe('Activity batching', () => {
 afterEach(() => { vi.useRealTimers() })
 
 describe('batched Prime event reduction', () => {
-  it('anchors an accepted steer immediately, then marks the exact pickup boundary', () => {
+  it('keeps an accepted steer visible, then moves it to the exact pickup boundary', () => {
     const steer = { id: 'queued-1', text: 'change direction', intent: 'steer' as const, timestamp: 2, parts: [{ type: 'text' as const, text: 'change direction' }] }
     const result = replayPrimeEvents(transcript(), [
       delta('before acceptance'),
       createSteerAcceptedEvent(steer),
       delta('still finishing the current work'),
-      createSteerPickupEvent([steer]),
+      createSteerPickupEvent([steer], 50),
       { type: 'turn_start' },
       delta('after pickup'),
     ])
 
     expect(result.map((message) => [message.role, message.kind])).toEqual([
       ['assistant', undefined],
-      ['user', undefined],
       ['assistant', undefined],
+      ['user', undefined],
       ['system', 'steer-read-marker'],
       ['assistant', undefined],
     ])
-    expect(result[1]).toMatchObject({ id: 'user-queued-1', steerState: 'read' })
-    expect(result[2]?.parts).toEqual([{ type: 'text', text: 'still finishing the current work', partId: expect.any(String) }])
+    expect(result[0]?.parts).toEqual([{ type: 'text', text: 'loaded:before acceptance' }])
+    expect(result[1]?.parts).toEqual([{ type: 'text', text: 'still finishing the current work', partId: expect.any(String) }])
+    expect(result[2]).toMatchObject({ id: 'user-queued-1', steerState: 'read', timestamp: 50 })
     expect(result[3]?.parts).toEqual([{ type: 'text', text: 'Steer read here' }])
     expect(result[4]?.parts).toEqual([{ type: 'text', text: 'after pickup', partId: expect.any(String) }])
   })
@@ -223,10 +224,10 @@ describe('batched Prime event reduction', () => {
   it('places repeated picked-up steers between the tool segments that consumed them', () => {
     const result = replayPrimeEvents(transcript(), [
       { type: 'tool_execution_start', toolCallId: 'read', toolName: 'Read', args: { path: 'before.ts' } },
-      createSteerPickupEvent([{ id: 'queued-1', text: 'change direction', intent: 'steer', timestamp: 2, parts: [{ type: 'text', text: 'change direction' }] }]),
+      createSteerPickupEvent([{ id: 'queued-1', text: 'change direction', intent: 'steer', timestamp: 2, parts: [{ type: 'text', text: 'change direction' }] }], 20),
       { type: 'turn_start' },
       { type: 'tool_execution_start', toolCallId: 'write', toolName: 'Write', args: { path: 'after.ts' } },
-      createSteerPickupEvent([{ id: 'queued-2', text: 'also compare the physics', intent: 'steer', timestamp: 3, parts: [{ type: 'text', text: 'also compare the physics' }] }]),
+      createSteerPickupEvent([{ id: 'queued-2', text: 'also compare the physics', intent: 'steer', timestamp: 3, parts: [{ type: 'text', text: 'also compare the physics' }] }], 30),
       { type: 'turn_start' },
       delta('continued after both pickups'),
     ])
@@ -234,11 +235,11 @@ describe('batched Prime event reduction', () => {
     expect(result.map((message) => message.role)).toEqual(['assistant', 'user', 'system', 'assistant', 'user', 'system', 'assistant'])
     expect(result[0]?.streaming).toBe(false)
     expect(result[0]?.parts.some((part) => part.type === 'toolCall' && part.name === 'Read')).toBe(true)
-    expect(result[1]).toMatchObject({ id: 'user-queued-1', timestamp: 2, parts: [{ type: 'text', text: 'change direction' }] })
+    expect(result[1]).toMatchObject({ id: 'user-queued-1', timestamp: 20, parts: [{ type: 'text', text: 'change direction' }] })
     expect(result[2]).toMatchObject({ kind: 'steer-read-marker' })
     expect(result[3]).toMatchObject({ role: 'assistant', streaming: false })
     expect(result[3]?.parts.some((part) => part.type === 'toolCall' && part.name === 'Write')).toBe(true)
-    expect(result[4]).toMatchObject({ id: 'user-queued-2', timestamp: 3, parts: [{ type: 'text', text: 'also compare the physics' }] })
+    expect(result[4]).toMatchObject({ id: 'user-queued-2', timestamp: 30, parts: [{ type: 'text', text: 'also compare the physics' }] })
     expect(result[5]).toMatchObject({ kind: 'steer-read-marker' })
     expect(result[6]?.streaming).toBe(true)
     expect(result[6]?.parts).toEqual([{ type: 'text', text: 'continued after both pickups', partId: expect.any(String) }])
