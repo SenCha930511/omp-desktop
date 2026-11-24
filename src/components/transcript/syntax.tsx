@@ -48,10 +48,42 @@ export function tokenizeSyntaxLine(line: string): SyntaxToken[] {
   return tokens
 }
 
+/**
+ * Bounded LRU of whole-text tokens for `SyntaxText`. Re-renders of the same
+ * code block (virtual-scroll recycling, tab switches) used the uncached
+ * tokenizer and re-ran the scanner on identical input. Both caps keep a long
+ * transcript from pinning unbounded token arrays.
+ */
+const SYNTAX_TEXT_CACHE_LIMIT = 64
+const SYNTAX_TEXT_MAX_CHARS = 16_384
+const SYNTAX_TEXT_CACHE_CHARS = 524_288
+const textTokenCache = new Map<string, SyntaxToken[]>()
+let textTokenCacheChars = 0
+
+export function tokenizeSyntaxCached(text: string): SyntaxToken[] {
+  if (text.length > SYNTAX_TEXT_MAX_CHARS) return tokenizeSyntax(text)
+  const cached = textTokenCache.get(text)
+  if (cached) {
+    textTokenCache.delete(text)
+    textTokenCache.set(text, cached)
+    return cached
+  }
+  const tokens = tokenizeSyntax(text)
+  while (textTokenCache.size >= SYNTAX_TEXT_CACHE_LIMIT || textTokenCacheChars + text.length > SYNTAX_TEXT_CACHE_CHARS) {
+    const oldest = textTokenCache.keys().next()
+    if (oldest.done) break
+    textTokenCache.delete(oldest.value)
+    textTokenCacheChars -= oldest.value.length
+  }
+  textTokenCache.set(text, tokens)
+  textTokenCacheChars += text.length
+  return tokens
+}
+
 export const SyntaxText = memo(function SyntaxText({ text }: { text: string }) {
   return (
     <>
-      {tokenizeSyntax(text).map((token, index) => (
+      {tokenizeSyntaxCached(text).map((token, index) => (
         <span className={token.kind === 'plain' ? undefined : `syntax-${token.kind}`} key={`${index}-${token.text.slice(0, 8)}`}>
           {token.text}
         </span>

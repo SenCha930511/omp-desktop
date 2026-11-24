@@ -52,6 +52,7 @@ let container: HTMLDivElement
 let root: Root
 
 beforeEach(() => {
+  vi.useFakeTimers()
   container = document.createElement('div')
   document.body.append(container)
   root = createRoot(container)
@@ -60,6 +61,7 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount())
   container.remove()
+  vi.useRealTimers()
   vi.restoreAllMocks()
 })
 
@@ -71,6 +73,8 @@ function HookProbe({ bridge, sessionId, runtimeId, expose }: { bridge: DesktopAp
 
 async function flush() {
   await act(async () => {
+    // The delta coalescer batches into the next animation frame.
+    vi.advanceTimersByTime(16)
     await Promise.resolve()
     await Promise.resolve()
   })
@@ -98,11 +102,16 @@ describe('useSideQuestions', () => {
     expect(controller!.session('session-1').topics).toHaveLength(1)
     expect(renderCount).toBeGreaterThan(0)
 
+    const rendersBeforeDeltas = renderCount
     await act(async () => {
       emit({ runtimeId: 'runtime-1', event: { type: 'side_question_delta', topicId: 'topic-1', delta: 'A config ' } })
       emit({ runtimeId: 'runtime-1', event: { type: 'side_question_delta', topicId: 'topic-1', delta: 'file.' } })
     })
+    // Both deltas are coalesced into the next frame, so one render carries both.
+    expect(controller!.session('session-1').live['topic-1']).toBeUndefined()
+    await flush()
     expect(controller!.session('session-1').live['topic-1']).toBe('A config file.')
+    expect(renderCount - rendersBeforeDeltas).toBe(1)
 
     await act(async () => {
       emit({ runtimeId: 'runtime-1', event: { type: 'side_question_record', topic: topic({ answer: 'A config file.', status: 'complete' }) } })
@@ -111,6 +120,26 @@ describe('useSideQuestions', () => {
     expect(finished.live['topic-1']).toBeUndefined()
     expect(finished.topics[0]?.status).toBe('complete')
     expect(isTopicRunning(finished.topics[0]!)).toBe(false)
+  })
+
+  it('flushes buffered deltas before a finishing record so stale text never returns', async () => {
+    const { bridge, emit } = makeBridge()
+    let controller: SideQuestionsController | null = null
+    await act(async () => {
+      root.render(<HookProbe bridge={bridge} sessionId="session-1" runtimeId="runtime-1" expose={(value) => { controller = value }} />)
+    })
+    await flush()
+    await act(async () => {
+      emit({ runtimeId: 'runtime-1', event: { type: 'side_question_record', topic: topic() } })
+    })
+    await act(async () => {
+      emit({ runtimeId: 'runtime-1', event: { type: 'side_question_delta', topicId: 'topic-1', delta: 'half a ' } })
+      emit({ runtimeId: 'runtime-1', event: { type: 'side_question_record', topic: topic({ answer: 'half a sentence.', status: 'complete' }) } })
+    })
+    await flush()
+    const finished = controller!.session('session-1')
+    expect(finished.live['topic-1']).toBeUndefined()
+    expect(finished.topics[0]?.answer).toBe('half a sentence.')
   })
 
   it('clears visible topics but keeps the support probe result', async () => {

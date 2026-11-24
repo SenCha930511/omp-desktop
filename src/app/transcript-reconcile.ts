@@ -1,18 +1,34 @@
 import type { TranscriptMessage } from '@/types/api'
 
+/** Allocation-free deep equality. Records are compared by own enumerable keys
+ * whose value is not `undefined`, on both sides, so a transient `undefined`
+ * never forces a re-render. */
 function structurallyEqual(left: unknown, right: unknown): boolean {
   if (Object.is(left, right)) return true
   if (left === null || right === null || typeof left !== 'object' || typeof right !== 'object') return false
   if (Array.isArray(left) || Array.isArray(right)) {
     if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false
-    return left.every((value, index) => structurallyEqual(value, right[index]))
+    for (let index = 0; index < left.length; index += 1) {
+      if (!structurallyEqual(left[index], right[index])) return false
+    }
+    return true
   }
   const leftRecord = left as Record<string, unknown>
   const rightRecord = right as Record<string, unknown>
-  const leftKeys = Object.keys(leftRecord).filter((key) => leftRecord[key] !== undefined)
-  const rightKeys = Object.keys(rightRecord).filter((key) => rightRecord[key] !== undefined)
-  if (leftKeys.length !== rightKeys.length) return false
-  return leftKeys.every((key) => structurallyEqual(leftRecord[key], rightRecord[key]))
+  let leftCount = 0
+  for (const key in leftRecord) {
+    if (!Object.hasOwn(leftRecord, key)) continue
+    const value = leftRecord[key]
+    if (value === undefined) continue
+    leftCount += 1
+    if (!structurallyEqual(value, rightRecord[key])) return false
+  }
+  let rightCount = 0
+  for (const key in rightRecord) {
+    if (!Object.hasOwn(rightRecord, key)) continue
+    if (rightRecord[key] !== undefined) rightCount += 1
+  }
+  return leftCount === rightCount
 }
 
 /**

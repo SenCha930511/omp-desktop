@@ -59,6 +59,13 @@ function normalizeStatus(raw: string): OmpBackgroundTaskStatus {
   return 'completed'
 }
 
+/** One replayable background-task mutation. Collected from an immutable
+ * message once, then re-applied to the live job map on later derivations, so
+ * completed history never re-runs its regular expressions during streaming. */
+type TaskOp =
+  | { op: 'upsertJob'; id: string; type: string; status: OmpBackgroundTaskStatus; detail?: string; title?: string }
+  | { op: 'status'; id: string; status: OmpBackgroundTaskStatus }
+
 function markJobTerminalStatus(jobs: Map<string, OmpBackgroundTask>, id: string, status: OmpBackgroundTaskStatus): void {
   const existing = jobs.get(id)
   if (!existing) return
@@ -66,32 +73,42 @@ function markJobTerminalStatus(jobs: Map<string, OmpBackgroundTask>, id: string,
   existing.cancellable = status === 'running'
 }
 
-function applyStatusUpdatesFromText(text: string, jobs: Map<string, OmpBackgroundTask>): void {
-  if (!text) return
+function applyTaskOps(jobs: Map<string, OmpBackgroundTask>, ops: readonly TaskOp[]): void {
+  for (const op of ops) {
+    if (op.op === 'status') {
+      markJobTerminalStatus(jobs, op.id, op.status)
+      continue
+    }
+    const existing = jobs.get(op.id)
+    jobs.set(op.id, {
+      id: op.id,
+      kind: 'job',
+      title: op.title || existing?.title || op.id,
+      type: op.type || existing?.type || 'job',
+      status: op.status,
+      detail: op.detail || existing?.detail,
+      cancellable: op.status === 'running',
+    })
+  }
+}
+
+function collectStatusOps(text: string): TaskOp[] {
+  const ops: TaskOp[] = []
+  if (!text) return ops
 
   for (const jobMatch of text.matchAll(JOBS_LINE_RE)) {
     const [, id, type, statusRaw, elapsed] = jobMatch
-    const status = normalizeStatus(statusRaw)
     const afterLine = text.slice((jobMatch.index ?? 0) + jobMatch[0].length)
     const nextLine = /^\r?\n\s+([^\r\n]+)/.exec(afterLine)?.[1]?.trim()
-    const existing = jobs.get(id)
-    jobs.set(id, {
-      id,
-      kind: 'job',
-      title: nextLine || existing?.title || id,
-      type: type || existing?.type || 'job',
-      status,
-      detail: elapsed?.trim() || existing?.detail,
-      cancellable: status === 'running',
-    })
+    ops.push({ op: 'upsertJob', id, type, status: normalizeStatus(statusRaw), detail: elapsed?.trim(), title: nextLine })
   }
 
   for (const cancelMatch of text.matchAll(CANCELLED_JOB_RE)) {
-    markJobTerminalStatus(jobs, cancelMatch[1], 'cancelled')
+    ops.push({ op: 'status', id: cancelMatch[1], status: 'cancelled' })
   }
 
   for (const alreadyMatch of text.matchAll(ALREADY_JOB_RE)) {
-    markJobTerminalStatus(jobs, alreadyMatch[1], normalizeStatus(alreadyMatch[2]))
+    ops.push({ op: 'status', id: alreadyMatch[1], status: normalizeStatus(alreadyMatch[2]) })
   }
 
   if (text.includes('## Completed') || text.includes('## Failed') || text.includes('## Cancelled')) {
@@ -103,26 +120,33 @@ function applyStatusUpdatesFromText(text: string, jobs: Map<string, OmpBackgroun
       if (header) {
         sectionStatus = normalizeStatus(header[1])
         const idInHeader = header[2]?.trim()
-        if (idInHeader) markJobTerminalStatus(jobs, idInHeader, sectionStatus)
+        if (idInHeader) ops.push({ op: 'status', id: idInHeader, status: sectionStatus })
         continue
       }
       if (!sectionStatus) continue
       const bulletMatch = /^[-*]\s+`?([A-Za-z0-9._:-]+)`?/.exec(line.trim())
-      if (bulletMatch) markJobTerminalStatus(jobs, bulletMatch[1], sectionStatus)
+      if (bulletMatch) ops.push({ op: 'status', id: bulletMatch[1], status: sectionStatus })
       for (const idMatch of line.matchAll(ASYNC_JOB_ID_RE)) {
-        markJobTerminalStatus(jobs, idMatch[1], sectionStatus)
+        ops.push({ op: 'status', id: idMatch[1], status: sectionStatus })
       }
     }
   }
+  return ops
 }
 
-function collectPartToolCalls(
-  parts: readonly MessagePart[],
-  jobs: Map<string, OmpBackgroundTask>,
-  activeTools: OmpBackgroundTask[],
-  messageStreaming: boolean,
-  messageId: string,
-): void {
+interface MessageTaskOps {
+  ops: TaskOp[]
+  activeTools: OmpBackgroundTask[]
+}
+
+/**
+ * Ops for one message. Completed messages yield a stable op list that callers
+ * cache; the streaming message is collected live because its open tool calls
+ * depend on the current `isStreaming` pass.
+ */
+function collectMessageTaskOps(parts: readonly MessagePart[], messageStreaming: boolean, messageId: string): MessageTaskOps {
+  const ops: TaskOp[] = []
+  const activeTools: OmpBackgroundTask[] = []
   const openToolCalls: Array<{ part: Extract<MessagePart, { type: 'toolCall' }>; index: number }> = []
   for (let index = 0; index < parts.length; index += 1) {
     const part = parts[index]
@@ -141,20 +165,19 @@ function collectPartToolCalls(
       if (jobMatch) {
         const jobId = jobMatch[1]
         const toolName = callEntry?.part.name ?? part.name ?? 'job'
-        jobs.set(jobId, {
+        ops.push({
+          op: 'upsertJob',
           id: jobId,
-          kind: 'job',
-          title: callEntry ? summarizeToolArgs(callEntry.part.args, jobId) : jobId,
           type: toolName,
           status: 'running',
-          cancellable: true,
+          title: callEntry ? summarizeToolArgs(callEntry.part.args, jobId) : jobId,
         })
       }
-      applyStatusUpdatesFromText(part.text, jobs)
+      ops.push(...collectStatusOps(part.text))
       continue
     }
     if (part.type === 'text' || part.type === 'agentMessage') {
-      applyStatusUpdatesFromText(part.text, jobs)
+      ops.push(...collectStatusOps(part.text))
     }
   }
 
@@ -170,7 +193,12 @@ function collectPartToolCalls(
       })
     }
   }
+  return { ops, activeTools }
 }
+
+/** Completed messages are immutable, so their op list is collected once. Weak
+ * keys let a trimmed or replaced message be reclaimed by GC. */
+const completedMessageOps = new WeakMap<TranscriptMessage, TaskOp[]>()
 
 /**
  * Derives currently active (and recently tracked) OMP background work for the
@@ -190,12 +218,23 @@ export function deriveOmpBackgroundTasks({
   for (let index = 0; index < messages.length; index += 1) {
     const message = messages[index]
     const messageStreaming = Boolean(message.streaming || (isStreaming && index === messages.length - 1 && message.role === 'assistant'))
-    collectPartToolCalls(message.parts, jobs, activeTools, messageStreaming, message.id)
+    if (messageStreaming) {
+      const live = collectMessageTaskOps(message.parts, true, message.id)
+      applyTaskOps(jobs, live.ops)
+      activeTools.push(...live.activeTools)
+      continue
+    }
+    let ops = completedMessageOps.get(message)
+    if (!ops) {
+      ops = collectMessageTaskOps(message.parts, false, message.id).ops
+      completedMessageOps.set(message, ops)
+    }
+    applyTaskOps(jobs, ops)
   }
 
   for (let index = commandOutputHistory.length - 1; index >= 0; index -= 1) {
     const entry = commandOutputHistory[index]
-    if (entry.text) applyStatusUpdatesFromText(entry.text, jobs)
+    if (entry.text) applyTaskOps(jobs, collectStatusOps(entry.text))
   }
 
   const tasks: OmpBackgroundTask[] = []

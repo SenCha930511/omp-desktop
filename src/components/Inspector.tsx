@@ -101,7 +101,22 @@ const EMPTY_MESSAGES: TranscriptMessage[] = []
 const EMPTY_HISTORY: readonly CommandResult[] = []
 const EMPTY_PREVIEW_FILES: string[] = []
 const EMPTY_AGENT_BROWSER_TABS: AgentBrowserTabRecord[] = []
+const EMPTY_TASKS: OmpBackgroundTask[] = []
 const MAX_EXTRA_BROWSER_TABS = 8
+
+/** Field-exact task equality: a text/thinking delta changes the transcript but
+ * never a derived task, so the panel can keep its previous array reference. */
+function sameTaskItems(left: readonly OmpBackgroundTask[], right: readonly OmpBackgroundTask[]): boolean {
+  if (left === right) return true
+  if (left.length !== right.length) return false
+  for (let index = 0; index < left.length; index += 1) {
+    const a = left[index]
+    const b = right[index]
+    if (a.id !== b.id || a.kind !== b.kind || a.title !== b.title || a.type !== b.type
+      || a.status !== b.status || a.detail !== b.detail || a.cancellable !== b.cancellable) return false
+  }
+  return true
+}
 
 const TAB_IDS: InspectorTab[] = ['changes', 'files', 'browser', 'sidechat', 'agents', 'tasks']
 const TAB_ICONS = {
@@ -307,17 +322,18 @@ export const Inspector = memo(function Inspector({
     [observeTasks, transcript],
   )
   const observedMessages = useSyncExternalStore(subscribeMessages, getMessages)
-  const taskItems = useMemo(
-    () =>
-      backgroundTasks ??
-      deriveOmpBackgroundTasks({
-        messages: observedMessages,
-        isStreaming,
-        commandOutputHistory,
-        activeProjectScript,
-      }),
-    [activeProjectScript, backgroundTasks, commandOutputHistory, isStreaming, observedMessages],
-  )
+  const stableTaskItems = useRef<OmpBackgroundTask[]>(EMPTY_TASKS)
+  const taskItems = useMemo(() => {
+    const next = backgroundTasks ?? deriveOmpBackgroundTasks({
+      messages: observedMessages,
+      isStreaming,
+      commandOutputHistory,
+      activeProjectScript,
+    })
+    if (sameTaskItems(stableTaskItems.current, next)) return stableTaskItems.current
+    stableTaskItems.current = next
+    return next
+  }, [activeProjectScript, backgroundTasks, commandOutputHistory, isStreaming, observedMessages])
   const changeTotals = git.files.reduce(
     (totals, file) => ({ additions: totals.additions + (file.additions ?? 0), deletions: totals.deletions + (file.deletions ?? 0) }),
     { additions: 0, deletions: 0 },

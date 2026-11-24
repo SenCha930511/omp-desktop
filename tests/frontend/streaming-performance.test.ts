@@ -571,6 +571,15 @@ describe('external sync reconciliation', () => {
     expect(merged[0]).toBe(current[0])
     expect(merged[3]).toBe(fromDisk[3])
   })
+
+  it('compares nested records by their defined own keys on both sides', () => {
+    const withUndefined = [{ id: 'a', role: 'user' as const, timestamp: 1, parts: [], meta: { kept: 1, dropped: undefined } }] as unknown as TranscriptMessage[]
+    const withoutUndefined = [{ id: 'a', role: 'user' as const, timestamp: 1, parts: [], meta: { kept: 1 } }] as unknown as TranscriptMessage[]
+    expect(reconcileTranscripts(withUndefined, withoutUndefined)).toBe(withUndefined)
+
+    const extraKey = [{ id: 'a', role: 'user' as const, timestamp: 1, parts: [], meta: { kept: 1, added: 2 } }] as unknown as TranscriptMessage[]
+    expect(reconcileTranscripts(withUndefined, extraKey)[0]).toBe(extraKey[0])
+  })
 })
 
 describe('catalog tick session identity', () => {
