@@ -571,6 +571,12 @@ export class JsonStateStore {
     return this.state.projects
   }
 
+  /** Same invariant as `projectsReadonly()`, for main-process settings reads. */
+  settingsReadonly(): Readonly<AppSettings> {
+    this.assertCompatible()
+    return this.state.settings
+  }
+
   dismissedProjectPathsReadonly(): readonly string[] {
     this.assertCompatible()
     return this.state.dismissedProjectPaths

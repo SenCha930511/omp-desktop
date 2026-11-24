@@ -7,7 +7,7 @@ import { homedir } from 'node:os'
 import { pathToFileURL } from 'node:url'
 import { assertNoMcpAuthenticationCommand } from '../../src/lib/mcp-policy'
 import { BROWSER_PARTITION, type ApplicationMenuName, type AppMeta, type AppUpdateState, type HarnessUpdateState, type PrimeEventEnvelope, type RuntimeInfo, type ThemeMode } from '../../src/types/api'
-import { AgentRpcManager, OMP_RPC_ADAPTER } from './agent-rpc'
+import { AgentRpcManager, createStreamingDeltaCoalescer, OMP_RPC_ADAPTER, type StreamingDeltaCoalescer } from './agent-rpc'
 import { installApplicationMenu } from './application-menu'
 import { MacBackgroundController, shouldStartInBackground } from './background'
 import { BrowserDownloadGuard } from './browser-downloads'
@@ -68,6 +68,7 @@ let agentBrowser: AgentBrowserService | null = null
 let agentBrowserBridge: AgentBrowserBridge | null = null
 let agentCollaborationBridge: AgentCollaborationBridge | null = null
 let backgroundMode: MacBackgroundController | null = null
+let agentDeltaCoalescer: StreamingDeltaCoalescer | null = null
 let shutdownStarted = false
 let shutdownApproved = false
 let confirmingShutdown = false
@@ -301,7 +302,7 @@ function requestShutdown(window: BrowserWindow | null, prompt: ShutdownPrompt): 
 }
 
 export function interfaceZoomFactor(): number {
-  return (store?.getSettings().interfaceFontScale ?? 110) / 100
+  return (store?.settingsReadonly().interfaceFontScale ?? 110) / 100
 }
 
 export function trafficLightPositionForZoom(scalePercent = 100): { x: number; y: number } {
@@ -412,7 +413,7 @@ async function createWindow(): Promise<BrowserWindow | null> {
     show: false,
     backgroundColor: '#f5f5f4',
     icon: appIconPath(),
-    ...mainWindowChromeOptions(process.platform, resolvedWindowTheme(store?.getSettings().theme), Math.round(interfaceZoomFactor() * 100)),
+    ...mainWindowChromeOptions(process.platform, resolvedWindowTheme(store?.settingsReadonly().theme), Math.round(interfaceZoomFactor() * 100)),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       zoomFactor: interfaceZoomFactor(),
@@ -833,12 +834,17 @@ async function bootstrap(): Promise<void> {
     browser: ompBrowserExtensionPath,
     askUser: ompAskUserExtensionPath,
   }
-  ompManager.setRuntimeEnvironmentProvider((scope) => ({
-    ...extensionRuntimeEnvironment(scheduleBridge.environmentFor(scope), () => browserBridge.environmentFor(scope), capabilityExtensionPaths, stateStore.getSettings().askUserEnabled && scope.interactive, stateStore.getSettings().browserEnabled),
-    ...collaborationBridge.environmentFor({ ...scope, harness: 'omp' }),
-    GOOEYPI_CUA_DRIVER_PATH: stateStore.getSettings().computerUseEnabled ? cuaDriver.executable() ?? undefined : undefined,
-    GOOEYPI_COMPUTER_USE_SKILL_PATH: stateStore.getSettings().computerUseEnabled && cuaDriver.executable() ? computerUseSkillPath : undefined,
-  }))
+  ompManager.setRuntimeEnvironmentProvider((scope) => {
+    // One readonly snapshot per call: the committed state is replaced wholesale
+    // on every update, so this stays stable without three deep clones.
+    const settings = stateStore.settingsReadonly()
+    return {
+      ...extensionRuntimeEnvironment(scheduleBridge.environmentFor(scope), () => browserBridge.environmentFor(scope), capabilityExtensionPaths, settings.askUserEnabled && scope.interactive, settings.browserEnabled),
+      ...collaborationBridge.environmentFor({ ...scope, harness: 'omp' }),
+      GOOEYPI_CUA_DRIVER_PATH: settings.computerUseEnabled ? cuaDriver.executable() ?? undefined : undefined,
+      GOOEYPI_COMPUTER_USE_SKILL_PATH: settings.computerUseEnabled && cuaDriver.executable() ? computerUseSkillPath : undefined,
+    }
+  })
   ompManager.setRuntimeStartListener((environment, info) => {
     browserBridge.bindSession(environment.OMP_DESKTOP_BROWSER_TOKEN, info.sessionFile)
     collaborationBridge.bindSession(environment.GOOEYPI_COLLABORATION_TOKEN, info.sessionFile, info.runtimeId)
@@ -899,7 +905,12 @@ async function bootstrap(): Promise<void> {
       renderer.send(IPC_CHANNELS.agent.onEvent, envelope)
     }
   }
-  ompManager.setEventSink(forwardAgentEvent)
+  // Streaming deltas are coalesced before IPC: the harness repeats the whole
+  // growing message beside every token, so forwarding verbatim makes a turn's
+  // IPC traffic quadratic. The first delta still leaves synchronously, and any
+  // non-delta event flushes the batch first, so ordering and TTFT are intact.
+  agentDeltaCoalescer = createStreamingDeltaCoalescer(forwardAgentEvent)
+  ompManager.setEventSink((envelope) => agentDeltaCoalescer?.push(envelope))
   updates.setEventSink((state: AppUpdateState) => {
     const renderer = mainWindow?.webContents
     if (!shutdownStarted && renderer && !renderer.isDestroyed()
@@ -1041,6 +1052,9 @@ app.on('before-quit', (event) => {
   registration?.dispose()
   backgroundMode?.dispose()
   updateService?.dispose()
+  // Quitting: drop any buffered delta and its timer without another IPC send.
+  agentDeltaCoalescer?.dispose()
+  agentDeltaCoalescer = null
   agents?.beginShutdown()
   beginProcessShutdown()
   beginPluginDiscoveryShutdown()

@@ -80,7 +80,7 @@ export interface SessionWatcher {
 
 export type SessionWatchFactory = (
   path: string,
-  options: { persistent: boolean },
+  options: { persistent: boolean; recursive?: boolean },
   listener: (eventType: string, filename: string | Buffer | null) => void,
 ) => SessionWatcher
 
@@ -125,6 +125,13 @@ export class SessionService {
   readonly harness: HarnessId
   readonly sessionRoot: string
   private readonly recursiveWatch: boolean
+  /**
+   * macOS and Windows implement `fs.watch({ recursive: true })` natively with
+   * a single kernel watch, so bucketed sessions need no per-directory watchers
+   * or rescan on every event. Linux keeps the explicit bucket watchers, and an
+   * injected `watchDirectory` seam always keeps them so tests stay deterministic.
+   */
+  private readonly usesNativeRecursiveWatch: boolean
   private runtimeForSession: (filePath: string) => RuntimeSessionState | undefined = () => undefined
   private listRuntimeSessions: (() => readonly RuntimeSessionSnapshot[]) | null = null
   private runtimeForker: ((filePath: string, cwd: string) => Promise<string>) | null = null
@@ -176,6 +183,8 @@ export class SessionService {
     this.harness = options.harness ?? 'omp'
     this.sessionRoot = options.sessionRoot ?? join(homedir(), '.omp', 'agent', 'sessions')
     this.recursiveWatch = options.recursiveWatch === true
+    this.usesNativeRecursiveWatch = this.recursiveWatch && options.watchDirectory === undefined
+      && (process.platform === 'darwin' || process.platform === 'win32')
     this.metadataReader = options.metadataReader ?? createSessionMetadataReader()
     this.transcriptReader = options.transcriptReader ?? readTranscript
     this.isSessionPathAuthorized = options.isSessionPathAuthorized ?? authorizeOmpSessionPath
@@ -530,12 +539,17 @@ export class SessionService {
     try {
       // A missing session root (harness never used on this machine) throws
       // here and lands in the retry below, which watches once the root appears.
-      const watcher = this.watchDirectory(this.sessionRoot, { persistent: false }, (_eventType, filename) => {
-        this.queueSessionChange(filename)
-        if (this.recursiveWatch) this.refreshBucketWatchers(watcher)
-      })
+      const nativeRecursive = this.usesNativeRecursiveWatch
+      const watcher = this.watchDirectory(
+        this.sessionRoot,
+        nativeRecursive ? { persistent: false, recursive: true } : { persistent: false },
+        (_eventType, filename) => {
+          this.queueSessionChange(filename)
+          if (this.recursiveWatch && !nativeRecursive) this.refreshBucketWatchers(watcher)
+        },
+      )
       this.sessionWatcher = watcher
-      if (this.recursiveWatch) this.refreshBucketWatchers(watcher)
+      if (this.recursiveWatch && !nativeRecursive) this.refreshBucketWatchers(watcher)
       watcher.on('error', () => {
         if (this.sessionWatcher !== watcher) return
         watcher.close()

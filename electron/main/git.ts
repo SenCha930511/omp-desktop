@@ -98,6 +98,34 @@ function parseNumstat(output: string, maxEntries = GIT_STATUS_ENTRY_LIMIT): Pars
   return { values, truncated }
 }
 
+/** Which diff families the status codes prove non-empty. `git diff --numstat`
+ * never reports untracked (`??`) files, so only a tracked worktree code needs
+ * the unstaged diff; only an index code needs either `--cached` read. */
+function statusChangeFlags(output: string): { hasIndexChanges: boolean; hasTrackedWorktreeChanges: boolean } {
+  const flags = { hasIndexChanges: false, hasTrackedWorktreeChanges: false }
+  let cursor = 0
+  while (cursor < output.length) {
+    const field = nextNulField(output, cursor)
+    cursor = field.cursor
+    const record = field.value
+    if (!record || record.startsWith('## ') || record.length < 4) continue
+    const code = record.slice(0, 2)
+    if (code[0] !== ' ' && code[0] !== '?') flags.hasIndexChanges = true
+    if (code !== '??' && code[1] !== ' ' && code[1] !== '!') flags.hasTrackedWorktreeChanges = true
+    if (code.includes('R') || code.includes('C')) cursor = nextNulField(output, cursor).cursor
+    if (flags.hasIndexChanges && flags.hasTrackedWorktreeChanges) break
+  }
+  return flags
+}
+
+const EMPTY_NUMSTAT: ParsedNumstat = { values: new Map(), truncated: false }
+
+async function settledNumstat(operation: string, result: ProcessResult | undefined): Promise<ParsedNumstat> {
+  if (!result) return EMPTY_NUMSTAT
+  requireProcessSuccess(operation, result)
+  return parseNumstat(result.stdout)
+}
+
 function parseBranch(header: string, status: GitStatus): void {
   let value = header.slice(3)
   if (value.startsWith('No commits yet on ')) value = value.slice('No commits yet on '.length)
@@ -244,12 +272,22 @@ function pruneStampedCache<T>(cache: Map<string, StampedCacheEntry<T>>, now: num
 }
 
 /**
+ * Generation counter for repository mutations. A status read is shared only
+ * with callers of the same generation, so a read that started before a
+ * stage/unstage/restore/commit/branch switch can never serve a caller that
+ * began afterwards.
+ */
+let gitMutationEpoch = 0
+const inFlightGitStatus = new Map<string, Promise<GitStatus>>()
+
+/**
  * Drops cached repository metadata. Mutations call this so the next read
  * observes the new index or HEAD instead of waiting out the TTL; a branch
  * switch outside the service is caught by the HEAD stamp. Calling it without
  * a root clears every repository.
  */
 export function invalidateGitRepositoryCaches(repositoryRoot?: string): void {
+  gitMutationEpoch += 1
   if (repositoryRoot === undefined) {
     repositoryConfigCache.clear()
     repositoryBranchCache.clear()
@@ -653,6 +691,8 @@ async function changeGitBranch(cwd: string, branchValue: unknown, create: boolea
     maxBytes: GIT_BRANCH_OUTPUT_LIMIT,
   }, overrides)
   requireProcessSuccess(create ? 'Git branch creation' : 'Git branch switch', result)
+  // HEAD moved: retire every status read that began before the switch.
+  gitMutationEpoch += 1
   return { kind: 'applied' }
 }
 
@@ -712,34 +752,25 @@ export class GitService {
     } catch { return undefined }
   }
 
+  /**
+   * Reads the worktree status. Authorization and canonicalization run on every
+   * call, so an unauthorized caller can never ride a concurrent authorized
+   * read; only the identical canonical root (and the same mutation generation)
+   * shares one subprocess burst. Each caller receives its own clone so no
+   * caller can observe another's in-place edits.
+   */
   async status(cwdValue: unknown): Promise<GitStatus> {
     try {
       const { cwd, overrides } = await this.withRepositoryGuards(cwdValue, undefined, { readOnly: true })
-      const statusResult = await runGit(cwd, ['status', '--porcelain=v1', '--branch', '--untracked-files=all', '--ignore-submodules=all', '-z'], { timeoutMs: 15_000, maxBytes: GIT_STATUS_OUTPUT_LIMIT }, overrides)
-      requireProcessSuccess('Git status', statusResult)
-      await rejectFilteredPaths(cwd, [...changedPathStatesFromStatus(statusResult.stdout).keys()], overrides)
-      const [unstagedResult, stagedResult] = await Promise.all([
-        runGit(cwd, ['diff', '--no-ext-diff', '--no-textconv', '--ignore-submodules=all', '--numstat', '-z'], { timeoutMs: 15_000, maxBytes: GIT_STATUS_OUTPUT_LIMIT }, overrides),
-        runGit(cwd, ['diff', '--no-ext-diff', '--no-textconv', '--ignore-submodules=all', '--cached', '--numstat', '-z'], { timeoutMs: 15_000, maxBytes: GIT_STATUS_OUTPUT_LIMIT }, overrides),
-      ])
-      requireProcessSuccess('Git unstaged statistics', unstagedResult)
-      requireProcessSuccess('Git staged statistics', stagedResult)
-      const status = parseStatus(statusResult.stdout, parseNumstat(stagedResult.stdout), parseNumstat(unstagedResult.stdout))
-      const indexResult = await runGit(cwd, ['diff', '--cached', '--raw', '-z', '--no-abbrev', '--no-renames', '--no-ext-diff', '--no-textconv', '--ignore-submodules=all'], { timeoutMs: 15_000, maxBytes: GIT_STATUS_OUTPUT_LIMIT }, overrides)
-      requireProcessSuccess('Git index identities', indexResult)
-      const fields = indexResult.stdout.split('\0')
-      const indexHashes = new Map<string, string>()
-      for (let index = 0; index + 1 < fields.length; index += 2) {
-        const metadata = fields[index].split(' ')
-        indexHashes.set(fields[index + 1], `${metadata[1]}:${metadata[3]}`)
+      const key = `${gitMutationEpoch}\0${cwd}`
+      let pending = inFlightGitStatus.get(key)
+      if (!pending) {
+        pending = this.collectStatus(cwd, overrides)
+        inFlightGitStatus.set(key, pending)
+        const settle = () => { if (inFlightGitStatus.get(key) === pending) inFlightGitStatus.delete(key) }
+        pending.then(settle, settle)
       }
-      // Bound disk concurrency even for repositories with many dirty files.
-      for (let offset = 0; offset < status.files.length; offset += 8) {
-        await Promise.all(status.files.slice(offset, offset + 8).map(async (file) => {
-          file.contentHash = file.staged ? indexHashes.get(file.path) : await gitWorktreeContentHash(join(cwd, file.path))
-        }))
-      }
-      return status
+      return structuredClone(await pending)
     } catch (error) {
       const message = errorMessage(error).slice(0, GIT_ERROR_LIMIT)
       // Only a genuine "not a repository" detection may claim there is no repo.
@@ -748,6 +779,45 @@ export class GitService {
       if (isNotARepositoryFailure(error)) return { isRepo: false, files: [], error: message || 'Not a Git repository' }
       return { isRepo: true, files: [], error: message || 'Git status failed' }
     }
+  }
+
+  private async collectStatus(cwd: string, overrides: readonly string[]): Promise<GitStatus> {
+    const statusResult = await runGit(cwd, ['status', '--porcelain=v1', '--branch', '--untracked-files=all', '--ignore-submodules=all', '-z'], { timeoutMs: 15_000, maxBytes: GIT_STATUS_OUTPUT_LIMIT }, overrides)
+    requireProcessSuccess('Git status', statusResult)
+    await rejectFilteredPaths(cwd, [...changedPathStatesFromStatus(statusResult.stdout).keys()], overrides)
+    // `git diff --numstat` never counts untracked files and `--cached` only
+    // counts index changes, so a clean or untracked-only worktree would pay for
+    // subprocesses that can only return nothing. Read the status codes first and
+    // skip exactly the diffs whose output is provably empty.
+    const flags = statusChangeFlags(statusResult.stdout)
+    const [unstagedResult, stagedResult] = await Promise.all([
+      flags.hasTrackedWorktreeChanges
+        ? runGit(cwd, ['diff', '--no-ext-diff', '--no-textconv', '--ignore-submodules=all', '--numstat', '-z'], { timeoutMs: 15_000, maxBytes: GIT_STATUS_OUTPUT_LIMIT }, overrides)
+        : undefined,
+      flags.hasIndexChanges
+        ? runGit(cwd, ['diff', '--no-ext-diff', '--no-textconv', '--ignore-submodules=all', '--cached', '--numstat', '-z'], { timeoutMs: 15_000, maxBytes: GIT_STATUS_OUTPUT_LIMIT }, overrides)
+        : undefined,
+    ])
+    const unstagedStats = await settledNumstat('Git unstaged statistics', unstagedResult)
+    const stagedStats = await settledNumstat('Git staged statistics', stagedResult)
+    const status = parseStatus(statusResult.stdout, stagedStats, unstagedStats)
+    const indexHashes = new Map<string, string>()
+    if (flags.hasIndexChanges) {
+      const indexResult = await runGit(cwd, ['diff', '--cached', '--raw', '-z', '--no-abbrev', '--no-renames', '--no-ext-diff', '--no-textconv', '--ignore-submodules=all'], { timeoutMs: 15_000, maxBytes: GIT_STATUS_OUTPUT_LIMIT }, overrides)
+      requireProcessSuccess('Git index identities', indexResult)
+      const fields = indexResult.stdout.split('\0')
+      for (let index = 0; index + 1 < fields.length; index += 2) {
+        const metadata = fields[index].split(' ')
+        indexHashes.set(fields[index + 1], `${metadata[1]}:${metadata[3]}`)
+      }
+    }
+    // Bound disk concurrency even for repositories with many dirty files.
+    for (let offset = 0; offset < status.files.length; offset += 8) {
+      await Promise.all(status.files.slice(offset, offset + 8).map(async (file) => {
+        file.contentHash = file.staged ? indexHashes.get(file.path) : await gitWorktreeContentHash(join(cwd, file.path))
+      }))
+    }
+    return status
   }
 
   async diff(cwdValue: unknown, pathValue?: unknown, stagedValue?: unknown): Promise<GitDiff> {
