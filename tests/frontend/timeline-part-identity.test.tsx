@@ -158,4 +158,21 @@ describe('timeline part identity', () => {
     expect(toolRow?.querySelectorAll('.shine-sweep').length).toBeGreaterThanOrEqual(1)
     expect(toolRow?.textContent).toContain('running')
   })
+
+  it('counts the elapsed wait on a wait row that has no result yet', () => {
+    vi.useFakeTimers()
+    try {
+      renderTimeline({
+        id: 'wait-row',
+        role: 'assistant',
+        timestamp: 1,
+        parts: [{ type: 'toolCall', name: 'wait', args: { op: 'wait', jobs: [{ id: 'job-1' }] } }],
+      })
+      expect(container.querySelector('.activity-tool__wait-elapsed')).not.toBeNull()
+      act(() => { vi.advanceTimersByTime(3_000) })
+      expect(container.querySelector('.activity-tool__wait-elapsed')?.textContent).toMatch(/3s/)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

@@ -275,7 +275,7 @@ const ToolPart = memo(function ToolPart({ part, next, streaming }: { part: Extra
   const testReport = result?.testReport
   const canExpand = Boolean(output || details || testReport || (part.args !== undefined && part.args !== ''))
   const state = failed ? 'error' : finished ? 'done' : !streaming ? 'unknown' : kind === 'question' ? 'waiting' : 'running'
-  const waitElapsed = useWaitElapsed(part, part.name.trim().toLowerCase() === 'wait' && state === 'running')
+  const waitElapsed = useWaitElapsed(part, part.name.trim().toLowerCase() === 'wait' && !finished)
   const preview = part.name.trim().toLowerCase() === 'wait'
     ? waitTarget(part.args) || (details?.kind === 'wait'
       ? t(details.truncated ? 'transcript.tool.wait.jobLimit' : 'transcript.tool.wait.jobs', { count: details.jobs.length })
@@ -321,9 +321,9 @@ const ToolPart = memo(function ToolPart({ part, next, streaming }: { part: Extra
           ) : (
             <>
               <LoaderCircle className="spin" size={12} /> <span className="shine-sweep">{t('transcript.tool.state.running')}</span>
-              {waitElapsed !== undefined ? <span className="activity-tool__wait-elapsed">{t('transcript.tool.wait.elapsed', { duration: formatWorkedDuration(waitElapsed) })}</span> : null}
             </>
           )}
+          {waitElapsed !== undefined ? <span className="activity-tool__wait-elapsed">{t('transcript.tool.wait.elapsed', { duration: formatWorkedDuration(waitElapsed) })}</span> : null}
         </span>
         {canExpand ? open ? <ChevronDown size={13} /> : <ChevronRight size={13} /> : null}
       </button>
