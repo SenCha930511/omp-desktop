@@ -1774,6 +1774,14 @@ rl.on('line', (line) => {
     if (process.env.FAKE_CONFLICT === '1') {
       setTimeout(() => process.stderr.write('Session /fake/session.jsonl is open for writing in another omp process, so this session now saves to a forked file.\\n'), Number(process.env.FAKE_CONFLICT_AFTER_MS || 0))
     }
+    if (process.env.FAKE_STDOUT_CONFLICT === '1') {
+      setTimeout(() => process.stdout.write(JSON.stringify({
+        type: 'notice',
+        level: 'warning',
+        source: 'session-persistence',
+        message: 'Session /fake/session.jsonl is open for writing in another omp process, so this session now saves to a forked file.',
+      }) + '\\n'), Number(process.env.FAKE_CONFLICT_AFTER_MS || 0))
+    }
   } else {
     process.stdout.write(JSON.stringify({ id: command.id, type: 'response', command: command.type, success: true }) + '\\n')
   }
@@ -1825,6 +1833,26 @@ rl.on('line', (line) => {
       await runtime.stop()
     }
   })
+
+  it('rejects later commands when the conflict notice arrives on stdout with empty stderr', async () => {
+    const fake = writeConflictAgent()
+    const events: Record<string, unknown>[] = []
+    const runtime = new RpcRuntime(
+      process.execPath,
+      [fake.executable, '--resume', '/fake/session.jsonl'],
+      fake.cwd,
+      ({ event }) => events.push(event),
+      () => undefined,
+      { FAKE_STDOUT_CONFLICT: '1', FAKE_CONFLICT_AFTER_MS: '500' },
+    )
+    try {
+      await expect(runtime.handshake()).resolves.toBeTruthy()
+      await waitUntil(() => events.some((event) => event.type === 'notice' && event.source === 'session-persistence'))
+      await expect(runtime.command({ type: 'compact' })).rejects.toThrow('This session is open in another OMP process')
+    } finally {
+      await runtime.stop()
+    }
+  })
 })
 
 describe('agent RPC duplicate session starts', () => {
@@ -1850,6 +1878,59 @@ describe('agent RPC duplicate session starts', () => {
     // Starting the second session retires the now-idle first child (warm
     // replacement), so exactly one resident child remains.
     expect(manager.list().map((runtime) => runtime.runtimeId)).toEqual([third.runtimeId])
+  })
+
+  it('waits for an in-flight stop on the same session before spawning a replacement child', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-rpc-stop-wait-'))
+    dirs.push(cwd)
+    const lifecycleLog = join(cwd, 'lifecycle.jsonl')
+    const executable = join(cwd, 'slow-stop-agent.cjs')
+    writeFileSync(executable, `#!/usr/bin/env node
+const fs = require('node:fs')
+const readline = require('node:readline')
+const logPath = ${JSON.stringify(lifecycleLog)}
+const record = (event) => fs.appendFileSync(logPath, JSON.stringify({ event, pid: process.pid }) + '\\n')
+record('start')
+const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
+const input = readline.createInterface({ input: process.stdin })
+input.on('line', (line) => {
+  const command = JSON.parse(line)
+  if (command.type === 'negotiate_protocol') {
+    send({ id: command.id, type: 'response', command: 'negotiate_protocol', success: true, data: { protocolVersion: command.protocolVersion } })
+  } else if (command.type === 'get_state') {
+    send({ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'session-1', thinkingLevel: 'medium', isStreaming: false, isSettled: true, hasPendingAsyncWork: false } })
+  } else if (command.type === 'get_session_stats') {
+    send({ id: command.id, type: 'response', command: 'get_session_stats', success: true, data: { contextUsage: { tokens: 25000, contextWindow: 100000, percent: 25 } } })
+  } else {
+    send({ id: command.id, type: 'response', command: command.type, success: true })
+  }
+})
+input.on('close', () => {
+  process.on('SIGTERM', () => {})
+  setTimeout(() => {
+    record('exit')
+    process.exit(0)
+  }, 350)
+})
+`)
+    chmodSync(executable, 0o755)
+    const manager = managerFor(executable)
+    const sessionPath = join(cwd, 'session.jsonl')
+    writeFileSync(sessionPath, '')
+
+    const first = await manager.start({ cwd, sessionPath })
+    const stopPromise = manager.stop(first.runtimeId)
+    const second = await manager.start({ cwd, sessionPath })
+    await stopPromise
+
+    expect(second.runtimeId).not.toBe(first.runtimeId)
+    const events = readFileSync(lifecycleLog, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { event: string; pid: number })
+    expect(events.map((entry) => entry.event)).toEqual(['start', 'exit', 'start'])
+    expect(events[0]?.pid).toBe(events[1]?.pid)
+    expect(events[2]?.pid).not.toBe(events[0]?.pid)
   })
 })
 

@@ -243,6 +243,16 @@ export async function validateRpcCommand(raw: unknown, validateSessionPath: (pat
     rejectUnknownKeys(command, ['type', 'name'], 'command')
     return { type, name: requireString(command.name, 'name', { min: 1, max: 200, trim: true }) }
   }
+  if (type === 'get_session_lease') {
+    rejectUnknownKeys(command, ['type', 'sessionIds'], 'command')
+    if (!Array.isArray(command.sessionIds) || command.sessionIds.length === 0 || command.sessionIds.length > 100) {
+      throw new TypeError('sessionIds must contain 1 to 100 session ids')
+    }
+    return {
+      type,
+      sessionIds: command.sessionIds.map((id, index) => requireString(id, `sessionIds[${index}]`, { min: 1, max: 4096 })),
+    }
+  }
   if (type === 'extension_ui_response') {
     const id = requireId(command.id, 'id')
     if (command.cancelled === true) {

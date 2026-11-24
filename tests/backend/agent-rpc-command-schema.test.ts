@@ -247,6 +247,15 @@ describe('validateRpcCommand session commands', () => {
       await expect(validate({ type } as never)).rejects.toThrow(`RPC command ${type} is not exposed to the renderer`)
     }
   })
+
+  it('validates get_session_lease with 1 to 100 session ids', async () => {
+    await expect(validate({ type: 'get_session_lease', sessionIds: ['session-1'] })).resolves.toEqual({
+      type: 'get_session_lease', sessionIds: ['session-1'],
+    })
+    await expect(validate({ type: 'get_session_lease', sessionIds: [] })).rejects.toThrow('sessionIds must contain 1 to 100 session ids')
+    await expect(validate({ type: 'get_session_lease', sessionIds: Array.from({ length: 101 }, (_, index) => `s-${index}`) })).rejects.toThrow('sessionIds must contain 1 to 100 session ids')
+    await expect(validate({ type: 'get_session_lease', sessionIds: ['session-1'], extra: true })).rejects.toThrow('command.extra is not supported')
+  })
 })
 
 describe('validateRpcCommand queue commands', () => {
