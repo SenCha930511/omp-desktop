@@ -155,7 +155,7 @@ describe('prompt admission versus background transcript reads', () => {
     expect(latest.pendingQueuedPrompts.map((prompt) => prompt.text)).toEqual(['other thread follow-up'])
   })
 
-  it('drops the queued steer once the harness injects it, without waiting for the queue count', () => {
+  it('keeps the submitted steer row and drops only its chip once the harness injects it', () => {
     let flushFrame: FrameRequestCallback | undefined
     vi.stubGlobal('requestAnimationFrame', vi.fn((callback: FrameRequestCallback) => { flushFrame = callback; return 1 }))
     vi.stubGlobal('cancelAnimationFrame', vi.fn())
@@ -168,17 +168,19 @@ describe('prompt admission versus background transcript reads', () => {
     act(() => { latest.reconcileQueuedPrompts({ queuedCount: 1, steering: [], followUps: [] }) })
     expect(latest.pendingQueuedPrompts.map((prompt) => prompt.text)).toEqual(['change direction'])
 
-    // The injected user message proves delivery; the chip and optimistic row go.
+    // The injected user message proves delivery: the chip goes, the row stays
+    // as the reader's copy of what they sent.
     act(() => {
       latest.deliverQueuedSteer('change direction')
       flushFrame?.(2)
     })
     expect(latest.pendingQueuedPrompts).toEqual([])
-    expect(latest.messages.filter((message) => message.role === 'user')).toEqual([])
+    expect(latest.messages.filter((message) => message.role === 'user').map((message) => message.parts.map((part) => part.type === 'text' ? part.text : '').join(''))).toEqual(['change direction'])
 
     // A later snapshot with a stale count must not resurrect anything.
     act(() => { latest.reconcileQueuedPrompts({ queuedCount: 1, steering: ['change direction'], followUps: [] }) })
     expect(latest.pendingQueuedPrompts).toEqual([])
+    expect(latest.messages.filter((message) => message.role === 'user')).toHaveLength(1)
   })
 
   it('promotes an acknowledged omp steer into history while leaving true queued prompts pending', () => {

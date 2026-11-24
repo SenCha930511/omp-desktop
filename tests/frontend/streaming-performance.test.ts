@@ -580,6 +580,18 @@ describe('external sync reconciliation', () => {
     const extraKey = [{ id: 'a', role: 'user' as const, timestamp: 1, parts: [], meta: { kept: 1, added: 2 } }] as unknown as TranscriptMessage[]
     expect(reconcileTranscripts(withUndefined, extraKey)[0]).toBe(extraKey[0])
   })
+
+  it('keeps a local steer row the read cannot know about and drops it once the same text is persisted', () => {
+    const disk = syncTranscript()
+    const local: TranscriptMessage = { id: 'user-queued-1', role: 'user', timestamp: 2, parts: [{ type: 'text', text: 'change direction' }] }
+    const kept = reconcileTranscripts([...disk, local], disk)
+    expect(kept.map((message) => message.id)).toContain('user-queued-1')
+    expect(kept.filter((message) => message.role === 'user').map((message) => message.parts[0]?.type === 'text' ? message.parts[0].text : '')).toEqual(['question', 'change direction'])
+
+    const persisted = [...disk, { id: 'entry-9', role: 'user' as const, timestamp: 2, parts: [{ type: 'text' as const, text: 'change direction' }] }]
+    const deduped = reconcileTranscripts([...disk, local], persisted)
+    expect(deduped.map((message) => message.id)).toEqual(persisted.map((message) => message.id))
+  })
 })
 
 describe('catalog tick session identity', () => {

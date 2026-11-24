@@ -31,6 +31,43 @@ function structurallyEqual(left: unknown, right: unknown): boolean {
   return leftCount === rightCount
 }
 
+/** Concatenated text parts, trimmed: the identity of a prompt for superseding
+ * a renderer-local user row with the row the harness persisted. */
+export function transcriptMessageText(message: TranscriptMessage): string {
+  let text = ''
+  for (const part of message.parts) {
+    if (part.type === 'text' || part.type === 'agentMessage') text += part.text
+  }
+  return text.trim()
+}
+
+/**
+ * Re-inserts renderer-local user rows the read cannot know about. A steer the
+ * harness injected is often not persisted as a user record, so the row that
+ * rendered at submit time is the reader's only copy; dropping it on every
+ * authoritative read made steers vanish. A persisted row with the same text
+ * supersedes it instead, so the same prompt never renders twice.
+ */
+export function keepLocalUserRows(current: TranscriptMessage[], next: TranscriptMessage[]): TranscriptMessage[] {
+  const nextIds = new Set(next.map((message) => message.id))
+  const nextUserTexts = new Set(next.filter((message) => message.role === 'user').map(transcriptMessageText))
+  const missing: TranscriptMessage[] = []
+  for (const message of current) {
+    if (message.role !== 'user' || !message.id.startsWith('user-') || nextIds.has(message.id)) continue
+    if (nextUserTexts.has(transcriptMessageText(message))) continue
+    missing.push(message)
+  }
+  if (!missing.length) return next
+  const merged = [...next]
+  for (const row of missing) {
+    const rowTime = typeof row.timestamp === 'number' ? row.timestamp : Number.POSITIVE_INFINITY
+    const index = merged.findIndex((message) => typeof message.timestamp === 'number' && message.timestamp > rowTime)
+    if (index < 0) merged.push(row)
+    else merged.splice(index, 0, row)
+  }
+  return merged
+}
+
 /**
  * Merges an authoritative transcript read into current renderer state by
  * message id: messages whose content is unchanged keep their current object
@@ -51,5 +88,5 @@ export function reconcileTranscripts(current: TranscriptMessage[], next: Transcr
     changed = true
     return message
   })
-  return changed ? merged : current
+  return changed ? keepLocalUserRows(current, merged) : current
 }

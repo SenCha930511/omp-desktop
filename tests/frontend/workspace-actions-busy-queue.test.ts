@@ -327,7 +327,7 @@ describe('busy queue parity between text and images', () => {
     expect(state.command).toHaveBeenCalledWith('busy-runtime', expect.objectContaining({ type: 'follow_up', message: 'Queue this' }))
     expect(state.queuePrompt).not.toHaveBeenCalled()
     expect(state.start).not.toHaveBeenCalled()
-    expect(state.messages()).toEqual([])
+    expect(state.messages().map((message) => [message.role, message.parts.map((part) => part.type === 'text' ? part.text : '').join('')])).toEqual([['user', 'Queue this']])
   })
 
   it('keeps input in the local queue when the session runs outside OMP Desktop', async () => {

@@ -971,6 +971,12 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
           // parts holds streamed content from the running turn and survives.
           workspace.setMessages((items) => items.filter((item) => item.id !== userMessage.id && (item.id !== pendingAssistantId || item.parts.length > 0)))
         }
+        // The running turn owns the transcript, so its placeholder goes; the
+        // submitted user row stays as the reader's feedback that the prompt
+        // exists until the harness persists it.
+        const retractPendingAssistant = () => {
+          workspace.setMessages((items) => items.filter((item) => item.id !== pendingAssistantId || item.parts.length > 0))
+        }
         if (!bridge) {
           appendUserMessage()
           const assistantId = `assistant-${Date.now()}`
@@ -1070,8 +1076,10 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
           // agent.list() disagreed with the optimistic append: omp owns the
           // busy queue, so the follow-up is delivered to the streaming
           // runtime — text and images share one semantic. The const snapshot
-          // keeps the narrowing inside the setRuntime closure below.
-          retractPendingTurn()
+          // keeps the narrowing inside the setRuntime closure below. The
+          // submitted row stays visible: it is the reader's only feedback that
+          // the follow-up exists until the harness persists it.
+          retractPendingAssistant()
           workspace.attachRuntime(streamingRuntime, generation)
           if (admitted.sessionFile) setSessions((items) => items.map((session) => (session.filePath === admitted.sessionFile ? { ...session, lastUserMessageAt: sentAtIso, updatedAt: sentAtIso } : session)))
           const response = await bridge.agent.command(streamingRuntime.runtimeId, { type: 'follow_up', message: prompt, ...(images.length ? { images } : {}) })
@@ -1087,13 +1095,15 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
           // agent 控制比照 ownsStreamingRuntime 分支即時處理;session 在 OMP
           // Desktop 外執行時沒有可命令的 runtime,輸入維持本地排隊。
           if (activeRuntime?.isStreaming && slashDisposition?.kind === 'respond-local') {
-            retractPendingTurn()
+            appendUserMessage()
+            retractPendingAssistant()
             respondLocally(activeRuntime)
             completeQueuedFlush()
             return
           }
           if (activeRuntime?.isStreaming && slashDisposition?.kind === 'agent-control') {
-            retractPendingTurn()
+            appendUserMessage()
+            retractPendingAssistant()
             if (!confirmGoalDrop(generation)) {
               completeQueuedFlush()
               return
@@ -1112,7 +1122,8 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
             return
           }
           if (activeRuntime?.isStreaming && (compactRpc || slashCommand)) {
-            retractPendingTurn()
+            appendUserMessage()
+            retractPendingAssistant()
             workspace.attachRuntime(activeRuntime, generation)
             await sendDirectSlashCommand(activeRuntime, generation)
             return
@@ -1233,14 +1244,16 @@ export function createWorkspaceActions(getDeps: () => WorkspaceActionsDeps) {
           completeQueuedFlush()
         } else if (activeRuntime.isStreaming) {
           if (slashCommand) {
-            retractPendingTurn()
+            appendUserMessage()
+            retractPendingAssistant()
             await sendDirectSlashCommand(activeRuntime, generation)
             return
           }
-          // Follow-ups are daemon-owned. Steers get a renderer-only pending
-          // row so pickup can move them into history without redelivery.
-          // The running turn owns the transcript: hand our optimistic rows back.
-          retractPendingTurn()
+          // Follow-ups are daemon-owned. Steers get a renderer-only row that
+          // pickup moves into history without redelivery. The submitted row
+          // stays visible for both: a queued prompt keeps the row it rendered
+          // at submit time, and a fresh steer renders its own below.
+          retractPendingAssistant()
           if (intent === 'steer') queuedPromptId = workspace.queuePrompt(prompt, intent, userMessage.parts, sentAt)
           const response = await bridge.agent.command(activeRuntime.runtimeId, { type: intent === 'steer' ? 'steer' : 'follow_up', message: prompt, ...(images.length ? { images } : {}) })
           const actions = parseSessionActionSnapshot(response.sessionActions)
