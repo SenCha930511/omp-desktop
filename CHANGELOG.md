@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.3.22 — 2026-11-24
+
+### Added
+
+- Streaming session metadata and transcript reads through the Rust/WASM JSONL core: a reused linear-memory buffer, a single-pass transcript builder, and the same recovery and budget rules as the TypeScript reader. Measured 2.04x over 1,000 files, and 608 local sessions parsed deep-equal with zero mismatches.
+- An elapsed-time counter on `wait` tool rows, shown from the moment the row appears, including before its result arrives.
+- Tab accepts the active slash-command or mention suggestion while the menu is open. Shift+Tab keeps normal focus movement.
+
+### Changed
+
+- Slash commands open from a `/` token anywhere in the draft, replace only the typed token, keep subcommands listed after the command space, and insert skills at the caret.
+- The running session spinner takes the relative-time slot instead of sitting beside it, so a working session shows no clock label.
+- Queued prompts, steers, slash commands, and skills keep the user row rendered at submit time; only the pending assistant placeholder is dropped.
+- A delivered steer moves from its submit position to the real delivery boundary and is marked read, with its original submit timestamp preserved.
+- Git status skips diff subprocesses whose output is provably empty, shares one subprocess burst per root and mutation generation, and watches the session root with one native recursive watcher.
+- Streaming text and thinking deltas coalesce per 12 ms window, and growing message snapshots are stripped before IPC.
+- Transcript background-task ops, subagent history, side-question deltas, syntax tokens, and session tree rows are cached or bounded so a streaming delta no longer re-scans history.
+- A local prompt row is matched to a persisted row one to one and nearest first, so sending the same prompt twice keeps both rows.
+
+### Fixed
+
+- Steer and queue prompts no longer disappear or duplicate around authoritative reads.
+- Split-turn tool ownership is preserved when a turn is divided.
+- Two concurrent fork triggers for the same source session now share one fork instead of each creating a copy.
+- The background-task panel no longer leaves stale bash rows marked as running after an unmatched finish event.
+- Jump-to-bottom lands on the real bottom after the smooth-ride guard, and the button stays available while the reader is pinned.
+- The per-line syntax cache skips lines over 16 KiB and caps its keys at 1 MiB.
+
+**Full Changelog**: https://github.com/SenCha930511/omp-desktop/compare/v1.3.21...v1.3.22
+
 ## 1.3.21 — 2026-11-24
 
 ### Added
