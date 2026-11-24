@@ -328,7 +328,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     setTimeout(() => {
       fs.rmSync(marker('omp-get-state-pending'), { force: true })
       send({ id: command.id, type: 'response', command: command.type, success: true, data: {
-        sessionId: 'fixture-session', sessionFile, isStreaming: streaming, thinkingLevel: currentThinking,
+        sessionId: 'fixture-session', sessionFile, isStreaming: streaming, isSettled: true, hasPendingAsyncWork: false, thinkingLevel: currentThinking,
         model: currentModel,
         contextUsage: { tokens: 12000, contextWindow: 100000, percent: 12 },
         fastModeEnabled: false, queuedMessageCount: steeringQueue.length + followUpQueue.length, queuedMessages: { steering: [...steeringQueue], followUp: [...followUpQueue] }, sessionActions: sessionActionsSnapshot(),
@@ -1523,6 +1523,7 @@ test.describe('OMP Desktop desktop smoke', () => {
     const composer = page.getByRole('combobox', { name: 'Message OMP' })
     await composer.fill('Start a turn to fork')
     await composer.press('Enter')
+    await expect.poll(() => page.evaluate(async () => (await window.desktop.agent.list()).length)).toBe(1)
     const runtimes = await page.evaluate(() => window.desktop.agent.list())
     expect(runtimes).toHaveLength(1)
     await page.evaluate((runtimeId) => window.desktop.agent.command(runtimeId, { type: 'fork', entryId: 'fixture-goal-summary' }), runtimes[0].runtimeId)

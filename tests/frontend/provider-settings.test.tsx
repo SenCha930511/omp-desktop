@@ -604,6 +604,21 @@ describe('provider runtime mutations', () => {
     expect(command).not.toHaveBeenCalled()
   })
 
+  it('keeps an unsent effort choice when an idle runtime attaches later', async () => {
+    const hook = await mountCatalogHook({ command: vi.fn().mockResolvedValue({}), runtime: null })
+    await act(async () => { await Promise.resolve() })
+    act(() => hook.value.changeEffort('high'))
+
+    await hook.updateRuntime({
+      ...runtime,
+      model: { provider: 'anthropic', id: 'claude-sonnet', name: 'Claude Sonnet' },
+      configuredThinkingLevel: 'medium',
+      thinkingLevel: 'medium',
+    })
+
+    expect(hook.value.effort).toBe('high')
+  })
+
 })
 
 describe('composer selection peek and runtime alignment', () => {
@@ -714,11 +729,10 @@ describe('composer selection peek and runtime alignment', () => {
     let aligned: RuntimeInfo | undefined
     await act(async () => { aligned = await hook.value.alignRuntime!(stale) })
 
-    expect(order).toEqual(['set_model', 'set_thinking_level', 'set_service_tier', 'refresh'])
+    expect(order).toEqual(['set_model', 'set_thinking_level', 'refresh'])
     expect(command.mock.calls.map(([, request]) => request)).toEqual([
       { type: 'set_model', provider: 'openai-codex', modelId: 'gpt-5.6' },
       { type: 'set_thinking_level', level: 'medium' },
-      { type: 'set_service_tier', serviceTier: 'default' },
     ])
     expect(refreshState).toHaveBeenCalledExactlyOnceWith('runtime-1')
     expect(aligned).toBe(refreshed)
@@ -746,6 +760,24 @@ describe('composer selection peek and runtime alignment', () => {
     expect(hook.command).not.toHaveBeenCalled()
     expect(hook.refreshState).not.toHaveBeenCalled()
     expect(aligned).toBe(matching)
+  })
+
+  it('requests priority only when the composer asks for fast', async () => {
+    const hook = await mountSelectionHook({ lastSelectedModel: model.key })
+    await act(async () => { await Promise.resolve() })
+    act(() => hook.value.changeFast(true))
+    const target: RuntimeInfo = {
+      ...runtime,
+      model: alignedModel,
+      configuredThinkingLevel: 'medium',
+      thinkingLevel: 'medium',
+      serviceTier: 'default',
+      fastModeSupported: true,
+    }
+
+    await act(async () => { await hook.value.alignRuntime!(target) })
+
+    expect(hook.command).toHaveBeenCalledExactlyOnceWith('runtime-1', { type: 'set_service_tier', serviceTier: 'priority' })
   })
 
   it('skips effort alignment for auto and fast alignment when unsupported', async () => {

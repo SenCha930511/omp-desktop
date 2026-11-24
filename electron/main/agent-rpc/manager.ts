@@ -166,6 +166,7 @@ export class AgentRpcManager {
     if (sessionPath !== undefined && this.mutatingRuntimeForSession(sessionPath)) {
       throw new Error('Session identity is being changed')
     }
+    if (sessionPath !== undefined) await this.retireStaleRuntimeForSession(sessionPath)
     if (sessionPath !== undefined) {
       // Reuse the process that already owns this file. Opening it in a second
       // OMP process can trigger lock-conflict forking; normal resume itself
@@ -182,6 +183,7 @@ export class AgentRpcManager {
     const key = canonicalSessionPath(sessionPath)
     for (let attempt = 0; ; attempt += 1) {
       if (attempt >= MAX_LAUNCH_ATTEMPTS) throw new Error('The session is already being started by another caller')
+      await this.retireStaleRuntimeForSession(key)
       const ready = this.readyRuntimeForSession(key)
       if (ready) return this.reuseReadyRuntime(ready, interactive, ownerId)
       const decision = this.launches.begin(key, { interactive, ownerId, revision: this.runtimeEnvironmentRevision })
@@ -215,7 +217,19 @@ export class AgentRpcManager {
       // Different audience (for example the scheduler while the renderer is
       // starting the same session): wait for that launch instead of opening the
       // file a second time, then re-evaluate the ready gate.
-      await decision.ticket.ready.then(() => undefined, () => undefined)
+      const info = await decision.ticket.ready.catch(() => undefined)
+      if (info) {
+        const joined = this.runtimes.get(info.runtimeId)
+        if (joined && !this.startingRuntimes.has(info.runtimeId)) {
+          if (!this.isCurrentEnvironment(joined.runtimeId)) {
+            if (joined.snapshot().isStreaming) return this.reuseReadyRuntime(joined, interactive, ownerId)
+            const retired = await this.retireForCheckout(joined).catch(() => false)
+            if (!retired) throw new Error('The session runtime could not be refreshed')
+            continue
+          }
+          return this.reuseReadyRuntime(joined, interactive, ownerId)
+        }
+      }
     }
   }
 
@@ -263,6 +277,24 @@ export class AgentRpcManager {
       if (sessionFile === undefined) return this.startSessionPathById.get(runtime.runtimeId) === wanted
       return canonicalSessionPath(sessionFile) === wanted
     })
+  }
+
+  /** Retire an idle stale-environment child, or refuse to spawn beside a busy one. */
+  private async retireStaleRuntimeForSession(sessionPath: string): Promise<void> {
+    const wanted = canonicalSessionPath(sessionPath)
+    const stale = [...this.runtimes.values()].find((runtime) => {
+      if (this.startingRuntimes.has(runtime.runtimeId)) return false
+      if (this.retiringRuntimes.has(runtime.runtimeId)) return false
+      if (this.quarantinedRuntimes.has(runtime.runtimeId)) return false
+      if (this.isCurrentEnvironment(runtime.runtimeId)) return false
+      const sessionFile = runtime.snapshot().sessionFile
+      return (sessionFile !== undefined && canonicalSessionPath(sessionFile) === wanted)
+        || this.startSessionPathById.get(runtime.runtimeId) === wanted
+    })
+    if (!stale) return
+    if (stale.snapshot().isStreaming) throw new Error('The session runtime is still busy in an older environment')
+    const retired = await this.retireForCheckout(stale).catch(() => false)
+    if (!retired) throw new Error('The stale session runtime could not be retired')
   }
 
   /** A runtime whose native identity mutation still owns the requested source file. */
@@ -717,13 +749,11 @@ export class AgentRpcManager {
     return this.stopRuntime(runtime)
   }
 
-  /** Renderer-visible runtime list. Retiring/quarantined runtimes are excluded:
-   * commands against them fail by design, so advertising them only invites the
-   * renderer to adopt one inside the ~30s stop window and surface a raw
-   * "Runtime is being retired" error — the idle-prompt path must instead see
-   * them as gone and transparently start a fresh runtime. */
+  /** Renderer-visible runtime list. Starting, retiring, and quarantined runtimes
+   * are excluded: a caller must wait for the launch ticket instead of adopting
+   * a pre-handshake snapshot or a runtime inside its stop window. */
   list(): RuntimeInfo[] {
-    return [...this.runtimes.values()].filter((runtime) => !this.retiringRuntimes.has(runtime.runtimeId) && !this.quarantinedRuntimes.has(runtime.runtimeId)).map((runtime) => runtime.snapshot())
+    return [...this.runtimes.values()].filter((runtime) => !this.startingRuntimes.has(runtime.runtimeId) && !this.retiringRuntimes.has(runtime.runtimeId) && !this.quarantinedRuntimes.has(runtime.runtimeId)).map((runtime) => runtime.snapshot())
   }
 
   /** Cheap ownership probe for IPC routing; requireRuntime keeps the authoritative not-found error. */
@@ -933,12 +963,16 @@ export class AgentRpcManager {
     } catch {
       outcome = { ok: false }
     }
-    this.hostOpenUrl.finishRegistration({
+    const status = this.hostOpenUrl.finishRegistration({
       runtimeId: runtime.runtimeId,
       registrationGeneration: generation,
       ownerId,
       outcome,
     })
+    if (status !== 'registered' && this.hostToolOwnerByRuntimeId.get(runtime.runtimeId) === ownerId) {
+      const snapshot = this.hostOpenUrl.snapshot(runtime.runtimeId, ownerId)
+      if (snapshot.registrationGeneration === generation) this.hostToolOwnerByRuntimeId.delete(runtime.runtimeId)
+    }
   }
 
   private handleHostToolFrame(runtimeId: string, frame: RpcObject): void {

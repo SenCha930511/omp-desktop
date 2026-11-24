@@ -271,10 +271,10 @@ export function useProviderCatalog({ bridge, ready = true, harness = 'omp', loca
       const pending = pendingSelectionsRef.current.get(sessionKey)
       const pendingModel = pending && catalog.models.find((candidate) => candidate.key === pending.model && isUsable(candidate))
       const runtimeModel = catalog.models.find((candidate) => candidate.provider === runtime.model?.provider && candidate.id === runtime.model?.id && isUsable(candidate))
-      // An unsent choice parked while no runtime existed outranks an idle
-      // runtime that appeared later (for example a startup prewarm). Keep it
-      // until alignment refreshes the runtime to the same selection.
-      if (pending && pendingModel && !runtime.isStreaming && (!runtimeModel || runtimeModel.key !== pendingModel.key)) {
+      const pendingEffortDiffers = Boolean(pending && pendingModel
+        && supportsEffort(pendingModel, pending.effort)
+        && (runtime.configuredThinkingLevel ?? runtime.thinkingLevel) !== pending.effort)
+      if (pending && pendingModel && !runtime.isStreaming && (!runtimeModel || runtimeModel.key !== pendingModel.key || pendingEffortDiffers)) {
         if (modelRef.current !== pendingModel.key) updateModel(pendingModel.key)
         if (supportsEffort(pendingModel, pending.effort) && effortRef.current !== pending.effort) updateEffort(pending.effort)
         return
@@ -504,11 +504,8 @@ export function useProviderCatalog({ bridge, ready = true, harness = 'omp', loca
         if (selection.effort !== 'auto' && (current.configuredThinkingLevel ?? current.thinkingLevel) !== selection.effort) {
           commands.push({ type: 'set_thinking_level', level: selection.effort })
         }
-        if (current.fastModeSupported === true) {
-          const desiredTier = selection.fast ? 'priority' : 'default'
-          if ((current.serviceTier === 'priority' ? 'priority' : 'default') !== desiredTier) {
-            commands.push({ type: 'set_service_tier', serviceTier: desiredTier })
-          }
+        if (selection.fast && current.fastModeSupported === true && current.serviceTier !== 'priority') {
+          commands.push({ type: 'set_service_tier', serviceTier: 'priority' })
         }
         if (commands.length === 0) {
           aligned.resolve(current)

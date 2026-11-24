@@ -20,6 +20,8 @@ interface ConvergenceAgentOptions {
   /** Authoritative session file the fake reports from get_state. */
   sessionFile: string
   sessionId?: string
+  streaming?: boolean
+  failHostTools?: boolean
 }
 
 /**
@@ -45,6 +47,8 @@ const failFile = ${JSON.stringify(failFile)}
 const state = {
   sessionId: ${JSON.stringify(options.sessionId ?? 'session-1')},
   sessionFile: ${JSON.stringify(options.sessionFile)},
+  streaming: ${options.streaming === true},
+  failHostTools: ${options.failHostTools === true},
 }
 const exists = (path) => { try { return fs.existsSync(path) } catch { return false } }
 const send = (frame) => process.stdout.write(JSON.stringify(frame) + '\\n')
@@ -70,7 +74,7 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line
       send({ id: command.id, type: 'response', command: command.type, success: true, data: {
         sessionId: state.sessionId,
         sessionFile: state.sessionFile,
-        isStreaming: false,
+        isStreaming: state.streaming,
         isCompacting: false,
         isSettled: true,
         hasPendingAsyncWork: false,
@@ -80,6 +84,10 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line
     return
   }
   if (command.type === 'set_host_tools') {
+    if (state.failHostTools) {
+      send({ id: command.id, type: 'response', command: command.type, success: false, error: 'host tools unavailable' })
+      return
+    }
     const toolNames = Array.isArray(command.tools) ? command.tools.map((tool) => tool.name) : []
     send({ id: command.id, type: 'response', command: command.type, success: true, data: { toolNames } })
     return
@@ -154,6 +162,7 @@ describe('agent RPC start convergence', () => {
     expect(fake.spawns()).toHaveLength(1)
     expect(first.settled()).toBe(false)
     expect(second.settled()).toBe(false)
+    expect(manager.list()).toEqual([])
 
     fake.release()
     const [a, b] = await Promise.all([first.promise, second.promise])
@@ -219,13 +228,14 @@ describe('agent RPC start convergence', () => {
   it('waits for a launch owned by another audience instead of spawning a second child', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-start-convergence-audience-'))
     dirs.push(cwd)
-    const sessionPath = sessionFileFor(cwd)
-    const fake = convergenceAgent({ sessionFile: sessionPath })
+    const requested = sessionFileFor(cwd, 'requested.jsonl')
+    const authoritative = sessionFileFor(cwd, 'authoritative.jsonl')
+    const fake = convergenceAgent({ sessionFile: authoritative })
     const manager = managerFor(fake.executable, fake.cwd)
 
-    const interactive = track(manager.start({ cwd: fake.cwd, sessionPath }))
+    const interactive = track(manager.start({ cwd: fake.cwd, sessionPath: requested }))
     await waitUntil(() => fake.framesOf('get_state').length >= 1)
-    const unattended = track(manager.startUnattended({ cwd: fake.cwd, sessionPath }))
+    const unattended = track(manager.startUnattended({ cwd: fake.cwd, sessionPath: requested }))
 
     await new Promise((resolve) => setTimeout(resolve, 200))
     expect(fake.spawns()).toHaveLength(1)
@@ -235,7 +245,8 @@ describe('agent RPC start convergence', () => {
     const [owned, scheduled] = await Promise.all([interactive.promise, unattended.promise])
     expect(fake.spawns()).toHaveLength(1)
     expect(scheduled.runtimeId).toBe(owned.runtimeId)
-    expect(scheduled.sessionFile).toBe(canonicalSessionPath(sessionPath))
+    expect(scheduled.sessionFile).toBe(canonicalSessionPath(authoritative))
+    expect(manager.getForSession(requested)).toBeUndefined()
   }, 20_000)
 
   it('registers host tools for an interactive caller that deferred behind an unattended launch', async () => {
@@ -322,5 +333,43 @@ describe('agent RPC start convergence', () => {
     expect(current.runtimeId).not.toBe(stale.runtimeId)
     expect(fake.spawns()).toHaveLength(2)
     expect(manager.list().map((runtime) => runtime.runtimeId)).toEqual([current.runtimeId])
+  }, 20_000)
+
+  it('refuses to spawn beside a busy runtime from an older environment', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-start-convergence-stale-busy-'))
+    dirs.push(cwd)
+    const sessionPath = sessionFileFor(cwd)
+    const fake = convergenceAgent({ sessionFile: sessionPath, streaming: true })
+    const manager = managerFor(fake.executable, fake.cwd)
+
+    const started = manager.start({ cwd: fake.cwd, sessionPath }, 7)
+    await waitUntil(() => fake.framesOf('get_state').length >= 1)
+    fake.release()
+    const owned = await started
+    await manager.requestRuntimeEnvironmentRefresh()
+
+    await expect(manager.start({ cwd: fake.cwd, sessionPath }, 7)).rejects.toThrow('busy in an older environment')
+    expect(fake.spawns()).toHaveLength(1)
+    expect(manager.list().map((runtime) => runtime.runtimeId)).toEqual([owned.runtimeId])
+  }, 20_000)
+
+  it('retries host-tool registration after an unavailable acknowledgement', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-start-convergence-host-retry-'))
+    dirs.push(cwd)
+    const sessionPath = sessionFileFor(cwd)
+    const fake = convergenceAgent({ sessionFile: sessionPath, failHostTools: true })
+    const hostOpenUrl = hostService()
+    const manager = managerFor(fake.executable, fake.cwd, hostOpenUrl)
+
+    const first = manager.start({ cwd: fake.cwd, sessionPath }, 42)
+    await waitUntil(() => fake.framesOf('get_state').length >= 1)
+    fake.release()
+    const owned = await first
+    expect(fake.framesOf('set_host_tools')).toHaveLength(1)
+
+    const reused = await manager.start({ cwd: fake.cwd, sessionPath }, 42)
+    expect(reused.runtimeId).toBe(owned.runtimeId)
+    expect(fake.spawns()).toHaveLength(1)
+    expect(fake.framesOf('set_host_tools')).toHaveLength(2)
   }, 20_000)
 })
