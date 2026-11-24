@@ -408,8 +408,9 @@ function SidebarView({
         </span>
         <span className="session-row__meta">
           {session.pinned ? <span className="session-row__pin" title={t('sidebar.sessionPinnedAria')}><Pin size={10} fill="currentColor" /></span> : null}
-          {session.status === 'running' ? <span className="session-row__spinner" title={t('sidebar.sessionWorking')}><LoaderCircle className="spin" size={13} /></span> : null}
-          <span className="session-row__time">{formatCompactRelative(session.updatedAt || session.lastUserMessageAt, { nowLabel: t('sidebar.time.now') })}</span>
+          {session.status === 'running'
+            ? <span className="session-row__spinner" title={t('sidebar.sessionWorking')}><LoaderCircle className="spin" size={13} /></span>
+            : <span className="session-row__time">{formatCompactRelative(session.updatedAt || session.lastUserMessageAt, { nowLabel: t('sidebar.time.now') })}</span>}
         </span>
       </button>
       <IconButton

@@ -15,7 +15,8 @@ async function submitLayoutRun(page: Page, withHud: boolean): Promise<void> {
 }
 
 async function expectOrdinaryRowAlignment(row: Locator): Promise<void> {
-  await expect(row.locator('.session-row__time')).toHaveCSS('opacity', '1')
+  const metadata = row.locator('.session-row__time, .session-row__spinner')
+  await expect(metadata.first()).toHaveCSS('opacity', '1')
   await expect.poll(async () => {
     const rowBox = await row.boundingBox()
     const metaBox = await row.locator('.session-row__meta').boundingBox()
@@ -29,8 +30,7 @@ async function expectOrdinaryRowAlignment(row: Locator): Promise<void> {
 async function expectControlsClearMetadata(row: Locator): Promise<void> {
   const time = row.locator('.session-row__time')
   const spinner = row.locator('.session-row__spinner')
-  await expect(time).toHaveCSS('opacity', '0')
-  if (await spinner.count()) await expect(spinner).toHaveCSS('opacity', '0')
+  for (const element of [time, spinner]) if (await element.count()) await expect(element).toHaveCSS('opacity', '0')
   await expect(row.locator('.session-row__archive')).toHaveCSS('opacity', '1')
   await expect(row.locator('.session-row__more')).toHaveCSS('opacity', '1')
   await expect.poll(async () => row.evaluate((element) => {
@@ -134,11 +134,8 @@ test('keeps long session metadata right aligned through running, controls, and c
     await submitLayoutRun(page, false)
     await expect(row).toHaveClass(/session-row-wrap--running/)
     await expect(row.locator('.session-row__spinner')).toBeVisible()
-    await expect(row.locator('.session-row__time')).toContainText('now')
+    await expect(row.locator('.session-row__time')).toHaveCount(0)
     await expectOrdinaryRowAlignment(row)
-    const spinnerBox = await row.locator('.session-row__spinner').boundingBox()
-    const timeBox = await row.locator('.session-row__time').boundingBox()
-    expect(spinnerBox && timeBox && spinnerBox.x + spinnerBox.width <= timeBox.x).toBe(true)
     await row.hover()
     await expectControlsClearMetadata(row)
     await testInfo.attach('running-hover', { body: await page.screenshot({ path: `${evidenceDirectory}/session-title-running.png` }), contentType: 'image/png' })
