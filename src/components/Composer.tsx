@@ -13,6 +13,7 @@ import { type MessageKey, useI18n } from '@/lib/i18n'
 import { formatQueuedItemsForRestore, isContinueShorthand, parseQueueShorthandInput } from '@/lib/input-shorthands'
 import { isImeComposing, isImeComposingOrGuarded, messageActionForKey, splitAttachmentFileName } from '@/lib/message-shortcuts'
 import { appendSessionRouting, findSessionMentions } from '@/lib/session-mentions'
+import { fitPromptImagesForTransport } from '@/lib/prompt-image-fit'
 import { INITIAL_SLASH_COMMANDS, slashCommandAcceptsImages, slashSuggestions, type SlashCommand } from '@/lib/slash-commands'
 import { desktopSlashCommands } from '@/lib/slash-command-ui'
 import type {
@@ -511,9 +512,17 @@ export const Composer = memo(function Composer({
         setAttachmentError(t('composer.error.queueShorthandEmpty'))
         return
       }
-      const queueShorthandImages = currentImages.map(({ type, data, mimeType }) => ({ type, data, mimeType }))
-      const queueShorthandComposerImages = currentImages
+      let queueShorthandImages = currentImages.map(({ type, data, mimeType }) => ({ type, data, mimeType }))
       submittingRef.current = true
+      try {
+        const fitted = fitPromptImagesForTransport({ type: 'prompt', message: queueItems[0] ?? '', images: queueShorthandImages })
+        queueShorthandImages = Array.isArray(fitted) ? fitted : await fitted
+      } catch {
+        submittingRef.current = false
+        setAttachmentError(t('composer.error.imagesTooLarge'))
+        return
+      }
+      const queueShorthandComposerImages = currentImages
       setValue('')
       if (draftKey) saveComposerDraft(draftKey, { text: '', model, effort, fast })
       imageAttachments.clear()
@@ -586,7 +595,7 @@ export const Composer = memo(function Composer({
       setAttachmentError(t('slash.error.images'))
       return
     }
-    const submittedImages = currentImages.map(({ type, data, mimeType }) => ({ type, data, mimeType }))
+    let submittedImages = currentImages.map(({ type, data, mimeType }) => ({ type, data, mimeType }))
     // Recognized @ mentions carry explicit routing semantics; annotations then
     // ride along inside the prompt as their own delimited plain-text block.
     const referencedSessions = findSessionMentions(prompt, sessions, sessionReferenceIds)
@@ -600,6 +609,18 @@ export const Composer = memo(function Composer({
     )
     const promptWithAnnotations = appendAnnotationsToPrompt(promptWithCapabilities, currentAnnotations)
     submittingRef.current = true
+    try {
+      const fitted = fitPromptImagesForTransport({
+        type: intent === 'steer' ? 'steer' : 'prompt',
+        message: promptWithAnnotations,
+        images: submittedImages,
+      })
+      submittedImages = Array.isArray(fitted) ? fitted : await fitted
+    } catch {
+      submittingRef.current = false
+      setAttachmentError(t('composer.error.imagesTooLarge'))
+      return
+    }
     const submittedValue = draftValue
     const submittedComposerImages = currentImages
     setValue('')

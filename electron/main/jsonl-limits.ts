@@ -1,3 +1,7 @@
+import { RPC_WRITE_FRAME_LIMIT_BYTES } from '../../src/lib/rpc-frame'
+
+export { RPC_WRITE_FRAME_LIMIT_BYTES }
+
 /**
  * The single home for JSONL frame (per-record) size limits.
  *
@@ -18,4 +22,5 @@
  */
 export const SESSION_FILE_RECORD_LIMIT_BYTES = 64 * 1024 * 1024
 export const RPC_READ_FRAME_LIMIT_BYTES = 16 * 1024 * 1024
-export const RPC_WRITE_FRAME_LIMIT_BYTES = 2 * 1024 * 1024
+// RPC_WRITE_FRAME_LIMIT_BYTES is defined in src/lib/rpc-frame.ts so the
+// renderer can fit prompt images before the main-process guard sees them.
