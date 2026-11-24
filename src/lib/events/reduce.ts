@@ -287,6 +287,51 @@ export function replayPrimeEvents(
   const assistantIndex = () => lastStreamingAssistant >= 0
     ? lastStreamingAssistant
     : resumeTailAssistant() ?? appendAssistant('stream')
+  const isMidTurnRow = (message: TranscriptMessage): boolean => {
+    if (message.role === 'assistant') return message.outcome !== 'failed' && message.outcome !== 'cancelled'
+    if (message.role === 'user') return message.steerState !== undefined || message.id.startsWith('user-queued-')
+    if (message.role === 'system') {
+      return message.kind === 'steer-read-marker'
+        || message.kind === 'agent-notice'
+        || message.kind === 'agent-notice-warning'
+        || message.kind === 'agent-notice-error'
+        || message.id.startsWith('fallback-')
+    }
+    return false
+  }
+  const findActiveTurnToolOwner = (toolCallId: string | undefined): number | undefined => {
+    if (!toolCallId) return undefined
+    for (let index = next.length - 1; index >= 0; index -= 1) {
+      const message = next[index]
+      if (!isMidTurnRow(message)) break
+      if (message.role !== 'assistant') continue
+      const draft = partDrafts.get(index)
+      if (draft) {
+        if (draft.firstToolById.has(toolCallId)) return index
+        continue
+      }
+      for (const part of message.parts) {
+        if (part.type === 'toolCall' && part.id === toolCallId) return index
+      }
+    }
+    return undefined
+  }
+  const hasSettledAsyncBashResult = (index: number, toolCallId: string): boolean => {
+    const draft = partDrafts.get(index)
+    if (draft) {
+      const result = draft.firstToolById.get(toolCallId)?.next?.part
+      return Boolean(result?.type === 'toolResult' && !result.streaming && result.details?.kind === 'bash' && result.details.async !== undefined)
+    }
+    const parts = next[index]?.parts
+    if (!parts) return false
+    for (let i = 0; i < parts.length; i += 1) {
+      const part = parts[i]
+      if (part.type !== 'toolCall' || part.id !== toolCallId) continue
+      const result = parts[i + 1]
+      return Boolean(result?.type === 'toolResult' && !result.streaming && result.details?.kind === 'bash' && result.details.async !== undefined)
+    }
+    return false
+  }
   const upsertToolDraft = (index: number, id: string, name: string, args: unknown): PartNode => {
     const draft = draftParts(index)
     const existing = id ? draft.firstToolById.get(id) : undefined
@@ -419,9 +464,11 @@ export function replayPrimeEvents(
       }
       for (const message of pickedUp) {
         const existing = existingById.get(message.id)
+        const submittedAt = existing?.submittedAt
+          ?? (typeof existing?.timestamp === 'number' ? existing.timestamp : typeof message.timestamp === 'number' ? message.timestamp : undefined)
         moved.push(existing
-          ? { ...existing, steerState: 'read', timestamp: deliveredAt }
-          : { ...message, timestamp: deliveredAt })
+          ? { ...existing, steerState: 'read', timestamp: deliveredAt, ...(submittedAt !== undefined ? { submittedAt } : {}) }
+          : { ...message, timestamp: deliveredAt, ...(submittedAt !== undefined ? { submittedAt } : {}) })
       }
       const markerId = `steer-read-${pickedUp.map((message) => message.id).join('-')}`
       if (!moved.some((message) => message.id === markerId)) {
@@ -510,9 +557,11 @@ export function replayPrimeEvents(
       continue
     }
     if (type === 'tool_execution_update') {
-      const index = assistantIndex()
+      const rawToolId = string(raw.toolCallId)
+      const index = findActiveTurnToolOwner(rawToolId) ?? assistantIndex()
       const name = string(raw.toolName) ?? 'Tool'
-      const id = effectiveToolId(string(raw.toolCallId), name)
+      const id = effectiveToolId(rawToolId, name)
+      if (hasSettledAsyncBashResult(index, id)) continue
       upsertToolDraft(index, id, name, raw.args)
       const draft = draftParts(index)
       const call = draft.firstToolById.get(id)
@@ -521,9 +570,10 @@ export function replayPrimeEvents(
       continue
     }
     if (type === 'tool_execution_end') {
-      const index = assistantIndex()
+      const rawToolId = string(raw.toolCallId)
+      const index = findActiveTurnToolOwner(rawToolId) ?? assistantIndex()
       const name = string(raw.toolName) ?? 'Tool'
-      const id = effectiveToolId(string(raw.toolCallId), name)
+      const id = effectiveToolId(rawToolId, name)
       const draft = draftParts(index)
       const call = draft.firstToolById.get(id)
       const text = resultText(raw.result)

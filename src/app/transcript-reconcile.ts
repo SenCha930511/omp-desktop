@@ -61,14 +61,15 @@ export function keepLocalUserRows(current: TranscriptMessage[], next: Transcript
     if (message.role !== 'user' || !message.id.startsWith('user-') || nextIds.has(message.id)) continue
     const text = transcriptMessageText(message)
     const rowTime = typeof message.timestamp === 'number' ? message.timestamp : Number.NaN
+    const submittedTime = typeof message.submittedAt === 'number' ? message.submittedAt : rowTime
     let best: TranscriptMessage | undefined
     for (const candidate of persistedUsers) {
       if (superseded.has(candidate) || transcriptMessageText(candidate) !== text) continue
       const candidateTime = candidate.timestamp as number
       // The harness writes the user record at or after submission; an older row
       // with the same text is earlier history, not this prompt's copy.
-      if (Number.isFinite(rowTime) && candidateTime < rowTime - 2_000) continue
-      if (!best || Math.abs((best.timestamp as number) - rowTime) > Math.abs(candidateTime - rowTime)) best = candidate
+      if (Number.isFinite(submittedTime) && candidateTime < submittedTime - 2_000) continue
+      if (!best || Math.abs((best.timestamp as number) - submittedTime) > Math.abs(candidateTime - submittedTime)) best = candidate
     }
     if (best) superseded.add(best)
     else missing.push(message)
