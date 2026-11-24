@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { CURRENT_DESKTOP_STATE_FILENAME, LEGACY_DESKTOP_STATE_FILENAME } from '../../electron/main/store'
+import { MAX_RPC_WRITE_FRAME_BYTES, rpcRequestFrameBytes } from '../../electron/main/agent-rpc/limits'
 
 let app: ElectronApplication | undefined
 let page: Page
@@ -224,6 +225,10 @@ const fs = require('node:fs')
 const path = require('node:path')
 const readline = require('node:readline')
 const args = process.argv.slice(2)
+const modelIndex = args.indexOf('--model')
+const requestedModel = modelIndex >= 0 ? String(args[modelIndex + 1]) : 'openai-codex/gpt-fixture'
+const [requestedProvider, requestedId] = requestedModel.includes('/') ? requestedModel.split('/', 2) : ['openai-codex', requestedModel]
+const requestedModelName = requestedId === 'claude-fixture' ? 'Claude Fixture' : 'GPT Fixture'
 const fixtureRoot = ${JSON.stringify(fixtureRoot)}
 const marker = (name) => path.join(fixtureRoot, name)
 if (args.includes('--version')) { process.stdout.write('omp/17.2.15\\n'); process.exit(0) }
@@ -295,7 +300,7 @@ let negotiated = false
 let streaming = false
 // The fixture's authoritative model/thinking, mutated by the set_* commands
 // below so a prewarm-aligned runtime reports what the composer chose.
-let currentModel = { provider: 'openai-codex', id: 'gpt-fixture', name: 'GPT Fixture' }
+let currentModel = { provider: requestedProvider, id: requestedId, name: requestedModelName }
 let currentThinking = 'medium'
 let pendingPrompt
 let answers = {}
@@ -3544,5 +3549,42 @@ test.describe('OMP Desktop desktop smoke', () => {
     await closed
     await expect.poll(() => processIsAlive(runtimePid)).toBe(false)
     app = undefined
+  })
+
+  test('fits an oversized image before sending it through the RPC transport', async () => {
+    const dataUrl = await page.evaluate(() => {
+      const canvas = document.createElement('canvas')
+      canvas.width = 1200
+      canvas.height = 1200
+      const context = canvas.getContext('2d')
+      if (!context) throw new Error('Canvas 2D context is unavailable')
+      const pixels = context.createImageData(canvas.width, canvas.height)
+      for (let index = 0; index < pixels.data.length; index += 4) {
+        pixels.data[index] = Math.floor(Math.random() * 256)
+        pixels.data[index + 1] = Math.floor(Math.random() * 256)
+        pixels.data[index + 2] = Math.floor(Math.random() * 256)
+        pixels.data[index + 3] = 255
+      }
+      context.putImageData(pixels, 0, 0)
+      return canvas.toDataURL('image/png')
+    })
+    const image = Buffer.from(dataUrl.slice(dataUrl.indexOf(',') + 1), 'base64')
+    expect(image.length).toBeGreaterThan(MAX_RPC_WRITE_FRAME_BYTES)
+    const imagePath = join(fixtureRoot, 'oversized.png')
+    writeFileSync(imagePath, image)
+
+    await page.locator('input[type="file"]').setInputFiles(imagePath)
+    await expect(page.locator('.composer-attachment')).toHaveCount(1)
+    const composer = page.getByRole('combobox', { name: 'Message OMP' })
+    await composer.fill('send the oversized image')
+    await composer.press('Enter')
+
+    const promptPath = join(fixtureRoot, 'prompt-args.json')
+    await expect.poll(() => existsSync(promptPath), { timeout: 30_000 }).toBe(true)
+    const sent = JSON.parse(readFileSync(promptPath, 'utf8')) as { images?: Array<{ data: string }> }
+    expect(sent.images).toHaveLength(1)
+    expect(sent.images![0]!.data.length).toBeLessThan(dataUrl.length)
+    expect(rpcRequestFrameBytes(sent)).toBeLessThanOrEqual(MAX_RPC_WRITE_FRAME_BYTES)
+    await expect(page.locator('[role="alert"]')).toHaveCount(0)
   })
 })
