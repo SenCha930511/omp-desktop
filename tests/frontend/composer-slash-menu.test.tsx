@@ -108,4 +108,48 @@ describe('Composer slash menu skill icon alignment', () => {
     expect(css).toContain('.composer-menu button > svg { flex: 0 0 auto; width: 14px; height: 14px; }')
     expect(css).toContain('.composer-menu button > span { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }')
   })
+
+  it('opens the command menu for a slash token after existing text and keeps the draft', () => {
+    act(() => {
+      root.render(
+        <Composer
+          busy={false}
+          model="provider/vision"
+          effort="medium"
+          modelsByProvider={modelsByProvider}
+          providers={providers}
+          reasoningLevels={['medium']}
+          fast={false}
+          fastSupported={false}
+          fastAvailable={false}
+          imageInputSupported={false}
+          messageEnterAction="queue"
+          skills={[]}
+          availableCommands={[
+            { name: 'btw', description: 'Open side questions', source: 'builtin' },
+            { name: 'skill:architect', description: 'Plan the shape first.', source: 'skill' },
+          ]}
+          onModelChange={vi.fn()}
+          onEffortChange={vi.fn()}
+          onFastChange={vi.fn()}
+          onSend={vi.fn()}
+          onStop={vi.fn()}
+        />,
+      )
+    })
+
+    const textarea = container.querySelector('textarea')!
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, 'keep this /ski')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+
+    const options = [...container.querySelectorAll<HTMLButtonElement>('.composer-menu button[role="option"]')]
+    expect(options.length).toBeGreaterThan(0)
+    const skillOption = options.find((button) => button.textContent?.includes('skill:architect'))
+    expect(skillOption).toBeDefined()
+
+    act(() => { skillOption!.click() })
+    expect(textarea.value).toBe('keep this /skill:architect ')
+  })
 })
