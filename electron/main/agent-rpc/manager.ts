@@ -1,8 +1,10 @@
+import { existsSync } from 'node:fs'
+import { basename, dirname, extname, join } from 'node:path'
 import type { PrimeEventEnvelope, PrimeModelCatalog, PrimeModelDescriptor, RuntimeInfo } from '../../../src/types/api'
 import { readLatestCompactionRecord, type ManualCompactionReader } from './manual-compaction'
 import { assertNoMcpAuthenticationCommand } from '../../../src/lib/mcp-policy'
 import { parseSessionActionSnapshot, streamingBehaviorForIntent } from '../../../src/lib/session-actions'
-import { resolveExecutable, type ExecutableSource } from '../process-utils'
+import { resolveExecutable, runProcess, type ExecutableSource } from '../process-utils'
 import { canonicalSessionPath } from '../session-paths'
 import { isPathWithin, isRecord, rejectUnknownKeys, requireId, requireRecord, requireString, type JsonObject } from '../validation'
 import { isThinkingLevel, validateRpcCommand } from './command-schema'
@@ -18,6 +20,15 @@ import { SessionLaunches, type OwnedLaunch } from './session-launches'
 
 /** Bounded retry for a deferral chain; a second deferral in a row is pathological. */
 const MAX_LAUNCH_ATTEMPTS = 2
+const SESSION_LEASE_ID_PATTERN = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i
+
+export function sessionLeaseId(sessionPath: string): string {
+  return SESSION_LEASE_ID_PATTERN.exec(sessionPath)?.[1] ?? basename(sessionPath, extname(sessionPath))
+}
+
+export function sessionLockFilePath(sessionPath: string): string {
+  return join(dirname(sessionPath), `.${basename(sessionPath)}.lock.os`)
+}
 
 /** A caller's validated selection, read per caller before joining or spawning. */
 interface StartRequest {
@@ -46,6 +57,7 @@ export class AgentRpcManager {
   private readonly runtimes = new Map<string, RpcRuntime>()
   private readonly startingRuntimes = new Set<string>()
   private readonly retiringRuntimes = new Set<string>()
+  private readonly stoppingRuntimes = new Map<string, { promise: Promise<boolean>; sessionPaths: Set<string> }>()
   /** One in-flight fork per source path: a second trigger joins it instead of forking the fork. */
   private readonly forksInFlight = new Map<string, Promise<string>>()
   private readonly runtimeEnvironmentRevisions = new Map<string, number>()
@@ -191,6 +203,7 @@ export class AgentRpcManager {
       const decision = this.launches.begin(key, { interactive, ownerId, revision: this.runtimeEnvironmentRevision })
       if (decision.kind === 'owner') {
         try {
+          await this.assertSessionLeaseAvailable(executable, sessionPath)
           return await this.spawnRuntime({ executable, cwd, sessionPath, request, interactive, ownerId, launch: decision.launch })
         } catch (error) {
           // No automatic retry: the slot is freed so a later manual start can
@@ -266,12 +279,25 @@ export class AgentRpcManager {
     return true
   }
 
+  /** All canonical session file paths currently associated with a runtime. */
+  private sessionPathsOwnedBy(runtime: RpcRuntime): Set<string> {
+    const paths = new Set<string>()
+    const current = runtime.snapshot().sessionFile
+    if (current) paths.add(canonicalSessionPath(current))
+    const started = this.startSessionPathById.get(runtime.runtimeId)
+    if (started) paths.add(started)
+    const durable = this.durableIdentityByRuntimeId.get(runtime.runtimeId)?.sessionFile
+    if (durable) paths.add(durable)
+    return paths
+  }
+
   /** A resident runtime for the session that already finished its handshake. */
   private readyRuntimeForSession(sessionPath: string): RpcRuntime | undefined {
     const wanted = canonicalSessionPath(sessionPath)
     return [...this.runtimes.values()].find((runtime) => {
       if (this.startingRuntimes.has(runtime.runtimeId)) return false
       if (this.retiringRuntimes.has(runtime.runtimeId)) return false
+      if (this.quarantinedRuntimes.has(runtime.runtimeId)) return false
       if (!this.isCurrentEnvironment(runtime.runtimeId)) return false
       const sessionFile = runtime.snapshot().sessionFile
       // Before the handshake reports the authoritative file the resume path is
@@ -281,22 +307,37 @@ export class AgentRpcManager {
     })
   }
 
-  /** Retire an idle stale-environment child, or refuse to spawn beside a busy one. */
+  /** Wait for stopping/retiring children on `sessionPath`, and retire stale or quarantined ones. */
   private async retireStaleRuntimeForSession(sessionPath: string): Promise<void> {
     const wanted = canonicalSessionPath(sessionPath)
-    const stale = [...this.runtimes.values()].find((runtime) => {
+    const stopping = [
+      ...[...this.stoppingRuntimes.values()]
+        .filter((entry) => entry.sessionPaths.has(wanted))
+        .map((entry) => entry.promise),
+      ...[...this.runtimes.values()]
+        .filter((runtime) => this.retiringRuntimes.has(runtime.runtimeId) && this.sessionPathsOwnedBy(runtime).has(wanted))
+        .map((runtime) => this.stopRuntime(runtime)),
+    ]
+    if (stopping.length) {
+      const results = await Promise.all(stopping.map((promise) => promise.catch(() => false)))
+      if (results.some((stopped) => !stopped)) throw new Error('The previous session runtime could not be stopped')
+    }
+    const blockers = [...this.runtimes.values()].filter((runtime) => {
       if (this.startingRuntimes.has(runtime.runtimeId)) return false
       if (this.retiringRuntimes.has(runtime.runtimeId)) return false
-      if (this.quarantinedRuntimes.has(runtime.runtimeId)) return false
-      if (this.isCurrentEnvironment(runtime.runtimeId)) return false
-      const sessionFile = runtime.snapshot().sessionFile
-      return (sessionFile !== undefined && canonicalSessionPath(sessionFile) === wanted)
-        || this.startSessionPathById.get(runtime.runtimeId) === wanted
+      if (!this.sessionPathsOwnedBy(runtime).has(wanted)) return false
+      return this.quarantinedRuntimes.has(runtime.runtimeId) || !this.isCurrentEnvironment(runtime.runtimeId)
     })
-    if (!stale) return
-    if (stale.snapshot().isStreaming) throw new Error('The session runtime is still busy in an older environment')
-    const retired = await this.retireForCheckout(stale).catch(() => false)
-    if (!retired) throw new Error('The stale session runtime could not be retired')
+    for (const blocker of blockers) {
+      if (blocker.snapshot().isStreaming) throw new Error('The session runtime is still busy in an older environment')
+      if (this.quarantinedRuntimes.has(blocker.runtimeId)) {
+        const stopped = await this.stopRuntime(blocker).catch(() => false)
+        if (!stopped) throw new Error('The quarantined session runtime could not be retired')
+        continue
+      }
+      const retired = await this.retireForCheckout(blocker).catch(() => false)
+      if (!retired) throw new Error('The stale session runtime could not be retired')
+    }
   }
 
   /** A runtime whose native identity mutation still owns the requested source file. */
@@ -574,6 +615,49 @@ export class AgentRpcManager {
     return runtime.refreshState()
   }
 
+  async getSessionLease(runtimeId: unknown, sessionIds: string[]): Promise<{ held: string[]; unknown: string[] }> {
+    this.requireOpen()
+    const runtime = this.requireRuntime(runtimeId)
+    if (this.retiringRuntimes.has(runtime.runtimeId)) throw new Error('Runtime is being retired')
+    if (this.quarantinedRuntimes.has(runtime.runtimeId)) throw new Error('Runtime is quarantined after a session identity change')
+    const response = await runtime.command({ type: 'get_session_lease', sessionIds })
+    if (response.success !== true) throw new Error(typeof response.error === 'string' ? response.error : 'OMP could not read session leases')
+    const data = requireRecord(response.data, 'get_session_lease data')
+    const read = (value: unknown): string[] => Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+    return { held: read(data.held), unknown: read(data.unknown) }
+  }
+
+  private async assertSessionLeaseAvailable(executable: string, sessionPath: string): Promise<void> {
+    if (this.adapter.id !== 'omp') return
+    const canonical = canonicalSessionPath(sessionPath)
+    if (!existsSync(sessionLockFilePath(canonical)) && !existsSync(sessionLockFilePath(sessionPath))) return
+    const leaseId = sessionLeaseId(canonical)
+    const probe = [...this.runtimes.values()].find((runtime) => !this.startingRuntimes.has(runtime.runtimeId)
+      && !this.retiringRuntimes.has(runtime.runtimeId)
+      && !this.quarantinedRuntimes.has(runtime.runtimeId))
+    let lease = probe ? await probe.probeSessionLease([leaseId]) : null
+    if (!lease) {
+      try {
+        const result = await runProcess(executable, ['session', 'lease', '--json', '--', leaseId], { timeoutMs: 10_000, maxBytes: 64 * 1024 })
+        if (result.code === 0 && !result.timedOut && !result.outputExceeded) {
+          const parsed: unknown = JSON.parse(result.stdout)
+          if (isRecord(parsed) && Array.isArray(parsed.held) && Array.isArray(parsed.unknown)) {
+            const read = (items: unknown[]): string[] => items.filter((item): item is string => typeof item === 'string')
+            lease = { held: read(parsed.held), unknown: read(parsed.unknown) }
+          }
+        }
+      } catch {
+        // Older OMP builds or fake test scripts without `session lease` fall back to runtime stdout/stderr checks.
+      }
+    }
+    if (lease?.held.includes(leaseId)) {
+      throw new Error('This session is open in another OMP process (session lease already active). Close it there, then try again.')
+    }
+    if (lease?.unknown.includes(leaseId)) {
+      throw new Error('Could not verify whether another OMP process owns this session.')
+    }
+  }
+
   private async dispatchCommand(runtimeId: unknown, rawCommand: unknown): Promise<RpcObject> {
     this.requireOpen()
     const runtime = this.requireRuntime(runtimeId)
@@ -776,12 +860,10 @@ export class AgentRpcManager {
 
   async stopForSession(filePath: string): Promise<void> {
     const wanted = canonicalSessionPath(filePath)
-    const matches = [...this.runtimes.values()].filter((runtime) => {
-      const path = runtime.snapshot().sessionFile
-      return path !== undefined && canonicalSessionPath(path) === wanted
-    })
+    const matches = [...this.runtimes.values()].filter((runtime) => this.sessionPathsOwnedBy(runtime).has(wanted))
     if (matches.some((runtime) => this.sessionMutations.has(runtime.runtimeId))) throw new Error('Session identity is being changed')
-    await Promise.all(matches.map((runtime) => this.stopRuntime(runtime)))
+    const stopping = [...this.stoppingRuntimes.values()].filter((entry) => entry.sessionPaths.has(wanted)).map((entry) => entry.promise)
+    await Promise.all([...matches.map((runtime) => this.stopRuntime(runtime)), ...stopping])
   }
 
   async stopForProjectRoots(roots: string[]): Promise<void> {
@@ -885,23 +967,22 @@ export class AgentRpcManager {
   }
 
   private async retireForCheckout(runtime: RpcRuntime, eligible: () => boolean = () => true): Promise<boolean> {
+    const existingStop = this.stoppingRuntimes.get(runtime.runtimeId)
+    if (existingStop) return existingStop.promise
     const decision = await this.withRuntimeAdmission(async () => {
+      if (this.stoppingRuntimes.has(runtime.runtimeId)) return 'joining'
       if (!this.runtimes.has(runtime.runtimeId)) return 'gone'
       if (!this.canReclaim(runtime) || !eligible()) return 'busy'
       this.retiringRuntimes.add(runtime.runtimeId)
       return 'retiring'
     })
+    if (decision === 'joining') return this.stoppingRuntimes.get(runtime.runtimeId)?.promise ?? true
     if (decision === 'gone') return true
     if (decision === 'busy') return false
     try {
-      const stopped = await this.stopRuntime(runtime)
-      if (stopped && this.runtimes.get(runtime.runtimeId) === runtime) {
-        this.runtimes.delete(runtime.runtimeId)
-        this.idleSince.delete(runtime.runtimeId)
-      }
-      return stopped
+      return await this.stopRuntime(runtime)
     } finally {
-      this.retiringRuntimes.delete(runtime.runtimeId)
+      if (!this.stoppingRuntimes.has(runtime.runtimeId)) this.retiringRuntimes.delete(runtime.runtimeId)
     }
   }
 
@@ -955,9 +1036,41 @@ export class AgentRpcManager {
   }
 
   private stopRuntime(runtime: RpcRuntime): Promise<boolean> {
+    const ownedPaths = this.sessionPathsOwnedBy(runtime)
+    const existing = this.stoppingRuntimes.get(runtime.runtimeId)
+    if (existing) {
+      for (const path of ownedPaths) existing.sessionPaths.add(path)
+      return existing.promise
+    }
+    this.retiringRuntimes.add(runtime.runtimeId)
     this.disposeWordPrediction(runtime.runtimeId, new Error('Runtime is stopping'))
     void this.hostOpenUrl?.retireRuntime(runtime.runtimeId)
-    return runtime.stop()
+    const entry: { promise: Promise<boolean>; sessionPaths: Set<string> } = {
+      promise: Promise.resolve(true),
+      sessionPaths: ownedPaths,
+    }
+    const promise = runtime.stop().then(
+      (stopped) => {
+        if (this.stoppingRuntimes.get(runtime.runtimeId) === entry) this.stoppingRuntimes.delete(runtime.runtimeId)
+        if (stopped) {
+          if (this.runtimes.get(runtime.runtimeId) === runtime) this.runtimes.delete(runtime.runtimeId)
+          this.idleSince.delete(runtime.runtimeId)
+          this.startSessionPathById.delete(runtime.runtimeId)
+          this.durableIdentityByRuntimeId.delete(runtime.runtimeId)
+          this.quarantinedRuntimes.delete(runtime.runtimeId)
+        }
+        this.retiringRuntimes.delete(runtime.runtimeId)
+        return stopped
+      },
+      (error) => {
+        if (this.stoppingRuntimes.get(runtime.runtimeId) === entry) this.stoppingRuntimes.delete(runtime.runtimeId)
+        this.retiringRuntimes.delete(runtime.runtimeId)
+        throw error
+      },
+    )
+    entry.promise = promise
+    this.stoppingRuntimes.set(runtime.runtimeId, entry)
+    return promise
   }
 
   private async registerHostTools(runtime: RpcRuntime, ownerId: number): Promise<void> {

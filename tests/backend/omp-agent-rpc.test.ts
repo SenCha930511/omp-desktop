@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AgentEventForwarder, AgentRpcManager, OMP_RPC_ADAPTER } from '../../electron/main/agent-rpc'
-import type { ProviderCatalog } from '../../electron/main/agent-rpc'
+import { sessionLockFilePath, type ProviderCatalog } from '../../electron/main/agent-rpc/manager'
 import {
   RPC_CHUNK_ASSEMBLY_INACTIVITY_MS,
   RpcRuntime,
@@ -66,6 +66,8 @@ interface FakeOmpOptions {
   predictionResponses?: Array<Record<string, unknown>>
   rolledSessionId?: string
   rolledSessionFile?: string
+  heldSessionIds?: string[]
+  unknownSessionIds?: string[]
 }
 
 function fakeOmpAgent(options: FakeOmpOptions = {}): { cwd: string; executable: string } {
@@ -80,6 +82,14 @@ function fakeOmpAgent(options: FakeOmpOptions = {}): { cwd: string; executable: 
   writeFileSync(executable, `#!/usr/bin/env node
 if (process.argv[2] === '--version') { process.stdout.write('omp/1.2.3\\n'); process.exit(0) }
 if (process.argv[2] === 'models' && process.argv[3] === '--json') { process.stdout.write(${JSON.stringify(JSON.stringify({ models: options.catalogModels ?? [] }))}); process.exit(0) }
+if (process.argv[2] === 'session' && process.argv[3] === 'lease') {
+  const sep = process.argv.indexOf('--')
+  const requested = process.argv.slice(sep >= 0 ? sep + 1 : 4)
+  const held = ${JSON.stringify(options.heldSessionIds ?? [])}.filter((id) => requested.includes(id))
+  const unknown = ${JSON.stringify(options.unknownSessionIds ?? [])}.filter((id) => requested.includes(id))
+  process.stdout.write(JSON.stringify({ held, unknown }))
+  process.exit(0)
+}
 const readline = require('node:readline')
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
 const sessionActions = ${JSON.stringify(options.sessionActions)}
@@ -206,6 +216,11 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   } else if (command.type === 'prompt') {
     send({ id: command.id, type: 'response', command: 'prompt', success: true, data: { agentInvoked: true } })
     ${options.promptScript ?? ''}
+  } else if (command.type === 'get_session_lease') {
+    const requested = Array.isArray(command.sessionIds) ? command.sessionIds : []
+    const held = ${JSON.stringify(options.heldSessionIds ?? [])}.filter((id) => requested.includes(id))
+    const unknown = ${JSON.stringify(options.unknownSessionIds ?? [])}.filter((id) => requested.includes(id))
+    send({ id: command.id, type: 'response', command: 'get_session_lease', success: true, data: { held, unknown } })
   } else if (command.type === 'steer' || command.type === 'follow_up') {
     send({ id: command.id, type: 'response', command: command.type, success: true, data: { accepted: true } })
   } else if (command.type === 'abort') {
@@ -822,6 +837,51 @@ describe('OMP RPC command translation', () => {
     expect(revoked).toHaveBeenCalledOnce()
   })
 
+  it('refuses to spawn a child when a resident runtime reports the locked session lease as held', async () => {
+    const leaseId = '01a1f480-0547-72ca-8139-26773e2fa9a8'
+    const fake = fakeOmpAgent({ heldSessionIds: [leaseId] })
+    const source = join(fake.cwd, `2026-11-24_${leaseId}.jsonl`)
+    writeFileSync(source, '')
+    writeFileSync(sessionLockFilePath(source), '')
+    const events: Array<Record<string, unknown>> = []
+    const manager = ompManager(fake.executable)
+    manager.setEventSink(({ event }) => events.push(event))
+
+    await manager.start({ cwd: fake.cwd })
+    expect(events.filter((event) => event.type === 'fake_argv')).toHaveLength(1)
+
+    await expect(manager.start({ cwd: fake.cwd, sessionPath: source })).rejects.toThrow(/open in another OMP process/i)
+    expect(events.filter((event) => event.type === 'fake_argv')).toHaveLength(1)
+  })
+
+  it('refuses to spawn on cold start when the CLI lease probe reports the locked session as held', async () => {
+    const leaseId = '01a1f480-0547-72ca-8139-26773e2fa9a9'
+    const fake = fakeOmpAgent({ heldSessionIds: [leaseId] })
+    const source = join(fake.cwd, `2026-11-24_${leaseId}.jsonl`)
+    writeFileSync(source, '')
+    writeFileSync(sessionLockFilePath(source), '')
+    const events: Array<Record<string, unknown>> = []
+    const manager = ompManager(fake.executable)
+    manager.setEventSink(({ event }) => events.push(event))
+
+    await expect(manager.start({ cwd: fake.cwd, sessionPath: source })).rejects.toThrow(/open in another OMP process/i)
+    expect(events.filter((event) => event.type === 'fake_argv')).toHaveLength(0)
+  })
+
+  it('refuses to spawn when the locked session lease status is unknown', async () => {
+    const leaseId = '01a1f480-0547-72ca-8139-26773e2fa9aa'
+    const fake = fakeOmpAgent({ unknownSessionIds: [leaseId] })
+    const source = join(fake.cwd, `2026-11-24_${leaseId}.jsonl`)
+    writeFileSync(source, '')
+    writeFileSync(sessionLockFilePath(source), '')
+    const events: Array<Record<string, unknown>> = []
+    const manager = ompManager(fake.executable)
+    manager.setEventSink(({ event }) => events.push(event))
+
+    await expect(manager.start({ cwd: fake.cwd, sessionPath: source })).rejects.toThrow(/could not verify/i)
+    expect(events.filter((event) => event.type === 'fake_argv')).toHaveLength(0)
+  })
+
   it('uses the native get_branch_messages command', async () => {
     const fake = fakeOmpAgent()
     const manager = ompManager(fake.executable)
@@ -1301,6 +1361,30 @@ describe('session identity capability claims', () => {
     expect(manager.getForSession(fake.fileA)).toBeUndefined()
     expect(manager.getForSession(fileB)).toBeUndefined()
     await expect(manager.command(runtime.runtimeId, { type: 'get_state' })).rejects.toThrow(/identity|retir|quarantin|not found/i)
+  })
+
+  it('stops a quarantined runtime cleanly before spawning a fresh runtime for the rolled session', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omp-desktop-rpc-quarantine-reclaim-'))
+    dirs.push(cwd)
+    const fileB = join(cwd, 'rolled-identity.jsonl')
+    const fake = capabilityRollAgent({ afterCompact: { sessionId: 'identity-beta', sessionFile: fileB } })
+    const manager = ompManager(fake.executable)
+    manager.setRuntimeEnvironmentProvider((scope) => ({
+      FAKE_IDENTITY: scope.sessionPath === fileB ? 'identity-beta' : 'identity-alpha',
+    }))
+    const runtime = await manager.start({ cwd: fake.cwd, sessionPath: fake.fileA })
+    await manager.command(runtime.runtimeId, { type: 'compact' })
+
+    const runtimes = (manager as unknown as { runtimes: Map<string, unknown> }).runtimes
+    expect(runtimes.has(runtime.runtimeId)).toBe(true)
+
+    const fresh = await manager.start({ cwd: fake.cwd, sessionPath: fileB })
+    expect(fresh.runtimeId).not.toBe(runtime.runtimeId)
+    expect(runtimes.has(runtime.runtimeId)).toBe(false)
+    expect(runtimes.has(fresh.runtimeId)).toBe(true)
+    expect(runtimes.size).toBe(1)
+    expect(manager.getForSession(fake.fileB)?.runtimeId).toBe(fresh.runtimeId)
+    expect(manager.list().map((item) => item.runtimeId)).toEqual([fresh.runtimeId])
   })
 
   it('keeps capability claims stable when compaction rewrites the session file in place', async () => {

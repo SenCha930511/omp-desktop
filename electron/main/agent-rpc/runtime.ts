@@ -146,6 +146,7 @@ export class RpcRuntime {
   private stopped = false
   private info: RuntimeInfo
   private resumedSession = false
+  private sessionHeldElsewhere = false
   private requestedServiceTier: PrimeServiceTier = 'default'
   private contextUsageRefresh: Promise<void> | null = null
   private contextUsageRefreshRequest: ContextUsageRefreshRequest | null = null
@@ -314,6 +315,10 @@ export class RpcRuntime {
     return this.snapshot()
   }
 
+  private hasSessionConflict(): boolean {
+    return this.sessionHeldElsewhere || SESSION_HELD_ELSEWHERE.test(this.transport.stderrTail())
+  }
+
   /**
    * The fork notice is emitted during boot — measurably before the get_state
    * response on a held session — so the immediate check after get_state is
@@ -322,7 +327,7 @@ export class RpcRuntime {
    */
   private async assertSessionNotHeldElsewhere(): Promise<void> {
     for (let attempt = 0; ; attempt += 1) {
-      if (SESSION_HELD_ELSEWHERE.test(this.transport.stderrTail())) throw new Error(SESSION_HELD_ELSEWHERE_MESSAGE)
+      if (this.hasSessionConflict()) throw new Error(SESSION_HELD_ELSEWHERE_MESSAGE)
       if (attempt >= 1) return
       await new Promise((resolve) => {
         const timer = setTimeout(resolve, 400)
@@ -388,10 +393,22 @@ export class RpcRuntime {
     return this.request({ type: 'set_host_tools', tools }, 10_000)
   }
 
+  async probeSessionLease(sessionIds: string[], timeoutMs = 2_000): Promise<{ held: string[]; unknown: string[] } | null> {
+    try {
+      const response = await this.request({ type: 'get_session_lease', sessionIds }, timeoutMs)
+      if (response.success !== true || !isRecord(response.data)) return null
+      if (!Array.isArray(response.data.held) || !Array.isArray(response.data.unknown)) return null
+      const read = (items: unknown[]): string[] => items.filter((item): item is string => typeof item === 'string')
+      return { held: read(response.data.held), unknown: read(response.data.unknown) }
+    } catch {
+      return null
+    }
+  }
+
   async command(command: RpcObject): Promise<RpcObject> {
     this.lastActivityAt = Date.now()
     this.scheduleCompactionPoll()
-    if (this.resumedSession && SESSION_HELD_ELSEWHERE.test(this.transport.stderrTail())) throw new Error(SESSION_HELD_ELSEWHERE_MESSAGE)
+    if (this.resumedSession && this.hasSessionConflict()) throw new Error(SESSION_HELD_ELSEWHERE_MESSAGE)
     if (command.type === 'extension_ui_response') {
       // Fire-and-forget on the wire: the dialog id may only be forgotten
       // once the line has actually been flushed to the child.
@@ -901,9 +918,13 @@ export class RpcRuntime {
     if (raw.type === 'host_tool_update' || raw.type === 'host_tool_result') return
     const value = this.adapter.normalizeEvent(raw)
     if (!value) return
-    if (value.type === 'notice' && value.source === 'session-persistence'
-      && (value.level === 'info' || value.level === 'warning' || value.level === 'error')) {
-      recordSessionDiagnostic('persistence-notice', this.snapshot(), value.level)
+    if (value.type === 'notice' && value.source === 'session-persistence') {
+      if (typeof value.message === 'string' && SESSION_HELD_ELSEWHERE.test(value.message)) {
+        this.sessionHeldElsewhere = true
+      }
+      if (value.level === 'info' || value.level === 'warning' || value.level === 'error') {
+        recordSessionDiagnostic('persistence-notice', this.snapshot(), value.level)
+      }
     }
     if (value.type === 'thinking_level_changed') {
       this.info.configuredThinkingLevel = (value.configured ?? value.thinkingLevel) as RuntimeInfo['configuredThinkingLevel']
